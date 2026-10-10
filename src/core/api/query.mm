@@ -390,8 +390,9 @@ GLsync FenceSync(Context& ctx, GLenum condition, GLbitfield flags) {
     // The fence is the current command buffer: it signals once that buffer is
     // flushed (glFlush, SYNC_FLUSH_COMMANDS_BIT, SwapBuffers, ...) and done, as
     // on other drivers. Committing here would split the stream into a command
-    // buffer per fence for fence-heavy renderers.
-    sync->serial = ctx.stream().serial();
+    // buffer per fence for fence-heavy renderers. With nothing recorded, the
+    // fence covers the work already committed and needs no flush.
+    sync->serial = ctx.stream().fenceSerial();
     sync->shareGroup = &ctx.share();
     ShareLock lock(ctx);
     ctx.share().syncs.insert(sync);

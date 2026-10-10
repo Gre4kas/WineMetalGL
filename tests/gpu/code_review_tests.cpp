@@ -208,3 +208,24 @@ GPU_TEST(gpu_cr_lazy_fence) {
     glDeleteSync(sync);
     CHECK_GL();
 }
+
+GPU_TEST(gpu_cr_fence_on_idle_stream) {
+    // With nothing recorded, a fence covers the committed work and signals
+    // without a flush (tests/wine/opengl_sync.c polls it with timeout 0).
+    glFinish();
+    GLsync sync = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+    CHECK(sync != nullptr);
+    GLint status = 0;
+    glGetSynciv(sync, GL_SYNC_STATUS, 1, nullptr, &status);
+    CHECK_EQ(status, GL_SIGNALED);
+    CHECK_EQ(glClientWaitSync(sync, 0, 0), static_cast<GLenum>(GL_ALREADY_SIGNALED));
+    glDeleteSync(sync);
+    // Work flushed but possibly still running: the fence waits for it.
+    glClear(GL_COLOR_BUFFER_BIT);
+    glFlush();
+    sync = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+    const GLenum waited = glClientWaitSync(sync, 0, 2000000000ull);
+    CHECK(waited == GL_CONDITION_SATISFIED || waited == GL_ALREADY_SIGNALED);
+    glDeleteSync(sync);
+    CHECK_GL();
+}
