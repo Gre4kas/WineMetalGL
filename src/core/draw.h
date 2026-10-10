@@ -5,6 +5,7 @@
 
 #include <cstdint>
 
+#include "core/format/formats.h"
 #include "core/gl/types.h"
 #include "core/metal/command_stream.h"
 #include "core/metal/pipeline_cache.h"
@@ -33,10 +34,19 @@ public:
     bool drawTarget(RenderTargetDesc& target, TargetFormats& formats, bool reportErrors = true);
     // Read framebuffer colour/depth/stencil texture for glReadPixels and blits.
     id<MTLTexture> readColorTexture(uint32_t& level, uint32_t& slice, GLenum& internalFormat, int& width, int& height);
+    // Read framebuffer source for GL_COLOR, GL_DEPTH or GL_STENCIL. For the
+    // default framebuffer, colour is the resolved back buffer while `samples`
+    // reports the surface's sample count. False if the buffer does not exist.
+    bool readTarget(GLenum buffer, RenderTargetDesc::Target& out, const FormatInfo*& info, uint32_t& width,
+                    uint32_t& height, uint32_t& samples);
 
     void drawArrays(GLenum mode, GLint first, GLsizei count, GLsizei instances);
     void drawElements(GLenum mode, GLsizei count, GLenum type, const void* indices, GLsizei instances, GLint baseVertex);
     void clear(GLbitfield mask);
+    // glClearBuffer*: buffer is GL_COLOR (drawbuffer = draw buffer index),
+    // GL_DEPTH, GL_STENCIL or GL_DEPTH_STENCIL. Colour values are converted
+    // to the attachment's type.
+    void clearBuffer(GLenum buffer, GLint drawbuffer, const double color[4], double depth, GLint stencil);
 
     TransientAllocator& transient() { return transient_; }
 

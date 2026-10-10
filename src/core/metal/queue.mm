@@ -1,5 +1,7 @@
 #include "core/metal/queue.h"
 
+#include <chrono>
+
 #include "core/metal/device.h"
 #include "core/util/log.h"
 
@@ -55,6 +57,16 @@ bool Queue::isCommitted(uint64_t serial) {
 void Queue::wait(uint64_t serial) {
     std::unique_lock<std::mutex> lock(mutex_);
     completed_.wait(lock, [&] { return !inflight_.count(serial); });
+}
+
+bool Queue::wait(uint64_t serial, uint64_t timeoutNs) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    auto done = [&] { return !inflight_.count(serial); };
+    if (timeoutNs == UINT64_MAX) {
+        completed_.wait(lock, done);
+        return true;
+    }
+    return completed_.wait_for(lock, std::chrono::nanoseconds(timeoutNs), done);
 }
 
 void Queue::waitIdle() {

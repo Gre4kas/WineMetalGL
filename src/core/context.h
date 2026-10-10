@@ -1,6 +1,7 @@
 // An OpenGL rendering context.
 #pragma once
 
+#include <array>
 #include <memory>
 #include <string>
 
@@ -60,6 +61,9 @@ public:
     NameTable<TransformFeedback> transformFeedbacks;
     RefPtr<VertexArray> defaultVertexArray;
     RefPtr<TransformFeedback> defaultTransformFeedback;
+    // Texture object 0 of each target, and the proxy texture of each target.
+    std::array<RefPtr<Texture>, kTexTargetCount> defaultTextures;
+    std::array<RefPtr<Texture>, kTexTargetCount> proxyTextures;
 
     // Lookup helpers that apply the share-group lock.
     Buffer* buffer(GLuint name);
@@ -83,6 +87,13 @@ public:
     const std::vector<std::string>& extensions() const { return extensions_; }
     const std::string& extensionString() const { return extensionString_; }
     bool hasExtension(const char* name) const;
+
+    // Occlusion-query slot of the current pass (see core/query.h).
+    struct {
+        uint64_t pass = 0, epoch = 0;
+        bool valid = false;
+    } occlusionSlot;
+    uint64_t occlusionEpoch = 1;
 
     // Debug output.
     GLDEBUGPROC debugCallback = nullptr;

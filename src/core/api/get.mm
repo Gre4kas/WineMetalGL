@@ -5,18 +5,13 @@
 #include <cstring>
 
 #include "core/context.h"
+#include "core/limits.h"
 #include "core/metal/device.h"
 #include "gl_api.gen.h"
 
 namespace wmgl::api {
 
-// Implementation limits shared with other modules.
-namespace limits {
-constexpr GLint kMaxTextureSize = 16384, kMax3DTextureSize = 2048, kMaxArrayLayers = 2048;
-constexpr GLint kMaxDrawBuffers = 8, kMaxVertexAttribs = 16, kMaxTextureUnitsPerStage = 16, kMaxCombinedTextureUnits = 48;
-constexpr GLint kMaxUniformBlocksPerStage = 12, kMaxCombinedUniformBlocks = 36, kMaxUniformBufferBindings = 36;
-constexpr GLint kMaxUniformBlockSize = 65536, kMaxDefaultUniformComponents = 4096;
-}  // namespace limits
+namespace limits = wmgl::limits;
 
 namespace {
 
@@ -109,8 +104,8 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
         return true;
     case GL_MAX_3D_TEXTURE_SIZE: out = ints({kMax3DTextureSize}); return true;
     case GL_MAX_ARRAY_TEXTURE_LAYERS: out = ints({kMaxArrayLayers}); return true;
-    case GL_MAX_TEXTURE_BUFFER_SIZE: out = ints({1 << 27}); return true;
-    case GL_MAX_TEXTURE_LOD_BIAS: out = floats({16.0}); return true;
+    case GL_MAX_TEXTURE_BUFFER_SIZE: out = ints({kMaxTextureBufferSize}); return true;
+    case GL_MAX_TEXTURE_LOD_BIAS: out = floats({kMaxTextureLodBias}); return true;
     case GL_MAX_VIEWPORT_DIMS: out = ints({kMaxTextureSize, kMaxTextureSize}); return true;
     case GL_MAX_DRAW_BUFFERS: case GL_MAX_COLOR_ATTACHMENTS: out = ints({kMaxDrawBuffers}); return true;
     case GL_MAX_DUAL_SOURCE_DRAW_BUFFERS: out = ints({1}); return true;

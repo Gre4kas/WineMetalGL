@@ -39,6 +39,11 @@ Context::Context(RefPtr<ShareGroup> share, const ContextConfig& config, int pixe
     defaultTransformFeedback = makeRef<TransformFeedback>(0);
     state.vertexArray = defaultVertexArray;
     state.transformFeedback = defaultTransformFeedback;
+    for (int i = 0; i < kTexTargetCount; ++i) {
+        defaultTextures[i] = makeRef<Texture>(0, textureTargetEnum(i));
+        proxyTextures[i] = makeRef<Texture>(0, textureTargetEnum(i));
+        for (TextureUnit& unit : state.textureUnits) unit.bound[i] = defaultTextures[i];
+    }
     draw_ = std::make_unique<DrawState>(*this);
     initStrings();
 }

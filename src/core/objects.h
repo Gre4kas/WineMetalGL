@@ -6,6 +6,7 @@
 #import <Metal/Metal.h>
 
 #include <array>
+#include <atomic>
 #include <map>
 #include <memory>
 #include <string>
@@ -78,7 +79,8 @@ public:
 // --------------------------------------------------------------- textures
 
 struct TextureImage {
-    GLenum internalFormat = 0;      // as requested (sized after resolution)
+    GLenum internalFormat = 0;      // sized internal format after resolution
+    GLenum requestedFormat = 0;     // as the application specified it (TEXTURE_INTERNAL_FORMAT)
     const FormatInfo* format = nullptr;
     GLsizei width = 0, height = 0, depth = 0;  // depth = layers for arrays, 6 faces are separate images
     GLsizei samples = 0;
@@ -255,8 +257,16 @@ public:
     bool everActive = false;
     uint64_t result = 0;
     uint64_t pendingSerial = 0;   // result is final once this serial completes
+    bool resultFinal = true;      // result holds the final value
     // Visibility-result slots used by occlusion queries (summed on completion).
     std::vector<std::pair<id<MTLBuffer>, uint32_t>> visibilitySlots;
+    // GPU times (seconds, host time base) for TIME_ELAPSED and TIMESTAMP,
+    // written by command-buffer completion handlers.
+    struct Timer {
+        std::atomic<double> start{0}, end{0};
+        std::atomic<bool> startSet{false}, endSet{false};
+    };
+    std::shared_ptr<Timer> timer;
     std::string label;
 };
 

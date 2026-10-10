@@ -83,6 +83,17 @@ public:
     // Called when the recorded work presents a drawable.
     void present(id<CAMetalDrawable> drawable);
 
+    // Occlusion queries. Render passes started while visibility is wanted
+    // carry a visibility-result buffer; each slot counts samples for one
+    // (query set, pass) pair. Wanting visibility ends a pass started without it.
+    void setVisibilityWanted(bool wanted);
+    bool visibilityWanted() const { return visibilityWanted_; }
+    // Reserves a slot in the open pass's visibility buffer (false if none).
+    bool allocateVisibilitySlot(__strong id<MTLBuffer>& buffer, NSUInteger& offset);
+
+    // Serial of the most recently committed command buffer of this stream.
+    uint64_t lastCommitted() const { return lastCommitted_; }
+
     Queue& queue() { return queue_; }
     bool hasDraws() const { return drawsInPass_; }
     void noteDraw() { drawsInPass_ = true; }
@@ -102,6 +113,9 @@ private:
     PendingClear pending_;
     bool drawsInPass_ = false;
     uint64_t passGeneration_ = 0;
+    bool visibilityWanted_ = false, passVisibility_ = false;
+    id<MTLBuffer> visibility_ = nil;
+    NSUInteger visibilityUsed_ = 0;
 };
 
 }  // namespace wmgl

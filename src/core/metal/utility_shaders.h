@@ -63,6 +63,75 @@ fragment ClearUintColors wmgl_clear_uint_fs(constant uint4* colors [[buffer(0)]]
     return ClearUintColors{colors[0], colors[1], colors[2], colors[3], colors[4], colors[5], colors[6], colors[7]};
 }
 fragment void wmgl_clear_depth_only_fs() {}
+
+// Framebuffer blits. The fragment's window position is the destination pixel
+// in GL coordinates (GL row 0 = Metal row 0); it is mapped into the source
+// rectangle. dst/src are (x0, y0, x1, y1); srcSize.z = 1 for linear filtering.
+struct BlitParams {
+    float4 dst;
+    float4 src;
+    float4 srcSize;
+};
+static float2 wmgl_blit_source(float2 p, constant BlitParams& b) {
+    float2 t = (p - b.dst.xy) / (b.dst.zw - b.dst.xy);
+    return b.src.xy + t * (b.src.zw - b.src.xy);
+}
+template <typename T, typename Tex>
+static vec<T, 4> wmgl_blit_read(Tex source, float2 s, constant BlitParams& b) {
+    int2 c = int2(floor(s));
+    if (any(c < 0) || any(c >= int2(b.srcSize.xy))) discard_fragment();
+    return source.read(uint2(c));
+}
+fragment float4 wmgl_blit_float_fs(ClearOut in [[stage_in]], texture2d<float> source [[texture(0)]],
+                                   sampler linearSampler [[sampler(0)]], constant BlitParams& b [[buffer(0)]]) {
+    float2 s = wmgl_blit_source(in.position.xy, b);
+    if (b.srcSize.z > 0.5) return source.sample(linearSampler, s / b.srcSize.xy);
+    return wmgl_blit_read<float>(source, s, b);
+}
+fragment float4 wmgl_blit_float_ms_fs(ClearOut in [[stage_in]], texture2d_ms<float> source [[texture(0)]],
+                                      constant BlitParams& b [[buffer(0)]]) {
+    int2 c = int2(floor(wmgl_blit_source(in.position.xy, b)));
+    if (any(c < 0) || any(c >= int2(b.srcSize.xy))) discard_fragment();
+    float4 sum = 0;
+    uint n = source.get_num_samples();
+    for (uint i = 0; i < n; ++i) sum += source.read(uint2(c), i);
+    return sum / float(n);
+}
+fragment int4 wmgl_blit_int_fs(ClearOut in [[stage_in]], texture2d<int> source [[texture(0)]],
+                               constant BlitParams& b [[buffer(0)]]) {
+    return wmgl_blit_read<int>(source, wmgl_blit_source(in.position.xy, b), b);
+}
+fragment int4 wmgl_blit_int_ms_fs(ClearOut in [[stage_in]], texture2d_ms<int> source [[texture(0)]],
+                                  constant BlitParams& b [[buffer(0)]]) {
+    int2 c = int2(floor(wmgl_blit_source(in.position.xy, b)));
+    if (any(c < 0) || any(c >= int2(b.srcSize.xy))) discard_fragment();
+    return source.read(uint2(c), 0);
+}
+fragment uint4 wmgl_blit_uint_fs(ClearOut in [[stage_in]], texture2d<uint> source [[texture(0)]],
+                                 constant BlitParams& b [[buffer(0)]]) {
+    return wmgl_blit_read<uint>(source, wmgl_blit_source(in.position.xy, b), b);
+}
+fragment uint4 wmgl_blit_uint_ms_fs(ClearOut in [[stage_in]], texture2d_ms<uint> source [[texture(0)]],
+                                    constant BlitParams& b [[buffer(0)]]) {
+    int2 c = int2(floor(wmgl_blit_source(in.position.xy, b)));
+    if (any(c < 0) || any(c >= int2(b.srcSize.xy))) discard_fragment();
+    return source.read(uint2(c), 0);
+}
+struct BlitDepthOut {
+    float depth [[depth(any)]];
+};
+fragment BlitDepthOut wmgl_blit_depth_fs(ClearOut in [[stage_in]], depth2d<float> source [[texture(0)]],
+                                         constant BlitParams& b [[buffer(0)]]) {
+    int2 c = int2(floor(wmgl_blit_source(in.position.xy, b)));
+    if (any(c < 0) || any(c >= int2(b.srcSize.xy))) discard_fragment();
+    return BlitDepthOut{source.read(uint2(c))};
+}
+fragment BlitDepthOut wmgl_blit_depth_ms_fs(ClearOut in [[stage_in]], depth2d_ms<float> source [[texture(0)]],
+                                            constant BlitParams& b [[buffer(0)]]) {
+    int2 c = int2(floor(wmgl_blit_source(in.position.xy, b)));
+    if (any(c < 0) || any(c >= int2(b.srcSize.xy))) discard_fragment();
+    return BlitDepthOut{source.read(uint2(c), 0)};
+}
 )MSL";
 
 }  // namespace wmgl

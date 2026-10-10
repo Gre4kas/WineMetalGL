@@ -585,6 +585,8 @@ LinkResult link(const LinkInput& input) {
             mslOptions.pad_fragment_output_components = true;
             mslOptions.force_native_arrays = false;
             mslOptions.enable_base_index_zero = false;
+            mslOptions.texture_buffer_native = true;   // samplerBuffer -> texture_buffer
+            mslOptions.texture_1D_as_2D = true;        // GL 1D textures are stored as 2D (mipmaps, rendering)
             msl.set_msl_options(mslOptions);
             spirv_cross::CompilerGLSL::Options common = msl.get_common_options();
             common.vertex.flip_vert_y = true;        // GL row 0 = Metal row 0 (see docs/design/core.md)

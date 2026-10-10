@@ -144,8 +144,42 @@ bool ensureTextureStorage(Context& ctx, Texture& tex) {
     return true;
 }
 
+namespace {
+
+// A texture view of a buffer texture's data store, rebuilt when the buffer's
+// Metal storage changes (BufferData reallocates it).
+id<MTLTexture> bufferTextureView(Texture& tex) {
+    Buffer* buffer = tex.buffer.get();
+    const FormatInfo* format = formatInfo(tex.bufferFormat);
+    if (!buffer || !buffer->mtl || !format) return nil;
+    const uint64_t key = reinterpret_cast<uint64_t>((__bridge void*)buffer->mtl);
+    for (const Texture::View& v : tex.views)
+        if (v.key == key) return v.view;
+    tex.views.clear();
+    const MTLPixelFormat pixelFormat = mtlPixelFormat(format->storage);
+    const size_t texel = storageBytes(format->storage);
+    const size_t offset = static_cast<size_t>(tex.bufferOffset);
+    const size_t available = buffer->mtl.length > offset ? buffer->mtl.length - offset : 0;
+    const size_t requested = tex.bufferSize < 0 ? static_cast<size_t>(buffer->size) - offset : static_cast<size_t>(tex.bufferSize);
+    const size_t alignment = [Device::get().mtl() minimumLinearTextureAlignmentForPixelFormat:pixelFormat];
+    NSUInteger width = static_cast<NSUInteger>(std::min<size_t>(std::min(requested, available) / texel, 1u << 27));
+    // bytesPerRow is aligned up; keep it inside the buffer.
+    auto rowBytes = [&](NSUInteger w) { return (w * texel + alignment - 1) / alignment * alignment; };
+    while (width > 0 && rowBytes(width) > available) --width;
+    if (width == 0) return nil;
+    MTLTextureDescriptor* desc = [MTLTextureDescriptor textureBufferDescriptorWithPixelFormat:pixelFormat
+                                                                                       width:width
+                                                                             resourceOptions:buffer->mtl.resourceOptions
+                                                                                       usage:MTLTextureUsageShaderRead];
+    id<MTLTexture> view = [buffer->mtl newTextureWithDescriptor:desc offset:offset bytesPerRow:rowBytes(width)];
+    if (view) tex.views.push_back({key, view});
+    return view;
+}
+
+}  // namespace
+
 bool textureComplete(Context& ctx, Texture& tex, const SamplerParams* params) {
-    if (tex.target == GL_TEXTURE_BUFFER) return tex.buffer && tex.buffer->mtl;
+    if (tex.target == GL_TEXTURE_BUFFER) return bufferTextureView(tex) != nil;
     const SamplerParams& p = params ? *params : tex.sampler;
     const int base = tex.baseLevel;
     if (base < 0 || base >= Texture::kMaxLevels) return false;
@@ -189,10 +223,7 @@ bool textureComplete(Context& ctx, Texture& tex, const SamplerParams* params) {
 
 id<MTLTexture> samplingView(Context& ctx, Texture& tex) {
     (void)ctx;
-    if (tex.target == GL_TEXTURE_BUFFER) {
-        // Texture buffer views are created by the texture-buffer code (W09).
-        return tex.mtl;
-    }
+    if (tex.target == GL_TEXTURE_BUFFER) return bufferTextureView(tex);
     const TextureImage& baseImage = tex.baseImage();
     const FormatInfo* format = baseImage.format;
     if (!format || !tex.mtl) return tex.mtl;
@@ -369,6 +400,35 @@ void uploadTexels(Context& ctx, Texture& tex, int face, int level, int x, int y,
     const bool array = tex.mtl.textureType == MTLTextureType2DArray || tex.mtl.textureType == MTLTextureTypeCubeArray;
     const bool is3D = tex.mtl.textureType == MTLTextureType3D;
     const size_t total = bytesPerImage * static_cast<size_t>(depth);
+    if (tex.mtl.pixelFormat == MTLPixelFormatDepth32Float_Stencil8) {
+        // Storage texels are (float depth, uint8 stencil, pad); Metal uploads each aspect separately.
+        const size_t texels = total / 8;
+        const size_t rowTexels = bytesPerRow / 8, imageTexels = bytesPerImage / 8;
+        TransientAllocation depthStaging = ctx.draw().transient().allocate(texels * 4, ctx.stream().serial(), 16);
+        TransientAllocation stencilStaging = ctx.draw().transient().allocate(texels, ctx.stream().serial(), 16);
+        const uint8_t* in = static_cast<const uint8_t*>(data);
+        for (size_t i = 0; i < texels; ++i) {
+            std::memcpy(static_cast<uint8_t*>(depthStaging.data) + i * 4, in + i * 8, 4);
+            static_cast<uint8_t*>(stencilStaging.data)[i] = in[i * 8 + 4];
+        }
+        id<MTLBlitCommandEncoder> blit = ctx.stream().blit();
+        for (int layer = 0; layer < depth; ++layer) {
+            const NSUInteger slice = static_cast<NSUInteger>(tex.target == GL_TEXTURE_CUBE_MAP ? face : array ? z + layer : 0);
+            const size_t first = imageTexels * static_cast<size_t>(layer);
+            [blit copyFromBuffer:depthStaging.buffer sourceOffset:depthStaging.offset + first * 4
+                   sourceBytesPerRow:rowTexels * 4 sourceBytesPerImage:imageTexels * 4
+                          sourceSize:MTLSizeMake(width, height, 1) toTexture:tex.mtl destinationSlice:slice
+                    destinationLevel:static_cast<NSUInteger>(level) destinationOrigin:MTLOriginMake(x, y, 0)
+                             options:MTLBlitOptionDepthFromDepthStencil];
+            [blit copyFromBuffer:stencilStaging.buffer sourceOffset:stencilStaging.offset + first
+                   sourceBytesPerRow:rowTexels sourceBytesPerImage:imageTexels
+                          sourceSize:MTLSizeMake(width, height, 1) toTexture:tex.mtl destinationSlice:slice
+                    destinationLevel:static_cast<NSUInteger>(level) destinationOrigin:MTLOriginMake(x, y, 0)
+                             options:MTLBlitOptionStencilFromDepthStencil];
+        }
+        ++tex.version;
+        return;
+    }
     TransientAllocation staging = ctx.draw().transient().allocate(total, ctx.stream().serial(), 16);
     std::memcpy(staging.data, data, total);
     id<MTLBlitCommandEncoder> blit = ctx.stream().blit();

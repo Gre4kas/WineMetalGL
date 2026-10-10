@@ -725,4 +725,29 @@ void ReadPixels(Context& ctx, GLint x, GLint y, GLsizei width, GLsizei height, G
     packPixels(texels.data(), readInfo, w, h, 1, format, type, region, clampColor, destination);
 }
 
+// ------------------------------------------------------------ sample positions
+
+void GetMultisamplefv(Context& ctx, GLenum pname, GLuint index, GLfloat* val) {
+    if (pname != GL_SAMPLE_POSITION) return ctx.setError(GL_INVALID_ENUM);
+    RenderTargetDesc target;
+    TargetFormats formats;
+    if (!ctx.draw().drawTarget(target, formats, false)) {
+        if (index >= 1) return ctx.setError(GL_INVALID_VALUE);
+        val[0] = val[1] = 0.5f;
+        return;
+    }
+    const uint32_t samples = std::max(1u, target.samples);
+    if (index >= samples) return ctx.setError(GL_INVALID_VALUE);
+    if (samples == 1) {
+        val[0] = val[1] = 0.5f;
+        return;
+    }
+    MTLSamplePosition positions[16];
+    [Device::get().mtl() getDefaultSamplePositions:positions count:samples];
+    // Metal positions are in a top-left origin pixel; GL's sample y grows upwards,
+    // which is the same direction as Metal rows here (GL row 0 = Metal row 0).
+    val[0] = positions[index].x;
+    val[1] = positions[index].y;
+}
+
 }  // namespace wmgl::api

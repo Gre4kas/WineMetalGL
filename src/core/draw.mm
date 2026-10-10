@@ -2,6 +2,9 @@
 
 #include <algorithm>
 #include <cstring>
+#include <mutex>
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "core/context.h"
@@ -10,6 +13,7 @@
 #include "core/metal/pipeline_cache.h"
 #include "core/metal/pixel_format.h"
 #include "core/program.h"
+#include "core/query.h"
 #include "core/texture_storage.h"
 #include "core/util/log.h"
 
@@ -168,6 +172,45 @@ id<MTLTexture> DrawState::readColorTexture(uint32_t& level, uint32_t& slice, GLe
     return t.texture;
 }
 
+bool DrawState::readTarget(GLenum buffer, RenderTargetDesc::Target& out, const FormatInfo*& info, uint32_t& width,
+                           uint32_t& height, uint32_t& samples) {
+    out = RenderTargetDesc::Target();
+    info = nullptr;
+    Framebuffer* fb = ctx_.state.readFramebuffer.get();
+    if (!fb) {
+        Surface* surface = ctx_.readSurface();
+        if (!surface) return false;
+        width = static_cast<uint32_t>(surface->width());
+        height = static_cast<uint32_t>(surface->height());
+        samples = surface->samples();
+        if (buffer == GL_COLOR) {
+            if (ctx_.state.defaultReadBuffer == GL_NONE) return false;
+            surface->resolveForRead(ctx_.stream());
+            out.texture = surface->resolvedColor();
+            info = formatInfo(surface->srgbCapable() ? GL_SRGB8_ALPHA8 : GL_RGBA8);
+            return true;
+        }
+        if ((buffer == GL_DEPTH && !surface->hasDepth()) || (buffer == GL_STENCIL && !surface->hasStencil())) return false;
+        out.texture = surface->depthStencil();
+        info = formatInfo(surface->hasStencil() ? (surface->hasDepth() ? GL_DEPTH24_STENCIL8 : GL_STENCIL_INDEX8)
+                          : surface->pixelFormat().depth_bits == 16 ? GL_DEPTH_COMPONENT16
+                                                                    : GL_DEPTH_COMPONENT24);
+        return out.texture != nil;
+    }
+    const Attachment* a = nullptr;
+    if (buffer == GL_COLOR) {
+        if (fb->readBuffer == GL_NONE) return false;
+        const int index = static_cast<int>(fb->readBuffer - GL_COLOR_ATTACHMENT0);
+        if (index < 0 || index >= Framebuffer::kMaxColor) return false;
+        a = &fb->color[index];
+    } else {
+        a = buffer == GL_DEPTH ? &fb->depth : &fb->stencil;
+    }
+    if (!a->attached()) return false;
+    MTLPixelFormat format;
+    return attachmentTarget(ctx_, *a, out, format, width, height, samples, info);
+}
+
 // ------------------------------------------------------------- validation
 
 bool DrawState::validateDraw(GLenum mode) {
@@ -202,6 +245,9 @@ bool DrawState::validateDraw(GLenum mode) {
             ctx_.setError(GL_INVALID_OPERATION);
             return false;
         }
+    RenderTargetDesc target;
+    TargetFormats formats;
+    if (!drawTarget(target, formats)) return false;
     return true;
 }
 
@@ -647,9 +693,11 @@ void expandIndices(GLenum mode, const std::vector<uint32_t>& in, std::vector<uin
 bool DrawState::issue(GLenum mode, GLint first, GLsizei count, GLsizei instances, const uint32_t* indexData,
                       id<MTLBuffer> indexBuffer, NSUInteger indexOffset, MTLIndexType indexType, GLint baseVertex,
                       GLint minVertex, GLsizei vertexSpan) {
+    queriesCountPrimitives(ctx_, mode, count, instances);
     MTLPrimitiveType primitive = MTLPrimitiveTypeTriangle;
     id<MTLRenderCommandEncoder> encoder = prepare(mode, primitive);
     if (!encoder) return false;
+    queriesBeforeDraw(ctx_, encoder);
     LinkedProgram& program = *ctx_.state.program->linked;
     PipelineKey key = lastKey_;
     // Instanced attributes need data for every instance they cover.
@@ -720,7 +768,7 @@ void DrawState::drawArrays(GLenum mode, GLint first, GLsizei count, GLsizei inst
         return;
     }
     if (!validateDraw(mode)) return;
-    if (count == 0 || instances == 0) return;
+    if (count == 0 || instances == 0 || !conditionalRenderAllows(ctx_)) return;
     issue(mode, first, count, instances, nullptr, nil, 0, MTLIndexTypeUInt16, 0, first, count);
 }
 
@@ -735,7 +783,7 @@ void DrawState::drawElements(GLenum mode, GLsizei count, GLenum type, const void
         return;
     }
     if (!validateDraw(mode)) return;
-    if (count == 0 || instances == 0) return;
+    if (count == 0 || instances == 0 || !conditionalRenderAllows(ctx_)) return;
     Buffer* elementBuffer = ctx_.state.vertexArray->elementBuffer.get();
     if (elementBuffer && elementBuffer->mapped) {
         ctx_.setError(GL_INVALID_OPERATION);
@@ -817,6 +865,7 @@ void DrawState::clear(GLbitfield mask) {
     RenderTargetDesc target;
     TargetFormats formats;
     if (!drawTarget(target, formats)) return;
+    if (!conditionalRenderAllows(ctx_)) return;
     PendingClear clear;
     bool fullMasks = true;
     if (mask & GL_COLOR_BUFFER_BIT) {
@@ -850,6 +899,64 @@ void DrawState::clear(GLbitfield mask) {
     clearWithDraw(target, formats, clear);
 }
 
+namespace {
+
+// Clear pipelines: the fragment shader's outputs are typed per attachment
+// (float, int or uint) to match the pass; values arrive as raw 32-bit words.
+id<MTLRenderPipelineState> clearPipeline(const TargetFormats& formats, const uint8_t writeMasks[8], uint32_t samples,
+                                         const char signature[9]) {
+    static std::mutex mutex;
+    static std::unordered_map<std::string, id<MTLRenderPipelineState>> cache;
+    std::string key(signature, 8);
+    for (int i = 0; i < 8; ++i) key += std::to_string(formats.color[i]) + ":" + std::to_string(writeMasks[i]) + ",";
+    key += std::to_string(formats.depth) + "," + std::to_string(formats.stencil) + "," + std::to_string(samples);
+    std::lock_guard<std::mutex> lock(mutex);
+    auto it = cache.find(key);
+    if (it != cache.end()) return it->second;
+    std::string source = "#include <metal_stdlib>\nusing namespace metal;\n"
+                         "struct V { float4 position [[position]]; };\n"
+                         "vertex V clear_vs(uint vid [[vertex_id]], constant float4& depth [[buffer(0)]]) {\n"
+                         "  float2 p = float2((vid << 1) & 2, vid & 2); V out; out.position = float4(p * 2.0 - 1.0, depth.x, 1.0); return out; }\n";
+    std::string fields, body;
+    for (int i = 0; i < 8; ++i) {
+        if (signature[i] == '-') continue;
+        const char* type = signature[i] == 'i' ? "int4" : signature[i] == 'u' ? "uint4" : "float4";
+        fields += std::string(type) + " c" + std::to_string(i) + " [[color(" + std::to_string(i) + ")]]; ";
+        body += "o.c" + std::to_string(i) + " = as_type<" + type + ">(v[" + std::to_string(i) + "]); ";
+    }
+    if (fields.empty()) {
+        source += "fragment void clear_fs() {}\n";
+    } else {
+        source += "struct O { " + fields + "};\n"
+                  "fragment O clear_fs(constant uint4* v [[buffer(0)]]) { O o; " + body + "return o; }\n";
+    }
+    NSError* error = nil;
+    MTLCompileOptions* options = [MTLCompileOptions new];
+    options.languageVersion = MTLLanguageVersion3_0;
+    id<MTLLibrary> library = [Device::get().mtl() newLibraryWithSource:[NSString stringWithUTF8String:source.c_str()]
+                                                               options:options
+                                                                 error:&error];
+    if (!library) {
+        WMGL_ERR("clear shader: %s", error.localizedDescription.UTF8String);
+        return cache[key] = nil;
+    }
+    MTLRenderPipelineDescriptor* desc = [MTLRenderPipelineDescriptor new];
+    desc.vertexFunction = [library newFunctionWithName:@"clear_vs"];
+    desc.fragmentFunction = [library newFunctionWithName:@"clear_fs"];
+    desc.rasterSampleCount = samples;
+    for (int i = 0; i < 8; ++i) {
+        desc.colorAttachments[i].pixelFormat = formats.color[i];
+        desc.colorAttachments[i].writeMask = writeMasks[i];
+    }
+    desc.depthAttachmentPixelFormat = formats.depth;
+    desc.stencilAttachmentPixelFormat = formats.stencil;
+    id<MTLRenderPipelineState> pipeline = [Device::get().mtl() newRenderPipelineStateWithDescriptor:desc error:&error];
+    if (!pipeline) WMGL_ERR("clear pipeline: %s", error.localizedDescription.UTF8String);
+    return cache[key] = pipeline;
+}
+
+}  // namespace
+
 void DrawState::clearWithDraw(const RenderTargetDesc& target, const TargetFormats& formats, const PendingClear& clear) {
     const ContextState& st = ctx_.state;
     MTLScissorRect scissor = {0, 0, target.width, target.height};
@@ -862,36 +969,41 @@ void DrawState::clearWithDraw(const RenderTargetDesc& target, const TargetFormat
         scissor = {static_cast<NSUInteger>(x0), static_cast<NSUInteger>(y0), static_cast<NSUInteger>(x1 - x0),
                    static_cast<NSUInteger>(y1 - y0)};
     }
-    id<MTLRenderCommandEncoder> encoder = ctx_.stream().render(target);
-    // Pipeline: utility clear shaders with the current colour masks.
-    id<MTLLibrary> library = Device::get().utilityLibrary();
-    static id<MTLFunction> vs = nil, fs = nil;
-    if (!vs) {
-        vs = [library newFunctionWithName:@"wmgl_clear_vs"];
-        fs = [library newFunctionWithName:@"wmgl_clear_float_fs"];
-    }
-    MTLRenderPipelineDescriptor* desc = [MTLRenderPipelineDescriptor new];
-    desc.vertexFunction = vs;
-    desc.fragmentFunction = fs;
-    desc.rasterSampleCount = target.samples;
+    // Per-attachment output type, write mask and raw clear value.
+    char signature[9] = "--------";
+    uint8_t writeMasks[8] = {};
+    uint32_t values[8][4] = {};
     for (int i = 0; i < 8; ++i) {
-        desc.colorAttachments[i].pixelFormat = formats.color[i];
         if (!formats.color[i]) continue;
+        const MTLPixelFormat f = formats.color[i];
+        const bool sint = f == MTLPixelFormatR8Sint || f == MTLPixelFormatR16Sint || f == MTLPixelFormatR32Sint ||
+                          f == MTLPixelFormatRG8Sint || f == MTLPixelFormatRG16Sint || f == MTLPixelFormatRG32Sint ||
+                          f == MTLPixelFormatRGBA8Sint || f == MTLPixelFormatRGBA16Sint || f == MTLPixelFormatRGBA32Sint;
+        signature[i] = formats.integer[i] ? (sint ? 'i' : 'u') : 'f';
+        const MTLClearColor& c = clear.color[i];
+        const double v[4] = {c.red, c.green, c.blue, c.alpha};
+        for (int k = 0; k < 4; ++k) {
+            if (signature[i] == 'f') {
+                const float x = static_cast<float>(v[k]);
+                std::memcpy(&values[i][k], &x, 4);
+            } else if (signature[i] == 'i') {
+                const int32_t x = static_cast<int32_t>(v[k]);
+                std::memcpy(&values[i][k], &x, 4);
+            } else {
+                values[i][k] = static_cast<uint32_t>(v[k]);
+            }
+        }
         const auto& m = st.colorMask[i];
         const bool cleared = clear.colorMask & (1u << i);
-        desc.colorAttachments[i].writeMask =
-            !cleared ? MTLColorWriteMaskNone
-                     : ((m[0] ? MTLColorWriteMaskRed : 0) | (m[1] ? MTLColorWriteMaskGreen : 0) |
-                        (m[2] ? MTLColorWriteMaskBlue : 0) | (m[3] && !formats.alphaIsOne[i] ? MTLColorWriteMaskAlpha : 0));
+        writeMasks[i] = !cleared ? MTLColorWriteMaskNone
+                                 : static_cast<uint8_t>((m[0] ? MTLColorWriteMaskRed : 0) | (m[1] ? MTLColorWriteMaskGreen : 0) |
+                                                        (m[2] ? MTLColorWriteMaskBlue : 0) |
+                                                        (m[3] && !formats.alphaIsOne[i] ? MTLColorWriteMaskAlpha : 0));
     }
-    desc.depthAttachmentPixelFormat = formats.depth;
-    desc.stencilAttachmentPixelFormat = formats.stencil;
-    NSError* error = nil;
-    id<MTLRenderPipelineState> pipeline = [Device::get().mtl() newRenderPipelineStateWithDescriptor:desc error:&error];
-    if (!pipeline) {
-        WMGL_ERR("clear pipeline: %s", error.localizedDescription.UTF8String);
-        return;
-    }
+    id<MTLRenderPipelineState> pipeline = clearPipeline(formats, writeMasks, target.samples, signature);
+    if (!pipeline) return;
+    id<MTLRenderCommandEncoder> encoder = ctx_.stream().render(target);
+    queriesSuspendVisibility(ctx_, encoder);  // clears do not count towards occlusion queries
     DepthStencilKey ds;
     std::memset(&ds, 0, sizeof(ds));
     ds.depthCompare = static_cast<uint8_t>(MTLCompareFunctionAlways);
@@ -916,16 +1028,45 @@ void DrawState::clearWithDraw(const RenderTargetDesc& target, const TargetFormat
     [encoder setStencilReferenceValue:clear.stencilValue];
     const float depth[4] = {static_cast<float>(clear.depthValue), 0, 0, 0};
     [encoder setVertexBytes:depth length:sizeof(depth) atIndex:0];
-    float colors[8][4];
-    for (int i = 0; i < 8; ++i) {
-        colors[i][0] = static_cast<float>(clear.color[i].red);
-        colors[i][1] = static_cast<float>(clear.color[i].green);
-        colors[i][2] = static_cast<float>(clear.color[i].blue);
-        colors[i][3] = static_cast<float>(clear.color[i].alpha);
-    }
-    [encoder setFragmentBytes:colors length:sizeof(colors) atIndex:0];
+    [encoder setFragmentBytes:values length:sizeof(values) atIndex:0];
     [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
     ctx_.stream().noteDraw();
+}
+
+void DrawState::clearBuffer(GLenum buffer, GLint drawbuffer, const double color[4], double depthValue,
+                            GLint stencilValue) {
+    const ContextState& st = ctx_.state;
+    RenderTargetDesc target;
+    TargetFormats formats;
+    if (!drawTarget(target, formats)) return;
+    if (st.rasterizerDiscard || !conditionalRenderAllows(ctx_)) return;
+    PendingClear clear;
+    bool fullMasks = true;
+    if (buffer == GL_COLOR) {
+        if (!target.color[drawbuffer].texture) return;
+        clear.colorMask = static_cast<uint8_t>(1u << drawbuffer);
+        clear.color[drawbuffer] = MTLClearColorMake(color[0], color[1], color[2], formats.alphaIsOne[drawbuffer] ? 1.0 : color[3]);
+        const auto& m = st.colorMask[drawbuffer];
+        if (!m[0] || !m[1] || !m[2] || (!m[3] && !formats.alphaIsOne[drawbuffer])) fullMasks = false;
+    }
+    if ((buffer == GL_DEPTH || buffer == GL_DEPTH_STENCIL) && target.depth.texture) {
+        clear.depth = true;
+        clear.depthValue = std::clamp(depthValue, 0.0, 1.0);
+        if (!st.depthMask) fullMasks = false;
+    }
+    if ((buffer == GL_STENCIL || buffer == GL_DEPTH_STENCIL) && target.stencil.texture) {
+        clear.stencil = true;
+        clear.stencilValue = static_cast<uint32_t>(stencilValue) & 0xff;
+        if ((st.stencilFront.writeMask & 0xff) != 0xff) fullMasks = false;
+    }
+    if (!clear.any()) return;
+    bool fullRect = true;
+    if (st.scissorTest)
+        fullRect = st.scissor[0] <= 0 && st.scissor[1] <= 0 &&
+                   static_cast<int64_t>(st.scissor[0]) + st.scissor[2] >= static_cast<int64_t>(target.width) &&
+                   static_cast<int64_t>(st.scissor[1]) + st.scissor[3] >= static_cast<int64_t>(target.height);
+    if (fullMasks && fullRect && ctx_.stream().clearWithLoadAction(target, clear)) return;
+    clearWithDraw(target, formats, clear);
 }
 
 }  // namespace wmgl

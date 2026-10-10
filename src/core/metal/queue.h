@@ -32,6 +32,8 @@ public:
     // Blocks until the serial completes. Returns immediately for serials that
     // are not committed (their work is not visible to other contexts yet).
     void wait(uint64_t serial);
+    // As wait(), giving up after timeoutNs (UINT64_MAX waits forever). True if complete.
+    bool wait(uint64_t serial, uint64_t timeoutNs);
     // Waits until everything committed so far has completed.
     void waitIdle();
     uint64_t lastSerial();

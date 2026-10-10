@@ -2,9 +2,16 @@
 
 #import <QuartzCore/CAMetalLayer.h>
 
+#include <cstring>
+
+#include "core/metal/device.h"
 #include "core/util/log.h"
 
 namespace wmgl {
+
+namespace {
+constexpr NSUInteger kVisibilitySlots = 4096;
+}  // namespace
 
 bool RenderTargetDesc::operator==(const RenderTargetDesc& o) const {
     return color == o.color && depth == o.depth && stencil == o.stencil && width == o.width && height == o.height &&
@@ -89,6 +96,16 @@ void CommandStream::startRender(const RenderTargetDesc& target) {
         pass.defaultRasterSampleCount = target.samples;
     }
     if (target.layers) pass.renderTargetArrayLength = target.layers;
+    passVisibility_ = false;
+    if (visibilityWanted_) {
+        if (!visibility_) {
+            visibility_ = [Device::get().mtl() newBufferWithLength:kVisibilitySlots * 8 options:MTLResourceStorageModeShared];
+            std::memset(visibility_.contents, 0, kVisibilitySlots * 8);
+            visibilityUsed_ = 0;
+        }
+        pass.visibilityResultBuffer = visibility_;
+        passVisibility_ = true;
+    }
     if (clearsApply) pending_ = PendingClear();
     render_ = [commandBuffer() renderCommandEncoderWithDescriptor:pass];
     target_ = target;
@@ -148,6 +165,19 @@ id<MTLComputeCommandEncoder> CommandStream::compute() {
     return compute_;
 }
 
+void CommandStream::setVisibilityWanted(bool wanted) {
+    visibilityWanted_ = wanted;
+    if (wanted && render_ && !passVisibility_) endEncoder();
+}
+
+bool CommandStream::allocateVisibilitySlot(__strong id<MTLBuffer>& buffer, NSUInteger& offset) {
+    if (!render_ || !passVisibility_ || visibilityUsed_ >= kVisibilitySlots) return false;
+    buffer = visibility_;
+    offset = visibilityUsed_ * 8;
+    ++visibilityUsed_;
+    return true;
+}
+
 void CommandStream::present(id<CAMetalDrawable> drawable) {
     [commandBuffer() presentDrawable:drawable];
 }
@@ -159,6 +189,7 @@ uint64_t CommandStream::flush() {
     queue_.commit(buffer_, serial_);
     lastCommitted_ = serial_;
     buffer_ = nil;
+    visibility_ = nil;
     serial_ = 0;
     return lastCommitted_;
 }

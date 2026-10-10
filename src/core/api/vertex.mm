@@ -338,5 +338,55 @@ void GetVertexAttribPointerv(Context& ctx, GLuint index, GLenum pname, void** po
     *pointer = reinterpret_cast<void*>(currentVao(ctx)->attribs[index].offset);
 }
 
+// --- packed generic attributes (GL_ARB_vertex_type_2_10_10_10_rev)
+
+namespace {
+
+void setGenericPacked(Context& ctx, GLuint index, GLenum type, GLboolean normalized, GLuint value, int size) {
+    if (type != GL_INT_2_10_10_10_REV && type != GL_UNSIGNED_INT_2_10_10_10_REV) return ctx.setError(GL_INVALID_ENUM);
+    const int bits[4] = {10, 10, 10, 2};
+    float c[4];
+    int shift = 0;
+    for (int i = 0; i < 4; ++i) {
+        const uint32_t raw = (value >> shift) & ((1u << bits[i]) - 1);
+        shift += bits[i];
+        if (type == GL_INT_2_10_10_10_REV) {
+            const int32_t v = static_cast<int32_t>(raw << (32 - bits[i])) >> (32 - bits[i]);
+            const float maxValue = static_cast<float>((1 << (bits[i] - 1)) - 1);
+            c[i] = normalized ? std::max(-1.0f, v / maxValue) : static_cast<float>(v);
+        } else {
+            c[i] = normalized ? raw / static_cast<float>((1u << bits[i]) - 1) : static_cast<float>(raw);
+        }
+    }
+    setGenericF(ctx, index, c[0], size > 1 ? c[1] : 0.0f, size > 2 ? c[2] : 0.0f, size > 3 ? c[3] : 1.0f);
+}
+
+}  // namespace
+
+void VertexAttribP1ui(Context& ctx, GLuint index, GLenum type, GLboolean normalized, GLuint value) {
+    setGenericPacked(ctx, index, type, normalized, value, 1);
+}
+void VertexAttribP2ui(Context& ctx, GLuint index, GLenum type, GLboolean normalized, GLuint value) {
+    setGenericPacked(ctx, index, type, normalized, value, 2);
+}
+void VertexAttribP3ui(Context& ctx, GLuint index, GLenum type, GLboolean normalized, GLuint value) {
+    setGenericPacked(ctx, index, type, normalized, value, 3);
+}
+void VertexAttribP4ui(Context& ctx, GLuint index, GLenum type, GLboolean normalized, GLuint value) {
+    setGenericPacked(ctx, index, type, normalized, value, 4);
+}
+void VertexAttribP1uiv(Context& ctx, GLuint index, GLenum type, GLboolean normalized, const GLuint* value) {
+    if (value) setGenericPacked(ctx, index, type, normalized, *value, 1);
+}
+void VertexAttribP2uiv(Context& ctx, GLuint index, GLenum type, GLboolean normalized, const GLuint* value) {
+    if (value) setGenericPacked(ctx, index, type, normalized, *value, 2);
+}
+void VertexAttribP3uiv(Context& ctx, GLuint index, GLenum type, GLboolean normalized, const GLuint* value) {
+    if (value) setGenericPacked(ctx, index, type, normalized, *value, 3);
+}
+void VertexAttribP4uiv(Context& ctx, GLuint index, GLenum type, GLboolean normalized, const GLuint* value) {
+    if (value) setGenericPacked(ctx, index, type, normalized, *value, 4);
+}
+
 }  // namespace api
 }  // namespace wmgl

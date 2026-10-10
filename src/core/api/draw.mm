@@ -59,4 +59,48 @@ void MultiDrawElementsBaseVertex(Context& ctx, GLenum mode, const GLsizei* count
 
 void Clear(Context& ctx, GLbitfield mask) { ctx.draw().clear(mask); }
 
+namespace {
+
+bool checkDrawBuffer(Context& ctx, GLenum buffer, GLint drawbuffer) {
+    const bool color = buffer == GL_COLOR;
+    if (drawbuffer < 0 || (color && drawbuffer >= ContextState::kMaxDrawBuffers) || (!color && drawbuffer != 0)) {
+        ctx.setError(GL_INVALID_VALUE);
+        return false;
+    }
+    return true;
+}
+
+}  // namespace
+
+void ClearBufferiv(Context& ctx, GLenum buffer, GLint drawbuffer, const GLint* value) {
+    if (buffer != GL_COLOR && buffer != GL_STENCIL) return ctx.setError(GL_INVALID_ENUM);
+    if (!checkDrawBuffer(ctx, buffer, drawbuffer)) return;
+    if (buffer == GL_STENCIL) return ctx.draw().clearBuffer(GL_STENCIL, 0, nullptr, 0.0, value[0]);
+    const double color[4] = {static_cast<double>(value[0]), static_cast<double>(value[1]), static_cast<double>(value[2]),
+                             static_cast<double>(value[3])};
+    ctx.draw().clearBuffer(GL_COLOR, drawbuffer, color, 0.0, 0);
+}
+
+void ClearBufferuiv(Context& ctx, GLenum buffer, GLint drawbuffer, const GLuint* value) {
+    if (buffer != GL_COLOR) return ctx.setError(GL_INVALID_ENUM);
+    if (!checkDrawBuffer(ctx, buffer, drawbuffer)) return;
+    const double color[4] = {static_cast<double>(value[0]), static_cast<double>(value[1]), static_cast<double>(value[2]),
+                             static_cast<double>(value[3])};
+    ctx.draw().clearBuffer(GL_COLOR, drawbuffer, color, 0.0, 0);
+}
+
+void ClearBufferfv(Context& ctx, GLenum buffer, GLint drawbuffer, const GLfloat* value) {
+    if (buffer != GL_COLOR && buffer != GL_DEPTH) return ctx.setError(GL_INVALID_ENUM);
+    if (!checkDrawBuffer(ctx, buffer, drawbuffer)) return;
+    if (buffer == GL_DEPTH) return ctx.draw().clearBuffer(GL_DEPTH, 0, nullptr, value[0], 0);
+    const double color[4] = {value[0], value[1], value[2], value[3]};
+    ctx.draw().clearBuffer(GL_COLOR, drawbuffer, color, 0.0, 0);
+}
+
+void ClearBufferfi(Context& ctx, GLenum buffer, GLint drawbuffer, GLfloat depth, GLint stencil) {
+    if (buffer != GL_DEPTH_STENCIL) return ctx.setError(GL_INVALID_ENUM);
+    if (!checkDrawBuffer(ctx, buffer, drawbuffer)) return;
+    ctx.draw().clearBuffer(GL_DEPTH_STENCIL, 0, nullptr, depth, stencil);
+}
+
 }  // namespace wmgl::api
