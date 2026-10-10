@@ -82,6 +82,7 @@ add_custom_target(wmgl_generated DEPENDS ${WMGL_GEN_OUTPUTS})
 add_library(wmgl_portable STATIC
     src/core/format/formats.cpp
     src/core/format/pixel_transfer.cpp
+    src/core/format/vertex_decode.cpp
     src/core/shader/compiler.cpp
     src/core/shader/geometry.cpp
     src/core/shader/transform_feedback.cpp

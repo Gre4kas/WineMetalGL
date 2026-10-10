@@ -1,11 +1,14 @@
-// Per-context OpenGL state. Every setter marks the dirty bits the draw path
-// uses to decide which Metal state needs rebuilding.
+// Per-context OpenGL state. Setters mark dirty bits (Context::markDirty), but
+// nothing reads them yet: the draw path rebuilds and re-binds its Metal state
+// on every draw. They are kept for the argument-buffer binding model (GL 4.x
+// roadmap, G02), which will encode only what changed.
 #pragma once
 
 #include <array>
 #include <cstdint>
 
 #include "core/compat/fixed_state.h"
+#include "core/format/pixel_transfer.h"
 #include "core/gl/types.h"
 #include "core/objects.h"
 
@@ -50,6 +53,20 @@ struct PixelStore {
     // GL_ARB_compressed_texture_pixel_storage (0 = not set).
     GLint blockWidth = 0, blockHeight = 0, blockDepth = 0, blockSize = 0;
 };
+
+// The layout parameters a transfer of `s` uses. IMAGE_HEIGHT and SKIP_IMAGES
+// apply to three-dimensional images only (GL 3.3 section 3.7.4).
+inline PixelStoreParams pixelStoreParams(const PixelStore& s, bool threeD) {
+    PixelStoreParams ps;
+    ps.alignment = s.alignment;
+    ps.rowLength = s.rowLength;
+    ps.imageHeight = threeD ? s.imageHeight : 0;
+    ps.skipPixels = s.skipPixels;
+    ps.skipRows = s.skipRows;
+    ps.skipImages = threeD ? s.skipImages : 0;
+    ps.swapBytes = s.swapBytes;
+    return ps;
+}
 
 struct IndexedBufferBinding {
     RefPtr<Buffer> buffer;

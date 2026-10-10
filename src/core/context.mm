@@ -20,6 +20,17 @@ thread_local Context* t_current = nullptr;
 
 thread_local int ShareLock::depth = 0;
 
+void waitForGpuUnlocked(Context& ctx, uint64_t serial) {
+    if (!serial) return;
+    CommandStream& stream = ctx.stream();
+    if (stream.queue().isComplete(serial)) return;
+    if (!stream.queue().isCommitted(serial)) stream.flush();
+    ShareUnlock unlock(ctx);
+    stream.waitFor(serial);
+}
+
+void finishUnlocked(Context& ctx) { waitForGpuUnlocked(ctx, ctx.stream().flush()); }
+
 bool g_traceCalls = [] {
     const char* value = std::getenv("WINEMETALGL_TRACE");
     return value && value[0] == '1';
@@ -101,7 +112,9 @@ void Context::initStrings() {
     extensions_.push_back("GL_ARB_ES2_compatibility");
     extensions_.push_back("GL_ARB_texture_storage");
     extensions_.push_back("GL_EXT_texture_storage");  // the same entry points (EXT aliases)
-    extensions_.push_back("GL_ARB_compute_shader");
+    // GL_ARB_compute_shader is not advertised: without storage buffers, images
+    // or atomic counters (GL 4.x roadmap, G08) a kernel has no way to write
+    // output, and engines that detect it would skip their working fallback.
     extensions_.push_back("GL_ARB_compressed_texture_pixel_storage");
     extensions_.push_back("GL_ARB_texture_storage_multisample");
     extensions_.push_back("GL_EXT_texture_compression_s3tc");

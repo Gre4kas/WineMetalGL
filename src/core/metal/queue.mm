@@ -42,6 +42,7 @@ void Queue::commit(id<MTLCommandBuffer> buffer, uint64_t serial) {
 void Queue::abandon(uint64_t serial) {
     std::lock_guard<std::mutex> lock(mutex_);
     reserved_.erase(serial);
+    completed_.notify_all();  // fence waiters (waitSignaled) stop waiting for it
 }
 
 bool Queue::isComplete(uint64_t serial) {
@@ -62,6 +63,16 @@ void Queue::wait(uint64_t serial) {
 bool Queue::wait(uint64_t serial, uint64_t timeoutNs) {
     std::unique_lock<std::mutex> lock(mutex_);
     auto done = [&] { return !inflight_.count(serial); };
+    if (timeoutNs == UINT64_MAX) {
+        completed_.wait(lock, done);
+        return true;
+    }
+    return completed_.wait_for(lock, std::chrono::nanoseconds(timeoutNs), done);
+}
+
+bool Queue::waitSignaled(uint64_t serial, uint64_t timeoutNs) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    auto done = [&] { return !inflight_.count(serial) && !reserved_.count(serial); };
     if (timeoutNs == UINT64_MAX) {
         completed_.wait(lock, done);
         return true;

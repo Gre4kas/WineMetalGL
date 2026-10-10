@@ -173,20 +173,6 @@ bool threeDTarget(GLenum target) {
     return target == GL_TEXTURE_3D || target == GL_TEXTURE_2D_ARRAY || target == GL_TEXTURE_CUBE_MAP_ARRAY;
 }
 
-// IMAGE_HEIGHT and SKIP_IMAGES apply to three-dimensional transfers only
-// (GL 3.3 section 3.7.4).
-PixelStoreParams storeParams(const PixelStore& s, bool threeD) {
-    PixelStoreParams ps;
-    ps.alignment = s.alignment;
-    ps.rowLength = s.rowLength;
-    ps.imageHeight = threeD ? s.imageHeight : 0;
-    ps.skipPixels = s.skipPixels;
-    ps.skipRows = s.skipRows;
-    ps.skipImages = threeD ? s.skipImages : 0;
-    ps.swapBytes = s.swapBytes;
-    return ps;
-}
-
 size_t typeSize(GLenum type) {
     switch (type) {
     case GL_UNSIGNED_BYTE: case GL_BYTE: case GL_UNSIGNED_BYTE_3_3_2: case GL_UNSIGNED_BYTE_2_3_3_REV: return 1;
@@ -286,7 +272,7 @@ void uploadRegion(Context& ctx, Texture& tex, int face, int level, int x, int y,
     }
     const size_t texel = storageBytes(image.format->storage);
     std::vector<uint8_t> texels(static_cast<size_t>(w) * h * d * texel);
-    unpackPixels(src, format, type, w, h, d, storeParams(ctx.state.unpack, threeDTarget(tex.target)), *image.format,
+    unpackPixels(src, format, type, w, h, d, pixelStoreParams(ctx.state.unpack, threeDTarget(tex.target)), *image.format,
                  texels.data());
     metalRegion(tex, x, y, z, w, h, d);
     uploadTexels(ctx, tex, face, level, x, y, z, w, h, d, texels.data(), static_cast<size_t>(w) * texel,
@@ -376,7 +362,7 @@ void uploadRgtcRegion(Context& ctx, Texture& tex, int face, int level, int x, in
     const TextureImage& image = tex.image(face, level);
     const FormatInfo* rgba = formatInfo(GL_RGBA32F);
     std::vector<float> texels(static_cast<size_t>(w) * h * d * 4);
-    unpackPixels(src, format, type, w, h, d, storeParams(ctx.state.unpack, threeDTarget(tex.target)), *rgba, texels.data());
+    unpackPixels(src, format, type, w, h, d, pixelStoreParams(ctx.state.unpack, threeDTarget(tex.target)), *rgba, texels.data());
     std::vector<uint8_t> blocks(compressedSize(*image.format, w, h, d));
     encodeRgtc(image.format->storage, texels.data(), w, h, d, blocks.data());
     metalRegion(tex, x, y, z, w, h, d);
@@ -447,7 +433,7 @@ void texImage(Context& ctx, int dims, GLenum target, GLint level, GLint internal
         image.depth = depth;
         return;
     }
-    const PixelStoreParams ps = storeParams(ctx.state.unpack, dims == 3);
+    const PixelStoreParams ps = pixelStoreParams(ctx.state.unpack, dims == 3);
     const TransferLayout layout = transferLayout(format, type, width, height, depth, ps);
     const uint8_t* src = nullptr;
     if (!unpackSource(ctx, pixels, width && height && depth ? layout.bytesNeeded : 0, typeSize(type), src)) return;
@@ -482,7 +468,7 @@ void texSubImage(Context& ctx, int dims, GLenum target, GLint level, GLint x, GL
     if (rgtc && ((x % 4) || (y % 4) || ((w % 4) && x + w != image.width) || ((h % 4) && y + h != image.height)))
         return ctx.setError(GL_INVALID_OPERATION);
     if (!textureTransferCompatible(format, type, *image.format)) return ctx.setError(GL_INVALID_OPERATION);
-    const TransferLayout layout = transferLayout(format, type, w, h, d, storeParams(ctx.state.unpack, dims == 3));
+    const TransferLayout layout = transferLayout(format, type, w, h, d, pixelStoreParams(ctx.state.unpack, dims == 3));
     const uint8_t* src = nullptr;
     if (!unpackSource(ctx, pixels, w && h && d ? layout.bytesNeeded : 0, typeSize(type), src)) return;
     if (rgtc) {
@@ -635,7 +621,7 @@ std::vector<uint8_t> readRegion(Context& ctx, id<MTLTexture> texture, uint32_t l
                 destinationOffset:imageBytes * static_cast<size_t>(i) destinationBytesPerRow:rowBytes
           destinationBytesPerImage:imageBytes options:option];
     }
-    ctx.stream().finish();
+    ctx.stream().finish();  // callers go on using the texture's state: keep the share-group lock
     const uint8_t* p = static_cast<const uint8_t*>(staging.contents);
     return std::vector<uint8_t>(p, p + imageBytes * static_cast<size_t>(d));
 }
@@ -1481,7 +1467,10 @@ void GenerateMipmap(Context& ctx, GLenum target) {
         return ctx.setError(GL_INVALID_ENUM);
     Texture* tex = boundTexture(ctx, target);
     if (!tex) return ctx.setError(GL_INVALID_OPERATION);
-    const int base = tex->baseLevel;
+    // An immutable texture's levels are fixed by TexStorage: the base level is
+    // clamped to them and generation stops at the last one.
+    const int levelEnd = tex->immutable ? std::max<int>(1, tex->immutableLevels) : Texture::kMaxLevels;
+    const int base = tex->immutable ? std::min(tex->baseLevel, levelEnd - 1) : tex->baseLevel;
     if (base >= Texture::kMaxLevels) return;
     const TextureImage& baseImage = tex->image(0, base);
     if (!baseImage.defined()) return;
@@ -1499,14 +1488,15 @@ void GenerateMipmap(Context& ctx, GLenum target) {
     const bool oneD = target == GL_TEXTURE_1D || target == GL_TEXTURE_1D_ARRAY;
     GLsizei w = baseImage.width, h = baseImage.height, d = baseImage.depth;
     int last = base;
-    for (int level = base + 1; level < Texture::kMaxLevels && level <= tex->maxLevel; ++level) {
+    for (int level = base + 1; level < levelEnd && level <= tex->maxLevel; ++level) {
         const bool done = w == 1 && (oneD || h == 1) && (target != GL_TEXTURE_3D || d == 1);
         if (done) break;
         w = std::max(1, w / 2);
         if (!oneD) h = std::max(1, h / 2);
         if (target == GL_TEXTURE_3D) d = std::max(1, d / 2);
-        for (int face = 0; face < tex->faceCount(); ++face)
-            defineImage(ctx, *tex, face, level, baseImage.requestedFormat, info, w, h, d);
+        if (!tex->immutable)
+            for (int face = 0; face < tex->faceCount(); ++face)
+                defineImage(ctx, *tex, face, level, baseImage.requestedFormat, info, w, h, d);
         last = level;
     }
     if (last == base || !ensureTextureStorage(ctx, *tex)) return;
@@ -1593,7 +1583,7 @@ void GetTexImage(Context& ctx, GLenum target, GLint level, GLenum format, GLenum
         logOnce(LogLevel::Warn, "get-compressed-uncompressed", "GetTexImage of an S3TC/BPTC image is not supported");
         return;
     }
-    const PixelStoreParams ps = storeParams(ctx.state.pack, dims == 3);
+    const PixelStoreParams ps = pixelStoreParams(ctx.state.pack, dims == 3);
     const TransferLayout layout = transferLayout(format, type, image.width, image.height, image.depth, ps);
     uint8_t* dst = nullptr;
     if (!packDestination(ctx, pixels, layout.bytesNeeded, typeSize(type), dst)) return;

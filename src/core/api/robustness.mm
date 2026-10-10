@@ -23,19 +23,6 @@
 namespace wmgl::api {
 namespace {
 
-// IMAGE_HEIGHT and SKIP_IMAGES apply to three-dimensional images only.
-PixelStoreParams packParams(const PixelStore& s, bool threeD) {
-    PixelStoreParams ps;
-    ps.alignment = s.alignment;
-    ps.rowLength = s.rowLength;
-    ps.imageHeight = threeD ? s.imageHeight : 0;
-    ps.skipPixels = s.skipPixels;
-    ps.skipRows = s.skipRows;
-    ps.skipImages = threeD ? s.skipImages : 0;
-    ps.swapBytes = s.swapBytes;
-    return ps;
-}
-
 // glReadnPixels and friends: a client buffer too small for the result is
 // INVALID_OPERATION and nothing is written (KHR_robustness section 4.3.2).
 bool fits(Context& ctx, size_t needed, GLsizei bufSize) {
@@ -53,7 +40,7 @@ bool fits(Context& ctx, size_t needed, GLsizei bufSize) {
 
 size_t imageBytes(Context& ctx, GLenum format, GLenum type, GLint width, GLint height, GLint depth, bool threeD) {
     if (width <= 0 || height <= 0 || depth <= 0) return 0;
-    return transferLayout(format, type, width, height, depth, packParams(ctx.state.pack, threeD)).bytesNeeded;
+    return transferLayout(format, type, width, height, depth, pixelStoreParams(ctx.state.pack, threeD)).bytesNeeded;
 }
 
 }  // namespace
