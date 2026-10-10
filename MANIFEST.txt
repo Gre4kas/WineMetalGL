@@ -15,6 +15,7 @@ config/winemetalgl.conf
 DEPENDENCIES.md
 docs/api-coverage.json
 docs/conformance.md
+docs/decisions/0001-gl-implementation-strategy.md
 docs/validation/RESULTS.md
 include/metalsharp/GLErrorTracker.h
 include/metalsharp/GLMetalRenderer.h
@@ -39,6 +40,11 @@ patches/wine/wine-11.17/0002-winemetalgl-default-config-and-feature-cap.patch
 README.md
 scripts/build.sh
 scripts/check-forbidden-identifiers.sh
+scripts/cts/__pycache__/results.cpython-314.pyc
+scripts/cts/diff.py
+scripts/cts/results.py
+scripts/cts/run.py
+scripts/cts/summary.py
 scripts/probe-native.sh
 scripts/run-gl33-case.sh
 scripts/run-gl33-failure-ledger.sh
@@ -48,6 +54,7 @@ scripts/run-gl40-bounded.sh
 scripts/stage-host-libs.sh
 scripts/stage-release.sh
 scripts/stage-wine.sh
+scripts/traces/replay.py
 scripts/update-checksums.sh
 scripts/verify-release.sh
 scripts/verify-source.sh
@@ -75,6 +82,10 @@ tests/cts/gl33-shards/shader-constructors.txt
 tests/cts/gl33-shards/shader-indexing.txt
 tests/cts/gl33-shards/unrun-full-tail.txt
 tests/forbidden-identifiers.txt
+tests/games/build-demos.sh
+tests/games/corpus.json
+tests/games/demos/scene33.c
+tests/games/README.md
 tests/native/glsl_translation_probe.c
 tests/native/probe-metalsharp-opengl.sh
 tests/wine/opengl_1d.c
