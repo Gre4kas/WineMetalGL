@@ -2501,8 +2501,8 @@ static uint64_t prepareClientIndexBuffer(int32_t count, uint32_t type, const voi
 extern "C" void glDrawArrays(uint32_t mode, int32_t first, int32_t count) {
     const uint32_t program = currentRenderProgram();
     bool geometryProgram = false; { std::lock_guard<std::mutex> lock(g_programMutex); auto it = g_programs.find(program); geometryProgram = it != g_programs.end() && it->second.geometryShader != 0; } if (g_transformFeedbackActive) geometryProgram = g_transformFeedbackGeometryProgram; if (!geometryProgram && metalModeEnabled()) for (uint32_t shader : metalsharp::GLShaderTracker::instance().copyAttachedShaders(program)) { auto* state = metalsharp::GLShaderTracker::instance().getShader(shader); if (state && state->stage == metalsharp::ShaderStage::Geometry) { geometryProgram = true; break; } }
-    if (metalModeEnabled() && g_primitivesGeneratedQuery && !geometryProgram) g_transformFeedbackPrimitiveCount += primitivesForDraw(mode, count);
     if (metalModeEnabled() && !geometryProgram && !transformFeedbackPrimitiveCompatible(mode)) { metalsharp::GLErrorTracker::instance().setError(0x0502); return; }
+    if (metalModeEnabled() && g_primitivesGeneratedQuery && !geometryProgram) g_transformFeedbackPrimitiveCount += primitivesForDraw(mode, count);
     if (isExperimentalProgram(program)) {
         if (mode == 0x000E && hasTessEvaluation(program)) {
             const uint32_t patchVertices = g_glBridge.state().patchVertices;
@@ -2627,8 +2627,10 @@ extern "C" void glDrawRangeElements(uint32_t mode, uint32_t start, uint32_t end,
 }
 
 extern "C" void glDrawElements(uint32_t mode, int32_t count, uint32_t type, const void* indices) {
-    if (metalModeEnabled() && g_primitivesGeneratedQuery) g_transformFeedbackPrimitiveCount += primitivesForDraw(mode, count);
     if (metalModeEnabled() && !transformFeedbackPrimitiveCompatible(mode)) { metalsharp::GLErrorTracker::instance().setError(0x0502); return; }
+    // PRIMITIVES_GENERATED: counted per primitive-restart segment below when
+    // restart splits the draw; otherwise from the whole index count.
+    bool countPrimitives = metalModeEnabled() && g_primitivesGeneratedQuery != 0;
     const uint32_t program = currentRenderProgram();
     if (!isExperimentalProgram(program)) {
         glDispatch<void, uint32_t, int32_t, uint32_t, const void*>("glDrawElements", mode, count, type, indices);
@@ -2685,6 +2687,11 @@ extern "C" void glDrawElements(uint32_t mode, int32_t count, uint32_t type, cons
         return;
     }
     g_metalRenderer.bindIndexBuffer(indexBuffer, 0);
+    if (countPrimitives) {
+        if (primitiveRestartHit) for (const auto& segment : primitiveRestartSegments) g_transformFeedbackPrimitiveCount += primitivesForDraw(mode, static_cast<int64_t>(segment.second));
+        else g_transformFeedbackPrimitiveCount += primitivesForDraw(mode, count);
+        countPrimitives = false;
+    }
     if (primitiveRestartHit && !clientIndices) {
         const size_t baseOffset=reinterpret_cast<size_t>(indices), indexSize=type==0x1401?1:type==0x1403?2:4;
         for(const auto& segment:primitiveRestartSegments){const uint32_t drawMode=mode==0x0002?0x0001:mode;if(!g_rasterizerDiscard&&segment.second)g_metalRenderer.drawElements(drawMode,static_cast<uint32_t>(segment.second),type,baseOffset+segment.first*indexSize);}
@@ -4960,7 +4967,6 @@ extern "C" void glReadPixels(int32_t x, int32_t y, int32_t w, int32_t h, uint32_
                   if (fbo->second.colorTexture) { auto texture = g_textures.find(fbo->second.colorTexture); if (texture != g_textures.end()) { textureHandle = texture->second.metalHandle; framebufferInteger = integerInternalFormat(texture->second.internalFormat); uint32_t components = 0; integerFormatInfo(texture->second.internalFormat, components, framebufferIntegerBits, framebufferIntegerSigned); } textureSlice = fbo->second.colorLayer; }
                   else textureHandle = fbo->second.colorHandle;
               } }
-            const uint32_t framebufferHeight = g_glBridge.state().viewportHeight > 0 ? static_cast<uint32_t>(g_glBridge.state().viewportHeight) : 0;
             const uint32_t readY = static_cast<uint32_t>(y);
             std::vector<uint8_t> rgba(static_cast<size_t>(w) * h * 4);
             std::vector<float> precise;
