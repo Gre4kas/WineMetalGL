@@ -66,19 +66,19 @@ Every NotSupported case in a committed result matches one entry of `tests/cts/no
 | Pattern | Kind | KHR-GL30 | KHR-GL31 | KHR-GL32 | KHR-GL33 | Reason |
 |---|---|---:|---:|---:|---:|---|
 | `KHR-GL3?.cull_distance.*` | extension | 0 | 0 | 0 | 218 | GL_ARB_cull_distance is not advertised. |
-| `KHR-GL3?.ext_texture_shadow_lod.*` | extension | 0 | 0 | 0 | 15 | GL_EXT_texture_shadow_lod is not advertised. |
-| `KHR-GL3?.transform_feedback_overflow_query_ARB.*` | extension | 0 | 0 | 0 | 13 | GL_ARB_transform_feedback_overflow_query is not advertised. |
+| `KHR-GL3?.ext_texture_shadow_lod.*` | extension | 15 | 15 | 15 | 15 | GL_EXT_texture_shadow_lod is not advertised. |
+| `KHR-GL3?.transform_feedback_overflow_query_ARB.*` | extension | 0 | 0 | 13 | 13 | GL_ARB_transform_feedback_overflow_query is not advertised. |
 | `KHR-GL3?.pipeline_statistics_query_tests_ARB.*` | extension | 0 | 0 | 0 | 10 | GL_ARB_pipeline_statistics_query is not advertised. |
 | `KHR-GL3?.texture_filter_minmax_tests.*` | extension | 0 | 0 | 0 | 5 | GL_ARB_texture_filter_minmax is not advertised. |
-| `KHR-GL3?.transform_feedback2.*` | extension | 0 | 0 | 0 | 1 | GL_ARB_transform_feedback2 is not advertised. |
-| `KHR-GL3?.transform_feedback3.*` | extension | 0 | 0 | 0 | 3 | GL_ARB_transform_feedback3 is not advertised. |
-| `KHR-GL3?.gpu_shader5_gl.*` | extension | 0 | 0 | 0 | 3 | GL_ARB_gpu_shader5 is not advertised. |
+| `KHR-GL3?.transform_feedback2.*` | extension | 1 | 1 | 1 | 1 | GL_ARB_transform_feedback2 is not advertised. |
+| `KHR-GL3?.transform_feedback3.*` | extension | 3 | 3 | 3 | 3 | GL_ARB_transform_feedback3 is not advertised. |
+| `KHR-GL3?.gpu_shader5_gl.*` | extension | 0 | 0 | 3 | 3 | GL_ARB_gpu_shader5 is not advertised. |
 | `KHR-GL3?.shaders.shader_integer_mix.*` | extension | 0 | 0 | 0 | 6 | GL_EXT_shader_integer_mix is not advertised. |
 | `KHR-GL3?.pixelstoragemodes.compressedteximage*.rgba_astc_*` | extension | 0 | 0 | 0 | 80 | ASTC formats need GL_KHR_texture_compression_astc_ldr, which is not advertised. |
-| `KHR-GL3?.packed_depth_stencil.stencil_texturing.*` | version | 0 | 0 | 0 | 2 | Stencil texturing needs GL 4.3 (GL_ARB_stencil_texturing is not advertised). |
-| `KHR-GL3?.CommonBugs.CommonBug_PerVertexValidation` | version | 0 | 0 | 0 | 1 | The case runs only on OpenGL 4.1 or newer contexts. |
+| `KHR-GL3?.packed_depth_stencil.stencil_texturing.*` | version | 0 | 0 | 2 | 2 | Stencil texturing needs GL 4.3 (GL_ARB_stencil_texturing is not advertised). |
+| `KHR-GL3?.CommonBugs.CommonBug_PerVertexValidation` | version | 0 | 1 | 1 | 1 | The case runs only on OpenGL 4.1 or newer contexts. |
 | `KHR-GL33.texture_swizzle.*` | test-design | 0 | 0 | 0 | 263 | The case pairs a texture target with an access routine or format that the test marks invalid (gl3cTextureSwizzleTests.cpp isTargetSuppByAccess/isTargetSuppByFormat, or a format whose m_minimum_gl_context is above 3.3), so it reports NotSupported on every implementation. |
-| `KHR-GL3[012].frag_coord_conventions.multisample` | extension | 0 | 0 | 0 | 0 | Below a GL 3.3 context the case needs GL_ARB_sample_shading (glcFragCoordConventionsTests.cpp), which is not advertised; KHR-GL33 runs it. |
-| `KHR-GL31.clip_distance.*` | test-design | 0 | 0 | 0 | 0 | KHR-GL31 creates a forward-compatible 3.1 context, and glu::contextSupports (gluRenderContext.cpp) matches a forward-compatible context only against its exact version, so the case's check for a GL 3.0 context fails (glcClipDistance.cpp); KHR-GL30, KHR-GL32 and KHR-GL33 run it. |
-| `KHR-GL31.texture_lod_bias.texture_lod_bias_all` | test-design | 0 | 0 | 0 | 0 | KHR-GL31 creates a forward-compatible 3.1 context, and glu::contextSupports (gluRenderContext.cpp) matches a forward-compatible context only against its exact version, so the case's check for a GL 3.0 context fails (glcTextureLodBiasTests.cpp); KHR-GL30, KHR-GL32 and KHR-GL33 run it. |
+| `KHR-GL3[012].frag_coord_conventions.multisample` | extension | 1 | 1 | 1 | 0 | Below a GL 3.3 context the case needs GL_ARB_sample_shading (glcFragCoordConventionsTests.cpp), which is not advertised; KHR-GL33 runs it. |
+| `KHR-GL31.clip_distance.*` | test-design | 0 | 3 | 0 | 0 | KHR-GL31 creates a forward-compatible 3.1 context, and glu::contextSupports (gluRenderContext.cpp) matches a forward-compatible context only against its exact version, so the case's check for a GL 3.0 context fails (glcClipDistance.cpp); KHR-GL30, KHR-GL32 and KHR-GL33 run it. |
+| `KHR-GL31.texture_lod_bias.texture_lod_bias_all` | test-design | 0 | 1 | 0 | 0 | KHR-GL31 creates a forward-compatible 3.1 context, and glu::contextSupports (gluRenderContext.cpp) matches a forward-compatible context only against its exact version, so the case's check for a GL 3.0 context fails (glcTextureLodBiasTests.cpp); KHR-GL30, KHR-GL32 and KHR-GL33 run it. |
 <!-- END GENERATED: notsupported -->

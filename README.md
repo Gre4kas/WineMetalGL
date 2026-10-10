@@ -20,10 +20,10 @@ it through the small driver ABI in `include/winemetalgl/driver.h`.
 
 | OpenGL | Conformance % | Features | Unsupported % |
 |---|---:|---|---:|
-| 3.0 | not measured | GLSL 1.30, framebuffer objects, vertex array objects, transform feedback, integer textures | not measured |
-| 3.1 | not measured | Instancing, texture buffers, uniform buffers, primitive restart | not measured |
-| 3.2 | not measured | Profiles, geometry shaders, sync objects, multisample textures, base vertex | not measured |
-| 3.3 | 100% | GLSL 3.30, sampler objects, timer queries, instanced arrays, dual-source blending | 3.71% |
+| 3.0 | 99.88% | GLSL 1.30, framebuffer objects, vertex array objects, transform feedback, integer textures | 2.28% |
+| 3.1 | 100% | Instancing, texture buffers, uniform buffers, primitive restart | 2.38% |
+| 3.2 | 100% | Profiles, geometry shaders, sync objects, multisample textures, base vertex | 0.69% |
+| 3.3 | 99.98% | GLSL 3.30, sampler objects, timer queries, instanced arrays, dual-source blending | 3.71% |
 | 4.0 | - | Tessellation, GLSL 4.00, double precision, indirect draws, per-sample shading | 100% |
 | 4.1 | - | Separate shader objects, program binaries, viewport arrays, 64-bit attributes | 100% |
 | 4.2 | - | Image load/store, atomic counters, immutable texture storage | 100% |
@@ -32,9 +32,11 @@ it through the small driver ABI in `include/winemetalgl/driver.h`.
 | 4.5 | - | Direct state access, clip control, robustness, cull distances | 100% |
 | 4.6 | - | SPIR-V shaders, anisotropic filtering, indirect draw counts | 100% |
 
-**Conformance %**: passing cases over applicable cases (cases that are not NotSupported) of the version's Khronos CTS mustpass list (`KHR-GL30` to `KHR-GL33`), in the worst of its 8 runs (configurations 1 to 4 of `mustpass.xml`, each under Wine and natively) at commit efa7879.
+**Conformance %**: passing cases over applicable cases (cases that are not NotSupported) of the version's Khronos CTS mustpass list (`KHR-GL30` to `KHR-GL33`), in the worst of its 8 runs (configurations 1 to 4 of `mustpass.xml`, each under Wine and natively) at commit 14eaa75.
 
 **Unsupported %**: cases the CTS reports NotSupported because WineMetalGL does not offer what they test (an extension it does not advertise or a newer GL version), over the cases any implementation can run. Contexts stop at OpenGL 3.3, so 4.x is 100%; some 4.x features are available as extensions ([Unsupported](docs/unsupported.md#opengl-4x)).
+
+Failing cases: `KHR-GL30.api.coverage`, `KHR-GL33.shaders.negative.non_precision_qualifiers_in_struct_members`. [Conformance results](docs/conformance.md) gives the reason for each.
 
 OpenGL 1.0 to 2.1 are implemented by WineMetalGL itself, as its compatibility profile: the fixed-function pipeline, immediate mode, display lists and legacy GLSL, alongside every 3.x feature. No public Khronos suite measures them; the Wine fixtures, GPU tests and game corpus exercise them, and [Unsupported](docs/unsupported.md#compatibility-profile-opengl-10-to-21) lists what is not implemented.
 <!-- END GENERATED: totals -->

@@ -1,7 +1,7 @@
 # mustpass gl33-main.txt config 2: --deqp-screen-rotation=unspecified --deqp-surface-width=113 --deqp-surface-height=47 --deqp-base-seed=2 --deqp-watchdog=disable
-# commit efa7879, path winemetalgl-native, 9886 cases, 273 s
+# commit 14eaa75, path winemetalgl-native, 9886 cases, 266 s
 # cts dEQP Core 1942832354c96f0de379f491519734256fbd4f9d
-# totals NotSupported=620 Pass=9266
+# totals Fail=1 NotSupported=620 Pass=9265
 KHR-GL33.CommonBugs.CommonBug_GetProgramivActiveUniformBlockMaxNameLength Pass
 KHR-GL33.CommonBugs.CommonBug_InputVariablesCannotBeModified Pass
 KHR-GL33.CommonBugs.CommonBug_InvalidUseCasesForAllNotFuncsAndExclMarkOp Pass
@@ -6929,7 +6929,7 @@ KHR-GL33.shaders.loops.while_uniform_iterations.vector_counter_fragment Pass
 KHR-GL33.shaders.loops.while_uniform_iterations.vector_counter_vertex Pass
 KHR-GL33.shaders.negative.constant_sequence Pass
 KHR-GL33.shaders.negative.initialize Pass
-KHR-GL33.shaders.negative.non_precision_qualifiers_in_struct_members Pass
+KHR-GL33.shaders.negative.non_precision_qualifiers_in_struct_members Fail
 KHR-GL33.shaders.preprocessor.basic.correct_phases_fragment Pass
 KHR-GL33.shaders.preprocessor.basic.correct_phases_vertex Pass
 KHR-GL33.shaders.preprocessor.basic.empty_directive_fragment Pass
