@@ -112,6 +112,15 @@ int getFixedState(Context& ctx, GLenum pname, double* values, char& kind) {
     const int clientTex = kConvTexCoord0 + static_cast<int>(f.clientActiveTexture);
     auto attrib = [&](int slot) { return s.genericAttribs[static_cast<size_t>(slot)].value.f; };
     switch (pname) {
+    case GL_CURRENT_TEXTURE_COORDS: case GL_TEXTURE_MATRIX: case GL_TRANSPOSE_TEXTURE_MATRIX: case GL_TEXTURE_STACK_DEPTH:
+        if (s.activeTexture >= FixedState::kTextureUnits) {
+            ctx.setError(GL_INVALID_OPERATION);  // texture coordinate set state past MAX_TEXTURE_COORDS
+            return -1;
+        }
+        break;
+    default: break;
+    }
+    switch (pname) {
     // --- current values
     case GL_CURRENT_COLOR: return o.colors(attrib(kConvColor), 4);
     case GL_CURRENT_SECONDARY_COLOR: return o.colors(attrib(kConvSecondaryColor), 4);

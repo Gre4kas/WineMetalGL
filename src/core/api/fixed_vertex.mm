@@ -91,6 +91,7 @@ void setAttributeNow(Context& ctx, int slot, const ImmediateBatch::Value& value,
     ContextState::GenericAttrib& g = ctx.state.genericAttribs[static_cast<size_t>(slot)];
     std::memcpy(&g.value, value.data(), 16);
     g.type = type;
+    if (slot == kConvColor) api::trackColorMaterial(ctx);
 }
 
 void emitVertexRaw(Context& ctx, const ImmediateBatch::Value& position) {
@@ -341,6 +342,7 @@ void applyBatchCurrent(Context& ctx, const ImmediateBatch& batch) {
         std::memcpy(&g.value, batch.current[static_cast<size_t>(slot)].data(), 16);
         g.type = batch.types[static_cast<size_t>(slot)];
     }
+    trackColorMaterial(ctx);
 }
 
 }  // namespace

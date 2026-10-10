@@ -60,6 +60,7 @@ void restore(GLbitfield mask, const ContextState& from, ContextState& to) {
         to.polygonSmooth = from.polygonSmooth;
         f.polygonStipple = g.polygonStipple;
     }
+    if (mask & GL_POLYGON_STIPPLE_BIT) f.stipple = g.stipple;
     if (mask & GL_PIXEL_MODE_BIT) {
         to.defaultReadBuffer = from.defaultReadBuffer;
         std::copy(g.pixelZoom, g.pixelZoom + 2, f.pixelZoom);
@@ -219,6 +220,7 @@ void PopAttrib(Context& ctx) {
     Context::AttribFrame frame = std::move(ctx.attribStack.back());
     ctx.attribStack.pop_back();
     restore(frame.mask, frame.state, ctx.state);
+    trackColorMaterial(ctx);  // a restored material or colour: tracked parameters follow the current colour
     ++ctx.state.fixed.version;
     ctx.markDirty(kDirtyAll);
 }

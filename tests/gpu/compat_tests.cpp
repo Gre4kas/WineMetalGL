@@ -1,6 +1,9 @@
 // Compatibility profile (W22): fixed-function processing, immediate mode,
 // display lists, client arrays, legacy GLSL built-ins and pixel rectangles.
 
+#include <cmath>
+#include <cstdlib>
+
 #include "gpu.h"
 
 #define WMGL_COMPAT_FUNCS(X)                                                                                   \
@@ -13,7 +16,8 @@
     X(glEnableClientState) X(glDisableClientState) X(glClientActiveTexture) X(glMultiTexCoord2f)                \
     X(glPushAttrib) X(glPopAttrib) X(glRasterPos2f) X(glWindowPos2i) X(glBitmap) X(glDrawPixels)                \
     X(glPixelZoom) X(glIsEnabled) X(glColorMaterial) X(glInterleavedArrays) X(glArrayElement)                  \
-    X(glFrustum) X(glMultMatrixf) X(glLoadMatrixf) X(glLineWidth) X(glPolygonStipple) X(glGetPolygonStipple) X(glRenderMode) X(glInitNames) X(glPushName) X(glLightf) X(glMaterialf) X(glTexGenf)
+    X(glFrustum) X(glMultMatrixf) X(glLoadMatrixf) X(glLineWidth) X(glPolygonStipple) X(glGetPolygonStipple) X(glRenderMode) X(glInitNames) X(glPushName) X(glLightf) X(glMaterialf) X(glTexGenf) \
+    X(glGetMaterialfv) X(glGetMaterialiv) X(glGetLightiv) X(glTexEnvf)
 
 #define WMGL_COMPAT_DECLARE(name) static PFN_##name name;
 WMGL_COMPAT_FUNCS(WMGL_COMPAT_DECLARE)
@@ -175,8 +179,13 @@ COMPAT_TEST(compat_lighting) {
     glVertex2f(-1, 3);
     glEnd();
     CHECK(pixel(32, 32, kBlue));
+    // The tracked parameter takes the current colour, and keeps it after
+    // COLOR_MATERIAL is disabled (GL 3.3 compatibility section 2.13.3).
+    GLfloat diffuse[4] = {};
+    glGetMaterialfv(GL_FRONT, GL_DIFFUSE, diffuse);
+    CHECK(diffuse[0] == 0 && diffuse[1] == 0 && diffuse[2] == 1 && diffuse[3] == 1);
     glDisable(GL_COLOR_MATERIAL);
-    // A light at 45 degrees gives cos(45) of the diffuse colour.
+    // A light at 45 degrees gives cos(45) of the diffuse colour (blue, from the colour material).
     const float slanted[4] = {1, 0, 1, 0};
     glLightfv(GL_LIGHT0, GL_POSITION, slanted);
     glBegin(GL_TRIANGLES);
@@ -185,8 +194,14 @@ COMPAT_TEST(compat_lighting) {
     glVertex2f(3, -1);
     glVertex2f(-1, 3);
     glEnd();
-    const uint8_t dim[4] = {181, 0, 0, 255};
+    const uint8_t dim[4] = {0, 0, 181, 255};
     CHECK(pixel(32, 32, dim, 3));
+    // glMaterial of a tracked parameter while COLOR_MATERIAL is on is overridden by the current colour.
+    glEnable(GL_COLOR_MATERIAL);
+    glMaterialfv(GL_FRONT_AND_BACK, GL_DIFFUSE, red);
+    glGetMaterialfv(GL_BACK, GL_DIFFUSE, diffuse);
+    CHECK(diffuse[0] == 0 && diffuse[2] == 1);
+    glDisable(GL_COLOR_MATERIAL);
     CHECK(glIsEnabled(GL_LIGHTING) == GL_TRUE);
     glDisable(GL_LIGHTING);
     CHECK_GL();
@@ -709,6 +724,124 @@ COMPAT_TEST(compat_polygon_stipple) {
     GLubyte back[128] = {};
     glGetPolygonStipple(back);
     CHECK(back[0] == 0xff && back[4] == 0x00);
+    // GL_POLYGON_STIPPLE_BIT saves the pattern.
+    GLubyte ones[128];
+    std::memset(ones, 0xff, sizeof(ones));
+    glPushAttrib(GL_POLYGON_STIPPLE_BIT);
+    glPolygonStipple(ones);
+    glPopAttrib();
+    std::memset(back, 0, sizeof(back));
+    glGetPolygonStipple(back);
+    CHECK(back[0] == 0xff && back[4] == 0x00);
+    // Pack state: a row length of 64 pixels gives 8-byte rows.
+    GLubyte wide[256] = {};
+    glPixelStorei(GL_PACK_ROW_LENGTH, 64);
+    glGetPolygonStipple(wide);
+    glPixelStorei(GL_PACK_ROW_LENGTH, 0);
+    CHECK(wide[0] == 0xff && wide[4] == 0x00 && wide[8] == 0x00 && wide[16] == 0xff);
+    CHECK_GL();
+    // Pixel buffer objects: the pattern is written to / read from the
+    // buffer, and ranges past its end are GL_INVALID_OPERATION.
+    GLuint buffers[2] = {};
+    glGenBuffers(2, buffers);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, buffers[0]);
+    glBufferData(GL_PIXEL_PACK_BUFFER, 128, nullptr, GL_STREAM_READ);
+    glGetPolygonStipple(nullptr);
+    CHECK_GL();
+    GLubyte packed[128] = {};
+    glGetBufferSubData(GL_PIXEL_PACK_BUFFER, 0, 128, packed);
+    CHECK(packed[0] == 0xff && packed[4] == 0x00 && packed[124] == 0x00);
+    glGetPolygonStipple(reinterpret_cast<GLubyte*>(64));
+    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_INVALID_OPERATION));
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, buffers[1]);
+    glBufferData(GL_PIXEL_UNPACK_BUFFER, 64, ones, GL_STATIC_DRAW);
+    glPolygonStipple(nullptr);
+    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_INVALID_OPERATION));
+    glWindowPos2i(0, 0);
+    glBitmap(32, 32, 0, 0, 0, 0, nullptr);  // 128 bytes from a 64-byte buffer
+    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_INVALID_OPERATION));
+    glBitmap(32, 16, 0, 0, 0, 0, nullptr);  // exactly 64 bytes
+    CHECK_GL();
+    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+    glDeleteBuffers(2, buffers);
+}
+
+COMPAT_TEST(compat_texture_unit_limits) {
+    // Units past MAX_TEXTURE_COORDS (8) have no texture matrix: matrix
+    // commands on them are GL_INVALID_OPERATION and leave unit 7 alone.
+    glActiveTexture(GL_TEXTURE7);
+    glMatrixMode(GL_TEXTURE);
+    glLoadIdentity();
+    glScalef(2, 2, 2);
+    glActiveTexture(GL_TEXTURE9);
+    glLoadIdentity();
+    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_INVALID_OPERATION));
+    glPushMatrix();
+    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_INVALID_OPERATION));
+    GLfloat m[16] = {};
+    glGetFloatv(GL_TEXTURE_MATRIX, m);
+    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_INVALID_OPERATION));
+    glIsEnabled(GL_TEXTURE_2D);
+    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_INVALID_OPERATION));
+    glMatrixMode(GL_MODELVIEW);
+    glMatrixMode(GL_TEXTURE);
+    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_INVALID_OPERATION));
+    glActiveTexture(GL_TEXTURE7);
+    glMatrixMode(GL_TEXTURE);
+    glGetFloatv(GL_TEXTURE_MATRIX, m);
+    CHECK(m[0] == 2 && m[5] == 2);
+    glLoadIdentity();
+    glActiveTexture(GL_TEXTURE0);
+    // The colour matrix belongs to the imaging subset, which is not advertised.
+    glMatrixMode(GL_COLOR);
+    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_INVALID_ENUM));
+    GLint mode = 0;
+    glGetIntegerv(GL_MATRIX_MODE, &mode);
+    CHECK_EQ(mode, GL_TEXTURE);
+    glMatrixMode(GL_MODELVIEW);
+    CHECK_GL();
+}
+
+COMPAT_TEST(compat_point_size_range) {
+    // The derived point size is clamped to POINT_SIZE_MIN/MAX even without
+    // distance attenuation (GL 3.3 compatibility section 3.4).
+    pixelProjection();
+    clear();
+    glPointParameteri(GL_POINT_SIZE_MAX, 4);
+    glPointSize(10);
+    glColor3f(1, 1, 1);
+    glBegin(GL_POINTS);
+    glVertex2f(32, 32);
+    glEnd();
+    CHECK(pixel(32, 32, kWhite));
+    CHECK(pixel(35, 32, kBlack));
+    glPointParameteri(GL_POINT_SIZE_MAX, 255);
+    clear();
+    glBegin(GL_POINTS);
+    glVertex2f(32, 32);
+    glEnd();
+    CHECK(pixel(35, 32, kWhite));
+    glPointSize(1);
+    CHECK_GL();
+}
+
+COMPAT_TEST(compat_integer_colour_queries) {
+    // Integer queries of light and material colours map [-1, 1] to the full
+    // integer range (GL 3.3 compatibility section 6.1.2).
+    const GLfloat diffuse[4] = {0.5f, 0.25f, 1, -1};
+    glLightfv(GL_LIGHT1, GL_DIFFUSE, diffuse);
+    GLint v[4] = {};
+    glGetLightiv(GL_LIGHT1, GL_DIFFUSE, v);
+    CHECK(std::llabs(v[0] - 1073741824LL) <= 2 && std::llabs(v[1] - 536870912LL) <= 2);
+    CHECK(v[2] == 2147483647 && v[3] == -2147483647);
+    const GLfloat specular[4] = {0.8f, 0, 0, 1};
+    glMaterialfv(GL_FRONT, GL_SPECULAR, specular);
+    glGetMaterialiv(GL_FRONT, GL_SPECULAR, v);
+    CHECK(std::llabs(v[0] - std::llround(static_cast<double>(0.8f) * 2147483647.0)) <= 2 && v[3] == 2147483647);
+    glMaterialf(GL_FRONT, GL_SHININESS, 12.6f);
+    glGetMaterialiv(GL_FRONT, GL_SHININESS, v);
+    CHECK_EQ(v[0], 13);
     CHECK_GL();
 }
 

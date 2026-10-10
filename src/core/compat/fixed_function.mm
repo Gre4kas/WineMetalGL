@@ -391,10 +391,7 @@ Key buildKey(Context& ctx, GLenum mode) {
         k.fogMode = f.fogMode == GL_LINEAR ? 0 : f.fogMode == GL_EXP ? 1 : 2;
         k.fogFromCoord = f.fogCoordSource == GL_FOG_COORD;
     }
-    if (mode == GL_POINTS) {
-        const float* a = f.pointDistanceAttenuation;
-        k.pointSize = a[0] != 1 || a[1] != 0 || a[2] != 0;
-    }
+    if (mode == GL_POINTS) k.pointSize = fixedFunctionWritesPointSize(ctx);
     k.flat = f.shadeModel == GL_FLAT;
     k.colorSum = f.colorSum || f.lighting;
     k.wideLines = fixedFunctionWideLines(ctx, mode);
@@ -779,9 +776,19 @@ bool fixedFunctionWideLines(Context& ctx, GLenum mode) {
     return !(s.transformFeedback && s.transformFeedback->active);  // capture records the line, not its quads
 }
 
+float textureUnitLodBias(const Context& ctx, GLint unit) {
+    if (!ctx.isCompat() || unit < 0 || unit >= FixedState::kTextureUnits) return 0;
+    return ctx.state.fixed.texEnv[static_cast<size_t>(unit)].lodBias;
+}
+
 bool fixedFunctionWritesPointSize(Context& ctx) {
-    const float* a = ctx.state.fixed.pointDistanceAttenuation;
-    return a[0] != 1 || a[1] != 0 || a[2] != 0;
+    // Distance attenuation, or a glPointSize outside [POINT_SIZE_MIN,
+    // POINT_SIZE_MAX]: the derived size is always clamped to that range
+    // (GL 3.3 compatibility section 3.4).
+    const FixedState& f = ctx.state.fixed;
+    const float* a = f.pointDistanceAttenuation;
+    const float size = ctx.state.pointSize;
+    return a[0] != 1 || a[1] != 0 || a[2] != 0 || size < std::max(f.pointSizeMin, 1.0f) || size > f.pointSizeMax;
 }
 
 Program* fixedFunctionProgram(Context& ctx, GLenum mode) {

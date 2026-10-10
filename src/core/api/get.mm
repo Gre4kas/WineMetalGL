@@ -410,6 +410,7 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
         double values[16];
         char kind = 'f';
         if (const int n = getFixedState(ctx, pname, values, kind)) {
+            if (n < 0) return true;  // error set; nothing is written
             out.kind = kind == 'c' ? Value::NormFloat : kind == 'i' ? Value::Int : kind == 'b' ? Value::Bool : Value::Float;
             out.count = n;
             std::copy(values, values + n, out.v);

@@ -36,9 +36,16 @@ const std::vector<uint8_t>& fixedFunctionBlock(Context& ctx, uint64_t& generatio
 // `mode`, or null (with a logged reason) if it cannot be built.
 Program* fixedFunctionProgram(Context& ctx, GLenum mode);
 
-// The fixed-function program draws a point size it computed (point
-// parameters with distance attenuation) rather than glPointSize.
+// The fixed-function program draws a point size it computed (distance
+// attenuation, or glPointSize clamped to POINT_SIZE_MIN/MAX) rather than
+// glPointSize. POINT_FADE_THRESHOLD_SIZE (an alpha fade of multisampled
+// points below the threshold) is not applied.
 bool fixedFunctionWritesPointSize(Context& ctx);
+
+// TEXTURE_LOD_BIAS of texture unit `unit` (glTexEnv with
+// GL_TEXTURE_FILTER_CONTROL), added to the texture or sampler object's bias
+// of every lookup through the unit (GL 3.3 compatibility section 3.9.11).
+float textureUnitLodBias(const Context& ctx, GLint unit);
 
 // Lines wider than one pixel (GL_ALIASED_LINE_WIDTH_RANGE) are drawn by the
 // fixed-function program as two triangles per segment, offset along the

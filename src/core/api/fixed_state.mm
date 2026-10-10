@@ -86,10 +86,23 @@ bool compatOnly(Context& ctx) {
     return false;
 }
 
+// The stack the matrix commands operate on. Texture units past
+// MAX_TEXTURE_COORDS have no texture matrix: GL_INVALID_OPERATION.
+std::vector<Mat4>* matrixStack(Context& ctx) {
+    if (!compatOnly(ctx)) return nullptr;
+    if (ctx.state.fixed.matrixMode == GL_TEXTURE && ctx.state.activeTexture >= FixedState::kTextureUnits) {
+        ctx.setError(GL_INVALID_OPERATION);
+        return nullptr;
+    }
+    return &fixedState(ctx).currentStack(ctx.state.activeTexture);
+}
+
+void load(Context& ctx, const Mat4& m) {
+    if (std::vector<Mat4>* stack = matrixStack(ctx)) stack->back() = m;
+}
+
 void multiply(Context& ctx, const Mat4& m) {
-    FixedState& f = fixedState(ctx);
-    Mat4& top = f.top(ctx.state.activeTexture);
-    top = top * m;
+    if (std::vector<Mat4>* stack = matrixStack(ctx)) stack->back() = stack->back() * m;
 }
 
 int depthLimit(GLenum mode) {
@@ -110,28 +123,17 @@ Mat4 toMat4(const T* m, bool transpose) {
 
 void MatrixMode(Context& ctx, GLenum mode) {
     if (!compatOnly(ctx)) return;
-    if (mode != GL_MODELVIEW && mode != GL_PROJECTION && mode != GL_TEXTURE && mode != GL_COLOR)
-        return ctx.setError(GL_INVALID_ENUM);
-    fixedState(ctx).matrixMode = mode == GL_COLOR ? GL_MODELVIEW : mode;  // the colour matrix (imaging subset) is not supported
+    // GL_COLOR selects the colour matrix of the imaging subset, which is not advertised.
+    if (mode != GL_MODELVIEW && mode != GL_PROJECTION && mode != GL_TEXTURE) return ctx.setError(GL_INVALID_ENUM);
+    if (mode == GL_TEXTURE && ctx.state.activeTexture >= FixedState::kTextureUnits) return ctx.setError(GL_INVALID_OPERATION);
+    fixedState(ctx).matrixMode = mode;
 }
 
-void LoadIdentity(Context& ctx) {
-    if (!compatOnly(ctx)) return;
-    fixedState(ctx).top(ctx.state.activeTexture) = Mat4();
-}
-
-void LoadMatrixf(Context& ctx, const GLfloat* m) {
-    if (compatOnly(ctx)) fixedState(ctx).top(ctx.state.activeTexture) = toMat4(m, false);
-}
-void LoadMatrixd(Context& ctx, const GLdouble* m) {
-    if (compatOnly(ctx)) fixedState(ctx).top(ctx.state.activeTexture) = toMat4(m, false);
-}
-void LoadTransposeMatrixf(Context& ctx, const GLfloat* m) {
-    if (compatOnly(ctx)) fixedState(ctx).top(ctx.state.activeTexture) = toMat4(m, true);
-}
-void LoadTransposeMatrixd(Context& ctx, const GLdouble* m) {
-    if (compatOnly(ctx)) fixedState(ctx).top(ctx.state.activeTexture) = toMat4(m, true);
-}
+void LoadIdentity(Context& ctx) { load(ctx, Mat4()); }
+void LoadMatrixf(Context& ctx, const GLfloat* m) { if (compatOnly(ctx)) load(ctx, toMat4(m, false)); }
+void LoadMatrixd(Context& ctx, const GLdouble* m) { if (compatOnly(ctx)) load(ctx, toMat4(m, false)); }
+void LoadTransposeMatrixf(Context& ctx, const GLfloat* m) { if (compatOnly(ctx)) load(ctx, toMat4(m, true)); }
+void LoadTransposeMatrixd(Context& ctx, const GLdouble* m) { if (compatOnly(ctx)) load(ctx, toMat4(m, true)); }
 void MultMatrixf(Context& ctx, const GLfloat* m) { if (compatOnly(ctx)) multiply(ctx, toMat4(m, false)); }
 void MultMatrixd(Context& ctx, const GLdouble* m) { if (compatOnly(ctx)) multiply(ctx, toMat4(m, false)); }
 void MultTransposeMatrixf(Context& ctx, const GLfloat* m) { if (compatOnly(ctx)) multiply(ctx, toMat4(m, true)); }
@@ -210,19 +212,17 @@ void Ortho(Context& ctx, GLdouble l, GLdouble r, GLdouble b, GLdouble t, GLdoubl
 }
 
 void PushMatrix(Context& ctx) {
-    if (!compatOnly(ctx)) return;
-    FixedState& f = fixedState(ctx);
-    std::vector<Mat4>& stack = f.currentStack(ctx.state.activeTexture);
-    if (static_cast<int>(stack.size()) >= depthLimit(f.matrixMode)) return ctx.setError(GL_STACK_OVERFLOW);
-    stack.push_back(stack.back());
+    std::vector<Mat4>* stack = matrixStack(ctx);
+    if (!stack) return;
+    if (static_cast<int>(stack->size()) >= depthLimit(ctx.state.fixed.matrixMode)) return ctx.setError(GL_STACK_OVERFLOW);
+    stack->push_back(stack->back());
 }
 
 void PopMatrix(Context& ctx) {
-    if (!compatOnly(ctx)) return;
-    FixedState& f = fixedState(ctx);
-    std::vector<Mat4>& stack = f.currentStack(ctx.state.activeTexture);
-    if (stack.size() <= 1) return ctx.setError(GL_STACK_UNDERFLOW);
-    stack.pop_back();
+    std::vector<Mat4>* stack = matrixStack(ctx);
+    if (!stack) return;
+    if (stack->size() <= 1) return ctx.setError(GL_STACK_UNDERFLOW);
+    stack->pop_back();
 }
 
 // ------------------------------------------------------------- lighting
@@ -304,6 +304,13 @@ bool isColorParam(GLenum pname) {
            pname == GL_AMBIENT_AND_DIFFUSE || pname == GL_LIGHT_MODEL_AMBIENT;
 }
 
+// Integer queries of colours map [-1, 1] linearly to the integer range;
+// other values are rounded (GL 3.3 compatibility section 6.1.2).
+GLint queryInt(GLenum pname, float v) {
+    if (isColorParam(pname)) return static_cast<GLint>(std::llround(std::clamp(static_cast<double>(v), -1.0, 1.0) * 2147483647.0));
+    return static_cast<GLint>(std::lround(v));
+}
+
 }  // namespace
 
 void Lightfv(Context& ctx, GLenum light, GLenum pname, const GLfloat* params) { setLight(ctx, light, pname, params); }
@@ -325,7 +332,7 @@ void GetLightfv(Context& ctx, GLenum light, GLenum pname, GLfloat* params) { get
 void GetLightiv(Context& ctx, GLenum light, GLenum pname, GLint* params) {
     float v[4] = {};
     getLight(ctx, light, pname, v);
-    for (int i = 0; i < lightParamCount(pname); ++i) params[i] = static_cast<GLint>(std::lround(v[i]));
+    for (int i = 0; i < lightParamCount(pname); ++i) params[i] = queryInt(pname, v[i]);
 }
 
 namespace {
@@ -389,6 +396,7 @@ void setMaterial(Context& ctx, GLenum face, GLenum pname, const float* v) {
         default: return ctx.setError(GL_INVALID_ENUM);
         }
     }
+    trackColorMaterial(ctx);  // the parameters COLOR_MATERIAL tracks keep the current colour
 }
 
 void getMaterial(Context& ctx, GLenum face, GLenum pname, float* out) {
@@ -428,7 +436,7 @@ void GetMaterialiv(Context& ctx, GLenum face, GLenum pname, GLint* params) {
     float v[4] = {};
     getMaterial(ctx, face, pname, v);
     const int n = pname == GL_SHININESS ? 1 : pname == GL_COLOR_INDEXES ? 3 : 4;
-    for (int i = 0; i < n; ++i) params[i] = static_cast<GLint>(std::lround(v[i]));
+    for (int i = 0; i < n; ++i) params[i] = queryInt(pname, v[i]);
 }
 
 void ColorMaterial(Context& ctx, GLenum face, GLenum mode) {
@@ -440,6 +448,31 @@ void ColorMaterial(Context& ctx, GLenum face, GLenum mode) {
     FixedState& f = fixedState(ctx);
     f.colorMaterialFace = face;
     f.colorMaterialMode = mode;
+    trackColorMaterial(ctx);
+}
+
+void trackColorMaterial(Context& ctx) {
+    FixedState& f = ctx.state.fixed;
+    if (!f.colorMaterial) return;
+    const float* color = ctx.state.genericAttribs[kConvColor].value.f;
+    bool changed = false;
+    auto track = [&](float* parameter) {
+        if (std::equal(color, color + 4, parameter)) return;
+        std::copy(color, color + 4, parameter);
+        changed = true;
+    };
+    for (int side = 0; side < 2; ++side) {
+        if ((side == 0 && f.colorMaterialFace == GL_BACK) || (side == 1 && f.colorMaterialFace == GL_FRONT)) continue;
+        FixedState::Material& m = f.material[side];
+        switch (f.colorMaterialMode) {
+        case GL_AMBIENT: track(m.ambient); break;
+        case GL_DIFFUSE: track(m.diffuse); break;
+        case GL_SPECULAR: track(m.specular); break;
+        case GL_EMISSION: track(m.emission); break;
+        default: track(m.ambient); track(m.diffuse); break;  // GL_AMBIENT_AND_DIFFUSE
+        }
+    }
+    if (changed) ++f.version;
 }
 
 void ShadeModel(Context& ctx, GLenum mode) {
@@ -476,6 +509,7 @@ void setTexEnv(Context& ctx, GLenum target, GLenum pname, const float* v, bool f
     if (target == GL_TEXTURE_FILTER_CONTROL) {
         if (pname != GL_TEXTURE_LOD_BIAS) return ctx.setError(GL_INVALID_ENUM);
         e->lodBias = v[0];
+        ctx.markDirty(kDirtyTextures);  // part of the unit's sampler state (compat::textureUnitLodBias)
         return;
     }
     if (target == GL_POINT_SPRITE) {
@@ -755,13 +789,8 @@ void LineStipple(Context& ctx, GLint factor, GLushort pattern) {
 // x mod 32, y mod 32) is clear (fixed_function.mm).
 void PolygonStipple(Context& ctx, const GLubyte* mask) {
     if (!compatOnly(ctx)) return;
-    const uint8_t* bits = mask;
-    if (Buffer* pbo = ctx.state.pixelUnpackBuffer.get()) {
-        if (!pbo->mtl) return ctx.setError(GL_INVALID_OPERATION);
-        if (pbo->lastWriteSerial) ctx.stream().waitFor(pbo->lastWriteSerial);
-        bits = pbo->contents() + reinterpret_cast<uintptr_t>(mask);
-    }
-    if (!bits) return;
+    const uint8_t* bits = nullptr;
+    if (!bitmapSource(ctx, mask, 32, 32, bits) || !bits) return;
     const std::vector<uint8_t> pixels = unpackBitmap(ctx.state.unpack, bits, 32, 32);
     FixedState& f = fixedState(ctx);
     for (int y = 0; y < 32; ++y) {
@@ -773,18 +802,32 @@ void PolygonStipple(Context& ctx, const GLubyte* mask) {
 }
 
 void GetPolygonStipple(Context& ctx, GLubyte* mask) {
-    if (!compatOnly(ctx) || !mask) return;
-    // Packed most significant bit first, 4 bytes per row (GL_PACK_ALIGNMENT <= 4 rows are tight).
+    if (!compatOnly(ctx)) return;
+    // A 32x32 GL_BITMAP image packed with the pack state, into client memory
+    // or the bound pixel pack buffer (GL 3.3 compatibility section 6.1.6).
     const PixelStore& pack = ctx.state.pack;
-    const size_t rowBytes = pack.alignment == 8 ? 8 : 4;
-    for (int y = 0; y < 32; ++y)
-        for (int byte = 0; byte < 4; ++byte) {
-            uint8_t value = 0;
-            for (int bit = 0; bit < 8; ++bit)
-                if (ctx.state.fixed.stipple[static_cast<size_t>(y)] & (1u << (byte * 8 + bit)))
-                    value |= pack.lsbFirst ? static_cast<uint8_t>(1u << bit) : static_cast<uint8_t>(0x80u >> bit);
-            mask[static_cast<size_t>(y) * rowBytes + static_cast<size_t>(byte)] = value;
+    uint8_t* out = mask;
+    if (Buffer* pbo = ctx.state.pixelPackBuffer.get()) {
+        const uintptr_t offset = reinterpret_cast<uintptr_t>(mask);
+        if (pbo->mappedNonPersistent() || !pbo->mtl || offset + bitmapBytes(pack, 32, 32) > static_cast<size_t>(pbo->size))
+            return ctx.setError(GL_INVALID_OPERATION);
+        ctx.stream().waitFor(pbo->lastUseSerial);
+        out = pbo->contents() + offset;
+        ++pbo->version;
+    }
+    if (!out) return;
+    const size_t rowPixels = static_cast<size_t>(pack.rowLength > 0 ? pack.rowLength : 32);
+    const size_t align = static_cast<size_t>(std::max(1, pack.alignment));
+    const size_t rowBytes = ((rowPixels + 7) / 8 + align - 1) / align * align;
+    for (int y = 0; y < 32; ++y) {
+        uint8_t* row = out + (static_cast<size_t>(std::max(0, pack.skipRows)) + static_cast<size_t>(y)) * rowBytes;
+        for (int x = 0; x < 32; ++x) {
+            const size_t bit = static_cast<size_t>(std::max(0, pack.skipPixels)) + static_cast<size_t>(x);
+            const uint8_t m = pack.lsbFirst ? static_cast<uint8_t>(1u << (bit % 8)) : static_cast<uint8_t>(0x80u >> (bit % 8));
+            if (ctx.state.fixed.stipple[static_cast<size_t>(y)] & (1u << x)) row[bit / 8] |= m;
+            else row[bit / 8] &= static_cast<uint8_t>(~m);
         }
+    }
 }
 
 void ClientActiveTexture(Context& ctx, GLenum texture) {
@@ -805,7 +848,10 @@ bool setFixedCapability(Context& ctx, GLenum cap, bool on) {
     ++f.version;
     switch (cap) {
     case GL_LIGHTING: f.lighting = on; return true;
-    case GL_COLOR_MATERIAL: f.colorMaterial = on; return true;
+    case GL_COLOR_MATERIAL:
+        f.colorMaterial = on;
+        trackColorMaterial(ctx);
+        return true;
     case GL_NORMALIZE: f.normalize = on; return true;
     case GL_RESCALE_NORMAL: f.rescaleNormal = on; return true;
     case GL_FOG: f.fog = on; return true;
@@ -845,6 +891,17 @@ bool getFixedCapability(Context& ctx, GLenum cap, bool& value) {
     if (!ctx.isCompat()) return false;
     const FixedState& f = ctx.state.fixed;
     const GLuint unit = std::min<GLuint>(ctx.state.activeTexture, FixedState::kTextureUnits - 1);
+    switch (cap) {
+    case GL_TEXTURE_1D: case GL_TEXTURE_2D: case GL_TEXTURE_3D: case GL_TEXTURE_CUBE_MAP: case GL_TEXTURE_RECTANGLE:
+    case GL_TEXTURE_GEN_S: case GL_TEXTURE_GEN_T: case GL_TEXTURE_GEN_R: case GL_TEXTURE_GEN_Q:
+        if (ctx.state.activeTexture >= FixedState::kTextureUnits) {
+            ctx.setError(GL_INVALID_OPERATION);  // no fixed-function state past MAX_TEXTURE_UNITS
+            value = false;
+            return true;
+        }
+        break;
+    default: break;
+    }
     switch (cap) {
     case GL_LIGHTING: value = f.lighting; return true;
     case GL_COLOR_MATERIAL: value = f.colorMaterial; return true;

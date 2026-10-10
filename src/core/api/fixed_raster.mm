@@ -244,14 +244,45 @@ void drawRectangle(Context& ctx, Blit kind, const RefPtr<Texture>& tex, float x0
 
 }  // namespace
 
+namespace {
+
+// Bytes per row of a GL_BITMAP image (GL 3.3 compatibility section 3.7.4).
+size_t bitmapRowBytes(const PixelStore& s, GLsizei width) {
+    const size_t rowPixels = static_cast<size_t>(s.rowLength > 0 ? s.rowLength : width);
+    const size_t align = static_cast<size_t>(std::max(1, s.alignment));
+    return ((rowPixels + 7) / 8 + align - 1) / align * align;
+}
+
+}  // namespace
+
+size_t bitmapBytes(const PixelStore& s, GLsizei width, GLsizei height) {
+    if (width <= 0 || height <= 0) return 0;
+    const size_t lastBit = static_cast<size_t>(std::max(0, s.skipPixels)) + static_cast<size_t>(width) - 1;
+    return (static_cast<size_t>(std::max(0, s.skipRows)) + static_cast<size_t>(height) - 1) * bitmapRowBytes(s, width) +
+           lastBit / 8 + 1;
+}
+
+bool bitmapSource(Context& ctx, const GLubyte* bits, GLsizei width, GLsizei height, const uint8_t*& out) {
+    out = bits;
+    Buffer* pbo = ctx.state.pixelUnpackBuffer.get();
+    if (!pbo) return true;
+    const uintptr_t offset = reinterpret_cast<uintptr_t>(bits);
+    if (pbo->mappedNonPersistent() || !pbo->mtl ||
+        offset + bitmapBytes(ctx.state.unpack, width, height) > static_cast<size_t>(pbo->size)) {
+        ctx.setError(GL_INVALID_OPERATION);
+        return false;
+    }
+    if (pbo->lastWriteSerial) ctx.stream().waitFor(pbo->lastWriteSerial);
+    out = pbo->contents() + offset;
+    return true;
+}
+
 // Unpacks a GL bitmap (1 bit per pixel, GL 3.3 compatibility section 3.7.4)
 // to one byte per pixel.
 std::vector<uint8_t> unpackBitmap(const PixelStore& s, const uint8_t* bits, GLsizei width, GLsizei height) {
     std::vector<uint8_t> out(static_cast<size_t>(width) * static_cast<size_t>(height), 0);
     if (!bits) return out;
-    const size_t rowPixels = static_cast<size_t>(s.rowLength > 0 ? s.rowLength : width);
-    const size_t align = static_cast<size_t>(std::max(1, s.alignment));
-    const size_t rowBytes = ((rowPixels + 7) / 8 + align - 1) / align * align;
+    const size_t rowBytes = bitmapRowBytes(s, width);
     for (GLsizei y = 0; y < height; ++y) {
         const uint8_t* row = bits + (static_cast<size_t>(s.skipRows) + static_cast<size_t>(y)) * rowBytes;
         for (GLsizei x = 0; x < width; ++x) {
@@ -330,12 +361,8 @@ void Bitmap(Context& ctx, GLsizei width, GLsizei height, GLfloat xorig, GLfloat 
     FixedState::RasterPos& r = ctx.state.fixed.rasterPos;
     if (!r.valid) return;
     if (width > 0 && height > 0) {
-        const uint8_t* bits = bitmap;
-        if (Buffer* pbo = ctx.state.pixelUnpackBuffer.get()) {
-            if (!pbo->mtl) return ctx.setError(GL_INVALID_OPERATION);
-            if (pbo->lastWriteSerial) ctx.stream().waitFor(pbo->lastWriteSerial);
-            bits = pbo->contents() + reinterpret_cast<uintptr_t>(bitmap);
-        }
+        const uint8_t* bits = nullptr;
+        if (!bitmapSource(ctx, bitmap, width, height, bits)) return;
         std::vector<uint8_t> mask = unpackBitmap(ctx.state.unpack, bits, width, height);
         uint64_t key = hashValue(hashValue(hashValue(1469598103934665603ull, 'B'), width), height);
         key = hashBytes(key, mask.data(), mask.size());
