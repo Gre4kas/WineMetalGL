@@ -54,4 +54,45 @@ id<MTLFunction> LinkedProgram::vertexNoRaster() {
     return vertexNoRaster_;
 }
 
+id<MTLFunction> LinkedProgram::geometryPassthrough() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (passthrough_ || passthroughFailed_) return passthrough_;
+    const shader::StageOutput& output = link.geometry.passthrough;
+    if (!link.geometry.active || output.msl.empty()) return nil;
+    passthrough_ = compileFunction(output.msl, output.entryPoint, static_cast<int>(shader::Stage::Geometry));
+    passthroughFailed_ = passthrough_ == nil;
+    return passthrough_;
+}
+
+namespace {
+
+id<MTLComputePipelineState> computePipelineFor(const shader::StageOutput& output, int stage) {
+    if (output.msl.empty()) return nil;
+    id<MTLFunction> function = compileFunction(output.msl, output.entryPoint, stage);
+    if (!function) return nil;
+    NSError* error = nil;
+    id<MTLComputePipelineState> state = [Device::get().mtl() newComputePipelineStateWithFunction:function error:&error];
+    if (!state) WMGL_ERR("compute pipeline creation failed: %s", error.localizedDescription.UTF8String);
+    return state;
+}
+
+}  // namespace
+
+id<MTLComputePipelineState> LinkedProgram::geometryKernel() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (kernel_ || kernelFailed_) return kernel_;
+    if (link.geometry.active) kernel_ = computePipelineFor(link.geometry.kernel, static_cast<int>(shader::Stage::Geometry));
+    kernelFailed_ = kernel_ == nil;
+    return kernel_;
+}
+
+id<MTLComputePipelineState> LinkedProgram::computePipeline() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (compute_ || computeFailed_) return compute_;
+    const int cs = static_cast<int>(shader::Stage::Compute);
+    if (link.stages[cs].present) compute_ = computePipelineFor(link.stages[cs], cs);
+    computeFailed_ = compute_ == nil;
+    return compute_;
+}
+
 }  // namespace wmgl

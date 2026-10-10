@@ -28,8 +28,9 @@ GLenum scalarKind(GLenum type) {
     }
 }
 
-// Expressions for each 32-bit word of one element, converted to uint.
-std::vector<std::string> elementWords(const std::string& e, GLenum type) {
+}  // namespace
+
+std::vector<std::string> captureWords(const std::string& e, GLenum type) {
     const GLenum kind = scalarKind(type);
     auto convert = [&](const std::string& x) {
         return kind == GL_FLOAT ? "floatBitsToUint(" + x + ")" : kind == GL_INT ? "uint(" + x + ")" : x;
@@ -59,10 +60,9 @@ std::vector<std::string> elementWords(const std::string& e, GLenum type) {
     return words;
 }
 
-}  // namespace
-
 bool layoutTransformFeedback(const std::vector<std::string>& varyings, GLenum mode,
-                             const std::vector<StageOutputVar>& outputs, LinkResult& result, std::string& log) {
+                             const std::vector<StageOutputVar>& outputs, LinkResult& result, std::string& log,
+                             uint32_t maxInterleavedComponents) {
     const bool separate = mode == GL_SEPARATE_ATTRIBS;
     if (separate && varyings.size() > 4) {
         log += "error: too many separate transform feedback varyings\n";
@@ -98,7 +98,8 @@ bool layoutTransformFeedback(const std::vector<std::string>& varyings, GLenum mo
         v.size = index >= 0 || out->arraySize == 0 ? 1 : out->arraySize;
         v.components = glTypeComponents(out->type) * v.size;
         v.array = index < 0 && out->arraySize > 0;
-        v.expression = index >= 0 ? base + "[" + std::to_string(index) + "]" : base;
+        const std::string access = out->expression.empty() ? base : out->expression;
+        v.expression = index >= 0 ? access + "[" + std::to_string(index) + "]" : access;
         if (separate) {
             if (v.components > 4) {
                 log += "error: transform feedback varying '" + varying + "' exceeds MAX_TRANSFORM_FEEDBACK_SEPARATE_COMPONENTS\n";
@@ -115,7 +116,7 @@ bool layoutTransformFeedback(const std::vector<std::string>& varyings, GLenum mo
         result.transformFeedback.push_back(v);
     }
     if (!separate) {
-        if (interleavedWords > 64) {
+        if (interleavedWords > maxInterleavedComponents) {
             log += "error: transform feedback varyings exceed MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS\n";
             return false;
         }
@@ -157,7 +158,7 @@ CaptureCode vertexCaptureCode(const LinkResult& layout, int glslVersion) {
         uint32_t word = v.offset;
         for (int element = 0; element < v.size; ++element) {
             const std::string expr = v.array ? v.expression + "[" + std::to_string(element) + "]" : v.expression;
-            for (const std::string& w : elementWords(expr, v.type)) {
+            for (const std::string& w : captureWords(expr, v.type)) {
                 e += "            wmgl_xfb_data" + std::to_string(v.buffer) + "[p" + std::to_string(v.buffer) + " + " +
                      std::to_string(word++) + "u] = " + w + ";\n";
             }

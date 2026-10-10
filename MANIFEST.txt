@@ -59,6 +59,7 @@ scripts/verify-source.sh
 SHA256SUMS
 src/core/api/blit.mm
 src/core/api/buffer.mm
+src/core/api/compute.mm
 src/core/api/draw.mm
 src/core/api/framebuffer.mm
 src/core/api/get.mm
@@ -102,6 +103,8 @@ src/core/program.mm
 src/core/query.h
 src/core/shader/compiler.cpp
 src/core/shader/compiler.h
+src/core/shader/geometry.cpp
+src/core/shader/geometry.h
 src/core/shader/glsl_upgrade.cpp
 src/core/shader/glsl_upgrade.h
 src/core/shader/transform_feedback.cpp
@@ -139,7 +142,9 @@ tests/games/corpus.json
 tests/games/demos/scene33.c
 tests/games/README.md
 tests/gpu/basic_tests.cpp
+tests/gpu/compute_tests.cpp
 tests/gpu/framebuffer_tests.cpp
+tests/gpu/geometry_tests.cpp
 tests/gpu/gpu.h
 tests/gpu/main.cpp
 tests/gpu/query_tests.cpp

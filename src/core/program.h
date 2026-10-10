@@ -19,6 +19,12 @@ struct LinkedProgram {
     // Vertex function returning void, for pipelines with rasterization disabled.
     id<MTLFunction> vertexNoRaster();
     bool functionFailed(shader::Stage stage) const { return failed_[static_cast<int>(stage)]; }
+    // Geometry shader emulation (link.geometry): the drawing vertex function
+    // and the geometry kernel.
+    id<MTLFunction> geometryPassthrough();
+    id<MTLComputePipelineState> geometryKernel();
+    // Compute programs.
+    id<MTLComputePipelineState> computePipeline();
 
     bool hasStage(shader::Stage stage) const { return link.stages[static_cast<int>(stage)].present; }
     const shader::StageOutput& stage(shader::Stage stage) const { return link.stages[static_cast<int>(stage)]; }
@@ -29,6 +35,11 @@ private:
     bool failed_[shader::kStageCount] = {};
     id<MTLFunction> vertexNoRaster_ = nil;
     bool vertexNoRasterFailed_ = false;
+    id<MTLFunction> passthrough_ = nil;
+    id<MTLComputePipelineState> kernel_ = nil;
+    bool passthroughFailed_ = false, kernelFailed_ = false;
+    id<MTLComputePipelineState> compute_ = nil;
+    bool computeFailed_ = false;
 };
 
 uint64_t nextLinkedProgramId();

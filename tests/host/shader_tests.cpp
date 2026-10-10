@@ -187,3 +187,37 @@ TEST(shader_transform_feedback_link_errors) {
     fragmentOnly.transformFeedbackVaryings = {"color"};
     CHECK(!link(fragmentOnly).ok);
 }
+
+TEST(shader_geometry_emulation) {
+    LinkInput in;
+    in.shaders.push_back({Stage::Vertex,
+                          "#version 330 core\nin vec4 pos; out VS_OUT { vec4 color; } vs_out; out float w;\n"
+                          "void main() { vs_out.color = pos; w = 2.0; gl_Position = pos; }\n"});
+    in.shaders.push_back({Stage::Geometry,
+                          "#version 330 core\nlayout(triangles) in; layout(triangle_strip, max_vertices = 4) out;\n"
+                          "in VS_OUT { vec4 color; } gs_in[]; in float w[];\nuniform float scale; uniform sampler2D tex;\n"
+                          "out vec4 fcol; flat out int prim;\n"
+                          "void emit(int i) { fcol = gs_in[i].color * texture(tex, vec2(0.5)) * w[i]; prim = gl_PrimitiveIDIn;\n"
+                          "    gl_Position = gl_in[i].gl_Position * scale; EmitVertex(); }\n"
+                          "void main() { for (int i = 0; i < 3; ++i) emit(i); EndPrimitive(); }\n"});
+    in.shaders.push_back({Stage::Fragment,
+                          "#version 330 core\nin vec4 fcol; flat in int prim; uniform vec4 tint; out vec4 color;\n"
+                          "void main() { color = fcol * tint + float(prim); }\n"});
+    in.transformFeedbackVaryings = {"fcol", "gl_Position"};
+    LinkResult r = link(in);
+    if (!r.ok) std::fprintf(stderr, "%s\n", r.log.c_str());
+    CHECK(r.ok);
+    CHECK(r.geometry.active);
+    CHECK_EQ(r.geometryInputType, static_cast<GLenum>(GL_TRIANGLES));
+    CHECK_EQ(r.geometryOutputType, static_cast<GLenum>(GL_TRIANGLE_STRIP));
+    CHECK_EQ(r.geometryVerticesOut, 4);
+    CHECK_EQ(r.geometry.inputStride, 4u + 4u + 1u);   // gl_Position, VS_OUT.color, w
+    CHECK_EQ(r.geometry.outputStride, 4u + 4u + 1u);  // gl_Position, fcol, prim
+    CHECK(r.transformFeedback.size() == 2 && r.xfbStride[0] == 8u);
+    CHECK(!r.geometry.kernel.msl.empty() && !r.geometry.passthrough.msl.empty());
+    CHECK(r.geometry.kernel.msl.find("kernel void") != std::string::npos);
+    const UniformInfo* tex = findUniform(r, "tex");
+    CHECK(tex && tex->samplerSlot >= 0 && r.samplers[tex->samplerSlot].stageTexture[static_cast<int>(Stage::Compute)] == 0);
+    CHECK(findUniform(r, "scale") != nullptr);
+    CHECK(r.stages[static_cast<int>(Stage::Vertex)].mslNoRaster.find("[[buffer(14)]]") != std::string::npos);
+}

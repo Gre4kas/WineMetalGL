@@ -1,12 +1,14 @@
 #include "core/texture_storage.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <mutex>
 #include <unordered_map>
 
 #include "core/context.h"
 #include "core/draw.h"
+#include "core/limits.h"
 #include "core/metal/device.h"
 #include "core/metal/enums.h"
 #include "core/metal/pipeline_cache.h"
@@ -304,6 +306,9 @@ id<MTLSamplerState> samplerState(Context& ctx, const SamplerParams& p, bool shad
     key.normalized = 1;
     key.lodMin = std::max(0.0f, p.minLod);
     key.lodMax = std::max(key.lodMin, p.maxLod);
+    // Apple GPUs truncate both the sampler and the shader bias to 1/64;
+    // rounding the sampler bias up keeps their sum within 1/64 of GL's.
+    key.lodBias = std::ceil(std::clamp(p.lodBias, -limits::kMaxTextureLodBias, limits::kMaxTextureLodBias) * 64.0f) / 64.0f;
     return ctx.share().pipelines().sampler(key);
 }
 

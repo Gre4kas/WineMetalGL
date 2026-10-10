@@ -252,7 +252,7 @@ GLuint CreateShader(Context& ctx, GLenum type) {
         if (type != GL_GEOMETRY_SHADER && ctx.version() >= 40) break;
         [[fallthrough]];
     case GL_COMPUTE_SHADER:
-        if (type == GL_COMPUTE_SHADER && ctx.version() >= 43) break;
+        if (type == GL_COMPUTE_SHADER && ctx.computeShaders()) break;
         [[fallthrough]];
     default: ctx.setError(GL_INVALID_ENUM); return 0;
     }
@@ -540,6 +540,11 @@ void GetProgramiv(Context& ctx, GLuint program, GLenum pname, GLint* params) {
                   : pname == GL_GEOMETRY_INPUT_TYPE ? static_cast<GLint>(link->geometryInputType)
                                                     : static_cast<GLint>(link->geometryOutputType);
         return;
+    case GL_COMPUTE_WORK_GROUP_SIZE:
+        if (!ctx.computeShaders()) break;
+        if (!link || !link->stages[static_cast<int>(shader::Stage::Compute)].present) return ctx.setError(GL_INVALID_OPERATION);
+        for (int d = 0; d < 3; ++d) params[d] = static_cast<GLint>(link->computeLocalSize[d]);
+        return;
     case GL_PROGRAM_BINARY_RETRIEVABLE_HINT:
         if (ctx.version() >= 41) { *params = p->binaryRetrievableHint; return; }
         break;
@@ -688,6 +693,10 @@ void GetActiveUniformBlockiv(Context& ctx, GLuint program, GLuint blockIndex, GL
     case GL_UNIFORM_BLOCK_REFERENCED_BY_VERTEX_SHADER: *params = (b.stageMask & stageBit(shader::Stage::Vertex)) != 0; return;
     case GL_UNIFORM_BLOCK_REFERENCED_BY_GEOMETRY_SHADER: *params = (b.stageMask & stageBit(shader::Stage::Geometry)) != 0; return;
     case GL_UNIFORM_BLOCK_REFERENCED_BY_FRAGMENT_SHADER: *params = (b.stageMask & stageBit(shader::Stage::Fragment)) != 0; return;
+    case GL_UNIFORM_BLOCK_REFERENCED_BY_COMPUTE_SHADER:
+        if (!ctx.computeShaders()) break;
+        *params = (b.stageMask & stageBit(shader::Stage::Compute)) != 0;
+        return;
     default: break;
     }
     ctx.setError(GL_INVALID_ENUM);

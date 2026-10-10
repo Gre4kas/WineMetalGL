@@ -613,6 +613,9 @@ void ReadBuffer(Context& ctx, GLenum src) {
 
 void ReadPixels(Context& ctx, GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, void* pixels) {
     if (width < 0 || height < 0) return ctx.setError(GL_INVALID_VALUE);
+    // GL 3.3 section 4.3.2: DEPTH_STENCIL takes only the packed depth/stencil types.
+    if (format == GL_DEPTH_STENCIL && type != GL_UNSIGNED_INT_24_8 && type != GL_FLOAT_32_UNSIGNED_INT_24_8_REV)
+        return ctx.setError(GL_INVALID_ENUM);
     if (!validTransferFormatType(format, type, ctx.isCompat())) {
         if (groupBytes(format, type) == 0 && !validTransferFormatType(format, GL_UNSIGNED_BYTE, ctx.isCompat()))
             return ctx.setError(GL_INVALID_ENUM);

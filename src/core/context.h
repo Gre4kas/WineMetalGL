@@ -87,6 +87,8 @@ public:
     const std::vector<std::string>& extensions() const { return extensions_; }
     const std::string& extensionString() const { return extensionString_; }
     bool hasExtension(const char* name) const;
+    // Compute shaders: GL 4.3 or GL_ARB_compute_shader.
+    bool computeShaders() const { return version() >= 43 || hasExtension("GL_ARB_compute_shader"); }
 
     // Occlusion-query slot of the current pass (see core/query.h).
     struct {

@@ -127,6 +127,14 @@ fragment BlitDepthOut wmgl_blit_depth_fs(ClearOut in [[stage_in]], depth2d<float
     if (any(c < 0) || any(c >= int2(b.srcSize.xy))) discard_fragment();
     return BlitDepthOut{source.read(uint2(c))};
 }
+// Stencil into multisampled targets: values (R16Uint) holds the new stencil
+// per pixel from p.xy, values above 0xff keep the target. p.z == 0 passes
+// every written pixel (the zeroing pass), else only those with bit p.z set.
+fragment void wmgl_blit_stencil_bit_fs(ClearOut in [[stage_in]], texture2d<uint> values [[texture(0)]],
+                                       constant uint4& p [[buffer(0)]]) {
+    uint v = values.read(uint2(int2(in.position.xy) - int2(p.xy))).r;
+    if (v > 0xffu || (p.z != 0u && (v & p.z) == 0u)) discard_fragment();
+}
 fragment BlitDepthOut wmgl_blit_depth_ms_fs(ClearOut in [[stage_in]], depth2d_ms<float> source [[texture(0)]],
                                             constant BlitParams& b [[buffer(0)]]) {
     int2 c = int2(floor(wmgl_blit_source(in.position.xy, b)));

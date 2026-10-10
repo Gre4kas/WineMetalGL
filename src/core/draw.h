@@ -15,6 +15,7 @@
 namespace wmgl {
 
 class Context;
+class Buffer;
 class Framebuffer;
 struct LinkedProgram;
 
@@ -24,6 +25,9 @@ struct TargetFormats {
     bool alphaIsOne[8] = {};   // RGB formats stored with an alpha channel
     bool integer[8] = {};
     bool srgb[8] = {};
+    // Depth/stencil buffers GL sees. A combined Metal format is bound to both
+    // Metal attachments even when GL attaches it to one point only.
+    bool depthAttached = false, stencilAttached = false;
 };
 
 class DrawState {
@@ -49,6 +53,10 @@ public:
     // to the attachment's type.
     void clearBuffer(GLenum buffer, GLint drawbuffer, const double color[4], double depth, GLint stencil);
 
+    // glDispatchCompute / glDispatchComputeIndirect (validated by the caller);
+    // `indirect` is the DISPATCH_INDIRECT_BUFFER, or null.
+    void dispatch(GLuint x, GLuint y, GLuint z, Buffer* indirect, GLintptr offset);
+
     TransientAllocator& transient() { return transient_; }
 
 private:
@@ -69,7 +77,25 @@ private:
     // Writes the transform feedback output of a draw: `vertices` are the
     // vertex numbers (gl_VertexID) in draw order.
     void captureTransformFeedback(GLenum mode, const std::vector<uint32_t>& vertices, GLsizei instances);
+    // Runs the program's capture vertex function (rasterization off) over
+    // `list`, writing vertex k of instance i to capture slot
+    // k + i * list.size() (below `limit`) of each buffer at its base word.
+    bool runVertexCapture(LinkedProgram& program, const std::vector<uint32_t>& list, GLsizei instances, uint32_t limit,
+                          int bufferCount, const __strong id<MTLBuffer>* buffers, const uint32_t* baseWords,
+                          const uint32_t* strides);
+    // Draws `vertices` (vertex numbers in draw order, one restart-free
+    // segment) through the geometry shader emulation (shader/geometry.h).
+    // primitiveBase is the gl_PrimitiveIDIn of the first primitive.
+    void drawGeometry(GLenum mode, const std::vector<uint32_t>& vertices, GLsizei instances, uint32_t& primitiveBase);
+    // Uniforms, uniform blocks and samplers of a compute function (the
+    // Stage::Compute slots: a compute program or the geometry kernel).
+    void bindKernelResources(id<MTLComputeCommandEncoder> encoder, LinkedProgram& program, bool usesDefaultUniforms);
     void bindCaptureDefaults(id<MTLRenderCommandEncoder> encoder, LinkedProgram& program);
+    // Depth/stencil, dynamic state, scissor, uniforms and textures for a draw.
+    void bindDrawState(id<MTLRenderCommandEncoder> encoder, LinkedProgram& program);
+    void uniformBlockBuffer(size_t block, __strong id<MTLBuffer>& buffer, NSUInteger& offset);
+    void samplerBinding(LinkedProgram& program, size_t index, __strong id<MTLTexture>& view,
+                        __strong id<MTLSamplerState>& sampler);
     void waitForCpuVertexReads(LinkedProgram& program, bool gather);
     void bindUniforms(id<MTLRenderCommandEncoder> encoder, LinkedProgram& program);
     void bindTextures(id<MTLRenderCommandEncoder> encoder, LinkedProgram& program);
@@ -79,6 +105,7 @@ private:
     TransientAllocator transient_;
     uint64_t lastPassGeneration_ = 0;
     PipelineKey lastKey_{};
+    TargetFormats lastFormats_{};
     MTLScissorRect lastScissor_{};
 };
 

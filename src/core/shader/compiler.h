@@ -28,6 +28,7 @@ constexpr uint32_t kSlotDriverUniforms = 1;    // buffer: WineMetalGL driver con
 constexpr uint32_t kSlotFirstUniformBlock = 2; // buffers 2..13: uniform blocks used by the stage
 constexpr uint32_t kMaxStageUniformBlocks = 12;
 constexpr uint32_t kSlotFirstXfbBuffer = 14;   // buffers 14..17: transform feedback outputs
+                                               // (geometry kernel: input, output, indices, control)
 constexpr uint32_t kSlotFirstVertexBuffer = 18;  // buffers 18..29: vertex buffers
 constexpr uint32_t kMaxVertexBufferSlots = 12;
 constexpr uint32_t kSlotXfbControl = 30;       // buffer 30: transform feedback capture control
@@ -128,6 +129,31 @@ struct TransformFeedbackVarying {
     uint32_t offset = 0;       // within one captured vertex in `buffer`
     std::string expression;    // GLSL expression of the first element ("gl_Position", "v", "v[2]")
     bool array = false;        // expression names a whole array (elements expression[i])
+    // Geometry emulation: word offset of the first element in the emitted
+    // vertex record (kNotEmitted: the shader never writes it).
+    uint32_t sourceOffset = 0;
+    static constexpr uint32_t kNotEmitted = 0xffffffffu;
+};
+
+// Geometry shader emulation (see geometry.h). The program's vertex stage is
+// replaced by its capture variant (xfbVertexCapture rules, one buffer of
+// `inputStride` words per vertex); the kernel uses the program's uniform
+// block and sampler slots recorded for Stage::Compute.
+struct GeometryEmulation {
+    bool active = false;
+    GLenum inputType = 0, outputType = 0;
+    int verticesIn = 0, maxVertices = 0;
+    uint32_t inputStride = 0;   // 32-bit words per captured vertex
+    uint32_t outputStride = 0;  // 32-bit words per emitted vertex
+    struct Field {
+        std::string name;       // GL varying name ("gl_Position", "col", "Block.member")
+        GLenum type = 0;
+        GLint size = 1;         // array elements
+        uint32_t offset = 0;    // in words
+    };
+    std::vector<Field> outputs;  // emitted vertex layout
+    StageOutput kernel;          // compute: one thread per input primitive
+    StageOutput passthrough;     // vertex: draws the emitted vertices
 };
 
 struct LinkResult {
@@ -149,6 +175,8 @@ struct LinkResult {
     // Geometry shader layout (for emulation).
     GLenum geometryInputType = 0, geometryOutputType = 0;
     GLint geometryVerticesOut = 0, geometryInvocations = 1;
+    GeometryEmulation geometry;
+    uint32_t computeLocalSize[3] = {1, 1, 1};  // compute programs: COMPUTE_WORK_GROUP_SIZE
 };
 
 LinkResult link(const LinkInput& input);

@@ -524,7 +524,9 @@ struct CopySource {
     int width = 0, height = 0;
 };
 
-bool copySource(Context& ctx, bool depth, CopySource& out) {
+// `stencil`: the destination has stencil, so the read framebuffer needs
+// both depth and stencil (GL 3.3 section 3.8.4).
+bool copySource(Context& ctx, bool depth, CopySource& out, bool stencil = false) {
     Framebuffer* fb = ctx.state.readFramebuffer.get();
     if (CheckFramebufferStatus(ctx, GL_READ_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
         return ctx.setError(GL_INVALID_FRAMEBUFFER_OPERATION), false;
@@ -536,7 +538,7 @@ bool copySource(Context& ctx, bool depth, CopySource& out) {
         out.info = formatInfo(internalFormat);
     } else if (fb) {
         const Attachment& a = fb->depth;
-        if (!a.attached()) return ctx.setError(GL_INVALID_OPERATION), false;
+        if (!a.attached() || (stencil && !fb->stencil.attached())) return ctx.setError(GL_INVALID_OPERATION), false;
         if (a.type == GL_TEXTURE) {
             Texture& tex = *a.texture;
             if (!ensureTextureStorage(ctx, tex)) return ctx.setError(GL_INVALID_OPERATION), false;
@@ -555,7 +557,8 @@ bool copySource(Context& ctx, bool depth, CopySource& out) {
         }
     } else {
         Surface* surface = ctx.readSurface();
-        if (!surface || !surface->hasDepth()) return ctx.setError(GL_INVALID_OPERATION), false;
+        if (!surface || !surface->hasDepth() || (stencil && !surface->hasStencil()))
+            return ctx.setError(GL_INVALID_OPERATION), false;
         out.texture = surface->depthStencil();
         out.info = formatInfo(surface->hasStencil() ? GL_DEPTH24_STENCIL8 : GL_DEPTH_COMPONENT24);
         out.width = surface->width();
@@ -683,7 +686,7 @@ void copyTexImage(Context& ctx, int dims, GLenum target, GLint level, GLenum int
     if (!formatAllowedOnTarget(*probe, t.target)) return ctx.setError(GL_INVALID_OPERATION);
     if (t.tex->immutable) return ctx.setError(GL_INVALID_OPERATION);
     CopySource src;
-    if (!copySource(ctx, probe->isDepthOrStencil(), src)) return;
+    if (!copySource(ctx, probe->isDepthOrStencil(), src, probe->stencilBits > 0)) return;
     // Unsized formats take their component sizes from the read buffer.
     const FormatInfo* info = probe;
     if (formatInfo(internalformat) == nullptr) {

@@ -68,6 +68,7 @@ void Context::initStrings() {
     if (!config_.coreProfile) extensions_.push_back("GL_ARB_compatibility");
     extensions_.push_back("GL_ARB_ES2_compatibility");
     extensions_.push_back("GL_ARB_texture_storage");
+    extensions_.push_back("GL_ARB_compute_shader");
     extensions_.push_back("GL_ARB_texture_storage_multisample");
     extensions_.push_back("GL_EXT_texture_compression_s3tc");
     extensions_.push_back("GL_EXT_texture_filter_anisotropic");
@@ -156,10 +157,8 @@ RefPtr<Buffer>* Context::bufferBinding(GLenum target) {
     }
     if (version() >= 40 || hasExtension("GL_ARB_draw_indirect"))
         if (target == GL_DRAW_INDIRECT_BUFFER) return &state.drawIndirectBuffer;
-    if (version() >= 43) {
-        if (target == GL_DISPATCH_INDIRECT_BUFFER) return &state.dispatchIndirectBuffer;
-        if (target == GL_SHADER_STORAGE_BUFFER) return &state.shaderStorageBuffer;
-    }
+    if (computeShaders() && target == GL_DISPATCH_INDIRECT_BUFFER) return &state.dispatchIndirectBuffer;
+    if (version() >= 43 && target == GL_SHADER_STORAGE_BUFFER) return &state.shaderStorageBuffer;
     if (version() >= 42 && target == GL_ATOMIC_COUNTER_BUFFER) return &state.atomicCounterBuffer;
     if (version() >= 44 && target == GL_QUERY_BUFFER) return &state.queryBuffer;
     return nullptr;

@@ -137,9 +137,15 @@ void VertexAttribLPointer(Context& ctx, GLuint index, GLint size, GLenum type, G
     setPointer(ctx, index, size, type, false, false, true, stride, pointer);
 }
 
+// GL 3.3 core (appendix E) only makes VertexAttribPointer an error without a
+// bound VAO; GL 4.5 extends that to every command that changes VAO state.
+static bool vaoStateWritable(Context& ctx) {
+    return !(ctx.isCore() && ctx.version() >= 45 && currentVao(ctx) == ctx.defaultVertexArray.get());
+}
+
 void EnableVertexAttribArray(Context& ctx, GLuint index) {
     if (!checkIndex(ctx, index)) return;
-    if (ctx.isCore() && currentVao(ctx) == ctx.defaultVertexArray.get()) return ctx.setError(GL_INVALID_OPERATION);
+    if (!vaoStateWritable(ctx)) return ctx.setError(GL_INVALID_OPERATION);
     currentVao(ctx)->attribs[index].enabled = true;
     ++currentVao(ctx)->version;
     ctx.markDirty(kDirtyVertexInput);
@@ -147,7 +153,7 @@ void EnableVertexAttribArray(Context& ctx, GLuint index) {
 
 void DisableVertexAttribArray(Context& ctx, GLuint index) {
     if (!checkIndex(ctx, index)) return;
-    if (ctx.isCore() && currentVao(ctx) == ctx.defaultVertexArray.get()) return ctx.setError(GL_INVALID_OPERATION);
+    if (!vaoStateWritable(ctx)) return ctx.setError(GL_INVALID_OPERATION);
     currentVao(ctx)->attribs[index].enabled = false;
     ++currentVao(ctx)->version;
     ctx.markDirty(kDirtyVertexInput);
@@ -155,7 +161,7 @@ void DisableVertexAttribArray(Context& ctx, GLuint index) {
 
 void VertexAttribDivisor(Context& ctx, GLuint index, GLuint divisor) {
     if (!checkIndex(ctx, index)) return;
-    if (ctx.isCore() && currentVao(ctx) == ctx.defaultVertexArray.get()) return ctx.setError(GL_INVALID_OPERATION);
+    if (!vaoStateWritable(ctx)) return ctx.setError(GL_INVALID_OPERATION);
     currentVao(ctx)->attribs[index].divisor = divisor;
     ++currentVao(ctx)->version;
     ctx.markDirty(kDirtyVertexInput);

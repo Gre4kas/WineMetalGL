@@ -3,7 +3,8 @@
 // Same-size, same-format colour and depth copies use the blit encoder.
 // Everything else renders a full-target triangle whose fragments map their
 // window position into the source rectangle (utility shaders wmgl_blit_*).
-// Stencil has no shader export path and is copied on the CPU.
+// Stencil has no shader export path: it is computed on the CPU and copied,
+// or written bit by bit with stencil-replace draws into multisampled targets.
 
 #include <algorithm>
 #include <cmath>
@@ -196,17 +197,73 @@ RenderTargetDesc::Target resolveDepthStencil(Context& ctx, const RenderTargetDes
     return out;
 }
 
+// Writes per-pixel stencil `values` (0x100: keep) over `clip` of a
+// multisampled target: a zeroing pass, then one stencil-replace pass per bit.
+void writeStencilMultisample(Context& ctx, const RenderTargetDesc::Target& dst, MTLPixelFormat depthFormat,
+                             uint32_t samples, uint32_t dstW, uint32_t dstH, const Rect& clip,
+                             const std::vector<uint16_t>& values) {
+    const int w = clip.x1 - clip.x0, h = clip.y1 - clip.y0;
+    MTLTextureDescriptor* desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatR16Uint
+                                                                                    width:static_cast<NSUInteger>(w)
+                                                                                   height:static_cast<NSUInteger>(h)
+                                                                                mipmapped:NO];
+    desc.storageMode = MTLStorageModeShared;
+    desc.usage = MTLTextureUsageShaderRead;
+    id<MTLTexture> texture = [Device::get().mtl() newTextureWithDescriptor:desc];
+    [texture replaceRegion:MTLRegionMake2D(0, 0, w, h) mipmapLevel:0 withBytes:values.data()
+               bytesPerRow:static_cast<NSUInteger>(w) * 2];
+    RenderTargetDesc target;
+    target.stencil = dst;
+    const bool combined = dst.texture.pixelFormat == MTLPixelFormatDepth32Float_Stencil8;
+    if (combined) target.depth = dst;
+    target.width = dstW;
+    target.height = dstH;
+    target.samples = samples;
+    id<MTLRenderPipelineState> pipeline = blitPipeline(@"wmgl_blit_stencil_bit_fs", MTLPixelFormatInvalid,
+                                                       combined ? depthFormat : MTLPixelFormatInvalid,
+                                                       dst.texture.pixelFormat, samples);
+    if (!pipeline) return;
+    id<MTLRenderCommandEncoder> encoder = ctx.stream().render(target);
+    [encoder setRenderPipelineState:pipeline];
+    [encoder setViewport:{0, 0, static_cast<double>(dstW), static_cast<double>(dstH), 0, 1}];
+    [encoder setScissorRect:{static_cast<NSUInteger>(clip.x0), static_cast<NSUInteger>(clip.y0), static_cast<NSUInteger>(w),
+                             static_cast<NSUInteger>(h)}];
+    [encoder setCullMode:MTLCullModeNone];
+    [encoder setTriangleFillMode:MTLTriangleFillModeFill];
+    [encoder setDepthClipMode:MTLDepthClipModeClamp];
+    const float zero[4] = {};
+    [encoder setVertexBytes:zero length:sizeof(zero) atIndex:0];
+    [encoder setFragmentTexture:texture atIndex:0];
+    for (int pass = 0; pass <= 8; ++pass) {
+        DepthStencilKey ds;
+        std::memset(&ds, 0, sizeof(ds));
+        ds.depthCompare = static_cast<uint8_t>(MTLCompareFunctionAlways);
+        ds.stencilEnabled = 1;
+        for (DepthStencilKey::Face* f : {&ds.front, &ds.back}) {
+            f->compare = static_cast<uint8_t>(MTLCompareFunctionAlways);
+            f->fail = f->depthFail = f->pass = static_cast<uint8_t>(MTLStencilOperationReplace);
+            f->readMask = 0xff;
+            f->writeMask = pass == 0 ? 0xffu : 1u << (pass - 1);
+        }
+        [encoder setDepthStencilState:ctx.share().pipelines().depthStencil(ds)];
+        [encoder setStencilReferenceValue:pass == 0 ? 0u : 0xffu];
+        const uint32_t p[4] = {static_cast<uint32_t>(clip.x0), static_cast<uint32_t>(clip.y0),
+                               pass == 0 ? 0u : 1u << (pass - 1), 0};
+        [encoder setFragmentBytes:p length:sizeof(p) atIndex:0];
+        [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+    }
+    ctx.stream().noteDraw();
+}
+
 // Stencil blit through the CPU (nearest filtering only, as GL requires).
 void blitStencil(Context& ctx, const RenderTargetDesc::Target& source, uint32_t srcW, uint32_t srcH,
-                 const RenderTargetDesc::Target& dst, uint32_t dstW, uint32_t dstH, const GLint s[4], const GLint d[4]) {
-    if (dst.texture.sampleCount > 1) {
-        logOnce(LogLevel::Warn, "blit-ms-stencil", "stencil blits into multisampled buffers are not supported");
-        return;
-    }
+                 const RenderTargetDesc::Target& dst, MTLPixelFormat dstDepthFormat, uint32_t dstSamples, uint32_t dstW,
+                 uint32_t dstH, const GLint s[4], const GLint d[4]) {
     const RenderTargetDesc::Target src =
         source.texture.sampleCount > 1 ? resolveDepthStencil(ctx, source, srcW, srcH) : source;
     const Rect clip = writableRect(ctx, normalized(d[0], d[1], d[2], d[3]), dstW, dstH);
     if (clip.empty()) return;
+    const bool multisample = dst.texture.sampleCount > 1;
     auto option = [](id<MTLTexture> t) {
         return t.pixelFormat == MTLPixelFormatDepth32Float_Stencil8 ? MTLBlitOptionStencilFromDepthStencil : MTLBlitOptionNone;
     };
@@ -222,21 +279,30 @@ void blitStencil(Context& ctx, const RenderTargetDesc::Target& source, uint32_t 
     id<MTLBuffer> out = [device newBufferWithLength:static_cast<size_t>(w) * h options:MTLResourceStorageModeShared];
     const bool dst3D = dst.texture.textureType == MTLTextureType3D;
     // Keep the destination's existing values where the source is outside its bounds.
-    [ctx.stream().blit() copyFromTexture:dst.texture sourceSlice:dst3D ? 0 : dst.slice sourceLevel:dst.level
-                            sourceOrigin:MTLOriginMake(clip.x0, clip.y0, dst3D ? dst.slice : 0) sourceSize:MTLSizeMake(w, h, 1)
-                                toBuffer:out destinationOffset:0 destinationBytesPerRow:static_cast<NSUInteger>(w)
-                 destinationBytesPerImage:static_cast<size_t>(w) * h options:option(dst.texture)];
+    if (!multisample)
+        [ctx.stream().blit() copyFromTexture:dst.texture sourceSlice:dst3D ? 0 : dst.slice sourceLevel:dst.level
+                                sourceOrigin:MTLOriginMake(clip.x0, clip.y0, dst3D ? dst.slice : 0) sourceSize:MTLSizeMake(w, h, 1)
+                                    toBuffer:out destinationOffset:0 destinationBytesPerRow:static_cast<NSUInteger>(w)
+                     destinationBytesPerImage:static_cast<size_t>(w) * h options:option(dst.texture)];
     ctx.stream().finish();
     const uint8_t* from = static_cast<const uint8_t*>(in.contents);
     uint8_t* to = static_cast<uint8_t*>(out.contents);
+    std::vector<uint16_t> values(multisample ? static_cast<size_t>(w) * h : 0, 0x100);
     const double sx = static_cast<double>(s[2] - s[0]) / (d[2] - d[0]), sy = static_cast<double>(s[3] - s[1]) / (d[3] - d[1]);
     for (int y = clip.y0; y < clip.y1; ++y) {
         for (int x = clip.x0; x < clip.x1; ++x) {
             const int px = static_cast<int>(std::floor(s[0] + (x + 0.5 - d[0]) * sx));
             const int py = static_cast<int>(std::floor(s[1] + (y + 0.5 - d[1]) * sy));
             if (px < 0 || py < 0 || px >= static_cast<int>(srcW) || py >= static_cast<int>(srcH)) continue;
-            to[static_cast<size_t>(y - clip.y0) * w + (x - clip.x0)] = from[static_cast<size_t>(py) * srcW + px];
+            const size_t at = static_cast<size_t>(y - clip.y0) * w + (x - clip.x0);
+            const uint8_t v = from[static_cast<size_t>(py) * srcW + px];
+            if (multisample) values[at] = v;
+            else to[at] = v;
         }
+    }
+    if (multisample) {
+        writeStencilMultisample(ctx, dst, dstDepthFormat, dstSamples, dstW, dstH, clip, values);
+        return;
     }
     [ctx.stream().blit() copyFromBuffer:out sourceOffset:0 sourceBytesPerRow:static_cast<NSUInteger>(w)
                     sourceBytesPerImage:static_cast<size_t>(w) * h sourceSize:MTLSizeMake(w, h, 1) toTexture:dst.texture
@@ -271,9 +337,9 @@ void BlitFramebuffer(Context& ctx, GLint srcX0, GLint srcY0, GLint srcX1, GLint 
     const FormatInfo *colorInfo = nullptr, *depthInfo = nullptr, *stencilInfo = nullptr;
     uint32_t srcW = 0, srcH = 0, srcSamples = 1, w, h, s;
     bool doColor = (mask & GL_COLOR_BUFFER_BIT) && draw.readTarget(GL_COLOR, srcColor, colorInfo, srcW, srcH, srcSamples);
-    bool doDepth = (mask & GL_DEPTH_BUFFER_BIT) && dst.depth.texture && draw.readTarget(GL_DEPTH, srcDepth, depthInfo, w, h, s);
+    bool doDepth = (mask & GL_DEPTH_BUFFER_BIT) && dstFormats.depthAttached && draw.readTarget(GL_DEPTH, srcDepth, depthInfo, w, h, s);
     if (doDepth && !doColor) { srcW = w; srcH = h; srcSamples = s; }
-    bool doStencil = (mask & GL_STENCIL_BUFFER_BIT) && dst.stencil.texture &&
+    bool doStencil = (mask & GL_STENCIL_BUFFER_BIT) && dstFormats.stencilAttached &&
                      draw.readTarget(GL_STENCIL, srcStencil, stencilInfo, w, h, s);
     if (doStencil && !doColor && !doDepth) { srcW = w; srcH = h; srcSamples = s; }
     if (doColor) {
@@ -342,7 +408,9 @@ void BlitFramebuffer(Context& ctx, GLint srcX0, GLint srcY0, GLint srcX1, GLint 
             if (pipeline) drawBlit(ctx, target, pipeline, view, params, scissor, true, false);
         }
     }
-    if (doStencil) blitStencil(ctx, srcStencil, srcW, srcH, dst.stencil, dst.width, dst.height, srcRect, dstRect);
+    if (doStencil)
+        blitStencil(ctx, srcStencil, srcW, srcH, dst.stencil, dstFormats.depth, dst.samples, dst.width, dst.height, srcRect,
+                    dstRect);
     // Draws after the blit start a fresh pass with their own state.
     ctx.stream().endEncoder();
     ctx.markDirty(kDirtyAll);

@@ -135,6 +135,24 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
     case GL_MAX_ARRAY_TEXTURE_LAYERS: out = ints({kMaxArrayLayers}); return true;
     case GL_MAX_TEXTURE_BUFFER_SIZE: out = ints({kMaxTextureBufferSize}); return true;
     case GL_MAX_TEXTURE_LOD_BIAS: out = floats({kMaxTextureLodBias}); return true;
+    case GL_MAX_COMPUTE_WORK_GROUP_INVOCATIONS: case GL_MAX_COMPUTE_UNIFORM_BLOCKS: case GL_MAX_COMPUTE_TEXTURE_IMAGE_UNITS:
+    case GL_MAX_COMPUTE_UNIFORM_COMPONENTS: case GL_MAX_COMBINED_COMPUTE_UNIFORM_COMPONENTS:
+    case GL_MAX_COMPUTE_SHARED_MEMORY_SIZE: case GL_MAX_COMPUTE_ATOMIC_COUNTERS: case GL_MAX_COMPUTE_ATOMIC_COUNTER_BUFFERS:
+    case GL_MAX_COMPUTE_IMAGE_UNIFORMS: case GL_DISPATCH_INDIRECT_BUFFER_BINDING:
+        if (!ctx.computeShaders()) return false;
+        switch (pname) {
+        case GL_MAX_COMPUTE_WORK_GROUP_INVOCATIONS: out = ints({kMaxComputeWorkGroupInvocations}); break;
+        case GL_MAX_COMPUTE_UNIFORM_BLOCKS: out = ints({kMaxUniformBlocksPerStage}); break;
+        case GL_MAX_COMPUTE_TEXTURE_IMAGE_UNITS: out = ints({kMaxTextureUnitsPerStage}); break;
+        case GL_MAX_COMPUTE_UNIFORM_COMPONENTS: out = ints({kMaxDefaultUniformComponents}); break;
+        case GL_MAX_COMBINED_COMPUTE_UNIFORM_COMPONENTS:
+            out = ints({kMaxDefaultUniformComponents + static_cast<int64_t>(kMaxUniformBlocksPerStage) * kMaxUniformBlockSize / 4});
+            break;
+        case GL_MAX_COMPUTE_SHARED_MEMORY_SIZE: out = ints({kMaxComputeSharedMemorySize}); break;
+        case GL_DISPATCH_INDIRECT_BUFFER_BINDING: out = ints({nameOf(s.dispatchIndirectBuffer)}); break;
+        default: out = ints({0}); break;  // atomic counters and images are separate extensions
+        }
+        return true;
     case GL_MAX_VIEWPORT_DIMS: out = ints({kMaxTextureSize, kMaxTextureSize}); return true;
     case GL_MAX_DRAW_BUFFERS: case GL_MAX_COLOR_ATTACHMENTS: out = ints({kMaxDrawBuffers}); return true;
     case GL_MAX_DUAL_SOURCE_DRAW_BUFFERS: out = ints({1}); return true;
@@ -346,6 +364,12 @@ bool getIndexed(Context& ctx, GLenum pname, GLuint index, Value& out, bool& badI
     const ContextState& s = ctx.state;
     badIndex = false;
     switch (pname) {
+    case GL_MAX_COMPUTE_WORK_GROUP_COUNT: case GL_MAX_COMPUTE_WORK_GROUP_SIZE:
+        if (!ctx.computeShaders()) return false;
+        if (index >= 3) { badIndex = true; return true; }
+        out = ints({pname == GL_MAX_COMPUTE_WORK_GROUP_COUNT ? limits::kMaxComputeWorkGroupCount
+                                                             : limits::kMaxComputeWorkGroupSize[index]});
+        return true;
     case GL_UNIFORM_BUFFER_BINDING: case GL_UNIFORM_BUFFER_START: case GL_UNIFORM_BUFFER_SIZE: {
         if (index >= static_cast<GLuint>(limits::kMaxUniformBufferBindings)) { badIndex = true; return true; }
         const IndexedBufferBinding& b = s.uniformBufferBindings[index];

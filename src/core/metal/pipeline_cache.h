@@ -38,6 +38,7 @@ struct PipelineKey {
     uint8_t alphaToOne;
     uint8_t rasterization;
     uint8_t topologyClass;  // MTLPrimitiveTopologyClass
+    uint8_t geometryPass;   // vertex function: the geometry emulation's pass-through
     uint16_t colorFormats[8];  // MTLPixelFormat
     uint16_t depthFormat, stencilFormat;
     struct Blend {
@@ -59,6 +60,7 @@ struct SamplerKey {
     uint8_t minFilter, magFilter, mipFilter, sAddress, tAddress, rAddress, compare, border;
     uint8_t maxAnisotropy, normalized, pad[2];
     float lodMin, lodMax;
+    float lodBias;  // TEXTURE_LOD_BIAS (macOS 26+)
 };
 
 class PipelineCache {

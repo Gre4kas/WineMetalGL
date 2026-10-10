@@ -12,7 +12,8 @@ Local changes to vendored sources (each marked `WineMetalGL:` in the code):
 
 - glslang `glslang/MachineIndependent/linkValidate.cpp`, `checkStageIO`: the
   Vulkan "every input has a matching output" check skips built-in blocks
-  (`gl_PerVertex`), which GL provides implicitly.
+  (`gl_PerVertex`) and redeclared built-in inputs (`gl_ClipDistance`), which
+  GL provides implicitly.
 
 The built dylib dynamically links only Apple system frameworks and libraries:
 Metal, OpenGL, Foundation, QuartzCore, AppKit, CoreFoundation, libc++,

@@ -88,6 +88,7 @@ GPU_TEST(gpu_primitives_generated_and_timer) {
     glGetQueryObjectui64v(q[3], GL_QUERY_RESULT, &t1);
     CHECK_EQ(prims, 6u);
     CHECK(elapsed > 0 && elapsed < 1000000000ull);
+    if (!(t0 > 0 && t1 >= t0)) std::fprintf(stderr, "  t0 %llu t1 %llu\n", (unsigned long long)t0, (unsigned long long)t1);
     CHECK(t0 > 0 && t1 >= t0);
     GLint64 now = 0;
     glGetInteger64v(GL_TIMESTAMP, &now);

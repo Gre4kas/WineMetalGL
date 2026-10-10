@@ -15,6 +15,7 @@
 #include <sstream>
 
 #include "core/shader/glsl_upgrade.h"
+#include "core/shader/geometry.h"
 #include "core/shader/transform_feedback.h"
 
 namespace wmgl::shader {
@@ -163,10 +164,12 @@ std::string insertAfterDirectives(const std::string& source, const std::string& 
     return source.substr(0, at) + text + "#line " + std::to_string(lineValue) + "\n" + source.substr(at);
 }
 
+std::string raiseComputeVersion(Stage stage, const std::string& source);
+
 bool parseForCodegen(Stage stage, const std::string& original, ParsedShader& out, std::string& log,
                      const CaptureCode* capture = nullptr) {
     const EShLanguage lang = language(stage);
-    UpgradeResult upgraded = upgradeLegacyGlsl(stage, original);
+    UpgradeResult upgraded = upgradeLegacyGlsl(stage, raiseComputeVersion(stage, original));
     if (!upgraded.ok) {
         log += upgraded.log;
         return false;
@@ -438,9 +441,27 @@ const char* glTypeName(GLenum type) {
 
 // ------------------------------------------------------------- compile
 
-CompileResult compile(Stage stage, const std::string& source) {
+namespace {
+
+// GL_ARB_compute_shader makes compute shaders available to any GLSL version;
+// glslang only accepts them from 4.20, so such sources are compiled as 4.30.
+std::string raiseComputeVersion(Stage stage, const std::string& source) {
+    if (stage != Stage::Compute || parseGlslVersion(source).number >= 420) return source;
+    if (source.find("GL_ARB_compute_shader") == std::string::npos) return source;
+    const size_t at = source.find("#version");
+    if (at == std::string::npos) return "#version 430\n" + source;
+    const size_t end = source.find('\n', at);
+    std::string raised = source;
+    raised.replace(at, end == std::string::npos ? std::string::npos : end - at, "#version 430");
+    return raised;
+}
+
+}  // namespace
+
+CompileResult compile(Stage stage, const std::string& original) {
     initGlslang();
     CompileResult result;
+    const std::string source = raiseComputeVersion(stage, original);
     // Status and log come from a plain GL parse, which accepts every GLSL
     // version and profile with GL's own rules.
     const EShLanguage lang = language(stage);
@@ -525,12 +546,20 @@ std::vector<StageOutputVar> captureableOutputs(glslang::TIntermediate* intermedi
                 if (!symbol || symbol->getQualifier().storage != glslang::EvqVaryingOut) continue;
                 const glslang::TType& type = symbol->getType();
                 if (type.getBasicType() == glslang::EbtBlock) {
+                    const std::string blockName = unescapeName(type.getTypeName().c_str());
+                    const bool anonymous = glslang::IsAnonymous(symbol->getName());
                     for (const glslang::TTypeLoc& member : *type.getStruct()) {
                         const glslang::TType& m = *member.type;
-                        if (m.getFieldName() == "gl_ClipDistance" && m.isSizedArray()) {
+                        const std::string field = unescapeName(m.getFieldName().c_str());
+                        if (field == "gl_ClipDistance" && m.isSizedArray()) {
                             outputs.push_back({"gl_ClipDistance", GL_FLOAT, m.getOuterArraySize()});
                             clipDistance = true;
                         }
+                        if (blockName == "gl_PerVertex" || field.rfind("gl_", 0) == 0 || type.isArray()) continue;
+                        // User blocks: members are named "Block.member" (GL 3.3 section 2.15).
+                        outputs.push_back({blockName + "." + field, glTypeOfAst(m), m.isSizedArray() ? m.getOuterArraySize() : 0,
+                                           anonymous ? m.getFieldName().c_str()
+                                                     : std::string(symbol->getName().c_str()) + "." + m.getFieldName().c_str()});
                     }
                     continue;
                 }
@@ -548,7 +577,10 @@ std::vector<StageOutputVar> captureableOutputs(glslang::TIntermediate* intermedi
 
 }  // namespace
 
-static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture) {
+// `geometry`/`geometryCapture` (optional) receive the parsed geometry stage
+// and the layout of the vertex outputs it reads (see geometry.h).
+static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, GeometryShaderInfo* geometry = nullptr,
+                           LinkResult* geometryCapture = nullptr) {
     initGlslang();
     LinkResult result;
     std::vector<ParsedShader> parsed(input.shaders.size());
@@ -559,6 +591,13 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture) {
                              captureHere ? capture : nullptr))
             return result;
         stagePresent[static_cast<int>(input.shaders[i].stage)] = true;
+    }
+    if (stagePresent[static_cast<int>(Stage::Compute)]) {
+        for (int s = 0; s < kStageCount; ++s)
+            if (stagePresent[s] && s != static_cast<int>(Stage::Compute)) {
+                result.log += "error: a compute shader cannot be linked with other shader stages\n";
+                return result;
+            }
     }
     if (!stagePresent[static_cast<int>(Stage::Compute)] && !input.separable) {
         if (!stagePresent[static_cast<int>(Stage::Vertex)] && !stagePresent[static_cast<int>(Stage::Fragment)] &&
@@ -577,6 +616,14 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture) {
     if (!program.link(kMessages)) {
         result.log += unescapeName(cleanLog(program.getInfoLog(), program.getInfoDebugLog()));
         return result;
+    }
+    if (stagePresent[static_cast<int>(Stage::Compute)]) {
+        const glslang::TIntermediate* cs = program.getIntermediate(EShLangCompute);
+        if (!cs->isLocalSizeSet()) {
+            result.log += "error: compute shader has no local_size layout qualifier\n";
+            return result;
+        }
+        for (int d = 0; d < 3; ++d) result.computeLocalSize[d] = cs->getLocalSize(d);
     }
     // Transform feedback varyings are validated against the last vertex
     // processing stage (geometry if present, else vertex).
@@ -713,6 +760,33 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture) {
         options.validate = false;
         glslang::GlslangToSpv(*intermediate, result.stages[s].spirv, &options);
         result.stages[s].present = true;
+    }
+    if (geometry && result.stages[static_cast<int>(Stage::Geometry)].present) {
+        std::string glsl;
+        try {
+            spirv_cross::CompilerGLSL glslOut(result.stages[static_cast<int>(Stage::Geometry)].spirv);
+            spirv_cross::CompilerGLSL::Options options = glslOut.get_common_options();
+            options.version = 450;
+            options.es = false;
+            options.vulkan_semantics = false;
+            glslOut.set_common_options(options);
+            glsl = glslOut.compile();
+        } catch (const std::exception& error) {
+            result.log += std::string("error: geometry shader translation failed: ") + error.what() + "\n";
+            return result;
+        }
+        if (!parseGeometryGlsl(glsl, *geometry, result.log)) return result;
+        if (!stagePresent[static_cast<int>(Stage::Vertex)]) {
+            result.log += "error: a geometry shader requires a vertex shader\n";
+            return result;
+        }
+        if (!layoutTransformFeedback(geometryCaptureVaryings(*geometry), GL_INTERLEAVED_ATTRIBS,
+                                     captureableOutputs(program.getIntermediate(EShLangVertex)), *geometryCapture, result.log,
+                                     UINT32_MAX))
+            return result;
+        result.geometryInputType = geometry->inputType;
+        result.geometryOutputType = geometry->outputType;
+        result.geometryVerticesOut = geometry->maxVertices;
     }
 
     // Program-wide interface, built from the first stage that declares each resource.
@@ -908,10 +982,11 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture) {
     // Metal translation per stage. The vertex stage is translated twice: the
     // second variant returns void, as Metal requires when rasterization is
     // disabled (GL_RASTERIZER_DISCARD, transform feedback capture passes).
+    // The geometry stage has no Metal equivalent; link() emulates it.
     for (int s = 0; s < kStageCount; ++s)
     for (int variant = 0; variant < (s == static_cast<int>(Stage::Vertex) ? 2 : 1); ++variant) {
         StageOutput& stage = result.stages[s];
-        if (!stage.present) continue;
+        if (!stage.present || s == static_cast<int>(Stage::Geometry)) continue;
         const bool noRaster = variant == 1;
         try {
             spirv_cross::CompilerMSL msl(rectImagesAs2D(stage.spirv));
@@ -968,7 +1043,13 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture) {
                 }
                 msl.add_msl_resource_binding(b);
             }
-            // Transform feedback capture buffers (see transform_feedback.h).
+            // Transform feedback capture and geometry emulation buffers
+            // (see transform_feedback.h, geometry.h).
+            static const std::map<std::string, uint32_t> kInternalBuffers = {
+                {"wmgl_XfbControl", kSlotXfbControl},      {"wmgl_GsInput", kSlotFirstXfbBuffer},
+                {"wmgl_GsOutput", kSlotFirstXfbBuffer + 1}, {"wmgl_GsIndices", kSlotFirstXfbBuffer + 2},
+                {"wmgl_GsControl", kSlotFirstXfbBuffer + 3}, {"wmgl_GsVertices", kSlotFirstXfbBuffer},
+            };
             for (const auto& ssbo : resources.storage_buffers) {
                 const std::string blockName = msl.get_name(ssbo.base_type_id);
                 spirv_cross::MSLResourceBinding b;
@@ -976,7 +1057,7 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture) {
                 msl.set_decoration(ssbo.id, spv::DecorationBinding, uniqueBinding++);
                 b.desc_set = msl.get_decoration(ssbo.id, spv::DecorationDescriptorSet);
                 b.binding = msl.get_decoration(ssbo.id, spv::DecorationBinding);
-                if (blockName == "wmgl_XfbControl") b.msl_buffer = kSlotXfbControl;
+                if (auto internal = kInternalBuffers.find(blockName); internal != kInternalBuffers.end()) b.msl_buffer = internal->second;
                 else if (blockName.rfind("wmgl_XfbData", 0) == 0) b.msl_buffer = kSlotFirstXfbBuffer + std::stoul(blockName.substr(12));
                 else {
                     result.log += "error: shader storage blocks are not supported\n";
@@ -1067,35 +1148,109 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture) {
     return result;
 }
 
-LinkResult link(const LinkInput& input) {
-    LinkResult result = linkImpl(input, nullptr);
-    if (!result.ok || result.transformFeedback.empty()) return result;
-    // Geometry-stage capture is emitted by the geometry emulation; vertex
-    // capture relinks the program with the capture code appended to the VS.
-    if (result.stages[static_cast<int>(Stage::Geometry)].present) return result;
+namespace {
+
+// Copies stage `from`'s uniform block and sampler slots of `source` (matched
+// by name) into stage `to` of `result`.
+void copyStageSlots(const LinkResult& source, int from, LinkResult& result, int to) {
+    for (UniformBlockInfo& block : result.blocks)
+        for (const UniformBlockInfo& other : source.blocks)
+            if (other.name == block.name) block.stageSlot[to] = other.stageSlot[from];
+    for (const UniformInfo& u : result.uniforms) {
+        if (u.samplerSlot < 0) continue;
+        for (const UniformInfo& other : source.uniforms)
+            if (other.name == u.name && other.samplerSlot >= 0)
+                for (GLint e = 0; e < std::min(u.size, other.size); ++e)
+                    result.samplers[u.samplerSlot + e].stageTexture[to] = source.samplers[other.samplerSlot + e].stageTexture[from];
+    }
+}
+
+// Relinks the program with capture code in its vertex shader and makes that
+// the program's vertex stage.
+bool useVertexCapture(const LinkInput& input, const LinkResult& layout, LinkResult& result) {
     int version = 140;
     for (const ShaderSource& shader : input.shaders)
         if (shader.stage == Stage::Vertex) version = std::max(version, parseGlslVersion(shader.source).number);
-    const CaptureCode code = vertexCaptureCode(result, version);
+    const CaptureCode code = vertexCaptureCode(layout, version);
     LinkInput again = input;
     again.transformFeedbackVaryings.clear();
     LinkResult captured = linkImpl(again, &code);
     if (!captured.ok) {
-        result.ok = false;
-        result.log += "error: internal error building transform feedback capture:\n" + captured.log;
-        return result;
+        result.log += "error: internal error building vertex output capture:\n" + captured.log;
+        return false;
     }
     const int vs = static_cast<int>(Stage::Vertex);
     result.stages[vs] = captured.stages[vs];
-    for (UniformBlockInfo& block : result.blocks)
-        for (const UniformBlockInfo& other : captured.blocks)
-            if (other.name == block.name) block.stageSlot[vs] = other.stageSlot[vs];
-    for (const UniformInfo& u : result.uniforms) {
-        if (u.samplerSlot < 0) continue;
-        for (const UniformInfo& other : captured.uniforms)
-            if (other.name == u.name && other.samplerSlot >= 0)
-                for (GLint e = 0; e < u.size; ++e)
-                    result.samplers[u.samplerSlot + e].stageTexture[vs] = captured.samplers[other.samplerSlot + e].stageTexture[vs];
+    copyStageSlots(captured, vs, result, vs);
+    return true;
+}
+
+bool buildGeometryEmulation(const LinkInput& input, const GeometryShaderInfo& info, const LinkResult& captureLayout,
+                            LinkResult& result) {
+    if (!useVertexCapture(input, captureLayout, result)) return false;
+    const GeometrySources sources = geometrySources(info, captureLayout);
+    GeometryEmulation& g = result.geometry;
+    g.inputType = info.inputType;
+    g.outputType = info.outputType;
+    g.verticesIn = info.verticesIn;
+    g.maxVertices = info.maxVertices;
+    g.inputStride = captureLayout.xfbStride[0];
+    g.outputStride = sources.outputStride;
+    g.outputs = sources.fields;
+    for (TransformFeedbackVarying& v : result.transformFeedback) {
+        const size_t open = v.name.find('[');
+        const std::string base = v.name.substr(0, open);
+        const int index = open == std::string::npos ? 0 : std::atoi(v.name.c_str() + open + 1);
+        v.sourceOffset = TransformFeedbackVarying::kNotEmitted;
+        for (const GeometryEmulation::Field& f : g.outputs)
+            if (f.name == base) v.sourceOffset = f.offset + static_cast<uint32_t>(index * glTypeComponents(f.type));
+    }
+    LinkInput kernelInput;
+    kernelInput.shaders = {{Stage::Compute, sources.compute}};
+    LinkResult kernel = linkImpl(kernelInput, nullptr);
+    if (!kernel.ok) {
+        result.log += "error: internal error building the geometry shader kernel:\n" + kernel.log;
+        return false;
+    }
+    const int cs = static_cast<int>(Stage::Compute);
+    g.kernel = kernel.stages[cs];
+    copyStageSlots(kernel, cs, result, cs);
+    LinkInput passthroughInput;
+    passthroughInput.shaders = {{Stage::Vertex, sources.passthrough}};
+    passthroughInput.separable = true;
+    LinkResult passthrough = linkImpl(passthroughInput, nullptr);
+    if (!passthrough.ok) {
+        result.log += "error: internal error building the geometry shader output stage:\n" + passthrough.log;
+        return false;
+    }
+    g.passthrough = passthrough.stages[static_cast<int>(Stage::Vertex)];
+    g.active = true;
+    static const bool dump = [] {
+        const char* v = std::getenv("WINEMETALGL_DUMP_SHADERS");
+        return v && v[0] == '1';
+    }();
+    if (dump) std::fprintf(stderr, "winemetalgl: geometry kernel GLSL:\n%s\npass-through GLSL:\n%s\n", sources.compute.c_str(),
+                           sources.passthrough.c_str());
+    return true;
+}
+
+}  // namespace
+
+LinkResult link(const LinkInput& input) {
+    GeometryShaderInfo geometry;
+    LinkResult geometryCapture;
+    LinkResult result = linkImpl(input, nullptr, &geometry, &geometryCapture);
+    if (!result.ok) return result;
+    if (result.stages[static_cast<int>(Stage::Geometry)].present) {
+        // Transform feedback (if any) captures the emitted vertices; the draw
+        // path reads them back from the kernel output (DrawState).
+        if (!buildGeometryEmulation(input, geometry, geometryCapture, result)) result.ok = false;
+        return result;
+    }
+    if (result.transformFeedback.empty()) return result;
+    if (!useVertexCapture(input, result, result)) {
+        result.ok = false;
+        return result;
     }
     result.xfbVertexCapture = true;
     return result;

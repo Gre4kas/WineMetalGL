@@ -20,14 +20,20 @@ namespace wmgl::shader {
 struct StageOutputVar {
     std::string name;
     GLenum type = 0;
-    int arraySize = 0;  // 0 = not an array
+    int arraySize = 0;       // 0 = not an array
+    std::string expression;  // GLSL access path when it differs from name ("inst.member")
 };
 
 // Validates glTransformFeedbackVaryings against the capturing stage's outputs
 // and fills result.transformFeedback / xfbStride / xfbBufferCount. Returns
 // false with a link error in `log`.
 bool layoutTransformFeedback(const std::vector<std::string>& varyings, GLenum mode,
-                             const std::vector<StageOutputVar>& outputs, LinkResult& result, std::string& log);
+                             const std::vector<StageOutputVar>& outputs, LinkResult& result, std::string& log,
+                             uint32_t maxInterleavedComponents = 64);
+
+// Expressions for each 32-bit word of one element of `type`, converted to uint
+// (matrices column by column).
+std::vector<std::string> captureWords(const std::string& expression, GLenum type);
 
 struct CaptureCode {
     std::string declarations;  // inserted after the #version / #extension lines

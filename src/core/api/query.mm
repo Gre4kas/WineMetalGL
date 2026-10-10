@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cstring>
 #include <limits>
+#include <mutex>
 
 #include "core/context.h"
 #include "core/query.h"
@@ -168,11 +169,22 @@ void endVisibility(Context& ctx) {
     ctx.stream().setVisibilityWanted(anyOcclusionActive(ctx));
 }
 
+// GPU times recorded so far never decrease: an empty command buffer can
+// report a later GPUEndTime than the busy buffer submitted after it, and GL
+// timestamps are monotonic.
+double monotonicGpuTime(double t) {
+    static std::mutex mutex;
+    static double last = 0.0;
+    std::lock_guard<std::mutex> lock(mutex);
+    last = std::max(last, t);
+    return last;
+}
+
 // Records the completion time of the current command buffer into the timer.
 void markTimerEnd(Context& ctx, Query& q) {
     std::shared_ptr<Query::Timer> timer = q.timer;
     [ctx.stream().commandBuffer() addCompletedHandler:^(id<MTLCommandBuffer> done) {
-        timer->end = done.GPUEndTime;
+        timer->end = monotonicGpuTime(done.GPUEndTime);
         timer->endSet = true;
     }];
     q.pendingSerial = ctx.stream().flush();

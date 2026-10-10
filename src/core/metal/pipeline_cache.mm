@@ -25,7 +25,9 @@ id<MTLRenderPipelineState> PipelineCache::render(const PipelineKey& key, LinkedP
         auto it = render_.find(key);
         if (it != render_.end()) return it->second;
     }
-    id<MTLFunction> vertex = key.rasterization ? program.function(shader::Stage::Vertex) : program.vertexNoRaster();
+    id<MTLFunction> vertex = key.geometryPass    ? program.geometryPassthrough()
+                             : key.rasterization ? program.function(shader::Stage::Vertex)
+                                                 : program.vertexNoRaster();
     id<MTLFunction> fragment = program.function(shader::Stage::Fragment);
     if (!vertex) return nil;
     MTLRenderPipelineDescriptor* desc = [MTLRenderPipelineDescriptor new];
@@ -116,6 +118,7 @@ id<MTLSamplerState> PipelineCache::sampler(const SamplerKey& key) {
     desc.normalizedCoordinates = key.normalized;
     desc.lodMinClamp = key.lodMin;
     desc.lodMaxClamp = key.lodMax;
+    if (@available(macOS 26.0, *)) desc.lodBias = key.lodBias;
     desc.supportArgumentBuffers = NO;
     id<MTLSamplerState> state = [Device::get().mtl() newSamplerStateWithDescriptor:desc];
     samplers_.emplace(key, state);

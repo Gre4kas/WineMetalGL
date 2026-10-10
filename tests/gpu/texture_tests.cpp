@@ -322,3 +322,38 @@ void main() { uvec4 v = texelFetch(tex, ivec2(2, 2), 1); o = vec4(float(v.r) / 8
     glDeleteTextures(1, &ms);
     CHECK_GL();
 }
+
+GPU_TEST(gpu_texture_lod_bias_vertex) {
+    // TEXTURE_LOD_BIAS applies to explicit-LOD lookups too (GL 3.3 section 3.8.11).
+    static const uint8_t colors[9][3] = {{255, 0, 0}, {0, 255, 0}, {0, 0, 255}, {255, 255, 0}, {0, 255, 255},
+                                         {255, 0, 255}, {255, 128, 128}, {128, 255, 128}, {128, 128, 255}};
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    for (int level = 0, size = 256; level <= 8; ++level, size >>= 1) {
+        std::vector<uint8_t> data(static_cast<size_t>(size) * size * 3);
+        for (size_t i = 0; i < data.size(); i += 3) std::memcpy(&data[i], colors[level], 3);
+        glTexImage2D(GL_TEXTURE_2D, level, GL_RGB, size, size, 0, GL_RGB, GL_UNSIGNED_BYTE, data.data());
+    }
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    const float bias = 2.519684f;
+    glTexParameterfv(GL_TEXTURE_2D, GL_TEXTURE_LOD_BIAS, &bias);
+    GLuint p = gpu::program(R"(#version 330 core
+in vec2 position; out vec4 tex; uniform sampler2D texture0; uniform float lodbase;
+void main() { gl_Position = vec4(position, 0.0, 1.0); tex = textureLod(texture0, position * 0.5 + 0.5, lodbase); })",
+                            R"(#version 330 core
+in vec4 tex; out vec4 frag; void main() { frag = tex; })");
+    glUseProgram(p);
+    glUniform1f(glGetUniformLocation(p, "lodbase"), 0.0f);
+    GLuint vao = gpu::quad();
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    const std::vector<uint8_t> px = gpu::readRGBA8(0, 0, 1, 1);
+    const uint8_t want[4] = {132, 132, 122, 255};
+    CHECK(gpu::near(px.data(), want, 5));
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
+    glDeleteTextures(1, &tex);
+    CHECK_GL();
+}
