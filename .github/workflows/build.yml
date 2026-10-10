@@ -41,6 +41,9 @@ jobs:
       - name: Verify source and artifact gates
         run: ./scripts/verify-source.sh
 
+      - name: Forbid conformance-test identifiers in driver sources
+        run: ./scripts/check-forbidden-identifiers.sh
+
       - name: Verify x86_64 macOS artifact
         run: |
           test "$(/usr/bin/lipo -archs build/release/metalsharp-opengl.dylib)" = x86_64
