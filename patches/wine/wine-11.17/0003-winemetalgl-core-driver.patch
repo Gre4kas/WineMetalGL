@@ -1,8 +1,8 @@
 diff --git a/dlls/winemac.drv/opengl.c b/dlls/winemac.drv/opengl.c
-index eafe13a..11a8d7a 100644
+index eafe13a..9e803b9 100644
 --- a/dlls/winemac.drv/opengl.c
 +++ b/dlls/winemac.drv/opengl.c
-@@ -2702,6 +2702,291 @@ static void macdrv_init_extensions(struct opengl_funcs *funcs, BOOLEAN extension
+@@ -2702,6 +2702,325 @@ static void macdrv_init_extensions(struct opengl_funcs *funcs, BOOLEAN extension
      funcs->p_wglQueryRendererStringWINE = macdrv_wglQueryRendererStringWINE;
  }
  
@@ -196,12 +196,34 @@ index eafe13a..11a8d7a 100644
 +    return TRUE;
 +}
 +
++/* win32u creates every client context without a share context and lets
++ * opengl32 handle wglShareLists, which needs all contexts in the process to
++ * share one object namespace (upstream Wine shares them all with its internal
++ * context). Every WineMetalGL context therefore shares with a hidden root
++ * context that lives for the rest of the process. */
++static void *wmgl_root_context;
++static pthread_mutex_t wmgl_root_mutex = PTHREAD_MUTEX_INITIALIZER;
++
++static void *wmgl_share_root(int format)
++{
++    int error = 0;
++    pthread_mutex_lock(&wmgl_root_mutex);
++    if (!wmgl_root_context) wmgl_root_context = p_wmgl_context_create(format, NULL, NULL, &error);
++    pthread_mutex_unlock(&wmgl_root_mutex);
++    return wmgl_root_context;
++}
++
 +static BOOL wmgl_context_create(int format, void *share, const int *attribs, void **private, BOOL *shared)
 +{
 +    int error = 0;
 +    void *context;
 +
 +    TRACE("format %d, share %p, attribs %p\n", format, share, attribs);
++    if (!share && !(share = wmgl_share_root(format)))
++    {
++        RtlSetLastWin32Error(ERROR_INVALID_PARAMETER);
++        return FALSE;
++    }
 +    if (!(context = p_wmgl_context_create(format, share, attribs, &error)))
 +    {
 +        switch (error)
@@ -236,6 +258,16 @@ index eafe13a..11a8d7a 100644
 +    return p_wmgl_get_proc_address(name);
 +}
 +
++static BOOL wmgl_pbuffer_updated(HDC hdc, struct opengl_drawable *base, GLenum cube_face, GLint mipmap_level)
++{
++    return GL_TRUE;
++}
++
++static UINT wmgl_pbuffer_bind(HDC hdc, struct opengl_drawable *base, GLenum buffer)
++{
++    return -1; /* win32u copies the pbuffer into the bound texture */
++}
++
 +static const struct opengl_driver_funcs wmgl_driver_funcs =
 +{
 +    .p_get_proc_address = wmgl_driver_get_proc_address,
@@ -247,6 +279,8 @@ index eafe13a..11a8d7a 100644
 +    .p_context_destroy = wmgl_context_destroy,
 +    .p_make_current = wmgl_make_current,
 +    .p_pbuffer_create = wmgl_pbuffer_create,
++    .p_pbuffer_updated = wmgl_pbuffer_updated,
++    .p_pbuffer_bind = wmgl_pbuffer_bind,
 +};
 +
 +static UINT wmgl_core_init(const struct opengl_driver_funcs **driver_funcs)
@@ -294,7 +328,7 @@ index eafe13a..11a8d7a 100644
  /**********************************************************************
   *              macdrv_OpenGLInit
   */
-@@ -2719,6 +3004,8 @@ UINT macdrv_OpenGLInit(UINT version, const struct opengl_funcs *opengl_funcs, co
+@@ -2719,6 +3038,8 @@ UINT macdrv_OpenGLInit(UINT version, const struct opengl_funcs *opengl_funcs, co
      }
      funcs = opengl_funcs;
  
