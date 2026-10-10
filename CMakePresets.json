@@ -17,7 +17,7 @@
     {
       "name": "release",
       "configurePreset": "release",
-      "targets": ["winemetalgl", "winemetalgl_core", "wmgl_host_tests", "wmgl_gpu_tests"]
+      "targets": ["winemetalgl_core", "wmgl_host_tests", "wmgl_gpu_tests"]
     }
   ]
 }

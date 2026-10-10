@@ -11,9 +11,10 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_OSX_DEPLOYMENT_TARGET "15.0" CACHE STRING "Minimum macOS deployment target" FORCE)
-# WMGL_HOST_ONLY builds the core and its tests for the build machine's
-# architecture (arm64 on Apple silicon) so they run without Rosetta. The
-# legacy dylib is skipped; Wine needs the default x86_64 build.
+# The default build is x86_64, the architecture of the Wine host processes
+# that load the core. WMGL_HOST_ONLY builds the core and its tests for the
+# build machine's architecture (arm64 on Apple silicon) so they run without
+# Rosetta.
 option(WMGL_HOST_ONLY "Build the core and tests for the build machine only" OFF)
 if(NOT WMGL_HOST_ONLY)
     set(CMAKE_OSX_ARCHITECTURES "x86_64" CACHE STRING "Host architecture" FORCE)
@@ -45,64 +46,14 @@ set(GLSLANG_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
 add_subdirectory(vendor/SPIRV-Cross)
 add_subdirectory(vendor/glslang)
 
-find_library(APPKIT_FRAMEWORK AppKit REQUIRED)
 find_library(FOUNDATION_FRAMEWORK Foundation REQUIRED)
 find_library(METAL_FRAMEWORK Metal REQUIRED)
-find_library(OPENGL_FRAMEWORK OpenGL REQUIRED)
 find_library(QUARTZCORE_FRAMEWORK QuartzCore REQUIRED)
 
-if(NOT WMGL_HOST_ONLY)
-add_library(winemetalgl SHARED
-    src/opengl/EntryPoint.cpp
-    src/opengl/GLErrorTracker.cpp
-    src/opengl/GLMetalRenderer.mm
-    src/opengl/GLShaderCache.cpp
-    src/opengl/GLShaderTracker.cpp
-    src/opengl/GLSLCompiler.cpp
-    src/opengl/OpenGLBridge.mm
-    src/opengl/WGLContextManager.mm
-    src/opengl/WGLShim.cpp
-    src/runtime/Logger.cpp
-)
-
-target_include_directories(winemetalgl
-    PRIVATE
-        "${CMAKE_CURRENT_SOURCE_DIR}/include"
-)
-
-target_compile_options(winemetalgl PRIVATE
-    $<$<COMPILE_LANGUAGE:OBJC>:-fobjc-arc>
-    $<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>
-)
-
-target_link_libraries(winemetalgl
-    PRIVATE
-        glslang
-        glslang-default-resource-limits
-        SPIRV
-        spirv-cross-core
-        spirv-cross-glsl
-        spirv-cross-msl
-        "${APPKIT_FRAMEWORK}"
-        "${FOUNDATION_FRAMEWORK}"
-        "${METAL_FRAMEWORK}"
-        "${OPENGL_FRAMEWORK}"
-        "${QUARTZCORE_FRAMEWORK}"
-)
-
-set_target_properties(winemetalgl PROPERTIES
-    OUTPUT_NAME "metalsharp-opengl"
-    PREFIX ""
-    INSTALL_NAME_DIR "@rpath"
-    OSX_ARCHITECTURES "x86_64"
-)
-
-install(TARGETS winemetalgl LIBRARY DESTINATION lib)
-endif()
-
 # ---------------------------------------------------------------------------
-# WineMetalGL core (feat/gl33-core): the GL 3.3 implementation on Metal.
-# Built as winemetalgl.dylib; winemac.drv loads it when WINEMETALGL_CORE=2.
+# WineMetalGL core: the OpenGL implementation on Metal. Built as
+# libwinemetalgl.dylib, which winemac.drv loads from its own directory
+# (patches/wine).
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 set(WMGL_GEN_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
@@ -173,6 +124,7 @@ if(NOT WMGL_HOST_ONLY)
 endif()
 # Only the driver ABI is exported; GL entry points are reached via wmgl_get_proc_address.
 target_link_options(winemetalgl_core PRIVATE "LINKER:-exported_symbol,_wmgl_*")
+install(TARGETS winemetalgl_core LIBRARY DESTINATION lib)
 
 # Host tests (no GPU, no Wine).
 add_executable(wmgl_host_tests tests/host/main.cpp tests/host/shader_tests.cpp tests/host/format_tests.cpp)
