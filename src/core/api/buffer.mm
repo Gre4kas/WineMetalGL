@@ -270,7 +270,9 @@ void GetBufferSubData(Context& ctx, GLenum target, GLintptr offset, GLsizeiptr s
     if (offset + size > buffer->size) return ctx.setError(GL_INVALID_VALUE);
     if (buffer->mapped && !(buffer->mapAccess & GL_MAP_PERSISTENT_BIT)) return ctx.setError(GL_INVALID_OPERATION);
     if (!size || !data || !buffer->mtl) return;
-    ctx.stream().waitFor(buffer->lastUseSerial);
+    waitForGpuUnlocked(ctx, buffer->lastUseSerial);
+    // Another context may have respecified the buffer during the wait.
+    if (!buffer->mtl || offset + size > buffer->size) return ctx.setError(GL_INVALID_VALUE);
     std::memcpy(data, static_cast<uint8_t*>(buffer->mtl.contents) + offset, static_cast<size_t>(size));
 }
 
@@ -314,7 +316,12 @@ void* MapBufferRange(Context& ctx, GLenum target, GLintptr offset, GLsizeiptr le
         // Immutable storage is never renamed: an invalidating map just waits.
         if ((access & GL_MAP_INVALIDATE_BUFFER_BIT) && !buffer->immutable) rename(ctx, *buffer, false);
         else if ((access & GL_MAP_INVALIDATE_RANGE_BIT) && !read && !buffer->immutable) rename(ctx, *buffer, true);
-        else ctx.stream().waitFor(buffer->lastUseSerial);
+        else waitForGpuUnlocked(ctx, buffer->lastUseSerial);
+    }
+    // Another context may have respecified or mapped the buffer during a wait.
+    if (buffer->mapped || !buffer->mtl || offset + length > buffer->size) {
+        ctx.setError(GL_INVALID_OPERATION);
+        return nullptr;
     }
     buffer->mapped = true;
     buffer->mapAccess = access;

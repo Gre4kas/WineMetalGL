@@ -210,7 +210,28 @@ void PushAttrib(Context& ctx, GLbitfield mask) {
     if (ctx.attribStack.size() >= static_cast<size_t>(kMaxAttribStackDepth)) return ctx.setError(GL_STACK_OVERFLOW);
     Context::AttribFrame frame;
     frame.mask = mask;
-    frame.state = ctx.state;
+    // Copy the state without the large parts restore() never reads (matrix
+    // and name stacks, buffer bindings, queries) and, unless GL_TEXTURE_BIT
+    // is saved, without the texture bindings: they are moved out around the
+    // copy instead of copied (no reference-count traffic per push).
+    ContextState& st = ctx.state;
+    FixedState& f = st.fixed;
+    std::vector<Mat4> modelview = std::move(f.modelview), projection = std::move(f.projection);
+    std::array<std::vector<Mat4>, FixedState::kTextureUnits> texture = std::move(f.texture);
+    std::vector<GLuint> names = std::move(f.nameStack);
+    decltype(st.uniformBufferBindings) uniformBuffers = std::move(st.uniformBufferBindings);
+    decltype(st.activeQueries) queries = std::move(st.activeQueries);
+    const bool textures = mask & GL_TEXTURE_BIT;
+    decltype(st.textureUnits) units;
+    if (!textures) units = std::move(st.textureUnits);
+    frame.state = st;
+    f.modelview = std::move(modelview);
+    f.projection = std::move(projection);
+    f.texture = std::move(texture);
+    f.nameStack = std::move(names);
+    st.uniformBufferBindings = std::move(uniformBuffers);
+    st.activeQueries = std::move(queries);
+    if (!textures) st.textureUnits = std::move(units);
     ctx.attribStack.push_back(std::move(frame));
 }
 

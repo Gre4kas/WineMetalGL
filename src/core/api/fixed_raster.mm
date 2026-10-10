@@ -407,12 +407,7 @@ void DrawPixels(Context& ctx, GLsizei width, GLsizei height, GLenum format, GLen
     key = hashValue(hashValue(key, unpack.swapBytes), unpack.lsbFirst);
     bool cacheable = false;
     {
-        PixelStoreParams ps;
-        ps.alignment = unpack.alignment;
-        ps.rowLength = unpack.rowLength;
-        ps.skipPixels = unpack.skipPixels;
-        ps.skipRows = unpack.skipRows;
-        const size_t bytes = transferLayout(format, type, width, height, 1, ps).bytesNeeded;
+        const size_t bytes = transferLayout(format, type, width, height, 1, pixelStoreParams(unpack, false)).bytesNeeded;
         const uint8_t* source = static_cast<const uint8_t*>(pixels);
         if (Buffer* pbo = ctx.state.pixelUnpackBuffer.get()) {
             const uintptr_t offset = reinterpret_cast<uintptr_t>(pixels);

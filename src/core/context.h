@@ -78,6 +78,7 @@ public:
     Sampler* sampler(GLuint name);
 
     ContextState state;
+    // Recorded but not read yet (see state.h).
     uint64_t dirty = kDirtyAll;
     void markDirty(uint64_t bits) { dirty |= bits; }
 
@@ -204,5 +205,12 @@ private:
     std::recursive_mutex& mutex_;
     int depth_;
 };
+
+// Waits for `serial` (this context's work is flushed first) without the
+// share-group lock, so the other contexts of the share group keep running.
+// Shared object state may change meanwhile: callers re-validate it after.
+void waitForGpuUnlocked(Context& ctx, uint64_t serial);
+// glFinish-style: flushes, then waits for everything submitted, unlocked.
+void finishUnlocked(Context& ctx);
 
 }  // namespace wmgl

@@ -499,7 +499,9 @@ void RenderbufferStorageMultisample(Context& ctx, GLenum target, GLsizei samples
     rb->format = f;
     rb->width = width;
     rb->height = height;
-    rb->samples = actual > 1 ? actual : (samples == 1 ? 1 : 0);
+    // One sample is single-sample storage: completeness compares the same
+    // value GL_RENDERBUFFER_SAMPLES reports (0).
+    rb->samples = actual > 1 ? actual : 0;
     rb->mtl = nil;
     rb->linearView = nil;
     if (width > 0 && height > 0) {
@@ -698,13 +700,7 @@ void ReadPixels(Context& ctx, GLint x, GLint y, GLsizei width, GLsizei height, G
     const FormatInfo* info = formatInfo(internalFormat);
     if (!info) return ctx.setError(GL_INVALID_OPERATION);
 
-    PixelStoreParams ps;
-    const PixelStore& pack = ctx.state.pack;
-    ps.alignment = pack.alignment;
-    ps.rowLength = pack.rowLength;
-    ps.skipPixels = pack.skipPixels;
-    ps.skipRows = pack.skipRows;
-    ps.swapBytes = pack.swapBytes;
+    const PixelStoreParams ps = pixelStoreParams(ctx.state.pack, false);
     Buffer* pbo = ctx.state.pixelPackBuffer.get();
     uint8_t* destination = static_cast<uint8_t*>(pixels);
     if (pbo) {
@@ -750,7 +746,10 @@ void ReadPixels(Context& ctx, GLint x, GLint y, GLsizei width, GLsizei height, G
                  sourceOrigin:MTLOriginMake(x0, y0, is3D ? slice : 0)
                    sourceSize:MTLSizeMake(w, h, 1) toBuffer:staging destinationOffset:0 destinationBytesPerRow:rowBytes
         destinationBytesPerImage:rowBytes * static_cast<size_t>(h) options:opt];
-        ctx.stream().finish();
+        // Without a pack buffer only local memory and the client's are used
+        // after the wait, so other contexts may run meanwhile.
+        if (pbo) ctx.stream().finish();
+        else finishUnlocked(ctx);
         return staging;
     };
     if (depthStencil && storage == Storage::Depth32Float_Stencil8) {

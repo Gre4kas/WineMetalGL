@@ -120,3 +120,11 @@ GPU_TEST(gpu_fence_sync) {
     CHECK_EQ(glGetError(), static_cast<GLenum>(GL_INVALID_VALUE));
     CHECK_GL();
 }
+
+// KHR-GL32.api.coverage queries GL_MAX_ELEMENT_INDEX through glGetInteger64v.
+GPU_TEST(gpu_max_element_index) {
+    GLint64 maxIndex = 0;
+    glGetInteger64v(GL_MAX_ELEMENT_INDEX, &maxIndex);
+    CHECK_EQ(maxIndex, static_cast<GLint64>(UINT32_MAX));
+    CHECK_GL();
+}

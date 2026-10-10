@@ -321,7 +321,6 @@ bool Surface::swap(CommandStream& stream) {
         stream.flush();
         return true;
     }
-    resolveForRead(stream);
     stream.resolvePendingClear();
     stream.endEncoder();
     ensurePresentPipeline();

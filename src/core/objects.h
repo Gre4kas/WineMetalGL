@@ -50,6 +50,20 @@ public:
     uint64_t lastWriteSerial = 0;
     // Incremented whenever the contents change (keys derived caches).
     uint64_t version = 0;
+    // drawElements' scans of index ranges in this buffer (draw.mm), valid
+    // while `version` is unchanged.
+    struct IndexScan {
+        uint64_t version;
+        uintptr_t offset;
+        GLsizei count;
+        GLenum type;
+        uint32_t restartIndex;
+        bool restart;
+        uint32_t minIndex, maxIndex;
+        bool hasRestart;
+    };
+    static constexpr size_t kMaxIndexScans = 64;
+    std::vector<IndexScan> indexScans;
 
     uint8_t* contents() const { return mtl ? static_cast<uint8_t*>(mtl.contents) : nullptr; }
     // Mapped in a way that forbids GPU use (persistent mappings allow it).
@@ -124,6 +138,7 @@ public:
     // Cached views keyed by (base, max, swizzle, format) for sampling.
     struct View { uint64_t key; id<MTLTexture> view; };
     std::vector<View> views;
+    // Recorded for the GL 4.x binding model (state.h); nothing reads them yet.
     uint64_t lastUseSerial = 0;
     uint64_t version = 0;
 
@@ -149,7 +164,7 @@ public:
     GLsizei width = 0, height = 0, samples = 0;
     id<MTLTexture> mtl = nil;
     id<MTLTexture> linearView = nil;  // non-sRGB view of sRGB storage (raw writes)
-    uint64_t lastUseSerial = 0;
+    uint64_t lastUseSerial = 0;       // recorded, not read yet (state.h)
 };
 
 // ----------------------------------------------------------- framebuffers
@@ -175,7 +190,7 @@ public:
     std::array<GLenum, kMaxColor> drawBuffers{GL_COLOR_ATTACHMENT0, GL_NONE, GL_NONE, GL_NONE,
                                               GL_NONE, GL_NONE, GL_NONE, GL_NONE};
     GLenum readBuffer = GL_COLOR_ATTACHMENT0;
-    uint64_t version = 0;  // bumped on any attachment/draw-buffer change
+    uint64_t version = 0;  // bumped on any attachment/draw-buffer change (not read yet; state.h)
 };
 
 // ----------------------------------------------------------- vertex arrays
@@ -206,7 +221,7 @@ public:
     static constexpr int kAttribSlots = 31;  // + 2 internal (compat/fixed_state.h InternalAttrib)
     std::array<VertexAttrib, kAttribSlots> attribs;
     RefPtr<Buffer> elementBuffer;
-    uint64_t version = 0;
+    uint64_t version = 0;  // not read yet (state.h)
 };
 
 // ------------------------------------------------------- shaders/programs

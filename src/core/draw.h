@@ -3,6 +3,7 @@
 
 #import <Metal/Metal.h>
 
+#include <array>
 #include <cstdint>
 #include <vector>
 
@@ -129,6 +130,22 @@ private:
     std::pair<Program*, size_t> samplerSource(LinkedProgram& program, size_t index);
     void samplerBinding(LinkedProgram& program, size_t index, __strong id<MTLTexture>& view,
                         __strong id<MTLSamplerState>& sampler);
+    // How a draw's vertex inputs are fed (planVertexInputs): read directly
+    // from buffer objects through shared layouts, converted on the CPU into
+    // one interleaved buffer per divisor, or taken from current values. The
+    // plan keeps the layouts within Metal's vertex buffer slots.
+    struct VertexInputPlan {
+        enum How : uint8_t { None, Constant, Direct, Converted, LineSide };
+        struct DirectGroup {
+            Buffer* buffer = nullptr;
+            NSUInteger base = 0;  // lowest attribute offset in the group
+            uint32_t stride = 0, divisor = 0;
+        };
+        std::array<How, 31> how{};      // VertexArray::kAttribSlots
+        std::array<int8_t, 31> group{};  // Direct: index into groups
+        std::vector<DirectGroup> groups;
+    };
+    void planVertexInputs(LinkedProgram& program, bool gather, VertexInputPlan& plan) const;
     void waitForCpuVertexReads(LinkedProgram& program, bool gather);
     const VertexAttrib& attribFor(const VertexArray& vao, int location) const;
     void bindUniforms(id<MTLRenderCommandEncoder> encoder, LinkedProgram& program);

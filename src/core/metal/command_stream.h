@@ -95,6 +95,9 @@ public:
 
     // Serial of the most recently committed command buffer of this stream.
     uint64_t lastCommitted() const { return lastCommitted_; }
+    // Serial a fence created now covers: the command buffer being recorded, or,
+    // when nothing is recorded or pending, the last committed one (0 if none).
+    uint64_t fenceSerial() { return buffer_ || pending_.any() ? serial() : lastCommitted_; }
 
     Queue& queue() { return queue_; }
     bool hasDraws() const { return drawsInPass_; }

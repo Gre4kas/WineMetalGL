@@ -172,8 +172,15 @@ UpgradeResult upgradeLegacyGlsl(Stage stage, const std::string& source, const Up
     int braceDepth = 0, parenDepth = 0;
     std::vector<int> shadowCalls;  // paren depth of each open shadow*() call
     std::string previousWord;      // the identifier just emitted ("" after other tokens)
+    size_t defineEnd = 0;          // end of the #define line whose body is being rewritten
     while (i < n) {
         const char c = source[i];
+        const bool inDefine = i < defineEnd;
+        if (inDefine && c == '\\' && i + 1 < n && source[i + 1] == '\n') {
+            out += "\\\n";  // a continued macro body
+            i += 2;
+            continue;
+        }
         if (c == '\n') {
             out += c;
             ++i;
@@ -213,6 +220,22 @@ UpgradeResult upgradeLegacyGlsl(Stage stage, const std::string& source, const Up
             } else if (name == "endif" && conditionalDepth > 0) {
                 --conditionalDepth;
             }
+            if (name == "define") {
+                // Macro bodies get the same rewriting as code (renamed built-ins
+                // and functions): only the macro's name and parameters are kept.
+                size_t head = nameEnd;
+                while (head < directive.size() && (directive[head] == ' ' || directive[head] == '\t')) ++head;
+                while (head < directive.size() && isIdent(directive[head])) ++head;
+                if (head < directive.size() && directive[head] == '(') {
+                    const size_t close = directive.find(')', head);
+                    head = close == std::string::npos ? directive.size() : close + 1;
+                }
+                out.append(directive, 0, head);
+                i += head;
+                defineEnd = lineEnd;
+                lineStart = false;
+                continue;
+            }
             if (!versionReplaced && directive.compare(k, 7, "version") == 0) {
                 out += "#version " + std::to_string(newVersion);
                 versionReplaced = true;
@@ -223,7 +246,7 @@ UpgradeResult upgradeLegacyGlsl(Stage stage, const std::string& source, const Up
             lineStart = false;
             continue;
         }
-        if (insertAt == std::string::npos) {
+        if (insertAt == std::string::npos && !inDefine) {
             // First real token: declarations go before it (or before the
             // #if block holding it), on their own line.
             insertAt = conditionalDepth > 0 ? conditionalStart : out.size();

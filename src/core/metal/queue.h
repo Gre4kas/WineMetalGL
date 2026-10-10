@@ -34,6 +34,9 @@ public:
     void wait(uint64_t serial);
     // As wait(), giving up after timeoutNs (UINT64_MAX waits forever). True if complete.
     bool wait(uint64_t serial, uint64_t timeoutNs);
+    // Fence waits: also waits while the serial is reserved but not yet
+    // committed (a fence signals once its command buffer is flushed and done).
+    bool waitSignaled(uint64_t serial, uint64_t timeoutNs);
     // Waits until everything committed so far has completed.
     void waitIdle();
     uint64_t lastSerial();

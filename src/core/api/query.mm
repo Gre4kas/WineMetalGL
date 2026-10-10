@@ -387,8 +387,12 @@ GLsync FenceSync(Context& ctx, GLenum condition, GLbitfield flags) {
     if (flags != 0) return ctx.setError(GL_INVALID_VALUE), nullptr;
     Sync* sync = new Sync();
     sync->retain();
-    // Committing here lets other contexts and threads wait on the fence.
-    sync->serial = ctx.stream().flush();
+    // The fence is the current command buffer: it signals once that buffer is
+    // flushed (glFlush, SYNC_FLUSH_COMMANDS_BIT, SwapBuffers, ...) and done, as
+    // on other drivers. Committing here would split the stream into a command
+    // buffer per fence for fence-heavy renderers. With nothing recorded, the
+    // fence covers the work already committed and needs no flush.
+    sync->serial = ctx.stream().fenceSerial();
     sync->shareGroup = &ctx.share();
     ShareLock lock(ctx);
     ctx.share().syncs.insert(sync);
@@ -418,16 +422,17 @@ GLenum ClientWaitSync(Context& ctx, GLsync handle, GLbitfield flags, GLuint64 ti
     if (flags & GL_SYNC_FLUSH_COMMANDS_BIT) ctx.stream().flush();
     if (timeout == 0) return GL_TIMEOUT_EXPIRED;
     ShareUnlock unlock(ctx);  // `hold` keeps the sync alive
-    return queue.wait(sync->serial, timeout) ? GL_CONDITION_SATISFIED : GL_TIMEOUT_EXPIRED;
+    return queue.waitSignaled(sync->serial, timeout) ? GL_CONDITION_SATISFIED : GL_TIMEOUT_EXPIRED;
 }
 
 void WaitSync(Context& ctx, GLsync handle, GLbitfield flags, GLuint64 timeout) {
     Sync* sync = syncObject(ctx, handle);
     if (!sync) return ctx.setError(GL_INVALID_VALUE);
     if (flags != 0 || timeout != GL_TIMEOUT_IGNORED) return ctx.setError(GL_INVALID_VALUE);
-    // Contexts in a share group submit to one in-order Metal queue, and the
-    // fence's command buffer was committed when it was created, so later
-    // work from this context already runs after it.
+    // Contexts in a share group submit to one in-order Metal queue. A fence of
+    // this context is in its stream already, and a fence of another context
+    // must have been flushed by it (GL 3.3 section 5.2), so later work from
+    // this context is committed, and runs, after it.
 }
 
 void GetSynciv(Context& ctx, GLsync handle, GLenum pname, GLsizei count, GLsizei* length, GLint* values) {

@@ -1,0 +1,7 @@
+{
+  "comment": "Failing cases (Fail, Crash, Timeout, ...) in committed baselines that WineMetalGL does not change behaviour for, with the reason. scripts/docs/generate.py prints the reason next to the case and fails if an entry matches no failing result. A case without an entry is listed as not yet explained.",
+  "entries": [
+    {"pattern": "KHR-GL30.api.coverage", "reason": "In configurations 3 and 4 (`--deqp-surface-type=fbo`) the test saves `GL_READ_BUFFER` while the CTS framebuffer object is bound (`GL_COLOR_ATTACHMENT0`), deletes its own bound framebuffer object, which rebinds framebuffer zero, and restores the saved value there (glcApiCoverageTests.cpp, TestCoverageGLCallReadBuffer). The default framebuffer has no `GL_COLOR_ATTACHMENT0` buffer, and `glReadBuffer` generates `GL_INVALID_OPERATION` for a buffer that does not exist, as the specification requires."},
+    {"pattern": "KHR-GL33.shaders.negative.non_precision_qualifiers_in_struct_members", "reason": "The case compiles compute shaders on every desktop GL version without checking for GL 4.3 or `GL_ARB_compute_shader` (glcShaderNegativeTests.cpp, ShaderNonPrecisionQualifiersStructCase). WineMetalGL does not expose compute shaders (without storage buffers, images or atomic counters a kernel could not write output), so `glCreateShader(GL_COMPUTE_SHADER)` generates `GL_INVALID_ENUM`, as the specification requires for an unsupported shader type."}
+  ]
+}

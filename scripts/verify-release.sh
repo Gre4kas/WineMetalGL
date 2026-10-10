@@ -21,6 +21,10 @@ for path in \
     "$stage/docs/conformance.md" \
     "$stage/docs/games.md" \
     "$stage/docs/release.md" \
+    "$stage/docs/unsupported.md" \
+    "$stage/docs/testing.md" \
+    "$stage/docs/building.md" \
+    "$stage/docs/performance.md" \
     "$stage/evidence/cts/gl33-cfg1-native.txt" \
     "$stage/evidence/cts/gl33-cfg1-wine.txt" \
     "$stage/evidence/games/results.json" \

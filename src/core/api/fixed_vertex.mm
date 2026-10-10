@@ -11,6 +11,7 @@
 #include "core/compat/compat_api.h"
 #include "core/compat/display_list.h"
 #include "core/compat/immediate.h"
+#include "core/format/vertex_decode.h"
 #include "core/context.h"
 #include "core/draw.h"
 #include "core/objects.h"
@@ -225,65 +226,15 @@ bool fetch(Context& ctx, const VertexAttrib& a, uint32_t index, ImmediateBatch::
     if (!base) return false;
     const uint8_t* p = base + at;
     if (a.integer) {
-        int32_t v[4] = {0, 0, 0, 1};
-        for (int c = 0; c < std::min(a.size, 4); ++c) {
-            switch (a.type) {
-            case GL_BYTE: v[c] = reinterpret_cast<const int8_t*>(p)[c]; break;
-            case GL_UNSIGNED_BYTE: v[c] = p[c]; break;
-            case GL_SHORT: { int16_t x; std::memcpy(&x, p + c * 2, 2); v[c] = x; break; }
-            case GL_UNSIGNED_SHORT: { uint16_t x; std::memcpy(&x, p + c * 2, 2); v[c] = x; break; }
-            default: std::memcpy(&v[c], p + c * 4, 4); break;
-            }
-        }
+        int32_t v[4];
+        decodeVertexInt(p, a.type, a.size, v);
         std::memcpy(out.data(), v, 16);
         type = a.type == GL_UNSIGNED_INT || a.type == GL_UNSIGNED_SHORT || a.type == GL_UNSIGNED_BYTE ? GL_UNSIGNED_INT : GL_INT;
         return true;
     }
-    float v[4] = {0, 0, 0, 1};
-    if (a.type == GL_INT_2_10_10_10_REV || a.type == GL_UNSIGNED_INT_2_10_10_10_REV) {
-        uint32_t word;
-        std::memcpy(&word, p, 4);
-        const int widths[4] = {10, 10, 10, 2};
-        int shift = 0;
-        for (int c = 0; c < 4; ++c) {
-            const uint32_t raw = (word >> shift) & ((1u << widths[c]) - 1);
-            shift += widths[c];
-            if (a.type == GL_UNSIGNED_INT_2_10_10_10_REV) {
-                v[c] = a.normalized ? raw / static_cast<float>((1u << widths[c]) - 1) : static_cast<float>(raw);
-            } else {
-                const int32_t value = static_cast<int32_t>(raw << (32 - widths[c])) >> (32 - widths[c]);
-                const float max = static_cast<float>((1 << (widths[c] - 1)) - 1);
-                v[c] = a.normalized ? std::max(-1.0f, value / max) : static_cast<float>(value);
-            }
-        }
-    } else {
-        const int size = a.size == GL_BGRA ? 4 : a.size;
-        for (int c = 0; c < std::min(size, 4); ++c) {
-            float x = 0;
-            switch (a.type) {
-            case GL_BYTE: { const int8_t s = reinterpret_cast<const int8_t*>(p)[c]; x = a.normalized ? (2.0f * s + 1.0f) / 255.0f : s; break; }
-            case GL_UNSIGNED_BYTE: x = a.normalized ? p[c] / 255.0f : p[c]; break;
-            case GL_SHORT: { int16_t s; std::memcpy(&s, p + c * 2, 2); x = a.normalized ? (2.0f * s + 1.0f) / 65535.0f : s; break; }
-            case GL_UNSIGNED_SHORT: { uint16_t s; std::memcpy(&s, p + c * 2, 2); x = a.normalized ? s / 65535.0f : s; break; }
-            case GL_INT: { int32_t s; std::memcpy(&s, p + c * 4, 4); x = a.normalized ? static_cast<float>((2.0 * s + 1.0) / 4294967295.0) : static_cast<float>(s); break; }
-            case GL_UNSIGNED_INT: { uint32_t s; std::memcpy(&s, p + c * 4, 4); x = a.normalized ? static_cast<float>(s / 4294967295.0) : static_cast<float>(s); break; }
-            case GL_DOUBLE: { double s; std::memcpy(&s, p + c * 8, 8); x = static_cast<float>(s); break; }
-            case GL_HALF_FLOAT: {
-                uint16_t h;
-                std::memcpy(&h, p + c * 2, 2);
-                const uint32_t e = (h >> 10) & 0x1f, m = h & 0x3ff;
-                x = e == 0 ? std::ldexp(static_cast<float>(m), -24)
-                    : e == 31 ? (m ? NAN : INFINITY)
-                              : std::ldexp(static_cast<float>(m | 0x400), static_cast<int>(e) - 25);
-                if (h & 0x8000) x = -x;
-                break;
-            }
-            default: std::memcpy(&x, p + c * 4, 4); break;
-            }
-            v[c] = x;
-        }
-        if (a.size == GL_BGRA) std::swap(v[0], v[2]);
-    }
+    // The same conversion as the draw path (signed normalized: max(c / (2^(b-1) - 1), -1)).
+    float v[4];
+    decodeVertexFloat(p, a.type, a.size, a.normalized, v);
     std::memcpy(out.data(), v, 16);
     type = GL_FLOAT;
     return true;

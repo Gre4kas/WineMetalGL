@@ -16,7 +16,7 @@ on:
         required: false
         type: string
       config:
-        description: mustpass.xml configuration number (1-6)
+        description: mustpass.xml configuration number (1-4; 5 and 6 repeat 1 and 2)
         required: true
         default: "1"
         type: string

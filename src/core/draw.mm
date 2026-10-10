@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "core/compat/fixed_function.h"
+#include "core/format/vertex_decode.h"
 #include "core/shader/glsl_upgrade.h"
 #include "core/stats.h"
 #include "core/context.h"
@@ -345,87 +346,6 @@ struct ConvertedAttribute {
     bool needed = false;
 };
 
-// Reads one component of a GL vertex attribute element as float.
-float readComponent(const uint8_t* p, GLenum type, bool normalized, int index) {
-    switch (type) {
-    case GL_BYTE: {
-        const int8_t v = reinterpret_cast<const int8_t*>(p)[index];
-        return normalized ? std::max(-1.0f, v / 127.0f) : static_cast<float>(v);
-    }
-    case GL_UNSIGNED_BYTE: {
-        const uint8_t v = p[index];
-        return normalized ? v / 255.0f : static_cast<float>(v);
-    }
-    case GL_SHORT: {
-        int16_t v;
-        std::memcpy(&v, p + index * 2, 2);
-        return normalized ? std::max(-1.0f, v / 32767.0f) : static_cast<float>(v);
-    }
-    case GL_UNSIGNED_SHORT: {
-        uint16_t v;
-        std::memcpy(&v, p + index * 2, 2);
-        return normalized ? v / 65535.0f : static_cast<float>(v);
-    }
-    case GL_INT: {
-        int32_t v;
-        std::memcpy(&v, p + index * 4, 4);
-        return normalized ? std::max(-1.0f, static_cast<float>(v / 2147483647.0)) : static_cast<float>(v);
-    }
-    case GL_UNSIGNED_INT: {
-        uint32_t v;
-        std::memcpy(&v, p + index * 4, 4);
-        return normalized ? static_cast<float>(v / 4294967295.0) : static_cast<float>(v);
-    }
-    case GL_FIXED: {
-        int32_t v;
-        std::memcpy(&v, p + index * 4, 4);
-        return v / 65536.0f;
-    }
-    case GL_DOUBLE: {
-        double v;
-        std::memcpy(&v, p + index * 8, 8);
-        return static_cast<float>(v);
-    }
-    case GL_FLOAT: {
-        float v;
-        std::memcpy(&v, p + index * 4, 4);
-        return v;
-    }
-    case GL_HALF_FLOAT: {
-        uint16_t h;
-        std::memcpy(&h, p + index * 2, 2);
-        const uint32_t sign = (h >> 15) & 1, exponent = (h >> 10) & 0x1f, mantissa = h & 0x3ff;
-        float v;
-        if (exponent == 0) v = std::ldexp(static_cast<float>(mantissa), -24);
-        else if (exponent == 31) v = mantissa ? NAN : INFINITY;
-        else v = std::ldexp(static_cast<float>(mantissa | 0x400), static_cast<int>(exponent) - 25);
-        return sign ? -v : v;
-    }
-    default: return 0.0f;
-    }
-}
-
-// Packed 32-bit vertex formats (GL 3.3 section 2.8.2), all four components.
-bool readPacked(const uint8_t* p, GLenum type, bool normalized, float out[4]) {
-    if (type != GL_INT_2_10_10_10_REV && type != GL_UNSIGNED_INT_2_10_10_10_REV) return false;
-    uint32_t word;
-    std::memcpy(&word, p, 4);
-    const int bits[4] = {10, 10, 10, 2};
-    int shift = 0;
-    for (int c = 0; c < 4; ++c) {
-        const uint32_t raw = (word >> shift) & ((1u << bits[c]) - 1);
-        shift += bits[c];
-        if (type == GL_UNSIGNED_INT_2_10_10_10_REV) {
-            out[c] = normalized ? raw / static_cast<float>((1u << bits[c]) - 1) : static_cast<float>(raw);
-        } else {
-            const int32_t value = static_cast<int32_t>(raw << (32 - bits[c])) >> (32 - bits[c]);
-            const float max = static_cast<float>((1 << (bits[c] - 1)) - 1);
-            out[c] = normalized ? std::max(-1.0f, value / max) : static_cast<float>(value);
-        }
-    }
-    return true;
-}
-
 }  // namespace
 
 // The array feeding attribute `location`. In the compatibility profile
@@ -435,26 +355,113 @@ const VertexAttrib& DrawState::attribFor(const VertexArray& vao, int location) c
     return vao.attribs[static_cast<size_t>(location)];
 }
 
+void DrawState::planVertexInputs(LinkedProgram& program, bool gather, VertexInputPlan& plan) const {
+    using Plan = VertexInputPlan;
+    const VertexArray& vao = *ctx_.state.vertexArray;
+    plan = Plan();
+    struct Window {
+        size_t group;
+        NSUInteger end;  // one past the highest byte the group's attributes read, within one element
+    };
+    std::vector<Window> windows;
+    bool constants = false, sides = false, convertedPerVertex = false;
+    std::vector<uint32_t> convertedDivisors;
+    auto convert = [&](int location, uint32_t divisor) {
+        plan.how[static_cast<size_t>(location)] = Plan::Converted;
+        if (!divisor) convertedPerVertex = true;
+        else if (std::find(convertedDivisors.begin(), convertedDivisors.end(), divisor) == convertedDivisors.end())
+            convertedDivisors.push_back(divisor);
+    };
+    std::vector<std::pair<int, const VertexAttrib*>> direct;
+    for (const shader::StageOutput::VertexInput& input : program.stage(Stage::Vertex).vertexInputs) {
+        const int location = input.location;
+        if (location < 0 || location >= VertexArray::kAttribSlots) continue;
+        if (lineSides_ && location == kLineSide) {
+            plan.how[static_cast<size_t>(location)] = Plan::LineSide;
+            sides = true;
+            continue;
+        }
+        // The other endpoint of a wide line segment reads the position array in partner order.
+        const bool partner = linePartners_ && location == kLinePartner;
+        const VertexAttrib& a = attribFor(vao, partner ? static_cast<int>(kConvVertex) : location);
+        if (!a.enabled) {
+            plan.how[static_cast<size_t>(location)] = Plan::Constant;
+            constants = true;
+            continue;
+        }
+        const uint32_t stride = static_cast<uint32_t>(a.effectiveStride());
+        const MTLVertexFormat format = a.isDouble ? MTLVertexFormatInvalid : mtlVertexFormat(a.type, a.size, a.normalized, a.integer);
+        const bool aligned = (a.offset % 4) == 0 && (stride % 4) == 0 && stride > 0;
+        const bool gathered = (gather || partner) && !a.divisor;
+        if (a.buffer && a.buffer->mtl && format != MTLVertexFormatInvalid && aligned && !gathered)
+            direct.emplace_back(location, &a);
+        else
+            convert(location, a.divisor);
+    }
+    // Attributes of one buffer, stride and divisor share a layout when they
+    // all fit in one element window, whatever their order.
+    std::vector<std::vector<int>> members;
+    for (const auto& [location, a] : direct) {
+        const uint32_t stride = static_cast<uint32_t>(a->effectiveStride());
+        const NSUInteger offset = static_cast<NSUInteger>(a->offset), end = offset + a->elementBytes();
+        size_t chosen = plan.groups.size();
+        for (Window& w : windows) {
+            Plan::DirectGroup& g = plan.groups[w.group];
+            if (g.buffer != a->buffer.get() || g.stride != stride || g.divisor != a->divisor) continue;
+            const NSUInteger base = std::min(g.base, offset), top = std::max(w.end, end);
+            if (top - base > stride) continue;
+            g.base = base;
+            w.end = top;
+            chosen = w.group;
+            break;
+        }
+        if (chosen == plan.groups.size()) {
+            plan.groups.push_back({a->buffer.get(), offset, stride, a->divisor});
+            windows.push_back({chosen, end});
+            members.emplace_back();
+        }
+        members[chosen].push_back(location);
+    }
+    // Keep within the vertex buffer slots: the last direct groups fall back to conversion.
+    auto layouts = [&] {
+        return plan.groups.size() + (convertedPerVertex ? 1 : 0) + convertedDivisors.size() + (constants ? 1 : 0) +
+               (sides ? 1 : 0);
+    };
+    while (layouts() > shader::kMaxVertexBufferSlots && !plan.groups.empty()) {
+        for (int location : members.back()) convert(location, plan.groups.back().divisor);
+        plan.groups.pop_back();
+        members.pop_back();
+    }
+    for (size_t g = 0; g < plan.groups.size(); ++g)
+        for (int location : members[g]) {
+            plan.how[static_cast<size_t>(location)] = Plan::Direct;
+            plan.group[static_cast<size_t>(location)] = static_cast<int8_t>(g);
+        }
+}
+
 void DrawState::waitForCpuVertexReads(LinkedProgram& program, bool gather) {
     // Waiting flushes the command buffer, so it must happen before a draw opens its encoder.
     Queue& queue = ctx_.stream().queue();
     const VertexArray& vao = *ctx_.state.vertexArray;
+    VertexInputPlan plan;
+    planVertexInputs(program, gather, plan);
     for (const shader::StageOutput::VertexInput& input : program.stage(Stage::Vertex).vertexInputs) {
         if (input.location < 0 || input.location >= VertexArray::kAttribSlots) continue;
+        if (plan.how[static_cast<size_t>(input.location)] != VertexInputPlan::Converted) continue;
         const VertexAttrib& a = attribFor(vao, input.location);
-        if (!a.enabled || !a.buffer || !a.buffer->lastWriteSerial || queue.isComplete(a.buffer->lastWriteSerial)) continue;
-        const MTLVertexFormat direct = a.isDouble ? MTLVertexFormatInvalid : mtlVertexFormat(a.type, a.size, a.normalized, a.integer);
-        const uint32_t stride = static_cast<uint32_t>(a.effectiveStride());
-        const bool cpuRead = (gather && !a.divisor) || direct == MTLVertexFormatInvalid || a.offset % 4 || stride % 4 || !stride;
-        if (cpuRead) ctx_.stream().waitFor(a.buffer->lastWriteSerial);
+        if (a.buffer && a.buffer->lastWriteSerial && !queue.isComplete(a.buffer->lastWriteSerial))
+            ctx_.stream().waitFor(a.buffer->lastWriteSerial);
     }
 }
 
 bool DrawState::bindVertexInputs(id<MTLRenderCommandEncoder> encoder, PipelineKey& key, LinkedProgram& program,
                                  GLint firstVertex, GLsizei vertexCount, GLsizei instances,
                                  const std::vector<uint32_t>* gather) {
+    using Plan = VertexInputPlan;
     VertexArray& vao = *ctx_.state.vertexArray;
     const uint64_t serial = ctx_.stream().serial();
+    Plan plan;
+    planVertexInputs(program, gather != nullptr, plan);
     struct Layout {
         id<MTLBuffer> buffer;
         NSUInteger offset;
@@ -468,15 +475,32 @@ bool DrawState::bindVertexInputs(id<MTLRenderCommandEncoder> encoder, PipelineKe
         layouts.push_back({buffer, offset, stride, divisor, constant});
         return static_cast<int>(layouts.size() - 1);
     };
-    // Current (generic and conventional) attribute values: one constant
-    // element each, packed into one buffer.
-    std::vector<int> constants;
+    // Direct groups first: layout g is group g. Renumbered vertices (issue())
+    // read from the draw's first vertex on.
+    for (const Plan::DirectGroup& g : plan.groups) {
+        const NSUInteger base = g.base + (g.divisor ? 0 : static_cast<NSUInteger>(vertexRebase_) * g.stride);
+        if (addLayout(g.buffer->mtl, base, g.stride, g.divisor, false) < 0) return false;
+        g.buffer->lastUseSerial = serial;
+    }
+    struct Converted {
+        int location;
+        const VertexAttrib* attrib;
+        const std::vector<uint32_t>* order;  // gathered: the vertex fetched for each draw vertex
+        char kind;
+    };
+    std::vector<Converted> converted;
+    std::vector<int> constants;  // current values, one constant element each, packed into one buffer
     for (const shader::StageOutput::VertexInput& input : program.stage(Stage::Vertex).vertexInputs) {
-        if (input.location < 0 || input.location >= VertexArray::kAttribSlots) continue;
-        VertexAttributeKey& out = key.attributes[input.location];
-        if (lineSides_ && input.location == kLineSide) {
+        const int location = input.location;
+        if (location < 0 || location >= VertexArray::kAttribSlots) continue;
+        VertexAttributeKey& out = key.attributes[location];
+        const bool partner = linePartners_ && location == kLinePartner;
+        const VertexAttrib& a = attribFor(vao, partner ? static_cast<int>(kConvVertex) : location);
+        switch (plan.how[static_cast<size_t>(location)]) {
+        case Plan::LineSide: {
             TransientAllocation alloc = transient_.allocate(lineSides_->size() * 16, serial, 16);
             auto* dst = static_cast<float*>(alloc.data);
+            if (!dst) return false;
             for (size_t v = 0; v < lineSides_->size(); ++v) {
                 dst[v * 4] = (*lineSides_)[v];
                 dst[v * 4 + 1] = dst[v * 4 + 2] = 0;
@@ -487,136 +511,118 @@ bool DrawState::bindVertexInputs(id<MTLRenderCommandEncoder> encoder, PipelineKe
             out.format = static_cast<uint8_t>(MTLVertexFormatFloat4);
             out.layout = static_cast<uint8_t>(layout);
             out.offset = 0;
-            continue;
+            break;
         }
-        // The other endpoint of a wide line segment reads the position array in partner order.
-        const bool partner = linePartners_ && input.location == kLinePartner;
-        const VertexAttrib& a = attribFor(vao, partner ? static_cast<int>(kConvVertex) : input.location);
-        const std::vector<uint32_t>* order = partner ? linePartners_ : gather;
-        if (!a.enabled) {
+        case Plan::Constant:
             out.format = static_cast<uint8_t>(input.kind == 'i' ? MTLVertexFormatInt4
                                               : input.kind == 'u' ? MTLVertexFormatUInt4
                                                                   : MTLVertexFormatFloat4);
             out.offset = static_cast<uint16_t>(constants.size() * 16);
-            constants.push_back(input.location);
-            continue;
+            constants.push_back(location);
+            break;
+        case Plan::Direct: {
+            const size_t g = static_cast<size_t>(plan.group[static_cast<size_t>(location)]);
+            out.format = static_cast<uint8_t>(mtlVertexFormat(a.type, a.size, a.normalized, a.integer));
+            out.layout = static_cast<uint8_t>(g);
+            out.offset = static_cast<uint16_t>(static_cast<NSUInteger>(a.offset) - plan.groups[g].base);
+            break;
         }
-        const uint32_t elementBytes = a.elementBytes();
-        const uint32_t stride = static_cast<uint32_t>(a.effectiveStride());
-        const MTLVertexFormat direct = a.isDouble ? MTLVertexFormatInvalid
-                                                  : mtlVertexFormat(a.type, a.size, a.normalized, a.integer);
-        const bool aligned = (a.offset % 4) == 0 && (stride % 4) == 0 && stride > 0;
-        const bool gathered = order && !a.divisor;
-        if (a.buffer && a.buffer->mtl && direct != MTLVertexFormatInvalid && aligned && !gathered) {
-            // Share a layout with an earlier attribute from the same buffer/stride/divisor when it fits.
-            int layout = -1;
-            for (size_t l = 0; l < layouts.size(); ++l) {
-                const Layout& existing = layouts[l];
-                if (existing.constant || existing.buffer != a.buffer->mtl || existing.stride != stride ||
-                    existing.divisor != a.divisor)
-                    continue;
-                const NSUInteger shifted = static_cast<NSUInteger>(a.offset) +
-                                           (a.divisor ? 0 : static_cast<NSUInteger>(vertexRebase_) * stride);
-                if (shifted >= existing.offset && shifted - existing.offset + elementBytes <= stride) {
-                    layout = static_cast<int>(l);
-                    break;
-                }
-            }
-            // Renumbered vertices (issue()) read from the draw's first vertex on.
-            const NSUInteger offset = static_cast<NSUInteger>(a.offset) +
-                                      (a.divisor ? 0 : static_cast<NSUInteger>(vertexRebase_) * stride);
-            if (layout < 0) layout = addLayout(a.buffer->mtl, offset, stride, a.divisor, false);
-            if (layout < 0) return false;
-            out.format = static_cast<uint8_t>(direct);
-            out.layout = static_cast<uint8_t>(layout);
-            out.offset = static_cast<uint16_t>(offset - layouts[layout].offset);
-            a.buffer->lastUseSerial = serial;
-            continue;
-        }
-        // Conversion: expand the used range to 4 x 32-bit components.
-        const uint8_t* source = nullptr;
-        // Bytes readable from `source` (a buffer object's size; client arrays are unbounded).
-        size_t readable = SIZE_MAX;
-        if (a.buffer) {
-            if (!a.buffer->mtl) {
+        case Plan::Converted:
+            if (a.buffer && !a.buffer->mtl) {
                 ctx_.setError(GL_INVALID_OPERATION);
                 return false;
             }
-            // GPU writes were waited for in waitForCpuVertexReads.
-            readable = a.buffer->size > a.offset ? static_cast<size_t>(a.buffer->size - a.offset) : 0;
-            source = a.buffer->contents() + std::min<size_t>(static_cast<size_t>(a.offset), static_cast<size_t>(a.buffer->size));
-        } else {
-            source = reinterpret_cast<const uint8_t*>(a.offset);
+            converted.push_back({location, &a, partner ? linePartners_ : gather, input.kind});
+            break;
+        case Plan::None: break;
         }
-        if (!source) return false;
+    }
+    // Converted attributes: expanded to 4 x 32-bit components, interleaved in
+    // one buffer per divisor (GPU writes to their buffers were waited for in
+    // waitForCpuVertexReads).
+    std::vector<uint32_t> divisors;
+    for (const Converted& c : converted)
+        if (std::find(divisors.begin(), divisors.end(), c.attrib->divisor) == divisors.end()) divisors.push_back(c.attrib->divisor);
+    for (uint32_t divisor : divisors) {
+        std::vector<const Converted*> group;
+        for (const Converted& c : converted)
+            if (c.attrib->divisor == divisor) group.push_back(&c);
+        // Per-vertex members are all gathered or none (gathering is per draw).
+        const bool gathered = !divisor && group.front()->order;
         uint32_t first = 0, count = 0;
         if (gathered) {
-            count = static_cast<uint32_t>(order->size());
-        } else if (a.divisor) {
-            // Instanced attribute: one element per `divisor` instances.
-            // Instanced attribute: one element per `divisor` instances, from the base instance.
-            count = baseInstance_ + static_cast<uint32_t>((std::max<GLsizei>(1, instances) + a.divisor - 1) / a.divisor);
+            count = static_cast<uint32_t>(group.front()->order->size());
+        } else if (divisor) {
+            // One element per `divisor` instances, from the base instance.
+            count = baseInstance_ + static_cast<uint32_t>((std::max<GLsizei>(1, instances) + divisor - 1) / divisor);
         } else {
             first = static_cast<uint32_t>(std::max(0, firstVertex));
             count = static_cast<uint32_t>(std::max(0, vertexCount));
         }
         // Element v of the draw is at v - rebase (vertices renumbered by issue()).
-        const uint32_t rebase = gathered || a.divisor ? 0 : static_cast<uint32_t>(vertexRebase_);
+        const uint32_t rebase = gathered || divisor ? 0 : static_cast<uint32_t>(vertexRebase_);
         const size_t elements = static_cast<size_t>(first - rebase) + count;
         if (elements > kMaxConvertedVertices) {
             // An index range this wide is almost certainly garbage indices.
             logOnce(LogLevel::Warn, "converted-span", "draw skipped: %zu vertices to convert", elements);
             return false;
         }
-        TransientAllocation alloc = transient_.allocate(std::max<size_t>(1, elements) * 16, serial, 16);
+        const size_t stride = 16 * group.size();
+        TransientAllocation alloc = transient_.allocate(std::max<size_t>(1, elements) * stride, serial, 16);
         auto* dst = static_cast<uint8_t*>(alloc.data);
         if (!dst) return false;
-        for (uint32_t v = first; v < first + count; ++v) {
-            const uint32_t fetch = gathered ? (*order)[v] : v;
-            const size_t at = static_cast<size_t>(fetch) * stride;
-            uint8_t* to = dst + static_cast<size_t>(v - rebase) * 16;
-            if (readable != SIZE_MAX && (at > readable || readable - at < elementBytes)) {
-                // Past the end of the buffer: GPUs read zeros (robust access), never past the allocation.
-                if (a.integer) {
-                    const int32_t zero[4] = {0, 0, 0, 1};
-                    std::memcpy(to, zero, 16);
-                } else {
-                    const float zero[4] = {0, 0, 0, 1};
-                    std::memcpy(to, zero, 16);
-                }
-                continue;
-            }
-            const uint8_t* element = source + at;
-            if (a.integer) {
-                int32_t values[4] = {0, 0, 0, 1};
-                for (int c = 0; c < std::min(a.size, 4); ++c) {
-                    switch (a.type) {
-                    case GL_BYTE: values[c] = reinterpret_cast<const int8_t*>(element)[c]; break;
-                    case GL_UNSIGNED_BYTE: values[c] = element[c]; break;
-                    case GL_SHORT: { int16_t x; std::memcpy(&x, element + c * 2, 2); values[c] = x; break; }
-                    case GL_UNSIGNED_SHORT: { uint16_t x; std::memcpy(&x, element + c * 2, 2); values[c] = x; break; }
-                    default: std::memcpy(&values[c], element + c * 4, 4); break;
-                    }
-                }
-                std::memcpy(to, values, 16);
+        for (size_t m = 0; m < group.size(); ++m) {
+            const VertexAttrib& a = *group[m]->attrib;
+            const uint32_t elementBytes = a.elementBytes(), attribStride = static_cast<uint32_t>(a.effectiveStride());
+            // Bytes readable from `source` (a buffer object's size; client arrays are unbounded).
+            size_t readable = SIZE_MAX;
+            const uint8_t* source = nullptr;
+            if (a.buffer) {
+                readable = a.buffer->size > a.offset ? static_cast<size_t>(a.buffer->size - a.offset) : 0;
+                source = a.buffer->contents() + std::min<size_t>(static_cast<size_t>(a.offset), static_cast<size_t>(a.buffer->size));
             } else {
-                float values[4] = {0, 0, 0, 1};
-                const int size = a.size == GL_BGRA ? 4 : a.size;
-                if (!readPacked(element, a.type, a.normalized, values))
-                    for (int c = 0; c < std::min(size, 4); ++c) values[c] = readComponent(element, a.type, a.normalized, c);
-                if (a.size == GL_BGRA) std::swap(values[0], values[2]);
-                std::memcpy(to, values, 16);
+                source = reinterpret_cast<const uint8_t*>(a.offset);
             }
+            if (!source) return false;
+            for (uint32_t v = first; v < first + count; ++v) {
+                const uint32_t fetch = gathered ? (*group[m]->order)[v] : v;
+                const size_t at = static_cast<size_t>(fetch) * attribStride;
+                uint8_t* to = dst + static_cast<size_t>(v - rebase) * stride + m * 16;
+                if (readable != SIZE_MAX && (at > readable || readable - at < elementBytes)) {
+                    // Past the end of the buffer: GPUs read zeros (robust access), never past the allocation.
+                    const int32_t one = 1;
+                    const float oneF = 1.0f;
+                    std::memset(to, 0, 16);
+                    std::memcpy(to + 12, a.integer ? static_cast<const void*>(&one) : static_cast<const void*>(&oneF), 4);
+                    continue;
+                }
+                const uint8_t* element = source + at;
+                if (a.integer) {
+                    int32_t values[4];
+                    decodeVertexInt(element, a.type, a.size, values);
+                    std::memcpy(to, values, 16);
+                } else {
+                    float values[4];
+                    decodeVertexFloat(element, a.type, a.size, a.normalized, values);
+                    std::memcpy(to, values, 16);
+                }
+            }
+            if (a.buffer) a.buffer->lastUseSerial = serial;
         }
-        const int layout = addLayout(alloc.buffer, alloc.offset, 16, a.divisor, false);
+        const int layout = addLayout(alloc.buffer, alloc.offset, static_cast<uint32_t>(stride), divisor, false);
         if (layout < 0) return false;
-        out.format = static_cast<uint8_t>(a.integer ? (input.kind == 'u' ? MTLVertexFormatUInt4 : MTLVertexFormatInt4)
-                                                    : MTLVertexFormatFloat4);
-        out.layout = static_cast<uint8_t>(layout);
-        out.offset = 0;
+        for (size_t m = 0; m < group.size(); ++m) {
+            VertexAttributeKey& out = key.attributes[group[m]->location];
+            out.format = static_cast<uint8_t>(group[m]->attrib->integer
+                                                  ? (group[m]->kind == 'u' ? MTLVertexFormatUInt4 : MTLVertexFormatInt4)
+                                                  : MTLVertexFormatFloat4);
+            out.layout = static_cast<uint8_t>(layout);
+            out.offset = static_cast<uint16_t>(m * 16);
+        }
     }
     if (!constants.empty()) {
         TransientAllocation alloc = transient_.allocate(constants.size() * 16, serial, 16);
+        if (!alloc.data) return false;
         for (size_t c = 0; c < constants.size(); ++c)
             std::memcpy(static_cast<uint8_t*>(alloc.data) + c * 16, &ctx_.state.genericAttribs[static_cast<size_t>(constants[c])].value, 16);
         const int layout = addLayout(alloc.buffer, alloc.offset, static_cast<uint32_t>(constants.size() * 16), 0, true);
@@ -778,6 +784,8 @@ void DrawState::samplerBinding(LinkedProgram& program, size_t index, __strong id
         params.lodBias += compat::textureUnitLodBias(ctx_, unit);  // glTexEnv(GL_TEXTURE_FILTER_CONTROL)
         sampler = samplerState(ctx_, *texture, params, slot.shadow);
         texture->lastUseSerial = ctx_.stream().serial();
+        // A buffer texture reads its buffer: writes to the buffer must wait for this draw.
+        if (texture->target == GL_TEXTURE_BUFFER && texture->buffer) texture->buffer->lastUseSerial = texture->lastUseSerial;
     } else {
         view = dummyTexture(slot.type);
         sampler = samplerState(ctx_, SamplerParams(), slot.shadow);
@@ -1774,8 +1782,7 @@ void DrawState::drawElements(GLenum mode, GLsizei count, GLenum type, const void
             // Out-of-range index fetches are undefined; draw nothing rather than read past the buffer.
             return;
         }
-        if (elementBuffer->lastWriteSerial) ctx_.stream().waitFor(elementBuffer->lastWriteSerial);
-        source = elementBuffer->contents() + offset;
+        source = elementBuffer->contents() + offset;  // read on the CPU only through cpuIndices()
     } else {
         // Client-memory indices: deprecated in core profiles but accepted, as
         // other desktop drivers do (the KHR-GL33 transform feedback tests use them).
@@ -1785,31 +1792,75 @@ void DrawState::drawElements(GLenum mode, GLsizei count, GLenum type, const void
         }
         source = static_cast<const uint8_t*>(indices);
     }
-    // Scan the indices: the used vertex range drives attribute conversion, and
-    // primitive restart / 8-bit indices / non-native modes need rewriting.
-    std::vector<uint32_t> values(static_cast<size_t>(count));
-    uint32_t minIndex = UINT32_MAX, maxIndex = 0;
     const ContextState& st = ctx_.state;
     const uint32_t restartIndex = st.primitiveRestartFixedIndex
                                       ? (type == GL_UNSIGNED_BYTE ? 0xffu : type == GL_UNSIGNED_SHORT ? 0xffffu : 0xffffffffu)
                                       : st.primitiveRestartIndex;
     const bool restart = st.primitiveRestart || st.primitiveRestartFixedIndex;
+    // CPU reads of buffer indices wait for GPU writes to the buffer first.
+    bool cpuReadable = !elementBuffer;
+    auto cpuSource = [&] {
+        if (!cpuReadable) {
+            if (elementBuffer->lastWriteSerial) ctx_.stream().waitFor(elementBuffer->lastWriteSerial);
+            cpuReadable = true;
+        }
+        return source;
+    };
+    auto index = [&](const uint8_t* p, GLsizei i) -> uint32_t {
+        if (indexSize == 1) return p[i];
+        if (indexSize == 2) { uint16_t x; std::memcpy(&x, p + i * 2, 2); return x; }
+        uint32_t x;
+        std::memcpy(&x, p + i * 4, 4);
+        return x;
+    };
+    // The used vertex range (attribute conversion, renumbering) and restart
+    // use: scanned on the CPU, cached per index range of an element buffer
+    // until its contents change (not for persistently mapped buffers, which
+    // the application writes behind GL's back).
+    uint32_t minIndex = UINT32_MAX, maxIndex = 0;
     bool hasRestart = false;
-    for (GLsizei i = 0; i < count; ++i) {
-        uint32_t v;
-        if (indexSize == 1) v = source[i];
-        else if (indexSize == 2) { uint16_t x; std::memcpy(&x, source + i * 2, 2); v = x; }
-        else std::memcpy(&v, source + i * 4, 4);
-        values[static_cast<size_t>(i)] = v;
-        if (restart && v == restartIndex) { hasRestart = true; continue; }
-        minIndex = std::min(minIndex, v);
-        maxIndex = std::max(maxIndex, v);
+    Buffer::IndexScan* cached = nullptr;
+    if (elementBuffer && !elementBuffer->mapped) {
+        for (Buffer::IndexScan& scan : elementBuffer->indexScans)
+            if (scan.version == elementBuffer->version && scan.offset == offset && scan.count == count &&
+                scan.type == type && scan.restart == restart && (!restart || scan.restartIndex == restartIndex))
+                cached = &scan;
+    }
+    if (cached) {
+        minIndex = cached->minIndex;
+        maxIndex = cached->maxIndex;
+        hasRestart = cached->hasRestart;
+    } else {
+        const uint8_t* p = cpuSource();
+        for (GLsizei i = 0; i < count; ++i) {
+            const uint32_t v = index(p, i);
+            if (restart && v == restartIndex) { hasRestart = true; continue; }
+            minIndex = std::min(minIndex, v);
+            maxIndex = std::max(maxIndex, v);
+        }
+        if (elementBuffer && !elementBuffer->mapped) {
+            std::vector<Buffer::IndexScan>& scans = elementBuffer->indexScans;
+            if (!scans.empty() && scans.front().version != elementBuffer->version) scans.clear();
+            if (scans.size() >= Buffer::kMaxIndexScans) scans.erase(scans.begin());
+            scans.push_back({elementBuffer->version, offset, count, type, restartIndex, restart, minIndex, maxIndex, hasRestart});
+        }
     }
     if (minIndex == UINT32_MAX) return;  // only restart indices
+    // The indices themselves, for the paths that rewrite them on the CPU.
+    std::vector<uint32_t> values;
+    auto cpuIndices = [&]() -> const std::vector<uint32_t>& {
+        if (values.empty()) {
+            const uint8_t* p = cpuSource();
+            values.resize(static_cast<size_t>(count));
+            for (GLsizei i = 0; i < count; ++i) values[static_cast<size_t>(i)] = index(p, i);
+        }
+        return values;
+    };
     // Restart-delimited segments are combined into one list of independent
     // primitives, so every instance draws all of them before the next
     // instance starts (GL draws instance by instance).
     auto forEachSegment = [&](uint32_t bias, auto&& fn) {
+        const std::vector<uint32_t>& values = cpuIndices();
         std::vector<uint32_t> segment;
         for (size_t i = 0; i <= values.size(); ++i) {
             if (i < values.size() && !(restart && values[i] == restartIndex)) {
@@ -1872,7 +1923,7 @@ void DrawState::drawElements(GLenum mode, GLsizei count, GLenum type, const void
               indexSize == 2 ? MTLIndexTypeUInt16 : MTLIndexTypeUInt32, baseVertex, spanFirst, span);
         return;
     }
-    issue(mode, 0, count, instances, values.data(), nil, 0, MTLIndexTypeUInt32, baseVertex, spanFirst, span);
+    issue(mode, 0, count, instances, cpuIndices().data(), nil, 0, MTLIndexTypeUInt32, baseVertex, spanFirst, span);
 }
 
 // ----------------------------------------------------------------- clears

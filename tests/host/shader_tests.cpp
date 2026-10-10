@@ -124,6 +124,20 @@ TEST(shader_legacy_glsl_110) {
     CHECK(findAttrib(r, "pos") != nullptr);
 }
 
+TEST(shader_legacy_macros) {
+    // Built-ins and legacy functions inside #define bodies are rewritten too.
+    LinkInput in;
+    in.shaders.push_back({Stage::Vertex,
+                          "#version 120\n#define MVP gl_ModelViewProjectionMatrix\nvarying vec2 v;\n"
+                          "void main() { v = gl_MultiTexCoord0.xy; gl_Position = MVP * gl_Vertex; }\n"});
+    in.shaders.push_back({Stage::Fragment,
+                          "#version 120\n#define TEX(s, c) texture2D(s, c)\n#define OUT(x) \\\n    gl_FragColor = x\n"
+                          "varying vec2 v; uniform sampler2D t;\nvoid main() { OUT(TEX(t, v)); }\n"});
+    LinkResult r = link(in);
+    if (!r.ok) std::fprintf(stderr, "%s\n", r.log.c_str());
+    CHECK(r.ok);
+}
+
 TEST(shader_legacy_fragdata) {
     UpgradeResult u = upgradeLegacyGlsl(Stage::Fragment, "#version 120\nvoid main() { gl_FragData[1] = vec4(1.0); }\n");
     CHECK(u.ok);

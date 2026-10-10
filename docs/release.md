@@ -16,7 +16,8 @@ OUTPUT/
     guest/i386/    opengl32.dll
     guest/x86_64/  opengl32.dll
   evidence/        CTS baselines, corpus results and frame times of the commit
-  docs/            conformance.md, games.md, api-coverage.json
+  docs/            conformance.md, unsupported.md, testing.md, building.md,
+                   performance.md, games.md, api-coverage.json, release.md
   README.md, STAGED-FROM.txt, SHA256SUMS
 ```
 
@@ -32,16 +33,20 @@ driver ABI, and the SHA256 manifest.
 
 ## The release
 
-After the development branch merges, `main` is tagged `winemetalgl-2.0.0` and
+After the development branch merges, `main` is tagged
+`winemetalgl-<version>` (the `project()` version in `CMakeLists.txt`) and
 released with two archives:
 
-- `winemetalgl-2.0.0-x86_64.tar.gz`: the staged release above, a drop-in for
-  x86_64 Wine (Wine 11.17 under Rosetta), with the evidence directory.
-- `winemetalgl-2.0.0-arm64-core.tar.gz`: `scripts/stage-arm64-core.sh OUTPUT`,
-  the arm64 core with the driver ABI header and `patches/wine`, for a native
-  arm64 Wine built with the patches. Its evidence is the native KHR-GL33 runs
-  (the core built for the build machine); it has not yet run inside an arm64
-  Wine.
+- `winemetalgl-<version>-x86_64.tar.gz`: the staged release above, with the
+  evidence directory. Its Wine modules are staged from MetalSharp's x86_64
+  Wine 11.17 (under Rosetta) and are a drop-in for that Wine; any other
+  Wine 11.17 is built with `patches/wine` ([Build it yourself](building.md))
+  and takes only `libwinemetalgl.dylib`.
+- `winemetalgl-<version>-arm64-core.tar.gz`: `scripts/stage-arm64-core.sh
+  OUTPUT`, the arm64 core with the driver ABI header and `patches/wine`, for a
+  native arm64 Wine built with the patches. Its evidence is the native
+  KHR-GL30 to KHR-GL33 runs (the core built for the build machine); it has not
+  yet run inside an arm64 Wine.
 
 The two cores are not interchangeable: `winemac.so` loads the core of its own
 architecture, and Wine falls back to Apple's OpenGL when it cannot.
