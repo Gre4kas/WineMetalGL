@@ -189,7 +189,9 @@ bool Surface::swap(CommandStream& stream) {
     id<MTLTexture> source = resolvedColor();
     if (source.pixelFormat == MTLPixelFormatRGBA8Unorm_sRGB)
         source = [source newTextureViewWithPixelFormat:MTLPixelFormatRGBA8Unorm];
-    const float params[4] = {1.0f, 0.0f, 0.0f, 0.0f};  // flip: GL row 0 is the bottom of the window
+    // No flip in the shader: the drawable's top row samples the back buffer's
+    // last row, which is GL's top row (GL row 0 = Metal row 0 = window bottom).
+    const float params[4] = {0.0f, 0.0f, 0.0f, 0.0f};
     [encoder setVertexBytes:params length:sizeof(params) atIndex:0];
     [encoder setFragmentTexture:source atIndex:0];
     [encoder setFragmentSamplerState:presentSampler_ atIndex:0];

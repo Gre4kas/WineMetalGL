@@ -623,7 +623,12 @@ void GetActiveUniformsiv(Context& ctx, GLuint program, GLsizei count, const GLui
         case GL_UNIFORM_NAME_LENGTH: params[i] = static_cast<GLint>(u.name.size() + 1); break;
         case GL_UNIFORM_BLOCK_INDEX: params[i] = u.blockIndex; break;
         case GL_UNIFORM_OFFSET: params[i] = u.blockIndex >= 0 ? u.offset : -1; break;
-        case GL_UNIFORM_ARRAY_STRIDE: params[i] = u.blockIndex >= 0 && u.size > 1 ? u.arrayStride : (u.blockIndex >= 0 ? 0 : -1); break;
+        case GL_UNIFORM_ARRAY_STRIDE: {
+            // Arrays (named "x[0]") report their stride even with one element.
+            const bool array = !u.name.empty() && u.name.back() == ']';
+            params[i] = u.blockIndex >= 0 ? (array ? u.arrayStride : 0) : -1;
+            break;
+        }
         case GL_UNIFORM_MATRIX_STRIDE: params[i] = u.blockIndex >= 0 ? u.matrixStride : -1; break;
         case GL_UNIFORM_IS_ROW_MAJOR: params[i] = u.blockIndex >= 0 && u.rowMajor; break;
         default: return ctx.setError(GL_INVALID_ENUM);

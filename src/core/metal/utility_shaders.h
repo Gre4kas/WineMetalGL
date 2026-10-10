@@ -13,8 +13,9 @@ struct FullscreenOut {
     float2 uv;
 };
 
-// Fullscreen triangle. flip_y selects whether texture row 0 ends up at the
-// top (present: GL bottom-up images onto a top-down drawable) or the bottom.
+// Fullscreen triangle. With params.x = 0, uv.y grows towards the top of the
+// target, so texture row 0 lands at the bottom: a GL image (row 0 = bottom)
+// keeps its orientation on a drawable. params.x = 1 mirrors it vertically.
 vertex FullscreenOut wmgl_fullscreen_vs(uint vid [[vertex_id]], constant float4& params [[buffer(0)]]) {
     float2 p = float2((vid << 1) & 2, vid & 2);
     FullscreenOut out;

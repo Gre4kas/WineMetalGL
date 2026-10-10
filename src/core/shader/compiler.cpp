@@ -3,9 +3,12 @@
 #include <glslang/Public/ResourceLimits.h>
 #include <glslang/Public/ShaderLang.h>
 #include <SPIRV/GlslangToSpv.h>
+#include <glslang/MachineIndependent/localintermediate.h>
 #include <spirv_msl.hpp>
 
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #include <memory>
 #include <mutex>
 #include <set>
@@ -197,6 +200,47 @@ bool isShadowSampler(GLenum type) {
     }
 }
 
+// Name with every array subscript removed ("B[1].s[0].x" -> "B.s.x"), used to
+// match glslang's reflection names against GL interface names.
+std::string arrayBaseName(const std::string& name) {
+    std::string out;
+    for (size_t i = 0; i < name.size(); ++i) {
+        if (name[i] == '[') {
+            while (i < name.size() && name[i] != ']') ++i;
+            continue;
+        }
+        out += name[i];
+    }
+    return out;
+}
+
+GLenum boolType(const glslang::TType& type) {
+    switch (type.getVectorSize()) {
+    case 2: return GL_BOOL_VEC2;
+    case 3: return GL_BOOL_VEC3;
+    case 4: return GL_BOOL_VEC4;
+    default: return GL_BOOL;
+    }
+}
+
+// Records the GL bool type of every bool member under `prefix` (names without
+// array subscripts, see arrayBaseName). With `self`, `type` itself is named `prefix`.
+void collectBoolMembers(const glslang::TType& type, const std::string& prefix, std::map<std::string, GLenum>& out,
+                        bool self = false) {
+    if (self) {
+        if (type.getBasicType() == glslang::EbtBool) out[prefix] = boolType(type);
+        else if (type.isStruct()) collectBoolMembers(type, prefix + ".", out);
+        return;
+    }
+    if (!type.isStruct()) return;
+    for (const glslang::TTypeLoc& member : *type.getStruct()) {
+        const glslang::TType& m = *member.type;
+        const std::string name = prefix + m.getFieldName().c_str();
+        if (m.isStruct()) collectBoolMembers(m, name + ".", out);
+        else if (m.getBasicType() == glslang::EbtBool) out[name] = boolType(m);
+    }
+}
+
 std::string topLevelName(const std::string& name) {
     const size_t end = name.find_first_of(".[");
     return end == std::string::npos ? name : name.substr(0, end);
@@ -221,6 +265,13 @@ void expandMember(const spirv_cross::Compiler& compiler, const spirv_cross::SPIR
                 expandMember(compiler, structType, m, elementName + ".", offset + element * arrayStride, blockIndex, out);
         }
         return;
+    }
+    if (isArray && arrayStride == 0) {
+        // Some arrays come without an ArrayStride value; blocks use std140 rules,
+        // where every array element starts on a 16-byte boundary (a matrix
+        // element spans one 16-byte vector per column, or per row if row-major).
+        const bool rowMajor = compiler.has_member_decoration(parent.self, index, spv::DecorationRowMajor);
+        arrayStride = 16u * (type.columns > 1 ? (rowMajor ? type.vecsize : type.columns) : 1u);
     }
     UniformInfo info;
     info.name = isArray ? name + "[0]" : name;
@@ -352,6 +403,74 @@ LinkResult link(const LinkInput& input) {
         if (block.name == kDefaultBlockName) defaultBlockReflectionIndex = i;
         else liveBlocks.insert(topLevelName(block.name));
     }
+    // SPIR-V stores bools in blocks as uint; the AST keeps the GL types.
+    std::map<std::string, GLenum> boolTypes;
+    // Cross-stage uniform interface rules (GLSL 3.30 section 4.3.7): a block
+    // is anonymous in every stage or in none, and names that anonymous blocks
+    // put in the global scope must not clash with other blocks' members or
+    // with default-block uniforms.
+    std::map<std::string, bool> blockAnonymous;             // block name -> declared without instance name
+    std::map<std::string, std::string> globalUniformOwner;  // global name -> block name ("" = default block)
+    std::string interfaceError;
+    auto claimGlobal = [&](const std::string& name, const std::string& owner) {
+        auto [it, inserted] = globalUniformOwner.emplace(name, owner);
+        if (!inserted && it->second != owner && interfaceError.empty())
+            interfaceError = "error: uniform '" + name + "' is declared by both " +
+                             (it->second.empty() ? std::string("the default uniform block") : "block " + it->second) + " and " +
+                             (owner.empty() ? std::string("the default uniform block") : "block " + owner) + "\n";
+    };
+    // GL treats uniform blocks declared shared or std140 as active even when
+    // nothing references them (only packed blocks may be eliminated). The
+    // packing qualifier is gone in SPIR-V, so read it from the linker objects.
+    for (int s = 0; s < kStageCount; ++s) {
+        if (!stagePresent[s]) continue;
+        glslang::TIntermediate* intermediate = program.getIntermediate(language(static_cast<Stage>(s)));
+        glslang::TIntermAggregate* root = intermediate && intermediate->getTreeRoot()
+                                              ? intermediate->getTreeRoot()->getAsAggregate()
+                                              : nullptr;
+        if (!root) continue;
+        for (TIntermNode* node : root->getSequence()) {
+            glslang::TIntermAggregate* objects = node->getAsAggregate();
+            if (!objects || objects->getOp() != glslang::EOpLinkerObjects) continue;
+            for (TIntermNode* object : objects->getSequence()) {
+                glslang::TIntermSymbol* symbol = object->getAsSymbolNode();
+                if (!symbol) continue;
+                const glslang::TType& type = symbol->getType();
+                const glslang::TQualifier& q = type.getQualifier();
+                if (q.storage == glslang::EvqUniform) {
+                    if (type.getBasicType() == glslang::EbtBlock) {
+                        const bool anonymous = glslang::IsAnonymous(symbol->getName());
+                        const std::string blockName = type.getTypeName().c_str();
+                        collectBoolMembers(type, anonymous ? "" : blockName + ".", boolTypes);
+                        if (blockName != kDefaultBlockName) {
+                            auto [it, inserted] = blockAnonymous.emplace(blockName, anonymous);
+                            if (!inserted && it->second != anonymous && interfaceError.empty())
+                                interfaceError = "error: uniform block '" + blockName +
+                                                 "' has an instance name in one stage but not in another\n";
+                            if (anonymous)
+                                for (const glslang::TTypeLoc& member : *type.getStruct())
+                                    claimGlobal(member.type->getFieldName().c_str(), blockName);
+                        } else {
+                            // Loose uniforms gathered into the default block.
+                            for (const glslang::TTypeLoc& member : *type.getStruct())
+                                claimGlobal(member.type->getFieldName().c_str(), "");
+                        }
+                    } else {
+                        collectBoolMembers(type, symbol->getName().c_str(), boolTypes, true);
+                        claimGlobal(symbol->getName().c_str(), "");
+                    }
+                }
+                if (type.getBasicType() == glslang::EbtBlock && q.storage == glslang::EvqUniform &&
+                    (q.layoutPacking == glslang::ElpShared || q.layoutPacking == glslang::ElpStd140) &&
+                    type.getTypeName() != kDefaultBlockName)
+                    liveBlocks.insert(type.getTypeName().c_str());
+            }
+        }
+    }
+    if (!interfaceError.empty()) {
+        result.log += interfaceError;
+        return result;
+    }
     std::set<std::string> liveSamplers;
     for (int i = 0; i < program.getNumUniformVariables(); ++i) {
         const auto& u = program.getUniform(i);
@@ -408,6 +527,7 @@ LinkResult link(const LinkInput& input) {
                     expandMember(compiler, type, m, "", 0, -1, members);
                 for (UniformInfo& u : members) {
                     if (!liveDefault.count(topLevelName(u.name))) continue;
+                    if (auto b = boolTypes.find(arrayBaseName(u.name)); b != boolTypes.end()) u.type = b->second;
                     auto it = std::find_if(result.uniforms.begin(), result.uniforms.end(),
                                            [&](const UniformInfo& e) { return e.name == u.name && e.blockIndex < 0; });
                     if (it == result.uniforms.end()) {
@@ -420,9 +540,11 @@ LinkResult link(const LinkInput& input) {
                 continue;
             }
             if (!liveBlocks.count(blockName)) continue;
-            const uint32_t count = type.array.empty() ? 1 : std::max(1u, type.array.back());
+            // The variable's type carries the instance-array dimension, not the block struct.
+            const spirv_cross::SPIRType& varType = compiler.get_type(ubo.type_id);
+            const uint32_t count = varType.array.empty() ? 1 : std::max(1u, varType.array.back());
             for (uint32_t element = 0; element < count; ++element) {
-                const std::string name = type.array.empty() ? blockName : blockName + "[" + std::to_string(element) + "]";
+                const std::string name = varType.array.empty() ? blockName : blockName + "[" + std::to_string(element) + "]";
                 auto it = blockIndexByName.find(name);
                 int index;
                 if (it == blockIndexByName.end()) {
@@ -434,9 +556,12 @@ LinkResult link(const LinkInput& input) {
                     result.blocks.push_back(block);
                     std::vector<UniformInfo> members;
                     const spirv_cross::SPIRType& structType = compiler.get_type(ubo.base_type_id);
+                    // Members of a block without an instance name are named without the block prefix.
+                    const std::string prefix = compiler.get_name(ubo.id).empty() ? "" : blockName + ".";
                     for (uint32_t m = 0; m < structType.member_types.size(); ++m)
-                        expandMember(compiler, structType, m, blockName + ".", 0, index, members);
+                        expandMember(compiler, structType, m, prefix, 0, index, members);
                     for (UniformInfo& u : members) {
+                        if (auto b = boolTypes.find(arrayBaseName(u.name)); b != boolTypes.end()) u.type = b->second;
                         result.blocks[index].activeUniforms.push_back(static_cast<int>(result.uniforms.size()));
                         result.uniforms.push_back(u);
                     }
@@ -597,16 +722,22 @@ LinkResult link(const LinkInput& input) {
 
             // Uniform buffers.
             uint32_t nextBlockSlot = kSlotFirstUniformBlock;
+            // glslang can give an unreferenced resource the same binding as a
+            // referenced one, and SPIRV-Cross maps slots by (set, binding), so
+            // every resource gets a unique binding before slots are assigned.
+            uint32_t uniqueBinding = 0;
             for (const auto& ubo : resources.uniform_buffers) {
                 const uint32_t binding = msl.get_decoration(ubo.id, spv::DecorationBinding);
                 const std::string blockName = msl.get_name(ubo.base_type_id);
+                const bool defaultBlock = binding == kDefaultBlockBinding || blockName == kDefaultBlockName;
+                if (!defaultBlock) msl.set_decoration(ubo.id, spv::DecorationBinding, uniqueBinding++);
                 spirv_cross::MSLResourceBinding b;
                 b.stage = model;
                 b.desc_set = msl.get_decoration(ubo.id, spv::DecorationDescriptorSet);
-                b.binding = binding;
+                b.binding = msl.get_decoration(ubo.id, spv::DecorationBinding);
                 const spirv_cross::SPIRType& type = msl.get_type(ubo.type_id);
                 b.count = type.array.empty() ? 1 : std::max(1u, type.array.back());
-                if (binding == kDefaultBlockBinding || blockName == kDefaultBlockName) {
+                if (defaultBlock) {
                     b.msl_buffer = kSlotDefaultUniforms;
                     stage.usesDefaultUniforms = true;
                 } else {
@@ -630,6 +761,7 @@ LinkResult link(const LinkInput& input) {
                 const std::string name = msl.get_name(image.id);
                 const spirv_cross::SPIRType& type = msl.get_type(image.type_id);
                 const uint32_t count = type.array.empty() ? 1 : std::max(1u, type.array.back());
+                msl.set_decoration(image.id, spv::DecorationBinding, uniqueBinding++);
                 spirv_cross::MSLResourceBinding b;
                 b.stage = model;
                 b.desc_set = msl.get_decoration(image.id, spv::DecorationDescriptorSet);
@@ -679,6 +811,12 @@ LinkResult link(const LinkInput& input) {
                 }
             }
             stage.msl = msl.compile();
+            // WINEMETALGL_DUMP_SHADERS=1 prints every generated MSL stage (debugging aid).
+            static const bool dump = [] {
+                const char* v = std::getenv("WINEMETALGL_DUMP_SHADERS");
+                return v && v[0] == '1';
+            }();
+            if (dump) std::fprintf(stderr, "winemetalgl: MSL stage %d:\n%s\n", s, stage.msl.c_str());
             stage.entryPoint = msl.get_cleansed_entry_point_name("main", model);
             stage.writesPointSize = stage.msl.find("[[point_size]]") != std::string::npos;
         } catch (const std::exception& error) {

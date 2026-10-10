@@ -124,6 +124,7 @@ src/opengl/OpenGLBridge.mm
 src/opengl/WGLContextManager.mm
 src/opengl/WGLShim.cpp
 src/runtime/Logger.cpp
+tests/cts/baseline/gl33-cfg1-native.txt
 tests/cts/baseline/gl33-cfg1-oldcore.txt
 tests/cts/native/build.sh
 tests/cts/native/README.md
@@ -140,6 +141,7 @@ tests/gpu/gpu.h
 tests/gpu/main.cpp
 tests/gpu/query_tests.cpp
 tests/gpu/texture_tests.cpp
+tests/gpu/uniform_block_tests.cpp
 tests/host/format_tests.cpp
 tests/host/main.cpp
 tests/host/shader_tests.cpp
