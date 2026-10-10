@@ -1,5 +1,7 @@
 #include "core/metal/pipeline_cache.h"
 
+#import <objc/message.h>
+
 #include "core/metal/device.h"
 #include "core/program.h"
 #include "core/shader/compiler.h"
@@ -121,7 +123,11 @@ id<MTLSamplerState> PipelineCache::sampler(const SamplerKey& key) {
     desc.normalizedCoordinates = key.normalized;
     desc.lodMinClamp = key.lodMin;
     desc.lodMaxClamp = key.lodMax;
-    if (@available(macOS 26.0, *)) desc.lodBias = key.lodBias;
+    // MTLSamplerDescriptor.lodBias is macOS 26 API; set it through the
+    // runtime so builds with older SDKs (CI) keep it on systems that have it.
+    static const SEL setLodBias = NSSelectorFromString(@"setLodBias:");
+    if (key.lodBias != 0.0f && [desc respondsToSelector:setLodBias])
+        reinterpret_cast<void (*)(id, SEL, float)>(objc_msgSend)(desc, setLodBias, key.lodBias);
     desc.supportArgumentBuffers = NO;
     id<MTLSamplerState> state = [Device::get().mtl() newSamplerStateWithDescriptor:desc];
     samplers_.emplace(key, state);
