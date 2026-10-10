@@ -434,6 +434,8 @@ void storedToRgba(const FormatInfo& info, Texel& t) {
 
 }  // namespace
 
+void mapRgbaToStored(const FormatInfo& info, Texel& t) { rgbaToStored(info, t); }
+
 // ------------------------------------------------------------- storage
 
 void decodeStorage(Storage s, const uint8_t* p, Texel& t) {
@@ -685,7 +687,8 @@ void unpackPixels(const void* src, GLenum format, GLenum type, int width, int he
                     t.c[0] = t.c[1] = t.c[2] = 0.0;
                 }
                 if (format == GL_LUMINANCE || format == GL_LUMINANCE_ALPHA) {
-                    // L -> R (GL 3.3 compatibility, table 3.21); G and B are unused by luminance storage.
+                    // Conversion to RGB: L is copied into R, G and B (GL 2.1 section 3.6.5).
+                    t.c[1] = t.c[2] = t.c[0];
                 }
                 if (clampDepth) t.depth = std::clamp(t.depth, 0.0, 1.0);
                 if (info.type == ComponentType::UnsignedNormalized && !info.isDepthOrStencil())

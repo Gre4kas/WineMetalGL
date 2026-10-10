@@ -90,6 +90,8 @@ public:
     bool visibilityWanted() const { return visibilityWanted_; }
     // Reserves a slot in the open pass's visibility buffer (false if none).
     bool allocateVisibilitySlot(__strong id<MTLBuffer>& buffer, NSUInteger& offset);
+    // Whether a pass opened now could allocate a visibility slot.
+    bool visibilitySlotAvailable() const;
 
     // Serial of the most recently committed command buffer of this stream.
     uint64_t lastCommitted() const { return lastCommitted_; }

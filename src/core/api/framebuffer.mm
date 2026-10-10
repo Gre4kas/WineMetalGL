@@ -72,7 +72,9 @@ GLenum completeness(Context& ctx, Framebuffer* fb) {
         if (kind == 2 && !f->stencilRenderable) return GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT;
         if (a.type == GL_TEXTURE && a.texture) {
             const GLenum t = a.texture->target;
-            if ((t == GL_TEXTURE_3D || t == GL_TEXTURE_2D_ARRAY || t == GL_TEXTURE_1D_ARRAY) && !a.layered) {
+            if ((t == GL_TEXTURE_3D || t == GL_TEXTURE_2D_ARRAY || t == GL_TEXTURE_1D_ARRAY ||
+                 t == GL_TEXTURE_2D_MULTISAMPLE_ARRAY || t == GL_TEXTURE_CUBE_MAP_ARRAY) &&
+                !a.layered) {
                 const TextureImage& image = a.texture->image(0, a.level);
                 const GLsizei layers = t == GL_TEXTURE_1D_ARRAY ? image.height : image.depth;
                 if (a.layer >= layers) return GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT;
@@ -668,8 +670,7 @@ void ReadPixels(Context& ctx, GLint x, GLint y, GLsizei width, GLsizei height, G
             if (!surface || (depth && !surface->hasDepth()) || (stencil && !surface->hasStencil()) ||
                 (depthStencil && !(surface->hasDepth() && surface->hasStencil())))
                 return ctx.setError(GL_INVALID_OPERATION);
-            if (surface->samples() > 1) return ctx.setError(GL_INVALID_OPERATION);
-            source = surface->depthStencil();
+            source = surface->resolvedDepthStencil(ctx.stream());
             internalFormat = surface->hasStencil() ? GL_DEPTH24_STENCIL8 : surface->pixelFormat().depth_bits == 16 ? GL_DEPTH_COMPONENT16 : GL_DEPTH_COMPONENT24;
             levelWidth = surface->width();
             levelHeight = surface->height();

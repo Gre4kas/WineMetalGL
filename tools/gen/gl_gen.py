@@ -194,8 +194,8 @@ def list_recorder(cmd, info, api_name):
         comp = [x for x in m.group(1).split(",") if x] if m else None
         if comp is not None and len(comp) >= 3 and comp[0] == "format" and comp[1] == "type":
             dims = comp[2:] + ["1"] * (3 - len(comp[2:]))
-            pre.append("wmgl::list::Pixels px_%s = wmgl::list::capturePixels(ctx, %s, format, type, %s);" % (
-                pname, pname, ", ".join(dims)))
+            pre.append("wmgl::list::Pixels px_%s = wmgl::list::capturePixels(ctx, %s, format, type, %s, %s);" % (
+                pname, pname, ", ".join(dims), "true" if len(comp) == 5 else "false"))
             captures.append("px_%s = std::move(px_%s)" % (pname, pname))
             args.append("static_cast<%s>(px_%s.data())" % (ptype, pname))
             scope = "px_" + pname

@@ -34,6 +34,7 @@ import threading
 import time
 import xml.etree.ElementTree as ET
 
+MAX_ABORTS = 20  # platform aborts tolerated per shard before cases are marked Crash
 MUSTPASS_REL = "external/openglcts/data/gl_cts/data/mustpass/gl/khronos_mustpass/main"
 CASE_BEGIN = re.compile(r"^#beginTestCaseResult (\S+)")
 CASE_END = re.compile(r"^#(endTestCaseResult|terminateTestCaseResult)")
@@ -122,6 +123,7 @@ class Shard:
         self.results = collections.OrderedDict()
         self.prefix = os.path.join(workdir, "prefix-%d" % index)
         self.attempt = 0
+        self.aborts = 0
 
     def run(self):
         if not self.args.native:
@@ -133,9 +135,18 @@ class Shard:
             qpa = os.path.join(self.workdir, "shard-%d-%d.qpa" % (self.index, self.attempt))
             with open(caselist, "w") as handle:
                 handle.write("\n".join(remaining) + "\n")
-            killed = self._run_process(caselist, qpa)
+            killed, aborted = self._run_process(caselist, qpa)
             done, unfinished = parse_qpa(qpa)
             self.results.update(done)
+            # dEQP's Win32 test window posts WM_QUIT when it is destroyed;
+            # when the platform loop sees it the run stops between or inside
+            # cases ("Test run was ABORTED!"). That is not a crash of the case
+            # in progress: run the remaining cases again (bounded).
+            if aborted and not killed and self.aborts < MAX_ABORTS:
+                self.aborts += 1
+                sys.stderr.write("shard %d: run aborted by the platform (%d), resuming\n" % (self.index, self.aborts))
+                remaining = [c for c in remaining if c not in self.results]
+                continue
             if unfinished is not None and unfinished not in self.results:
                 self.results[unfinished] = "Timeout" if killed else "Crash"
             next_remaining = [c for c in remaining if c not in self.results]
@@ -165,7 +176,9 @@ class Shard:
             "--deqp-log-shader-sources=%s" % ("enable" if self.args.log_shaders else "disable"),
             "--deqp-terminate-on-device-lost=disable",
         ] + self.config_args
-        stdout = open(os.path.join(self.workdir, "shard-%d.log" % self.index), "ab")
+        log = os.path.join(self.workdir, "shard-%d.log" % self.index)
+        log_start = os.path.getsize(log) if os.path.exists(log) else 0
+        stdout = open(log, "ab")
         process = subprocess.Popen(command, cwd=os.path.dirname(self.args.cts), env=env,
                                    stdout=stdout, stderr=subprocess.STDOUT, start_new_session=True)
         last_size = -1
@@ -185,7 +198,10 @@ class Shard:
                 break
         stdout.close()
         self._kill_wineserver()
-        return killed
+        with open(log, "rb") as handle:
+            handle.seek(log_start)
+            aborted = b"Test run was ABORTED" in handle.read()
+        return killed, aborted
 
     def _kill_wineserver(self):
         if self.args.native:

@@ -22,14 +22,15 @@
 namespace wmgl::api {
 namespace {
 
-PixelStoreParams packParams(const PixelStore& s) {
+// IMAGE_HEIGHT and SKIP_IMAGES apply to three-dimensional images only.
+PixelStoreParams packParams(const PixelStore& s, bool threeD) {
     PixelStoreParams ps;
     ps.alignment = s.alignment;
     ps.rowLength = s.rowLength;
-    ps.imageHeight = s.imageHeight;
+    ps.imageHeight = threeD ? s.imageHeight : 0;
     ps.skipPixels = s.skipPixels;
     ps.skipRows = s.skipRows;
-    ps.skipImages = s.skipImages;
+    ps.skipImages = threeD ? s.skipImages : 0;
     ps.swapBytes = s.swapBytes;
     return ps;
 }
@@ -49,9 +50,9 @@ bool fits(Context& ctx, size_t needed, GLsizei bufSize) {
     return true;
 }
 
-size_t imageBytes(Context& ctx, GLenum format, GLenum type, GLint width, GLint height, GLint depth) {
+size_t imageBytes(Context& ctx, GLenum format, GLenum type, GLint width, GLint height, GLint depth, bool threeD) {
     if (width <= 0 || height <= 0 || depth <= 0) return 0;
-    return transferLayout(format, type, width, height, depth, packParams(ctx.state.pack)).bytesNeeded;
+    return transferLayout(format, type, width, height, depth, packParams(ctx.state.pack, threeD)).bytesNeeded;
 }
 
 }  // namespace
@@ -66,7 +67,7 @@ GLenum GetGraphicsResetStatus(Context& ctx) {
 void ReadnPixels(Context& ctx, GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type,
                  GLsizei bufSize, void* data) {
     if (width < 0 || height < 0) return ctx.setError(GL_INVALID_VALUE);
-    if (!fits(ctx, imageBytes(ctx, format, type, width, height, 1), bufSize)) return;
+    if (!fits(ctx, imageBytes(ctx, format, type, width, height, 1, false), bufSize)) return;
     ReadPixels(ctx, x, y, width, height, format, type, data);
 }
 
@@ -111,7 +112,10 @@ void GetnTexImage(Context& ctx, GLenum target, GLint level, GLenum format, GLenu
     const GLenum error = ctx.takeError();
     if (before) ctx.setError(before);
     if (error) return GetTexImage(ctx, target, level, format, type, pixels);  // reports the error
-    if (!fits(ctx, imageBytes(ctx, format, type, w, h, d), bufSize)) return;
+    if (!fits(ctx, imageBytes(ctx, format, type, w, h, d,
+                              target == GL_TEXTURE_3D || target == GL_TEXTURE_2D_ARRAY ||
+                                  target == GL_TEXTURE_CUBE_MAP_ARRAY),
+             bufSize)) return;
     GetTexImage(ctx, target, level, format, type, pixels);
 }
 

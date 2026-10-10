@@ -41,8 +41,9 @@ struct Pixels {
     bool null = true;
     const void* data() const { return null ? nullptr : bytes.data(); }
 };
+// `threeD`: a three-dimensional image (IMAGE_HEIGHT and SKIP_IMAGES apply).
 Pixels capturePixels(Context& ctx, const void* data, GLenum format, GLenum type, GLsizei width, GLsizei height,
-                     GLsizei depth);
+                     GLsizei depth, bool threeD);
 Pixels captureBitmap(Context& ctx, const void* data, GLsizei width, GLsizei height);
 Pixels captureBytes(Context& ctx, const void* data, GLsizei size);
 struct UnpackScope {

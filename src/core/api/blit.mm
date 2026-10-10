@@ -42,12 +42,13 @@ Rect intersect(Rect a, Rect b) {
     return {std::max(a.x0, b.x0), std::max(a.y0, b.y0), std::min(a.x1, b.x1), std::min(a.y1, b.y1)};
 }
 
+// `writeAlpha` false keeps the stored alpha of an RGB format (always one).
 id<MTLRenderPipelineState> blitPipeline(NSString* fragment, MTLPixelFormat color, MTLPixelFormat depth,
-                                        MTLPixelFormat stencil, uint32_t samples) {
+                                        MTLPixelFormat stencil, uint32_t samples, bool writeAlpha = true) {
     static std::mutex mutex;
     static std::unordered_map<std::string, id<MTLRenderPipelineState>> cache;
     const std::string key = std::string(fragment.UTF8String) + "/" + std::to_string(color) + "/" + std::to_string(depth) +
-                            "/" + std::to_string(stencil) + "/" + std::to_string(samples);
+                            "/" + std::to_string(stencil) + "/" + std::to_string(samples) + (writeAlpha ? "" : "/rgb");
     std::lock_guard<std::mutex> lock(mutex);
     auto it = cache.find(key);
     if (it != cache.end()) return it->second;
@@ -56,6 +57,7 @@ id<MTLRenderPipelineState> blitPipeline(NSString* fragment, MTLPixelFormat color
     desc.vertexFunction = [library newFunctionWithName:@"wmgl_clear_vs"];
     desc.fragmentFunction = [library newFunctionWithName:fragment];
     desc.colorAttachments[0].pixelFormat = color;
+    if (!writeAlpha) desc.colorAttachments[0].writeMask = MTLColorWriteMaskRed | MTLColorWriteMaskGreen | MTLColorWriteMaskBlue;
     desc.depthAttachmentPixelFormat = depth;
     desc.stencilAttachmentPixelFormat = stencil;
     desc.rasterSampleCount = samples;
@@ -337,13 +339,16 @@ void BlitFramebuffer(Context& ctx, GLint srcX0, GLint srcY0, GLint srcX1, GLint 
     // Sources; buffers missing from either framebuffer are silently skipped.
     RenderTargetDesc::Target srcColor, srcDepth, srcStencil;
     const FormatInfo *colorInfo = nullptr, *depthInfo = nullptr, *stencilInfo = nullptr;
-    uint32_t srcW = 0, srcH = 0, srcSamples = 1, w, h, s;
+    // Each read buffer has its own size (attachments may differ, GL 3.0).
+    uint32_t srcW = 0, srcH = 0, srcSamples = 1, depthW = 0, depthH = 0, depthSamples = 1, stencilW = 0, stencilH = 0,
+             stencilSamples = 1;
     bool doColor = (mask & GL_COLOR_BUFFER_BIT) && draw.readTarget(GL_COLOR, srcColor, colorInfo, srcW, srcH, srcSamples);
-    bool doDepth = (mask & GL_DEPTH_BUFFER_BIT) && dstFormats.depthAttached && draw.readTarget(GL_DEPTH, srcDepth, depthInfo, w, h, s);
-    if (doDepth && !doColor) { srcW = w; srcH = h; srcSamples = s; }
+    bool doDepth = (mask & GL_DEPTH_BUFFER_BIT) && dstFormats.depthAttached &&
+                   draw.readTarget(GL_DEPTH, srcDepth, depthInfo, depthW, depthH, depthSamples);
+    if (doDepth && !doColor) srcSamples = depthSamples;
     bool doStencil = (mask & GL_STENCIL_BUFFER_BIT) && dstFormats.stencilAttached &&
-                     draw.readTarget(GL_STENCIL, srcStencil, stencilInfo, w, h, s);
-    if (doStencil && !doColor && !doDepth) { srcW = w; srcH = h; srcSamples = s; }
+                     draw.readTarget(GL_STENCIL, srcStencil, stencilInfo, stencilW, stencilH, stencilSamples);
+    if (doStencil && !doColor && !doDepth) srcSamples = stencilSamples;
     if (doColor) {
         bool anyDst = false;
         for (int i = 0; i < 8; ++i) anyDst |= dst.color[i].texture != nil;
@@ -372,15 +377,22 @@ void BlitFramebuffer(Context& ctx, GLint srcX0, GLint srcY0, GLint srcX1, GLint 
     if (srcX0 == srcX1 || srcY0 == srcY1 || dstX0 == dstX1 || dstY0 == dstY1) return;
     const Rect scissor = writableRect(ctx, normalized(dstX0, dstY0, dstX1, dstY1), dst.width, dst.height);
     if (scissor.empty()) return;
-    BlitParams params = {{static_cast<float>(dstX0), static_cast<float>(dstY0), static_cast<float>(dstX1), static_cast<float>(dstY1)},
-                         {static_cast<float>(srcX0), static_cast<float>(srcY0), static_cast<float>(srcX1), static_cast<float>(srcY1)},
-                         {static_cast<float>(srcW), static_cast<float>(srcH), filter == GL_LINEAR ? 1.0f : 0.0f, 0}};
+    auto paramsFor = [&](uint32_t width, uint32_t height) {
+        return BlitParams{
+            {static_cast<float>(dstX0), static_cast<float>(dstY0), static_cast<float>(dstX1), static_cast<float>(dstY1)},
+            {static_cast<float>(srcX0), static_cast<float>(srcY0), static_cast<float>(srcX1), static_cast<float>(srcY1)},
+            {static_cast<float>(width), static_cast<float>(height), filter == GL_LINEAR ? 1.0f : 0.0f, 0}};
+    };
+    const BlitParams params = paramsFor(srcW, srcH);
 
     if (doColor) {
         id<MTLTexture> view = nil;
         for (int i = 0; i < 8; ++i) {
             if (!dst.color[i].texture) continue;
-            if (tryCopy(ctx, srcColor, srcW, srcH, dst.color[i], dst.width, dst.height, srcRect, dstRect)) continue;
+            // An RGB destination keeps its stored alpha of one; a raw copy would overwrite it.
+            const bool keepAlpha = dstFormats.alphaIsOne[i] && !(colorInfo && colorInfo->storedAlphaIsOne);
+            if (!keepAlpha && tryCopy(ctx, srcColor, srcW, srcH, dst.color[i], dst.width, dst.height, srcRect, dstRect))
+                continue;
             if (!view) view = sourceView(ctx, srcColor, srcW, srcH);
             RenderTargetDesc target;
             target.color[0] = dst.color[i];
@@ -389,15 +401,15 @@ void BlitFramebuffer(Context& ctx, GLint srcX0, GLint srcY0, GLint srcX1, GLint 
             target.samples = dst.samples;
             id<MTLRenderPipelineState> pipeline =
                 blitPipeline(colorShader(colorInfo, view.sampleCount > 1), dstFormats.color[i], MTLPixelFormatInvalid,
-                             MTLPixelFormatInvalid, dst.samples);
+                             MTLPixelFormatInvalid, dst.samples, !dstFormats.alphaIsOne[i]);
             if (pipeline) drawBlit(ctx, target, pipeline, view, params, scissor, false, filter == GL_LINEAR);
         }
     }
     if (doDepth) {
         // Copying a combined depth/stencil texture would also copy stencil.
         const bool combined = dstFormats.depth == MTLPixelFormatDepth32Float_Stencil8;
-        if (combined || !tryCopy(ctx, srcDepth, srcW, srcH, dst.depth, dst.width, dst.height, srcRect, dstRect)) {
-            id<MTLTexture> view = sourceView(ctx, srcDepth, srcW, srcH);
+        if (combined || !tryCopy(ctx, srcDepth, depthW, depthH, dst.depth, dst.width, dst.height, srcRect, dstRect)) {
+            id<MTLTexture> view = sourceView(ctx, srcDepth, depthW, depthH);
             RenderTargetDesc target;
             target.depth = dst.depth;
             if (combined) target.stencil = dst.depth;  // Metal binds combined formats at both points
@@ -407,12 +419,12 @@ void BlitFramebuffer(Context& ctx, GLint srcX0, GLint srcY0, GLint srcX1, GLint 
             id<MTLRenderPipelineState> pipeline = blitPipeline(view.sampleCount > 1 ? @"wmgl_blit_depth_ms_fs" : @"wmgl_blit_depth_fs",
                                                                MTLPixelFormatInvalid, dstFormats.depth,
                                                                combined ? dstFormats.depth : MTLPixelFormatInvalid, dst.samples);
-            if (pipeline) drawBlit(ctx, target, pipeline, view, params, scissor, true, false);
+            if (pipeline) drawBlit(ctx, target, pipeline, view, paramsFor(depthW, depthH), scissor, true, false);
         }
     }
     if (doStencil)
-        blitStencil(ctx, srcStencil, srcW, srcH, dst.stencil, dstFormats.depth, dst.samples, dst.width, dst.height, srcRect,
-                    dstRect);
+        blitStencil(ctx, srcStencil, stencilW, stencilH, dst.stencil, dstFormats.depth, dst.samples, dst.width, dst.height,
+                    srcRect, dstRect);
     // Draws after the blit start a fresh pass with their own state.
     ctx.stream().endEncoder();
     ctx.markDirty(kDirtyAll);

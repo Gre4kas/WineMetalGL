@@ -174,6 +174,8 @@ void CommandStream::setVisibilityWanted(bool wanted) {
     if (wanted && render_ && !passVisibility_) endEncoder();
 }
 
+bool CommandStream::visibilitySlotAvailable() const { return !visibility_ || visibilityUsed_ < kVisibilitySlots; }
+
 bool CommandStream::allocateVisibilitySlot(__strong id<MTLBuffer>& buffer, NSUInteger& offset) {
     if (!render_ || !passVisibility_ || visibilityUsed_ >= kVisibilitySlots) return false;
     buffer = visibility_;

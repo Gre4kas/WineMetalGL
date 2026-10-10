@@ -26,9 +26,12 @@ bool compileElements(Context& ctx, GLenum mode, GLsizei count, GLenum type, cons
     if (!size) return true;  // the draw reports the error
     const uint8_t* source = static_cast<const uint8_t*>(indices);
     if (Buffer* elements = ctx.state.vertexArray->elementBuffer.get()) {
-        if (!elements->mtl) return true;
+        // Indices past the end of the buffer draw nothing, as in DrawState::drawElements.
+        const uintptr_t offset = reinterpret_cast<uintptr_t>(indices);
+        if (!elements->mtl || offset + static_cast<size_t>(count) * size > static_cast<size_t>(elements->size))
+            return false;
         if (elements->lastWriteSerial) ctx.stream().waitFor(elements->lastWriteSerial);
-        source = elements->contents() + reinterpret_cast<uintptr_t>(indices);
+        source = elements->contents() + offset;
     }
     if (!source) return true;
     std::vector<uint32_t> list(static_cast<size_t>(count));

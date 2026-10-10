@@ -66,6 +66,9 @@ public:
     bool swap(CommandStream& stream);
     // Resolves multisampled colour into the single-sample texture for reads.
     void resolveForRead(CommandStream& stream);
+    // The depth/stencil buffer for reads: resolved (sample 0) into a
+    // single-sample texture when multisampled.
+    id<MTLTexture> resolvedDepthStencil(CommandStream& stream);
 
 private:
     void allocate();
@@ -82,7 +85,7 @@ private:
     int width_ = 0, height_ = 0;
     uint32_t samples_ = 1;
     int interval_ = 1;
-    id<MTLTexture> color_ = nil, resolve_ = nil, depthStencil_ = nil, linearColor_ = nil;
+    id<MTLTexture> color_ = nil, resolve_ = nil, depthStencil_ = nil, depthResolve_ = nil, linearColor_ = nil;
     std::mutex pipelineMutex_;
     id<MTLRenderPipelineState> presentPipeline_ = nil;
     id<MTLSamplerState> presentSampler_ = nil;

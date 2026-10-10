@@ -141,6 +141,40 @@ fragment BlitDepthOut wmgl_blit_depth_ms_fs(ClearOut in [[stage_in]], depth2d_ms
     if (any(c < 0) || any(c >= int2(b.srcSize.xy))) discard_fragment();
     return BlitDepthOut{source.read(uint2(c), 0)};
 }
+
+// Geometry-shader strips as lists listing GL's last-vertex provoking vertex
+// first (Metal flat-shades from a primitive's first vertex); each triangle is
+// rotated, so its winding is unchanged. One thread per input primitive:
+// params.x = index region per thread (slot indices and 0xFFFFFFFF restarts),
+// params.y = output indices per thread, params.z = 1 for triangles and 0 for
+// lines, params.w = thread count. Unused output entries repeat one vertex.
+kernel void wmgl_strips_provoking_last(device const uint* in [[buffer(0)]], device uint* out [[buffer(1)]],
+                                       constant uint4& params [[buffer(2)]], uint t [[thread_position_in_grid]]) {
+    if (t >= params.w) return;
+    device const uint* r = in + t * params.x;
+    device uint* o = out + t * params.y;
+    uint n = 0, run = 0, a = 0, b = 0, fill = t * (params.x / 2u);
+    bool any = false;
+    for (uint i = 0; i < params.x; ++i) {
+        uint v = r[i];
+        if (v == 0xFFFFFFFFu) { run = 0; continue; }
+        if (!any) { fill = v; any = true; }
+        if (params.z != 0u) {
+            if (run >= 2u) {
+                o[n++] = v;
+                o[n++] = (run & 1u) != 0u ? b : a;
+                o[n++] = (run & 1u) != 0u ? a : b;
+            }
+        } else if (run >= 1u) {
+            o[n++] = v;
+            o[n++] = b;
+        }
+        a = b;
+        b = v;
+        ++run;
+    }
+    for (; n < params.y; ++n) o[n] = fill;
+}
 )MSL";
 
 }  // namespace wmgl

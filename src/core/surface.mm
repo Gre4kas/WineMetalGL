@@ -129,7 +129,7 @@ void Surface::allocate() {
         resolve_ = nil;
     }
     color_.label = @"default framebuffer";
-    depthStencil_ = nil;
+    depthStencil_ = depthResolve_ = nil;
     if (pf.depth_bits || pf.stencil_bits) {
         MTLPixelFormat dsFormat = pf.stencil_bits ? MTLPixelFormatDepth32Float_Stencil8
                                   : pf.depth_bits == 16 ? MTLPixelFormatDepth16Unorm
@@ -214,6 +214,39 @@ void Surface::resolveForRead(CommandStream& stream) {
     pass.colorAttachments[0].loadAction = MTLLoadActionLoad;
     pass.colorAttachments[0].storeAction = MTLStoreActionStoreAndMultisampleResolve;
     [[stream.commandBuffer() renderCommandEncoderWithDescriptor:pass] endEncoding];
+}
+
+id<MTLTexture> Surface::resolvedDepthStencil(CommandStream& stream) {
+    if (!depthStencil_ || samples_ <= 1) return depthStencil_;
+    if (!depthResolve_) {
+        MTLTextureDescriptor* desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:depthStencil_.pixelFormat
+                                                                                         width:width_
+                                                                                        height:height_
+                                                                                     mipmapped:NO];
+        desc.storageMode = MTLStorageModePrivate;
+        desc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+        depthResolve_ = [Device::get().mtl() newTextureWithDescriptor:desc];
+        depthResolve_.label = @"default depth/stencil (resolved)";
+    }
+    stream.resolvePendingClear();
+    stream.endEncoder();
+    MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
+    if (hasDepth()) {
+        pass.depthAttachment.texture = depthStencil_;
+        pass.depthAttachment.resolveTexture = depthResolve_;
+        pass.depthAttachment.loadAction = MTLLoadActionLoad;
+        pass.depthAttachment.storeAction = MTLStoreActionStoreAndMultisampleResolve;
+        pass.depthAttachment.depthResolveFilter = MTLMultisampleDepthResolveFilterSample0;
+    }
+    if (hasStencil()) {
+        pass.stencilAttachment.texture = depthStencil_;
+        pass.stencilAttachment.resolveTexture = depthResolve_;
+        pass.stencilAttachment.loadAction = MTLLoadActionLoad;
+        pass.stencilAttachment.storeAction = MTLStoreActionStoreAndMultisampleResolve;
+        pass.stencilAttachment.stencilResolveFilter = MTLMultisampleStencilResolveFilterSample0;
+    }
+    [[stream.commandBuffer() renderCommandEncoderWithDescriptor:pass] endEncoding];
+    return depthResolve_;
 }
 
 namespace {

@@ -169,14 +169,20 @@ bool checkFormatType(Context& ctx, GLenum format, GLenum type) {
     return false;
 }
 
-PixelStoreParams storeParams(const PixelStore& s) {
+bool threeDTarget(GLenum target) {
+    return target == GL_TEXTURE_3D || target == GL_TEXTURE_2D_ARRAY || target == GL_TEXTURE_CUBE_MAP_ARRAY;
+}
+
+// IMAGE_HEIGHT and SKIP_IMAGES apply to three-dimensional transfers only
+// (GL 3.3 section 3.7.4).
+PixelStoreParams storeParams(const PixelStore& s, bool threeD) {
     PixelStoreParams ps;
     ps.alignment = s.alignment;
     ps.rowLength = s.rowLength;
-    ps.imageHeight = s.imageHeight;
+    ps.imageHeight = threeD ? s.imageHeight : 0;
     ps.skipPixels = s.skipPixels;
     ps.skipRows = s.skipRows;
-    ps.skipImages = s.skipImages;
+    ps.skipImages = threeD ? s.skipImages : 0;
     ps.swapBytes = s.swapBytes;
     return ps;
 }
@@ -300,7 +306,8 @@ void uploadRegion(Context& ctx, Texture& tex, int face, int level, int x, int y,
     }
     const size_t texel = storageBytes(image.format->storage);
     std::vector<uint8_t> texels(static_cast<size_t>(w) * h * d * texel);
-    unpackPixels(src, format, type, w, h, d, storeParams(ctx.state.unpack), *image.format, texels.data());
+    unpackPixels(src, format, type, w, h, d, storeParams(ctx.state.unpack, threeDTarget(tex.target)), *image.format,
+                 texels.data());
     metalRegion(tex, x, y, z, w, h, d);
     uploadTexels(ctx, tex, face, level, x, y, z, w, h, d, texels.data(), static_cast<size_t>(w) * texel,
                  static_cast<size_t>(w) * h * texel);
@@ -389,7 +396,7 @@ void uploadRgtcRegion(Context& ctx, Texture& tex, int face, int level, int x, in
     const TextureImage& image = tex.image(face, level);
     const FormatInfo* rgba = formatInfo(GL_RGBA32F);
     std::vector<float> texels(static_cast<size_t>(w) * h * d * 4);
-    unpackPixels(src, format, type, w, h, d, storeParams(ctx.state.unpack), *rgba, texels.data());
+    unpackPixels(src, format, type, w, h, d, storeParams(ctx.state.unpack, threeDTarget(tex.target)), *rgba, texels.data());
     std::vector<uint8_t> blocks(compressedSize(*image.format, w, h, d));
     encodeRgtc(image.format->storage, texels.data(), w, h, d, blocks.data());
     metalRegion(tex, x, y, z, w, h, d);
@@ -460,7 +467,7 @@ void texImage(Context& ctx, int dims, GLenum target, GLint level, GLint internal
         image.depth = depth;
         return;
     }
-    const PixelStoreParams ps = storeParams(ctx.state.unpack);
+    const PixelStoreParams ps = storeParams(ctx.state.unpack, dims == 3);
     const TransferLayout layout = transferLayout(format, type, width, height, depth, ps);
     const uint8_t* src = nullptr;
     if (!unpackSource(ctx, pixels, width && height && depth ? layout.bytesNeeded : 0, typeSize(type), src)) return;
@@ -495,7 +502,7 @@ void texSubImage(Context& ctx, int dims, GLenum target, GLint level, GLint x, GL
     if (rgtc && ((x % 4) || (y % 4) || ((w % 4) && x + w != image.width) || ((h % 4) && y + h != image.height)))
         return ctx.setError(GL_INVALID_OPERATION);
     if (!textureTransferCompatible(format, type, *image.format)) return ctx.setError(GL_INVALID_OPERATION);
-    const TransferLayout layout = transferLayout(format, type, w, h, d, storeParams(ctx.state.unpack));
+    const TransferLayout layout = transferLayout(format, type, w, h, d, storeParams(ctx.state.unpack, dims == 3));
     const uint8_t* src = nullptr;
     if (!unpackSource(ctx, pixels, w && h && d ? layout.bytesNeeded : 0, typeSize(type), src)) return;
     if (rgtc) {
@@ -616,8 +623,10 @@ bool copySource(Context& ctx, bool depth, CopySource& out, bool stencil = false)
         Surface* surface = ctx.readSurface();
         if (!surface || !surface->hasDepth() || (stencil && !surface->hasStencil()))
             return ctx.setError(GL_INVALID_OPERATION), false;
-        out.texture = surface->depthStencil();
-        out.info = formatInfo(surface->hasStencil() ? GL_DEPTH24_STENCIL8 : GL_DEPTH_COMPONENT24);
+        out.texture = surface->resolvedDepthStencil(ctx.stream());
+        out.info = formatInfo(surface->hasStencil()                  ? GL_DEPTH24_STENCIL8
+                              : surface->pixelFormat().depth_bits == 16 ? GL_DEPTH_COMPONENT16
+                                                                        : GL_DEPTH_COMPONENT24);
         out.width = surface->width();
         out.height = surface->height();
     }
@@ -688,17 +697,25 @@ void copyRegion(Context& ctx, Texture& tex, int face, int level, int dx, int dy,
                                                          : tex.target == GL_TEXTURE_3D  ? 0
                                                                                         : mz);
     const NSUInteger destZ = tex.target == GL_TEXTURE_3D ? static_cast<NSUInteger>(mz) : 0;
-    if (src.texture.pixelFormat == tex.mtl.pixelFormat && tex.target != GL_TEXTURE_1D_ARRAY) {
+    // A 3D source layer is a depth plane, not a slice.
+    const bool src3D = src.texture.textureType == MTLTextureType3D;
+    const uint32_t srcSlice = src3D ? 0 : src.slice, srcZ = src3D ? src.slice : 0;
+    // A raw copy keeps the stored channels: exact unless the destination
+    // maps them (alpha and luminance-alpha formats, RGB's stored alpha).
+    const FormatInfo& dstInfo = *image.format;
+    const bool raw = dstInfo.baseFormat != GL_ALPHA && dstInfo.baseFormat != GL_LUMINANCE_ALPHA &&
+                     (!dstInfo.storedAlphaIsOne || src.info->storedAlphaIsOne);
+    if (raw && src.texture.pixelFormat == tex.mtl.pixelFormat && tex.target != GL_TEXTURE_1D_ARRAY) {
         id<MTLBlitCommandEncoder> blit = ctx.stream().blit();
-        [blit copyFromTexture:src.texture sourceSlice:src.slice sourceLevel:src.level sourceOrigin:MTLOriginMake(x0, y0, 0)
+        [blit copyFromTexture:src.texture sourceSlice:srcSlice sourceLevel:src.level sourceOrigin:MTLOriginMake(x0, y0, srcZ)
                    sourceSize:MTLSizeMake(cw, ch, 1) toTexture:tex.mtl destinationSlice:destSlice
              destinationLevel:static_cast<NSUInteger>(level) destinationOrigin:MTLOriginMake(mx, my, destZ)];
         imageChanged(ctx, tex);
         return;
     }
     // Format conversion through the canonical texel.
-    std::vector<uint8_t> texels = readImageTexels(ctx, src.texture, src.info->storage, src.level, src.slice, x0, y0, 0,
-                                                  cw, ch, 1);
+    std::vector<uint8_t> texels = readImageTexels(ctx, src.texture, src.info->storage, src.level, srcSlice, x0, y0,
+                                                  static_cast<int>(srcZ), cw, ch, 1);
     const size_t inBytes = storageBytes(src.info->storage), outBytes = storageBytes(image.format->storage);
     std::vector<uint8_t> converted(static_cast<size_t>(cw) * ch * outBytes);
     for (size_t i = 0; i < static_cast<size_t>(cw) * ch; ++i) {
@@ -706,9 +723,11 @@ void copyRegion(Context& ctx, Texture& tex, int face, int level, int dx, int dy,
         decodeStorage(src.info->storage, &texels[i * inBytes], texel);
         // Source channels missing from the read buffer format read as (0, 0, 0, 1).
         const uint8_t bits[4] = {src.info->redBits, src.info->greenBits, src.info->blueBits, src.info->alphaBits};
-        if (!src.info->isDepthOrStencil())
+        if (!src.info->isDepthOrStencil()) {
             for (int c = 0; c < 4; ++c)
                 if (!bits[c]) texel.c[c] = c == 3 ? 1.0 : 0.0;
+            mapRgbaToStored(dstInfo, texel);
+        }
         encodeStorage(image.format->storage, texel, &converted[i * outBytes]);
     }
     if (tex.target == GL_TEXTURE_1D_ARRAY) {
@@ -820,8 +839,10 @@ ParamValues paramFloats(const GLfloat* v, int count) {
 
 bool isVectorParam(GLenum pname) { return pname == GL_TEXTURE_BORDER_COLOR || pname == GL_TEXTURE_SWIZZLE_RGBA; }
 
-bool validWrap(GLenum v) {
-    return v == GL_CLAMP_TO_EDGE || v == GL_REPEAT || v == GL_MIRRORED_REPEAT || v == GL_CLAMP_TO_BORDER;
+// GL_CLAMP is compatibility-profile only.
+bool validWrap(GLenum v, bool compat) {
+    return v == GL_CLAMP_TO_EDGE || v == GL_REPEAT || v == GL_MIRRORED_REPEAT || v == GL_CLAMP_TO_BORDER ||
+           (compat && v == GL_CLAMP);
 }
 
 bool validCompareFunc(GLenum v) { return v >= GL_NEVER && v <= GL_ALWAYS; }
@@ -835,7 +856,7 @@ bool enumValue(const ParamValues& v, GLenum& out) {
 
 // Applies a sampler-state parameter. Returns GL_NO_ERROR, an error, or
 // GL_INVALID_ENUM for names that are not sampler state.
-GLenum setSamplerParam(SamplerParams& p, GLenum pname, const ParamValues& v, GLenum target) {
+GLenum setSamplerParam(SamplerParams& p, GLenum pname, const ParamValues& v, GLenum target, bool compat) {
     const bool rect = target == GL_TEXTURE_RECTANGLE;
     GLenum e = 0;
     switch (pname) {
@@ -852,8 +873,8 @@ GLenum setSamplerParam(SamplerParams& p, GLenum pname, const ParamValues& v, GLe
         p.magFilter = e;
         return GL_NO_ERROR;
     case GL_TEXTURE_WRAP_S: case GL_TEXTURE_WRAP_T: case GL_TEXTURE_WRAP_R:
-        if (!enumValue(v, e) || !validWrap(e)) return GL_INVALID_ENUM;
-        if (rect && e != GL_CLAMP_TO_EDGE && e != GL_CLAMP_TO_BORDER) return GL_INVALID_ENUM;
+        if (!enumValue(v, e) || !validWrap(e, compat)) return GL_INVALID_ENUM;
+        if (rect && e != GL_CLAMP_TO_EDGE && e != GL_CLAMP_TO_BORDER && e != GL_CLAMP) return GL_INVALID_ENUM;
         (pname == GL_TEXTURE_WRAP_S ? p.wrapS : pname == GL_TEXTURE_WRAP_T ? p.wrapT : p.wrapR) = e;
         return GL_NO_ERROR;
     case GL_TEXTURE_MIN_LOD: p.minLod = static_cast<GLfloat>(v.f[0]); return GL_NO_ERROR;
@@ -913,7 +934,7 @@ void texParameter(Context& ctx, GLenum target, GLenum pname, const ParamValues& 
         if (pname == GL_TEXTURE_MAX_ANISOTROPY && !ctx.hasExtension("GL_EXT_texture_filter_anisotropic") &&
             ctx.version() < 46)
             return ctx.setError(GL_INVALID_ENUM);
-        const GLenum error = setSamplerParam(tex->sampler, pname, v, target);
+        const GLenum error = setSamplerParam(tex->sampler, pname, v, target, ctx.isCompat());
         if (error) return ctx.setError(error);
         ctx.markDirty(kDirtyTextures);
         return;
@@ -1591,7 +1612,7 @@ void GetTexImage(Context& ctx, GLenum target, GLint level, GLenum format, GLenum
         logOnce(LogLevel::Warn, "get-compressed-uncompressed", "GetTexImage of an S3TC/BPTC image is not supported");
         return;
     }
-    const PixelStoreParams ps = storeParams(ctx.state.pack);
+    const PixelStoreParams ps = storeParams(ctx.state.pack, dims == 3);
     const TransferLayout layout = transferLayout(format, type, image.width, image.height, image.depth, ps);
     uint8_t* dst = nullptr;
     if (!packDestination(ctx, pixels, layout.bytesNeeded, typeSize(type), dst)) return;
@@ -1764,7 +1785,7 @@ void samplerParameter(Context& ctx, GLuint sampler, GLenum pname, const ParamVal
     if (!isSamplerParam(pname) || (!vectorCall && isVectorParam(pname))) return ctx.setError(GL_INVALID_ENUM);
     if (pname == GL_TEXTURE_MAX_ANISOTROPY && !ctx.hasExtension("GL_EXT_texture_filter_anisotropic") && ctx.version() < 46)
         return ctx.setError(GL_INVALID_ENUM);
-    const GLenum error = setSamplerParam(object->params, pname, v, 0);
+    const GLenum error = setSamplerParam(object->params, pname, v, 0, ctx.isCompat());
     if (error) return ctx.setError(error);
     ctx.markDirty(kDirtyTextures);
 }

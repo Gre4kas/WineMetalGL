@@ -54,6 +54,9 @@ void packPixels(const void* storage, const FormatInfo& info, int width, int heig
 // Single-texel conversions (exposed for tests and the clear/compressed paths).
 void decodeStorage(Storage storage, const uint8_t* texel, Texel& out);
 void encodeStorage(Storage storage, const Texel& in, uint8_t* texel);
+// Maps an RGBA texel to the stored channels of a format (alpha, luminance
+// alpha and RGB formats store channels differently).
+void mapRgbaToStored(const FormatInfo& info, Texel& t);
 
 // RGTC (BC4/BC5) block compression between canonical RGBA float texels
 // (tightly packed, 4 floats per texel) and blocks. Images are compressed

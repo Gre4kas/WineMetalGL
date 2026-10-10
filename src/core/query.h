@@ -26,6 +26,9 @@ int queryTargetIndex(Context& ctx, GLenum target);  // -1 if not a query target
 // Draw-path hooks. queriesBeforeDraw points the encoder's visibility counter
 // at the active occlusion queries; queriesSuspendVisibility stops counting
 // for internal draws (clears); queriesCountPrimitives feeds PRIMITIVES_GENERATED.
+// Before a draw opens its pass: when the command buffer's occlusion slots
+// are used up, flushes it so the next pass gets a fresh visibility buffer.
+void queriesPrepareVisibility(Context& ctx);
 void queriesBeforeDraw(Context& ctx, id<MTLRenderCommandEncoder> encoder);
 void queriesSuspendVisibility(Context& ctx, id<MTLRenderCommandEncoder> encoder);
 void queriesCountPrimitives(Context& ctx, GLenum mode, GLsizei count, GLsizei instances);

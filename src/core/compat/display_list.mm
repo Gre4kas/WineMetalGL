@@ -29,14 +29,14 @@ int pnameCount(GLenum pname) {
 
 namespace {
 
-PixelStoreParams params(const PixelStore& s) {
+PixelStoreParams params(const PixelStore& s, bool threeD) {
     PixelStoreParams ps;
     ps.alignment = s.alignment;
     ps.rowLength = s.rowLength;
-    ps.imageHeight = s.imageHeight;
+    ps.imageHeight = threeD ? s.imageHeight : 0;
     ps.skipPixels = s.skipPixels;
     ps.skipRows = s.skipRows;
-    ps.skipImages = s.skipImages;
+    ps.skipImages = threeD ? s.skipImages : 0;
     ps.swapBytes = s.swapBytes;
     return ps;
 }
@@ -55,12 +55,12 @@ const uint8_t* source(Context& ctx, const void* data, size_t bytes) {
 }  // namespace
 
 Pixels capturePixels(Context& ctx, const void* data, GLenum format, GLenum type, GLsizei width, GLsizei height,
-                     GLsizei depth) {
+                     GLsizei depth, bool threeD) {
     Pixels p;
     p.unpack = ctx.state.unpack;
     if (!data && !ctx.state.pixelUnpackBuffer) return p;
     const TransferLayout l = transferLayout(format, type, std::max(width, 0), std::max(height, 1), std::max(depth, 1),
-                                            params(ctx.state.unpack));
+                                            params(ctx.state.unpack, threeD));
     if (!l.groupBytes) return p;  // invalid format/type: the command reports it when the list runs
     if (const uint8_t* src = source(ctx, data, l.bytesNeeded)) {
         p.bytes.assign(src, src + l.bytesNeeded);

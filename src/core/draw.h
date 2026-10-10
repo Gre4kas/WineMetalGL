@@ -84,7 +84,7 @@ private:
     // minVertex/vertexSpan is the vertex range attribute conversion must cover.
     bool issue(GLenum mode, GLint first, GLsizei count, GLsizei instances, const uint32_t* indexData,
                id<MTLBuffer> indexBuffer, NSUInteger indexOffset, MTLIndexType indexType, GLint baseVertex,
-               GLint minVertex, GLsizei vertexSpan);
+               GLint minVertex, GLsizei vertexSpan, bool listed = false);
     void clearWithDraw(const RenderTargetDesc& target, const TargetFormats& formats, const PendingClear& clear);
     // `gather`, when given, lists the vertex fetched for each vertex of a
     // non-indexed draw (transform feedback capture): per-vertex attributes
@@ -104,7 +104,9 @@ private:
     // Draws `vertices` (vertex numbers in draw order, one restart-free
     // segment) through the geometry shader emulation (shader/geometry.h).
     // primitiveBase is the gl_PrimitiveIDIn of the first primitive.
-    void drawGeometry(GLenum mode, const std::vector<uint32_t>& vertices, GLsizei instances, uint32_t& primitiveBase);
+    // `assembled`: `vertices` already lists each input primitive's vertices.
+    void drawGeometry(GLenum mode, const std::vector<uint32_t>& vertices, GLsizei instances, uint32_t& primitiveBase,
+                      bool assembled = false);
     // Fixed-function wide lines (compat/fixed_function.h): `vertices` (one
     // restart-free line stream) drawn as two triangles per segment.
     void drawWideLines(GLenum mode, const std::vector<uint32_t>& vertices, GLsizei instances);
@@ -137,6 +139,8 @@ private:
     TransientAllocator transient_;
     uint64_t lastPassGeneration_ = 0;
     GLuint baseInstance_ = 0;
+    // First vertex of the draw being bound when issue() renumbers vertices from it.
+    GLint vertexRebase_ = 0;
     std::shared_ptr<LinkedProgram> current_;  // keeps a pipeline executable alive during a draw
     // Fixed-function program of the current draw (owned by the share group's cache).
     Program* ownerProgram();

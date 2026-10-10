@@ -511,17 +511,21 @@ bool DrawState::bindVertexInputs(id<MTLRenderCommandEncoder> encoder, PipelineKe
                 if (existing.constant || existing.buffer != a.buffer->mtl || existing.stride != stride ||
                     existing.divisor != a.divisor)
                     continue;
-                if (static_cast<NSUInteger>(a.offset) >= existing.offset &&
-                    a.offset - existing.offset + elementBytes <= stride) {
+                const NSUInteger shifted = static_cast<NSUInteger>(a.offset) +
+                                           (a.divisor ? 0 : static_cast<NSUInteger>(vertexRebase_) * stride);
+                if (shifted >= existing.offset && shifted - existing.offset + elementBytes <= stride) {
                     layout = static_cast<int>(l);
                     break;
                 }
             }
-            if (layout < 0) layout = addLayout(a.buffer->mtl, static_cast<NSUInteger>(a.offset), stride, a.divisor, false);
+            // Renumbered vertices (issue()) read from the draw's first vertex on.
+            const NSUInteger offset = static_cast<NSUInteger>(a.offset) +
+                                      (a.divisor ? 0 : static_cast<NSUInteger>(vertexRebase_) * stride);
+            if (layout < 0) layout = addLayout(a.buffer->mtl, offset, stride, a.divisor, false);
             if (layout < 0) return false;
             out.format = static_cast<uint8_t>(direct);
             out.layout = static_cast<uint8_t>(layout);
-            out.offset = static_cast<uint16_t>(a.offset - layouts[layout].offset);
+            out.offset = static_cast<uint16_t>(offset - layouts[layout].offset);
             a.buffer->lastUseSerial = serial;
             continue;
         }
@@ -548,13 +552,15 @@ bool DrawState::bindVertexInputs(id<MTLRenderCommandEncoder> encoder, PipelineKe
             first = static_cast<uint32_t>(std::max(0, firstVertex));
             count = static_cast<uint32_t>(std::max(0, vertexCount));
         }
-        const size_t elements = static_cast<size_t>(first) + count;
-        TransientAllocation alloc = transient_.allocate(elements * 16, serial, 16);
+        // Element v of the draw is at v - rebase (vertices renumbered by issue()).
+        const uint32_t rebase = gathered || a.divisor ? 0 : static_cast<uint32_t>(vertexRebase_);
+        const size_t elements = static_cast<size_t>(first - rebase) + count;
+        TransientAllocation alloc = transient_.allocate(std::max<size_t>(1, elements) * 16, serial, 16);
         auto* dst = static_cast<uint8_t*>(alloc.data);
         for (uint32_t v = first; v < first + count; ++v) {
             const uint32_t fetch = gathered ? (*order)[v] : v;
             const uint8_t* element = source + static_cast<size_t>(fetch) * stride;
-            uint8_t* to = dst + static_cast<size_t>(v) * 16;
+            uint8_t* to = dst + static_cast<size_t>(v - rebase) * 16;
             if (a.integer) {
                 int32_t values[4] = {0, 0, 0, 1};
                 for (int c = 0; c < std::min(a.size, 4); ++c) {
@@ -721,6 +727,8 @@ void DrawState::uniformBlockBuffer(LinkedProgram& program, size_t index, __stron
     if (binding >= ContextState::kMaxUniformBufferBindings) return;
     const IndexedBufferBinding& ib = ctx_.state.uniformBufferBindings[binding];
     if (!ib.buffer || !ib.buffer->mtl) return;
+    // A range starting past the end (the buffer shrank after binding) reads as unbound.
+    if (ib.offset < 0 || static_cast<NSUInteger>(ib.offset) >= ib.buffer->mtl.length) return;
     buffer = ib.buffer->mtl;
     offset = static_cast<NSUInteger>(ib.offset);
     ib.buffer->lastUseSerial = ctx_.stream().serial();
@@ -812,6 +820,7 @@ void DrawState::applyDynamicState(id<MTLRenderCommandEncoder> encoder, const Ren
 // --------------------------------------------------------------- prepare
 
 id<MTLRenderCommandEncoder> DrawState::prepare(GLenum mode, MTLPrimitiveType& primitive) {
+    queriesPrepareVisibility(ctx_);
     RenderTargetDesc target;
     TargetFormats formats;
     if (!drawTarget(target, formats)) return nil;
@@ -896,6 +905,20 @@ MTLPrimitiveType nativePrimitive(GLenum mode, bool& needsIndices) {
     }
 }
 
+// The utility kernel that rewrites geometry-shader strips as lists in GL's
+// last-vertex provoking order.
+id<MTLComputePipelineState> stripsProvokingLastKernel() {
+    static std::once_flag once;
+    static id<MTLComputePipelineState> state = nil;
+    std::call_once(once, [] {
+        id<MTLFunction> function = [Device::get().utilityLibrary() newFunctionWithName:@"wmgl_strips_provoking_last"];
+        NSError* error = nil;
+        if (function) state = [Device::get().mtl() newComputePipelineStateWithFunction:function error:&error];
+        if (!state) WMGL_ERR("strip conversion kernel: %s", error ? error.localizedDescription.UTF8String : "missing");
+    });
+    return state;
+}
+
 // Lists the primitives of a line or triangle stream with GL's last-vertex
 // provoking vertex first: Metal flat-shades from the first vertex. Each
 // triangle is rotated, so its winding is unchanged.
@@ -933,6 +956,23 @@ void expandProvokingLast(GLenum mode, const std::vector<uint32_t>& v, std::vecto
         for (size_t i = 0; i + 3 < n; i += 2)
             out.insert(out.end(), {v[i + 3], v[i], v[i + 1], v[i + 3], v[i + 2], v[i]});
         return;
+    // Without a geometry shader the adjacent vertices are dropped; the
+    // provoking vertices are those of GL 3.3 table 2.12.
+    case GL_LINES_ADJACENCY:
+        for (size_t i = 0; i + 3 < n; i += 4) out.insert(out.end(), {v[i + 2], v[i + 1]});
+        return;
+    case GL_LINE_STRIP_ADJACENCY:
+        for (size_t i = 1; i + 2 < n; ++i) out.insert(out.end(), {v[i + 1], v[i]});
+        return;
+    case GL_TRIANGLES_ADJACENCY:
+        for (size_t i = 0; i + 5 < n; i += 6) out.insert(out.end(), {v[i + 4], v[i], v[i + 2]});
+        return;
+    case GL_TRIANGLE_STRIP_ADJACENCY:
+        for (size_t i = 0; i + 5 < n; i += 2) {
+            if ((i / 2) % 2 == 0) out.insert(out.end(), {v[i + 4], v[i], v[i + 2]});
+            else out.insert(out.end(), {v[i + 4], v[i + 2], v[i]});
+        }
+        return;
     default:
         return;
     }
@@ -949,9 +989,15 @@ void expandIndices(GLenum mode, const std::vector<uint32_t>& in, std::vector<uin
         out.push_back(in[n - 1]);
         out.push_back(in[0]);
         return;
-    case GL_TRIANGLE_FAN: case GL_POLYGON:
-        // GL's provoking vertex for fans is the last vertex of each triangle (i + 1, i + 2).
-        for (size_t i = 1; i + 1 < n; ++i) { out.push_back(in[0]); out.push_back(in[i]); out.push_back(in[i + 1]); }
+    case GL_TRIANGLE_FAN:
+        // First-vertex convention: triangle (0, i, i+1) is provoked by vertex
+        // i, listed first (Metal flat-shades from it); rotated, so the
+        // winding is unchanged.
+        for (size_t i = 1; i + 1 < n; ++i) out.insert(out.end(), {in[i], in[i + 1], in[0]});
+        return;
+    case GL_POLYGON:
+        // A polygon is provoked by its first vertex in both conventions.
+        for (size_t i = 1; i + 1 < n; ++i) out.insert(out.end(), {in[0], in[i], in[i + 1]});
         return;
     case GL_QUADS:
         for (size_t i = 0; i + 3 < n; i += 4) {
@@ -984,11 +1030,48 @@ void expandIndices(GLenum mode, const std::vector<uint32_t>& in, std::vector<uin
     }
 }
 
+// The independent-primitive mode a primitive stream is drawn as when listed.
+GLenum listMode(GLenum mode) {
+    switch (topologyClass(mode)) {
+    case MTLPrimitiveTopologyClassPoint: return GL_POINTS;
+    case MTLPrimitiveTopologyClassLine: return GL_LINES;
+    default: return GL_TRIANGLES;
+    }
+}
+
+// Appends one restart-free segment as a list of independent primitives, each
+// listing its provoking vertex first (`rotate`: the last-vertex convention).
+void appendMetalList(GLenum mode, const std::vector<uint32_t>& v, bool rotate, std::vector<uint32_t>& out) {
+    std::vector<uint32_t> part;
+    const size_t n = v.size();
+    if (rotate) {
+        expandProvokingLast(mode, v, part);
+    } else {
+        switch (mode) {
+        case GL_POINTS: part = v; break;
+        case GL_LINES: part.assign(v.begin(), v.begin() + static_cast<long>(n / 2 * 2)); break;
+        case GL_LINE_STRIP:
+            for (size_t i = 0; i + 1 < n; ++i) part.insert(part.end(), {v[i], v[i + 1]});
+            break;
+        case GL_TRIANGLES: part.assign(v.begin(), v.begin() + static_cast<long>(n / 3 * 3)); break;
+        case GL_TRIANGLE_STRIP:
+            // Triangle i is provoked by vertex i; odd triangles are rotated to list it first.
+            for (size_t i = 0; i + 2 < n; ++i) {
+                if (i % 2 == 0) part.insert(part.end(), {v[i], v[i + 1], v[i + 2]});
+                else part.insert(part.end(), {v[i], v[i + 2], v[i + 1]});
+            }
+            break;
+        default: expandIndices(mode, v, part); break;
+        }
+    }
+    out.insert(out.end(), part.begin(), part.end());
+}
+
 }  // namespace
 
 bool DrawState::issue(GLenum mode, GLint first, GLsizei count, GLsizei instances, const uint32_t* indexData,
                       id<MTLBuffer> indexBuffer, NSUInteger indexOffset, MTLIndexType indexType, GLint baseVertex,
-                      GLint minVertex, GLsizei vertexSpan) {
+                      GLint minVertex, GLsizei vertexSpan, bool listed) {
     queriesCountPrimitives(ctx_, mode, count, instances);
     stats::count(&stats::Frame::draws);
     LinkedProgram* current = executable();
@@ -1001,8 +1084,15 @@ bool DrawState::issue(GLenum mode, GLint first, GLsizei count, GLsizei instances
     queriesBeforeDraw(ctx_, encoder);
     LinkedProgram& program = *current;
     PipelineKey key = lastKey_;
+    // Vertices are renumbered from the first one used, so converted vertex
+    // data starts at the draw's first vertex instead of vertex 0; not when
+    // the program reads gl_VertexID, which is the GL number.
+    const GLint rebase = minVertex > 0 && !program.readsVertexId() ? minVertex : 0;
+    vertexRebase_ = rebase;
     // Instanced attributes need data for every instance they cover.
-    if (!bindVertexInputs(encoder, key, program, minVertex, vertexSpan, instances)) {
+    const bool bound = bindVertexInputs(encoder, key, program, minVertex, vertexSpan, instances);
+    vertexRebase_ = 0;
+    if (!bound) {
         WMGL_WARN("too many vertex buffers for one draw");
         return false;
     }
@@ -1014,13 +1104,13 @@ bool DrawState::issue(GLenum mode, GLint first, GLsizei count, GLsizei instances
 
     bool needsIndices = false;
     MTLPrimitiveType native = nativePrimitive(mode, needsIndices);
-    const bool rotate = rotateProvoking(mode, program);
+    const bool rotate = !listed && rotateProvoking(mode, program);
     if (rotate) native = topologyClass(mode) == MTLPrimitiveTopologyClassLine ? MTLPrimitiveTypeLine : MTLPrimitiveTypeTriangle;
     const uint64_t serial = ctx_.stream().serial();
     if (needsIndices || rotate || (indexData && !indexBuffer)) {
         std::vector<uint32_t> in, out;
         in.reserve(static_cast<size_t>(count));
-        for (GLsizei i = 0; i < count; ++i) in.push_back(indexData ? indexData[i] : static_cast<uint32_t>(first + i));
+        for (GLsizei i = 0; i < count; ++i) in.push_back(indexData ? indexData[i] : static_cast<uint32_t>(first + i - rebase));
         if (rotate) expandProvokingLast(mode, in, out);
         else if (needsIndices) expandIndices(mode, in, out);
         else out.swap(in);
@@ -1029,14 +1119,15 @@ bool DrawState::issue(GLenum mode, GLint first, GLsizei count, GLsizei instances
         std::memcpy(alloc.data, out.data(), out.size() * 4);
         [encoder drawIndexedPrimitives:native indexCount:out.size() indexType:MTLIndexTypeUInt32
                            indexBuffer:alloc.buffer indexBufferOffset:alloc.offset instanceCount:std::max(1, instances)
-                            baseVertex:indexData ? baseVertex : 0 baseInstance:baseInstance_];
+                            baseVertex:indexData ? baseVertex - rebase : 0 baseInstance:baseInstance_];
     } else if (indexBuffer) {
         [encoder drawIndexedPrimitives:native indexCount:static_cast<NSUInteger>(count) indexType:indexType
                            indexBuffer:indexBuffer indexBufferOffset:indexOffset instanceCount:std::max(1, instances)
-                            baseVertex:baseVertex baseInstance:baseInstance_];
+                            baseVertex:baseVertex - rebase baseInstance:baseInstance_];
     } else {
-        [encoder drawPrimitives:native vertexStart:static_cast<NSUInteger>(first) vertexCount:static_cast<NSUInteger>(count)
-                  instanceCount:std::max(1, instances) baseInstance:baseInstance_];
+        [encoder drawPrimitives:native vertexStart:static_cast<NSUInteger>(first - rebase)
+                    vertexCount:static_cast<NSUInteger>(count) instanceCount:std::max(1, instances)
+                   baseInstance:baseInstance_];
     }
     ctx_.stream().noteDraw();
     return true;
@@ -1047,6 +1138,8 @@ bool DrawState::rotateProvoking(GLenum mode, LinkedProgram& program) const {
     switch (mode) {
     case GL_LINES: case GL_LINE_STRIP: case GL_LINE_LOOP: case GL_TRIANGLES: case GL_TRIANGLE_STRIP: case GL_TRIANGLE_FAN:
     case GL_QUADS: case GL_QUAD_STRIP:  // a polygon's provoking vertex is its first in both conventions
+    case GL_LINES_ADJACENCY: case GL_LINE_STRIP_ADJACENCY: case GL_TRIANGLES_ADJACENCY:
+    case GL_TRIANGLE_STRIP_ADJACENCY:  // without a geometry shader (with one, drawGeometry)
         return true;
     default:
         return false;
@@ -1147,7 +1240,9 @@ void DrawState::captureTransformFeedback(GLenum mode, const std::vector<uint32_t
     for (int b = 0; b < link.xfbBufferCount; ++b) {
         const TransformFeedback::Binding& binding = xfb.buffers[b];
         if (!binding.buffer || !binding.buffer->mtl) return;
-        const int64_t size = binding.size ? binding.size : binding.buffer->size - binding.offset;
+        // The bound range, clamped to the buffer's current size (it may have shrunk since binding).
+        const int64_t available = std::max<int64_t>(0, binding.buffer->size - binding.offset);
+        const int64_t size = binding.size ? std::min<int64_t>(binding.size, available) : available;
         const int64_t remaining = std::max<int64_t>(0, size - xfb.written[b]);
         const uint64_t vertexBytes = static_cast<uint64_t>(link.xfbStride[b]) * 4;
         if (vertexBytes) primitives = std::min<uint64_t>(primitives, static_cast<uint64_t>(remaining) / vertexBytes / perPrimitive);
@@ -1216,6 +1311,12 @@ bool DrawState::runVertexCapture(LinkedProgram& lp, const std::vector<uint32_t>&
     [encoder setVertexBuffer:control.buffer offset:control.offset atIndex:shader::kSlotXfbControl];
     [encoder drawPrimitives:MTLPrimitiveTypePoint vertexStart:0 vertexCount:list.size()
               instanceCount:static_cast<NSUInteger>(std::max(1, instances)) baseInstance:baseInstance_];
+    // Later draws in this pass may read the captured data (as vertex,
+    // uniform or texture buffers): Metal does not order work inside one
+    // encoder, so order them after these writes.
+    [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers
+                        afterStages:MTLRenderStageVertex
+                       beforeStages:MTLRenderStageVertex | MTLRenderStageFragment];
     ctx_.stream().noteDraw();
     return true;
 }
@@ -1393,10 +1494,11 @@ void DrawState::drawWideLines(GLenum mode, const std::vector<uint32_t>& vertices
     ctx_.markDirty(kDirtyRaster);
 }
 
-void DrawState::drawGeometry(GLenum mode, const std::vector<uint32_t>& vertices, GLsizei instances, uint32_t& primitiveBase) {
+void DrawState::drawGeometry(GLenum mode, const std::vector<uint32_t>& vertices, GLsizei instances, uint32_t& primitiveBase,
+                             bool assembled) {
     LinkedProgram& lp = *executable();
     const shader::GeometryEmulation& g = lp.link.geometry;
-    const std::vector<uint32_t> list = assembleGeometryInput(mode, vertices);
+    const std::vector<uint32_t> list = assembled ? vertices : assembleGeometryInput(mode, vertices);
     const uint32_t primitives = static_cast<uint32_t>(list.size() / static_cast<size_t>(g.verticesIn));
     if (!primitives) return;
     const uint32_t copies = static_cast<uint32_t>(std::max(1, instances));
@@ -1407,6 +1509,7 @@ void DrawState::drawGeometry(GLenum mode, const std::vector<uint32_t>& vertices,
     // Anything that flushes must happen before the transient allocations below.
     waitForCpuVertexReads(lp, true);
     prepareSamplerStorage(lp);
+    queriesPrepareVisibility(ctx_);
     const uint64_t serial = ctx_.stream().serial();
 
     // 1. Vertex outputs of every input primitive, in primitive order.
@@ -1434,6 +1537,27 @@ void DrawState::drawGeometry(GLenum mode, const std::vector<uint32_t>& vertices,
     [compute dispatchThreads:MTLSizeMake(total, 1, 1) threadsPerThreadgroup:MTLSizeMake(width, 1, 1)];
     primitiveBase += primitives;
 
+    // Flat-shaded strips with GL's last-vertex convention are drawn as lists
+    // whose primitives list their provoking vertex first.
+    TransientAllocation lastList;
+    size_t lastListCount = 0;
+    if (g.outputType != GL_POINTS && !ctx_.state.rasterizerDiscard &&
+        ctx_.state.provokingVertex == GL_LAST_VERTEX_CONVENTION && lp.stage(Stage::Fragment).flatInputs) {
+        if (id<MTLComputePipelineState> rotate = stripsProvokingLastKernel()) {
+            const uint32_t perThread = (g.outputType == GL_LINE_STRIP ? 2u : 3u) * maxV;
+            lastListCount = static_cast<size_t>(total) * perThread;
+            lastList = transient_.allocate(lastListCount * 4, serial, 16);
+            const uint32_t params[4] = {2 * maxV, perThread, g.outputType == GL_LINE_STRIP ? 0u : 1u,
+                                        static_cast<uint32_t>(total)};
+            [compute setComputePipelineState:rotate];
+            [compute setBuffer:indices.buffer offset:indices.offset atIndex:0];
+            [compute setBuffer:lastList.buffer offset:lastList.offset atIndex:1];
+            [compute setBytes:params length:sizeof(params) atIndex:2];
+            const NSUInteger rotateWidth = std::min<NSUInteger>(64, rotate.maxTotalThreadsPerThreadgroup);
+            [compute dispatchThreads:MTLSizeMake(total, 1, 1) threadsPerThreadgroup:MTLSizeMake(rotateWidth, 1, 1)];
+        }
+    }
+
     // 3. Draw the emitted vertices.
     if (!ctx_.state.rasterizerDiscard) {
         MTLPrimitiveType primitive = MTLPrimitiveTypeTriangle;
@@ -1449,6 +1573,12 @@ void DrawState::drawGeometry(GLenum mode, const std::vector<uint32_t>& vertices,
                 [encoder setVertexBuffer:output.buffer offset:output.offset atIndex:shader::kSlotFirstXfbBuffer];
                 if (g.outputType == GL_POINTS)
                     [encoder drawPrimitives:MTLPrimitiveTypePoint vertexStart:0 vertexCount:total * maxV];
+                else if (lastList.buffer)
+                    [encoder drawIndexedPrimitives:g.outputType == GL_LINE_STRIP ? MTLPrimitiveTypeLine : MTLPrimitiveTypeTriangle
+                                        indexCount:lastListCount
+                                         indexType:MTLIndexTypeUInt32
+                                       indexBuffer:lastList.buffer
+                                 indexBufferOffset:lastList.offset];
                 else
                     [encoder drawIndexedPrimitives:g.outputType == GL_LINE_STRIP ? MTLPrimitiveTypeLineStrip
                                                                                   : MTLPrimitiveTypeTriangleStrip
@@ -1497,7 +1627,9 @@ void DrawState::drawGeometry(GLenum mode, const std::vector<uint32_t>& vertices,
     for (int b = 0; b < link.xfbBufferCount; ++b) {
         const TransformFeedback::Binding& binding = xfb.buffers[b];
         if (!binding.buffer || !binding.buffer->mtl) return;
-        const int64_t size = binding.size ? binding.size : binding.buffer->size - binding.offset;
+        // The bound range, clamped to the buffer's current size (it may have shrunk since binding).
+        const int64_t available = std::max<int64_t>(0, binding.buffer->size - binding.offset);
+        const int64_t size = binding.size ? std::min<int64_t>(binding.size, available) : available;
         const int64_t remaining = std::max<int64_t>(0, size - xfb.written[b]);
         const uint64_t vertexBytes = static_cast<uint64_t>(link.xfbStride[b]) * 4;
         if (vertexBytes) written = std::min<uint64_t>(written, static_cast<uint64_t>(remaining) / vertexBytes / perPrimitive);
@@ -1610,64 +1742,66 @@ void DrawState::drawElements(GLenum mode, GLsizei count, GLenum type, const void
         maxIndex = std::max(maxIndex, v);
     }
     if (minIndex == UINT32_MAX) return;  // only restart indices
-    if (ffWideLines_) {
+    // Restart-delimited segments are combined into one list of independent
+    // primitives, so every instance draws all of them before the next
+    // instance starts (GL draws instance by instance).
+    auto forEachSegment = [&](uint32_t bias, auto&& fn) {
         std::vector<uint32_t> segment;
         for (size_t i = 0; i <= values.size(); ++i) {
             if (i < values.size() && !(restart && values[i] == restartIndex)) {
-                segment.push_back(values[i] + static_cast<uint32_t>(baseVertex));
+                segment.push_back(values[i] + bias);
                 continue;
             }
-            if (!segment.empty()) drawWideLines(mode, segment, instances);
+            if (!segment.empty()) fn(segment);
             segment.clear();
         }
+    };
+    const uint32_t bias = static_cast<uint32_t>(baseVertex);
+    if (ffWideLines_) {
+        std::vector<uint32_t> lines;
+        forEachSegment(bias, [&](const std::vector<uint32_t>& segment) {
+            const std::vector<uint32_t> part = assembleForCapture(mode, segment);
+            lines.insert(lines.end(), part.begin(), part.end());
+        });
+        drawWideLines(GL_LINES, lines, instances);
         return;
     }
     if (executable()->link.geometry.active) {
         // gl_PrimitiveIDIn keeps counting across restarts.
         uint32_t primitiveBase = 0;
-        std::vector<uint32_t> segment;
-        for (size_t i = 0; i <= values.size(); ++i) {
-            if (i < values.size() && !(restart && values[i] == restartIndex)) {
-                segment.push_back(values[i] + static_cast<uint32_t>(baseVertex));
-                continue;
-            }
-            if (!segment.empty()) drawGeometry(mode, segment, instances, primitiveBase);
-            segment.clear();
-        }
+        std::vector<uint32_t> assembled;
+        forEachSegment(bias, [&](const std::vector<uint32_t>& segment) {
+            const std::vector<uint32_t> part = assembleGeometryInput(mode, segment);
+            assembled.insert(assembled.end(), part.begin(), part.end());
+        });
+        drawGeometry(mode, assembled, instances, primitiveBase, true);
         return;
     }
     if (ctx_.state.transformFeedback->active) {
-        // Capture each restart-delimited segment in order; gl_VertexID includes basevertex.
-        std::vector<uint32_t> segment;
-        for (size_t i = 0; i <= values.size(); ++i) {
-            if (i < values.size() && !(restart && values[i] == restartIndex)) {
-                segment.push_back(values[i] + static_cast<uint32_t>(baseVertex));
-                continue;
-            }
-            if (!segment.empty()) captureTransformFeedback(mode, segment, instances);
-            segment.clear();
-        }
+        // gl_VertexID includes basevertex.
+        std::vector<uint32_t> captured;
+        forEachSegment(bias, [&](const std::vector<uint32_t>& segment) {
+            const std::vector<uint32_t> part = assembleForCapture(mode, segment);
+            captured.insert(captured.end(), part.begin(), part.end());
+        });
+        if (!captured.empty()) captureTransformFeedback(listMode(mode), captured, instances);
     }
     const GLint spanFirst = static_cast<GLint>(minIndex) + baseVertex;
     const GLsizei span = static_cast<GLsizei>(maxIndex - minIndex + 1);
     bool needsIndices = false;
     nativePrimitive(mode, needsIndices);
+    const bool rotate = rotateProvoking(mode, *executable());
     if (hasRestart) {
-        // Draw each restart-delimited segment as its own primitive stream.
-        size_t start = 0;
-        for (size_t i = 0; i <= values.size(); ++i) {
-            if (i < values.size() && values[i] != restartIndex) continue;
-            if (i > start) {
-                std::vector<uint32_t> segment(values.begin() + static_cast<long>(start), values.begin() + static_cast<long>(i));
-                issue(mode, 0, static_cast<GLsizei>(segment.size()), instances, segment.data(), nil, 0,
-                      MTLIndexTypeUInt32, baseVertex, spanFirst, span);
-            }
-            start = i + 1;
-        }
+        std::vector<uint32_t> list;
+        forEachSegment(0, [&](const std::vector<uint32_t>& segment) { appendMetalList(mode, segment, rotate, list); });
+        if (!list.empty())
+            issue(listMode(mode), 0, static_cast<GLsizei>(list.size()), instances, list.data(), nil, 0, MTLIndexTypeUInt32,
+                  baseVertex, spanFirst, span, true);
         return;
     }
-    const bool rotate = rotateProvoking(mode, *executable());
-    if (elementBuffer && !needsIndices && !rotate && indexSize != 1 && offset % indexSize == 0) {
+    // Metal always restarts at the type's largest index; GL only when asked.
+    const uint32_t metalRestart = indexSize == 2 ? 0xffffu : 0xffffffffu;
+    if (elementBuffer && !needsIndices && !rotate && indexSize != 1 && offset % indexSize == 0 && maxIndex != metalRestart) {
         elementBuffer->lastUseSerial = ctx_.stream().serial();
         issue(mode, 0, count, instances, nullptr, elementBuffer->mtl, offset,
               indexSize == 2 ? MTLIndexTypeUInt16 : MTLIndexTypeUInt32, baseVertex, spanFirst, span);

@@ -59,8 +59,12 @@ void levelSize(GLenum target, GLsizei w0, GLsizei h0, GLsizei d0, int level, GLs
 bool baseDimensions(const Texture& tex, GLsizei& w0, GLsizei& h0, GLsizei& d0, const FormatInfo*& format,
                     GLsizei& samples) {
     for (int level = 0; level < Texture::kMaxLevels; ++level) {
-        const TextureImage& image = tex.image(0, level);
-        if (!image.defined()) continue;
+        // Any cube face may be specified first.
+        const TextureImage* defined = nullptr;
+        for (int face = 0; face < tex.faceCount() && !defined; ++face)
+            if (tex.image(face, level).defined()) defined = &tex.image(face, level);
+        if (!defined) continue;
+        const TextureImage& image = *defined;
         format = image.format;
         samples = image.samples;
         w0 = image.width << level;
@@ -70,6 +74,34 @@ bool baseDimensions(const Texture& tex, GLsizei& w0, GLsizei& h0, GLsizei& d0, c
         return true;
     }
     return false;
+}
+
+// RGB formats are stored with an alpha channel that must read as one (copies
+// and blits move it as stored). New storage is cleared to (0, 0, 0, 1) in a
+// command buffer of its own, committed ahead of the stream's: nothing else
+// references the new texture yet, and it keeps any render pass the stream is
+// encoding open.
+void initAlphaOne(Context& ctx, id<MTLTexture> texture) {
+    id<MTLCommandBuffer> commandBuffer = [ctx.stream().queue().mtl() commandBuffer];
+    const bool volume = texture.textureType == MTLTextureType3D;
+    const NSUInteger faces = texture.textureType == MTLTextureTypeCube        ? 6
+                             : texture.textureType == MTLTextureTypeCubeArray ? 6 * texture.arrayLength
+                                                                               : texture.arrayLength;
+    for (NSUInteger level = 0; level < texture.mipmapLevelCount; ++level) {
+        const NSUInteger count = volume ? std::max<NSUInteger>(1, texture.depth >> level) : faces;
+        for (NSUInteger i = 0; i < count; ++i) {
+            MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
+            pass.colorAttachments[0].texture = texture;
+            pass.colorAttachments[0].level = level;
+            if (volume) pass.colorAttachments[0].depthPlane = i;
+            else pass.colorAttachments[0].slice = i;
+            pass.colorAttachments[0].loadAction = MTLLoadActionClear;
+            pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1);
+            pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+            [[commandBuffer renderCommandEncoderWithDescriptor:pass] endEncoding];
+        }
+    }
+    [commandBuffer commit];
 }
 
 }  // namespace
@@ -108,7 +140,7 @@ bool ensureTextureStorage(Context& ctx, Texture& tex) {
     desc.sampleCount = static_cast<NSUInteger>(std::max(1, samples));
     desc.storageMode = MTLStorageModePrivate;
     desc.usage = MTLTextureUsageShaderRead | MTLTextureUsagePixelFormatView;
-    if ((format->colorRenderable || format->isDepthOrStencil()) && !format->compressed)
+    if ((format->colorRenderable || format->isDepthOrStencil() || format->storedAlphaIsOne) && !format->compressed)
         desc.usage |= MTLTextureUsageRenderTarget;
     (void)cube;
     id<MTLTexture> texture = [Device::get().mtl() newTextureWithDescriptor:desc];
@@ -116,6 +148,7 @@ bool ensureTextureStorage(Context& ctx, Texture& tex) {
         WMGL_ERR("texture allocation failed (%dx%dx%d %s)", w0, h0, d0, storageName(format->storage));
         return false;
     }
+    if (format->storedAlphaIsOne) initAlphaOne(ctx, texture);
     // Keep existing contents of levels that still match.
     if (tex.mtl && tex.storage == format->storage && tex.mtl.textureType == texture.textureType &&
         tex.mtl.sampleCount == texture.sampleCount) {
@@ -184,7 +217,9 @@ id<MTLTexture> bufferTextureView(Texture& tex) {
 bool textureComplete(Context& ctx, Texture& tex, const SamplerParams* params) {
     if (tex.target == GL_TEXTURE_BUFFER) return bufferTextureView(tex) != nil;
     const SamplerParams& p = params ? *params : tex.sampler;
-    const int base = tex.baseLevel;
+    // Immutable textures clamp the base and max levels to [0, levels - 1] (GL 4.2 section 3.9.14).
+    const int levels = tex.immutable ? std::max<int>(1, tex.immutableLevels) : Texture::kMaxLevels;
+    const int base = tex.immutable ? std::clamp(tex.baseLevel, 0, levels - 1) : tex.baseLevel;
     if (base < 0 || base >= Texture::kMaxLevels) return false;
     const TextureImage& baseImage = tex.image(0, base);
     if (!baseImage.defined() || baseImage.width == 0 || baseImage.height == 0 || baseImage.depth == 0) return false;
@@ -210,8 +245,10 @@ bool textureComplete(Context& ctx, Texture& tex, const SamplerParams* params) {
         return false;
     if (mipmapped) {
         const int faces = tex.faceCount();
-        const int maxLevel = std::min({tex.maxLevel, Texture::kMaxLevels - 1,
-                                       base + fullMipCount(baseImage.width, baseImage.height,
+        // 1D arrays keep their layer count in height; only 3D textures shrink in depth.
+        const bool oneD = tex.target == GL_TEXTURE_1D || tex.target == GL_TEXTURE_1D_ARRAY;
+        const int maxLevel = std::min({tex.maxLevel, levels - 1, Texture::kMaxLevels - 1,
+                                       base + fullMipCount(baseImage.width, oneD ? 1 : baseImage.height,
                                                            tex.target == GL_TEXTURE_3D ? baseImage.depth : 1) - 1});
         for (int level = base; level <= maxLevel; ++level) {
             GLsizei w, h, d;

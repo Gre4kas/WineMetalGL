@@ -118,6 +118,10 @@ void queriesCountPrimitives(Context& ctx, GLenum mode, GLsizei count, GLsizei in
     if (q) q->result += primitiveCount(mode, count) * static_cast<uint64_t>(std::max(0, instances));
 }
 
+void queriesPrepareVisibility(Context& ctx) {
+    if (anyOcclusionActive(ctx) && !ctx.stream().visibilitySlotAvailable()) ctx.stream().flush();
+}
+
 void queriesBeforeDraw(Context& ctx, id<MTLRenderCommandEncoder> encoder) {
     if (!anyOcclusionActive(ctx)) return;
     auto& slot = ctx.occlusionSlot;

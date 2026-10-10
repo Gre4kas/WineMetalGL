@@ -4,6 +4,7 @@
 
 #import <Metal/Metal.h>
 
+#include <atomic>
 #include <mutex>
 
 #include "core/shader/compiler.h"
@@ -41,11 +42,23 @@ struct LinkedProgram {
     // Compute programs.
     id<MTLComputePipelineState> computePipeline();
 
+    // Whether the vertex function reads gl_VertexID (draws then keep GL's
+    // vertex numbering; see DrawState::issue).
+    bool readsVertexId() {
+        int value = readsVertexId_.load(std::memory_order_relaxed);
+        if (value < 0) {
+            value = stage(shader::Stage::Vertex).msl.find("[[vertex_id]]") != std::string::npos ? 1 : 0;
+            readsVertexId_.store(value, std::memory_order_relaxed);
+        }
+        return value != 0;
+    }
+
     bool hasStage(shader::Stage stage) const { return link.stages[static_cast<int>(stage)].present; }
     const shader::StageOutput& stage(shader::Stage stage) const { return link.stages[static_cast<int>(stage)]; }
 
 private:
     std::mutex mutex_;
+    std::atomic<int> readsVertexId_{-1};
     id<MTLFunction> functions_[shader::kStageCount] = {};
     bool failed_[shader::kStageCount] = {};
     id<MTLFunction> vertexNoRaster_ = nil;
