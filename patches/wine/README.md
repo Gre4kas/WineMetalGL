@@ -8,7 +8,7 @@ The results in `docs/` were recorded with MetalSharp's Wine 11.17, which the
 x86_64 release's prebuilt Wine modules are built from. Other Wine versions may
 need a small rebase when Wine's OpenGL driver interface changes.
 
-- `0001-opengl-wgl-fixes.patch`: three Wine OpenGL fixes the core relies on.
+- `0001-opengl-wgl-fixes.patch`: three Wine OpenGL fixes.
   `win32u` indexes the parsed extension list correctly for drivers without
   `GL_NUM_EXTENSIONS`, `wglChoosePixelFormatARB` keeps window requests
   within the on-screen pixel formats, and `glDeleteSync(0)` is ignored

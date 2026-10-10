@@ -57,7 +57,7 @@ build/host/wmgl_host_tests && build/host/wmgl_gpu_tests
 ## Wine
 
 The patches in `patches/wine/wine-11.17` add the core to `winemac.drv` and fix
-two Wine OpenGL bugs it relies on. With them applied, the core is Wine's
+three Wine OpenGL bugs. With them applied, the core is Wine's
 OpenGL; `WINEMETALGL=0` selects Apple's OpenGL instead (used to record
 reference frames), and Wine falls back to Apple's OpenGL if the core cannot be
 loaded.
