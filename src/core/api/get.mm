@@ -5,10 +5,12 @@
 #include <cstring>
 
 #include "core/compat/compat_api.h"
+#include "core/compat/fixed_function.h"
 #include "core/context.h"
 #include "core/draw.h"
 #include "core/limits.h"
 #include "core/metal/device.h"
+#include "core/program.h"
 #include "gl_api.gen.h"
 
 namespace wmgl::api {
@@ -183,7 +185,7 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
     case GL_NUM_SHADER_BINARY_FORMATS: out = ints({0}); return true;
     case GL_NUM_PROGRAM_BINARY_FORMATS: case GL_PROGRAM_BINARY_FORMATS:
         if (ctx.version() < 41 && !ctx.hasExtension("GL_ARB_get_program_binary")) return false;
-        out = pname == GL_NUM_PROGRAM_BINARY_FORMATS ? ints({0}) : ints({});
+        out = pname == GL_NUM_PROGRAM_BINARY_FORMATS ? ints({1}) : ints({kProgramBinaryFormat});
         return true;
     case GL_SHADER_BINARY_FORMATS: out = ints({}); return true;
     case GL_IMPLEMENTATION_COLOR_READ_FORMAT:
@@ -242,7 +244,11 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
     case GL_SUBPIXEL_BITS: out = ints({8}); return true;
     case GL_MAX_PROGRAM_TEXEL_OFFSET: out = ints({7}); return true;
     case GL_MIN_PROGRAM_TEXEL_OFFSET: out = ints({-8}); return true;
-    case GL_ALIASED_LINE_WIDTH_RANGE: case GL_SMOOTH_LINE_WIDTH_RANGE: out = floats({1.0, 1.0}); return true;
+    // Wide lines are drawn by the compatibility profile's fixed-function programs only.
+    case GL_ALIASED_LINE_WIDTH_RANGE:
+        out = floats({1.0, ctx.isCompat() ? static_cast<double>(compat::kMaxLineWidth) : 1.0});
+        return true;
+    case GL_SMOOTH_LINE_WIDTH_RANGE: out = floats({1.0, 1.0}); return true;
     case GL_SMOOTH_LINE_WIDTH_GRANULARITY: out = floats({0.125}); return true;
     case GL_POINT_SIZE_RANGE: out = floats({1.0, 511.0}); return true;
     case GL_POINT_SIZE_GRANULARITY: out = floats({0.125}); return true;
@@ -378,6 +384,25 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
     if (pname > GL_DRAW_BUFFER0 && pname < GL_DRAW_BUFFER0 + 8) {
         const int i = static_cast<int>(pname - GL_DRAW_BUFFER0);
         out = ints({s.drawFramebuffer ? s.drawFramebuffer->drawBuffers[i] : GL_NONE});
+        return true;
+    }
+    // GL_NVX_gpu_memory_info / GL_ATI_meminfo: Metal's recommended working
+    // set stands in for dedicated memory (values in KiB).
+    if (pname >= GL_GPU_MEMORY_INFO_DEDICATED_VIDMEM_NVX && pname <= GL_GPU_MEMORY_INFO_EVICTED_MEMORY_NVX) {
+        const int64_t total = static_cast<int64_t>(Device::get().caps().workingSetBytes / 1024);
+        const int64_t used = static_cast<int64_t>(Device::get().mtl().currentAllocatedSize / 1024);
+        const int64_t free = std::max<int64_t>(0, total - used);
+        switch (pname) {
+        case GL_GPU_MEMORY_INFO_DEDICATED_VIDMEM_NVX: case GL_GPU_MEMORY_INFO_TOTAL_AVAILABLE_MEMORY_NVX: out = ints({total}); break;
+        case GL_GPU_MEMORY_INFO_CURRENT_AVAILABLE_VIDMEM_NVX: out = ints({free}); break;
+        default: out = ints({0}); break;  // eviction count / evicted memory
+        }
+        return true;
+    }
+    if (pname == GL_VBO_FREE_MEMORY_ATI || pname == GL_TEXTURE_FREE_MEMORY_ATI || pname == GL_RENDERBUFFER_FREE_MEMORY_ATI) {
+        const int64_t total = static_cast<int64_t>(Device::get().caps().workingSetBytes / 1024);
+        const int64_t free = std::max<int64_t>(0, total - static_cast<int64_t>(Device::get().mtl().currentAllocatedSize / 1024));
+        out = ints({free, free, 0, 0});  // total free, largest block, auxiliary free, largest auxiliary block
         return true;
     }
     // Compatibility profile state (api/fixed_get.mm).

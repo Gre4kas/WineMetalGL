@@ -32,7 +32,12 @@ enum ConventionalAttrib : int {
     kConvVertex = 16, kConvNormal, kConvColor, kConvSecondaryColor, kConvFogCoord, kConvTexCoord0,
     kConvEnd = kConvTexCoord0 + 8
 };
-constexpr int kAttribSlotCount = kConvEnd;  // = VertexArray::kAttribSlots
+// Attribute slots with current values (generic + conventional).
+constexpr int kAttribSlotCount = kConvEnd;
+// Two internal slots follow: wide lines drawn by the fixed-function program
+// read the other endpoint of the segment and the side of the line each
+// expanded vertex is on (DrawState::drawWideLines).
+enum InternalAttrib : int { kLinePartner = kConvEnd, kLineSide, kInternalAttribEnd };
 
 struct FixedState {
     static constexpr int kTextureUnits = 8, kLights = 8, kClipPlanes = 8;
@@ -106,6 +111,8 @@ struct FixedState {
     bool lineStipple = false, polygonStipple = false;
     GLint lineStippleFactor = 1;
     GLushort lineStipplePattern = 0xffff;
+    // Polygon stipple rows from the bottom; bit x is window column x mod 32.
+    std::array<uint32_t, 32> stipple;
 
     GLuint clientActiveTexture = 0;
     bool edgeFlag = true;
@@ -122,9 +129,14 @@ struct FixedState {
     GLenum hintPerspective = GL_DONT_CARE, hintPointSmooth = GL_DONT_CARE, hintFog = GL_DONT_CARE;
     float accumClear[4] = {0, 0, 0, 0};
     GLuint listBase = 0;
+    // Selection and feedback (glRenderMode): modes are tracked, hit and
+    // feedback records are not produced (nothing is drawn outside GL_RENDER).
+    GLenum renderMode = GL_RENDER;
+    std::vector<GLuint> nameStack;
     uint64_t version = 1;  // bumped by every change (uniform block caching)
 
     FixedState() {
+        stipple.fill(~0u);
         for (auto& stack : texture) stack.assign(1, Mat4());
         float one[4] = {1, 1, 1, 1};
         std::copy(one, one + 4, lights[0].diffuse);

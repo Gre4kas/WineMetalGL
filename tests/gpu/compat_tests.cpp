@@ -13,7 +13,7 @@
     X(glEnableClientState) X(glDisableClientState) X(glClientActiveTexture) X(glMultiTexCoord2f)                \
     X(glPushAttrib) X(glPopAttrib) X(glRasterPos2f) X(glWindowPos2i) X(glBitmap) X(glDrawPixels)                \
     X(glPixelZoom) X(glIsEnabled) X(glColorMaterial) X(glInterleavedArrays) X(glArrayElement)                  \
-    X(glFrustum) X(glMultMatrixf) X(glLoadMatrixf)
+    X(glFrustum) X(glMultMatrixf) X(glLoadMatrixf) X(glLineWidth) X(glPolygonStipple) X(glGetPolygonStipple) X(glRenderMode) X(glInitNames) X(glPushName)
 
 #define WMGL_COMPAT_DECLARE(name) static PFN_##name name;
 WMGL_COMPAT_FUNCS(WMGL_COMPAT_DECLARE)
@@ -656,5 +656,90 @@ COMPAT_TEST(compat_fragment_only_program) {
     glUseProgram(0);
     glDeleteProgram(p);
     glDeleteShader(fs);
+    CHECK_GL();
+}
+
+COMPAT_TEST(compat_wide_lines) {
+    clear();
+    pixelProjection();
+    glLineWidth(9);
+    glColor3f(1, 0, 0);
+    glBegin(GL_LINES);  // x-major: 9 rows centred on y = 32
+    glVertex2f(8, 32);
+    glVertex2f(56, 32);
+    glEnd();
+    // Centres within 4.5 pixels of y = 32 (row 36's centre is on the edge).
+    CHECK(pixel(32, 32, kRed));
+    CHECK(pixel(32, 28, kRed));
+    CHECK(pixel(32, 35, kRed));
+    CHECK(pixel(32, 26, kBlack));
+    CHECK(pixel(32, 38, kBlack));
+    CHECK(pixel(4, 32, kBlack));  // ends are not extended
+    clear();
+    glColor3f(0, 1, 0);
+    glBegin(GL_LINE_STRIP);  // y-major segment: 9 columns centred on x = 16
+    glVertex2f(16, 8);
+    glVertex2f(16, 56);
+    glEnd();
+    CHECK(pixel(12, 32, kGreen));
+    CHECK(pixel(19, 32, kGreen));
+    CHECK(pixel(10, 32, kBlack));
+    CHECK(pixel(22, 32, kBlack));
+    GLfloat range[2] = {};
+    glGetFloatv(GL_ALIASED_LINE_WIDTH_RANGE, range);
+    CHECK(range[0] == 1 && range[1] >= 9);
+    glLineWidth(1);
+    CHECK_GL();
+}
+
+COMPAT_TEST(compat_polygon_stipple) {
+    // Rows alternate between all set and all clear.
+    GLubyte mask[128];
+    for (int row = 0; row < 32; ++row)
+        for (int b = 0; b < 4; ++b) mask[row * 4 + b] = row % 2 ? 0x00 : 0xff;
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    glPolygonStipple(mask);
+    glEnable(GL_POLYGON_STIPPLE);
+    clear();
+    glColor3f(0, 0, 1);
+    glRectf(-1, -1, 1, 1);
+    CHECK(pixel(10, 32, kBlue));
+    CHECK(pixel(10, 33, kBlack));
+    glDisable(GL_POLYGON_STIPPLE);
+    GLubyte back[128] = {};
+    glGetPolygonStipple(back);
+    CHECK(back[0] == 0xff && back[4] == 0x00);
+    CHECK_GL();
+}
+
+COMPAT_TEST(compat_render_mode) {
+    clear();
+    GLuint names[16];
+    (void)names;
+    glRenderMode(GL_SELECT);
+    GLint mode = 0;
+    glGetIntegerv(GL_RENDER_MODE, &mode);
+    CHECK_EQ(mode, GL_SELECT);
+    glInitNames();
+    glPushName(7);
+    GLint depth = 0;
+    glGetIntegerv(GL_NAME_STACK_DEPTH, &depth);
+    CHECK_EQ(depth, 1);
+    glColor3f(1, 0, 0);
+    glRectf(-1, -1, 1, 1);  // selection mode draws nothing
+    CHECK_EQ(glRenderMode(GL_RENDER), 0);
+    CHECK(pixel(32, 32, kBlack));
+    glRectf(-1, -1, 1, 1);
+    CHECK(pixel(32, 32, kRed));
+    CHECK_GL();
+}
+
+COMPAT_TEST(compat_memory_info) {
+    GLint dedicated = 0, available = 0, ati[4] = {};
+    glGetIntegerv(GL_GPU_MEMORY_INFO_DEDICATED_VIDMEM_NVX, &dedicated);
+    glGetIntegerv(GL_GPU_MEMORY_INFO_CURRENT_AVAILABLE_VIDMEM_NVX, &available);
+    glGetIntegerv(GL_TEXTURE_FREE_MEMORY_ATI, ati);
+    CHECK(dedicated > 0 && available > 0 && available <= dedicated);
+    CHECK(ati[0] > 0);
     CHECK_GL();
 }

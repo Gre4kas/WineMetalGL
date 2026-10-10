@@ -542,7 +542,8 @@ int conventionalAttribLocation(const std::string& name) {
     static const char* const kNames[kConventionalAttribCount] = {
         "wmgl_Vertex", "wmgl_Normal", "wmgl_Color", "wmgl_SecondaryColor", "wmgl_FogCoord",
         "wmgl_MultiTexCoord0", "wmgl_MultiTexCoord1", "wmgl_MultiTexCoord2", "wmgl_MultiTexCoord3",
-        "wmgl_MultiTexCoord4", "wmgl_MultiTexCoord5", "wmgl_MultiTexCoord6", "wmgl_MultiTexCoord7"};
+        "wmgl_MultiTexCoord4", "wmgl_MultiTexCoord5", "wmgl_MultiTexCoord6", "wmgl_MultiTexCoord7",
+        "wmgl_LinePartner", "wmgl_LineSide"};
     if (name.rfind("wmgl_", 0) != 0) return -1;
     for (int i = 0; i < kConventionalAttribCount; ++i)
         if (name == kNames[i]) return kConventionalAttribFirst + i;

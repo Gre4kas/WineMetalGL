@@ -93,7 +93,8 @@ struct AttribInfo {
 // Conventional vertex arrays (compatibility profile) follow the 16 generic
 // attributes: vertex, normal, colour, secondary colour, fog coordinate and
 // 8 texture coordinates (core/compat/fixed_state.h).
-constexpr int kConventionalAttribFirst = 16, kConventionalAttribCount = 13;
+// Two internal inputs of the fixed-function program follow (wide lines).
+constexpr int kConventionalAttribFirst = 16, kConventionalAttribCount = 15;
 // The location of a lowered legacy attribute ("wmgl_Vertex", ...), or -1.
 int conventionalAttribLocation(const std::string& name);
 

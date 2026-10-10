@@ -256,6 +256,8 @@ GLenum geometryInputFor(GLenum mode);
 }  // namespace
 
 bool DrawState::validateDraw(GLenum mode) {
+    // GL_SELECT / GL_FEEDBACK render modes draw nothing (no records are produced).
+    if (ctx_.state.fixed.renderMode != GL_RENDER) return false;
     switch (mode) {
     case GL_POINTS: case GL_LINES: case GL_LINE_LOOP: case GL_LINE_STRIP: case GL_TRIANGLES: case GL_TRIANGLE_STRIP:
     case GL_TRIANGLE_FAN: case GL_LINES_ADJACENCY: case GL_LINE_STRIP_ADJACENCY: case GL_TRIANGLES_ADJACENCY:
@@ -466,8 +468,26 @@ bool DrawState::bindVertexInputs(id<MTLRenderCommandEncoder> encoder, PipelineKe
     std::vector<int> constants;
     for (const shader::StageOutput::VertexInput& input : program.stage(Stage::Vertex).vertexInputs) {
         if (input.location < 0 || input.location >= VertexArray::kAttribSlots) continue;
-        const VertexAttrib& a = attribFor(vao, input.location);
         VertexAttributeKey& out = key.attributes[input.location];
+        if (lineSides_ && input.location == kLineSide) {
+            TransientAllocation alloc = transient_.allocate(lineSides_->size() * 16, serial, 16);
+            auto* dst = static_cast<float*>(alloc.data);
+            for (size_t v = 0; v < lineSides_->size(); ++v) {
+                dst[v * 4] = (*lineSides_)[v];
+                dst[v * 4 + 1] = dst[v * 4 + 2] = 0;
+                dst[v * 4 + 3] = 1;
+            }
+            const int layout = addLayout(alloc.buffer, alloc.offset, 16, 0, false);
+            if (layout < 0) return false;
+            out.format = static_cast<uint8_t>(MTLVertexFormatFloat4);
+            out.layout = static_cast<uint8_t>(layout);
+            out.offset = 0;
+            continue;
+        }
+        // The other endpoint of a wide line segment reads the position array in partner order.
+        const bool partner = linePartners_ && input.location == kLinePartner;
+        const VertexAttrib& a = attribFor(vao, partner ? static_cast<int>(kConvVertex) : input.location);
+        const std::vector<uint32_t>* order = partner ? linePartners_ : gather;
         if (!a.enabled) {
             out.format = static_cast<uint8_t>(input.kind == 'i' ? MTLVertexFormatInt4
                                               : input.kind == 'u' ? MTLVertexFormatUInt4
@@ -481,7 +501,7 @@ bool DrawState::bindVertexInputs(id<MTLRenderCommandEncoder> encoder, PipelineKe
         const MTLVertexFormat direct = a.isDouble ? MTLVertexFormatInvalid
                                                   : mtlVertexFormat(a.type, a.size, a.normalized, a.integer);
         const bool aligned = (a.offset % 4) == 0 && (stride % 4) == 0 && stride > 0;
-        const bool gathered = gather && !a.divisor;
+        const bool gathered = order && !a.divisor;
         if (a.buffer && a.buffer->mtl && direct != MTLVertexFormatInvalid && aligned && !gathered) {
             // Share a layout with an earlier attribute from the same buffer/stride/divisor when it fits.
             int layout = -1;
@@ -518,7 +538,7 @@ bool DrawState::bindVertexInputs(id<MTLRenderCommandEncoder> encoder, PipelineKe
         if (!source) return false;
         uint32_t first = 0, count = 0;
         if (gathered) {
-            count = static_cast<uint32_t>(gather->size());
+            count = static_cast<uint32_t>(order->size());
         } else if (a.divisor) {
             // Instanced attribute: one element per `divisor` instances.
             // Instanced attribute: one element per `divisor` instances, from the base instance.
@@ -531,7 +551,7 @@ bool DrawState::bindVertexInputs(id<MTLRenderCommandEncoder> encoder, PipelineKe
         TransientAllocation alloc = transient_.allocate(elements * 16, serial, 16);
         auto* dst = static_cast<uint8_t*>(alloc.data);
         for (uint32_t v = first; v < first + count; ++v) {
-            const uint32_t fetch = gathered ? (*gather)[v] : v;
+            const uint32_t fetch = gathered ? (*order)[v] : v;
             const uint8_t* element = source + static_cast<size_t>(fetch) * stride;
             uint8_t* to = dst + static_cast<size_t>(v) * 16;
             if (a.integer) {
@@ -613,6 +633,7 @@ LinkedProgram* DrawState::executable() {
     if (!ffChosen_) {
         ffProgram_ = compat::fixedFunctionProgram(ctx_, drawMode_);
         ffPointSize_ = drawMode_ == GL_POINTS && compat::fixedFunctionWritesPointSize(ctx_);
+        ffWideLines_ = compat::fixedFunctionWideLines(ctx_, drawMode_);
         ffChosen_ = true;
     }
     return ffProgram_ && ffProgram_->linked ? ffProgram_->linked.get() : nullptr;
@@ -623,6 +644,7 @@ void DrawState::beginDraw(GLenum mode) {
     ffChosen_ = false;
     ffProgram_ = nullptr;
     ffPointSize_ = false;
+    ffWideLines_ = false;
 }
 
 void DrawState::bindUniforms(id<MTLRenderCommandEncoder> encoder, LinkedProgram& program) {
@@ -1309,6 +1331,65 @@ void DrawState::dispatch(GLuint x, GLuint y, GLuint z, Buffer* indirect, GLintpt
     }
 }
 
+void DrawState::drawWideLines(GLenum mode, const std::vector<uint32_t>& vertices, GLsizei instances) {
+    const size_t n = vertices.size();
+    std::vector<std::pair<uint32_t, uint32_t>> segments;
+    if (mode == GL_LINES) {
+        for (size_t i = 0; i + 1 < n; i += 2) segments.emplace_back(vertices[i], vertices[i + 1]);
+    } else {
+        for (size_t i = 0; i + 1 < n; ++i) segments.emplace_back(vertices[i], vertices[i + 1]);
+        if (mode == GL_LINE_LOOP && n >= 2) segments.emplace_back(vertices[n - 1], vertices[0]);
+    }
+    queriesCountPrimitives(ctx_, mode, static_cast<GLsizei>(n), instances);
+    if (segments.empty()) return;
+    // Two triangles per segment, each listing the provoking endpoint first
+    // (Metal flat-shades from a triangle's first vertex). The program offsets
+    // every vertex by half the width to the side given (fixed_function.mm).
+    const bool last = ctx_.state.provokingVertex == GL_LAST_VERTEX_CONVENTION;
+    std::vector<uint32_t> list, partners;
+    std::vector<float> sides;
+    for (const auto& [a, b] : segments) {
+        const uint32_t p = last ? b : a, q = last ? a : b;
+        list.insert(list.end(), {p, p, q, p, q, q});
+        partners.insert(partners.end(), {q, q, p, q, p, p});
+        sides.insert(sides.end(), {-1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f});
+    }
+    LinkedProgram* current = executable();
+    if (!current) return;
+    waitForCpuVertexReads(*current, true);
+    prepareSamplerStorage(*current);
+    // Lines are not culled and ignore the polygon mode; their quads take the line offset state.
+    ContextState& st = ctx_.state;
+    const bool cull = st.cullFace, offsetFill = st.polygonOffsetFill;
+    const GLenum polygonMode = st.polygonMode, polygonModeBack = st.polygonModeBack;
+    st.cullFace = false;
+    st.polygonMode = st.polygonModeBack = GL_FILL;
+    st.polygonOffsetFill = st.polygonOffsetLine;
+    ctx_.markDirty(kDirtyRaster);
+    MTLPrimitiveType primitive = MTLPrimitiveTypeTriangle;
+    if (id<MTLRenderCommandEncoder> encoder = prepare(GL_TRIANGLES, primitive)) {
+        queriesBeforeDraw(ctx_, encoder);
+        PipelineKey key = lastKey_;
+        linePartners_ = &partners;
+        lineSides_ = &sides;
+        const bool bound = bindVertexInputs(encoder, key, *current, 0, static_cast<GLsizei>(list.size()), instances, &list);
+        linePartners_ = nullptr;
+        lineSides_ = nullptr;
+        if (id<MTLRenderPipelineState> pipeline = bound ? ctx_.share().pipelines().render(key, *current) : nil) {
+            [encoder setRenderPipelineState:pipeline];
+            bindDrawState(encoder, *current);
+            [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:list.size()
+                      instanceCount:static_cast<NSUInteger>(std::max(1, instances)) baseInstance:baseInstance_];
+            ctx_.stream().noteDraw();
+        }
+    }
+    st.cullFace = cull;
+    st.polygonOffsetFill = offsetFill;
+    st.polygonMode = polygonMode;
+    st.polygonModeBack = polygonModeBack;
+    ctx_.markDirty(kDirtyRaster);
+}
+
 void DrawState::drawGeometry(GLenum mode, const std::vector<uint32_t>& vertices, GLsizei instances, uint32_t& primitiveBase) {
     LinkedProgram& lp = *executable();
     const shader::GeometryEmulation& g = lp.link.geometry;
@@ -1447,6 +1528,12 @@ void DrawState::drawArrays(GLenum mode, GLint first, GLsizei count, GLsizei inst
     }
     if (!validateDraw(mode)) return;
     if (count == 0 || instances == 0 || !conditionalRenderAllows(ctx_)) return;
+    if (executable() && ffWideLines_) {
+        std::vector<uint32_t> vertices(static_cast<size_t>(count));
+        for (GLsizei i = 0; i < count; ++i) vertices[static_cast<size_t>(i)] = static_cast<uint32_t>(first + i);
+        drawWideLines(mode, vertices, instances);
+        return;
+    }
     if (executable()->link.geometry.active) {
         std::vector<uint32_t> vertices(static_cast<size_t>(count));
         for (GLsizei i = 0; i < count; ++i) vertices[static_cast<size_t>(i)] = static_cast<uint32_t>(first + i);
@@ -1520,6 +1607,18 @@ void DrawState::drawElements(GLenum mode, GLsizei count, GLenum type, const void
         maxIndex = std::max(maxIndex, v);
     }
     if (minIndex == UINT32_MAX) return;  // only restart indices
+    if (ffWideLines_) {
+        std::vector<uint32_t> segment;
+        for (size_t i = 0; i <= values.size(); ++i) {
+            if (i < values.size() && !(restart && values[i] == restartIndex)) {
+                segment.push_back(values[i] + static_cast<uint32_t>(baseVertex));
+                continue;
+            }
+            if (!segment.empty()) drawWideLines(mode, segment, instances);
+            segment.clear();
+        }
+        return;
+    }
     if (executable()->link.geometry.active) {
         // gl_PrimitiveIDIn keeps counting across restarts.
         uint32_t primitiveBase = 0;

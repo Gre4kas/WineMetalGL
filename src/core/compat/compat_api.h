@@ -1,7 +1,11 @@
 // Compatibility profile hooks called by the core API (W22).
 #pragma once
 
+#include <cstdint>
+#include <vector>
+
 #include "core/gl/types.h"
+#include "core/state.h"
 
 namespace wmgl {
 
@@ -25,6 +29,10 @@ int getFixedState(Context& ctx, GLenum pname, double* out, char& kind);
 // glPushAttrib / glPushClientAttrib stack depths (compat/fixed_attrib.mm).
 constexpr int kMaxAttribStackDepth = 16;
 int attribStackDepth(const Context& ctx, bool client);
+
+// Unpacks a GL bitmap (1 bit per pixel, unpack state `s`) to one byte per
+// pixel: 255 for set bits (api/fixed_raster.mm).
+std::vector<uint8_t> unpackBitmap(const PixelStore& s, const uint8_t* bits, GLsizei width, GLsizei height);
 
 // glGetPointerv of the conventional arrays; false if `pname` is not one.
 bool getConventionalPointer(Context& ctx, GLenum pname, void** params);

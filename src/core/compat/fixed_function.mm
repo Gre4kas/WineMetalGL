@@ -173,6 +173,15 @@ std::vector<uint8_t> packBlock(const ContextState& st) {
     b.endStruct();
     // wmgl_AlphaTest: function code (GL_NEVER..GL_ALWAYS -> 1..8, 0 = disabled) and reference.
     b.vec4(f.alphaTest ? static_cast<float>(f.alphaFunc - GL_NEVER + 1) : 0.0f, f.alphaRef, 0, 0);
+    // wmgl_LineParams: half the line width and half the viewport size (window pixels per NDC unit).
+    b.vec4(std::clamp(st.lineWidth, 1.0f, kMaxLineWidth) * 0.5f, std::max(1, st.viewport[2]) * 0.5f,
+           std::max(1, st.viewport[3]) * 0.5f, 0);
+    // wmgl_Stipple: 32 rows of 32 bits.
+    for (int i = 0; i < 32; i += 4) {
+        float row[4];
+        std::memcpy(row, &f.stipple[static_cast<size_t>(i)], 16);
+        b.vec4(row);
+    }
     b.align(16);
     return b.data;
 }
@@ -196,6 +205,7 @@ struct Key {
     uint8_t colorMaterialMode = 0, colorMaterialFace = 0;  // mode 0 = off
     uint8_t lights = 0, positional = 0, spot = 0;
     uint8_t clipPlanes = 0, fog = 0, fogMode = 0, fogFromCoord = 0, pointSize = 0, flat = 0, colorSum = 0;
+    uint8_t wideLines = 0, stipple = 0;
     UnitKey units[FixedState::kTextureUnits];
 
     std::string bytes() const {
@@ -203,7 +213,7 @@ struct Key {
         auto put = [&](uint8_t v) { out.push_back(static_cast<char>(v)); };
         for (uint8_t v : {lighting, twoSide, localViewer, separateSpecular, normalize, rescale, colorMaterialMode,
                           colorMaterialFace, lights, positional, spot, clipPlanes, fog, fogMode, fogFromCoord, pointSize,
-                          flat, colorSum})
+                          flat, colorSum, wideLines, stipple})
             put(v);
         for (const UnitKey& u : units) {
             for (uint8_t v : {u.target, u.format, u.shadow, u.mode, u.combineRGB, u.combineAlpha, u.scaleRGB, u.scaleAlpha,
@@ -326,6 +336,7 @@ Texture* unitTexture(Context& ctx, int unit, uint8_t& target) {
 
 Key buildKey(Context& ctx, GLenum mode) {
     const ContextState& st = ctx.state;
+    const ContextState& s = st;
     const FixedState& f = st.fixed;
     Key k;
     if (f.lighting) {
@@ -359,6 +370,11 @@ Key buildKey(Context& ctx, GLenum mode) {
     }
     k.flat = f.shadeModel == GL_FLAT;
     k.colorSum = f.colorSum || f.lighting;
+    k.wideLines = fixedFunctionWideLines(ctx, mode);
+    if (k.wideLines) k.twoSide = 0;  // lines are front-facing
+    const bool polygons = mode != GL_POINTS && mode != GL_LINES && mode != GL_LINE_STRIP && mode != GL_LINE_LOOP &&
+                          mode != GL_LINES_ADJACENCY && mode != GL_LINE_STRIP_ADJACENCY;
+    k.stipple = f.polygonStipple && polygons && s.polygonMode == GL_FILL;
     for (int u = 0; u < FixedState::kTextureUnits; ++u) {
         UnitKey& uk = k.units[u];
         Texture* tex = unitTexture(ctx, u, uk.target);
@@ -478,8 +494,16 @@ std::string vertexSource(const Key& k) {
         if (k.units[u].target && !k.units[u].coordReplace) s += "out vec4 ff_tc" + str(u) + ";\n";
     if (k.fog) s += "out float ff_fogCoord;\n";
     s += "float ff_pow(float x, float y) { return y == 0.0 ? 1.0 : pow(x, y); }\n";
+    if (k.wideLines) s += "in vec4 wmgl_LinePartner;\nin float wmgl_LineSide;\n";
     s += "void main() {\n";
     s += "    gl_Position = gl_ModelViewProjectionMatrix * gl_Vertex;\n";
+    if (k.wideLines) {
+        // Offset along the segment's window-space minor axis by half the width.
+        s += "    vec4 ff_other = gl_ModelViewProjectionMatrix * wmgl_LinePartner;\n";
+        s += "    vec2 ff_delta = (ff_other.xy / ff_other.w - gl_Position.xy / gl_Position.w) * wmgl_LineParams.yz;\n";
+        s += "    vec2 ff_offset = abs(ff_delta.x) >= abs(ff_delta.y) ? vec2(0.0, wmgl_LineSide) : vec2(wmgl_LineSide, 0.0);\n";
+        s += "    gl_Position.xy += ff_offset * wmgl_LineParams.x / wmgl_LineParams.yz * gl_Position.w;\n";
+    }
     s += "    vec4 eye = gl_ModelViewMatrix * gl_Vertex;\n";
     s += "    vec3 eyePos = eye.xyz / eye.w;\n";
     if (needsNormal(k)) {
@@ -591,6 +615,10 @@ std::string fragmentSource(const Key& k) {
     }
     if (k.fog) s += "in float ff_fogCoord;\n";
     s += "void main() {\n";
+    if (k.stipple) {
+        s += "    uvec2 ff_p = uvec2(gl_FragCoord.xy) % 32u;\n";
+        s += "    if (((wmgl_Stipple[ff_p.y >> 2u][ff_p.y & 3u] >> ff_p.x) & 1u) == 0u) discard;\n";
+    }
     s += twoSide ? "    vec4 primary = gl_FrontFacing ? ff_front : ff_back;\n"
                    "    vec4 secondary = gl_FrontFacing ? ff_frontSecondary : ff_backSecondary;\n"
                  : "    vec4 primary = ff_front;\n    vec4 secondary = ff_frontSecondary;\n";
@@ -666,11 +694,14 @@ const std::vector<uint8_t>& fixedFunctionBlock(Context& ctx, uint64_t& generatio
     Context::FixedFunctionBlockCache& cache = ctx.fixedFunctionBlockCache;
     const ContextState& st = ctx.state;
     if (!cache.generation || cache.version != st.fixed.version || cache.pointSize != st.pointSize ||
-        cache.fade != st.pointFadeThresholdSize) {
+        cache.fade != st.pointFadeThresholdSize || cache.lineWidth != st.lineWidth ||
+        !std::equal(st.viewport, st.viewport + 4, cache.viewport)) {
         cache.data = packBlock(st);
         cache.version = st.fixed.version;
         cache.pointSize = st.pointSize;
         cache.fade = st.pointFadeThresholdSize;
+        cache.lineWidth = st.lineWidth;
+        std::copy(st.viewport, st.viewport + 4, cache.viewport);
         cache.generation = ++generations;
     }
     generation = cache.generation;
@@ -708,6 +739,13 @@ void fixedFunctionSources(Context& ctx, GLenum mode, std::string& vertex, std::s
     const Key key = buildKey(ctx, mode);
     vertex = vertexSource(key);
     fragment = fragmentSource(key);
+}
+
+bool fixedFunctionWideLines(Context& ctx, GLenum mode) {
+    const ContextState& s = ctx.state;
+    if (!ctx.isCompat() || s.program || s.programPipeline || std::clamp(s.lineWidth, 1.0f, kMaxLineWidth) <= 1.0f) return false;
+    if (mode != GL_LINES && mode != GL_LINE_STRIP && mode != GL_LINE_LOOP) return false;
+    return !(s.transformFeedback && s.transformFeedback->active);  // capture records the line, not its quads
 }
 
 bool fixedFunctionWritesPointSize(Context& ctx) {

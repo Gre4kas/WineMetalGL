@@ -1,6 +1,6 @@
 {
  "path": "new",
- "commit": "e1c0681",
+ "commit": "19be53e",
  "date": "2026-10-10",
  "threshold": 8,
  "entries": [
@@ -38,6 +38,27 @@
    "status": "PASS",
    "worst_fraction": 0.0,
    "min_psnr_db": 99.5
+  },
+  {
+   "name": "legacy-gl21",
+   "tier": "C",
+   "status": "PASS",
+   "worst_fraction": 0.001771,
+   "min_psnr_db": 41.2
+  },
+  {
+   "name": "legacy-gl21-i386",
+   "tier": "C",
+   "status": "PASS",
+   "worst_fraction": 0.001771,
+   "min_psnr_db": 41.2
+  },
+  {
+   "name": "legacy-compat33",
+   "tier": "B",
+   "status": "PASS",
+   "worst_fraction": 0.001771,
+   "min_psnr_db": 41.2
   }
  ]
 }

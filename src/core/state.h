@@ -192,7 +192,7 @@ struct ContextState {
     bool debugOutput = false, debugOutputSynchronous = false;
 
     ContextState() {
-        static_assert(kAttribSlotCount == VertexArray::kAttribSlots, "conventional attribute slots");
+        static_assert(kInternalAttribEnd == VertexArray::kAttribSlots, "conventional attribute slots");
         for (auto& mask : colorMask) mask = {true, true, true, true};
         // Initial current values (GL 3.3 compatibility table 6.5).
         genericAttribs[kConvColor].value = {{1, 1, 1, 1}};

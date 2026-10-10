@@ -134,7 +134,8 @@ public:
     // display list compilation (compat/display_list.h).
     struct FixedFunctionBlockCache {
         uint64_t version = 0, generation = 0;
-        float pointSize = -1, fade = -1;
+        float pointSize = -1, fade = -1, lineWidth = -1;
+        GLint viewport[4] = {};
         std::vector<uint8_t> data;
     } fixedFunctionBlockCache;
     // glPushAttrib / glPushClientAttrib (api/fixed_attrib.mm): the mask and

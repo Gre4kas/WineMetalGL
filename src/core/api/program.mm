@@ -432,6 +432,46 @@ void BindFragDataLocation(Context& ctx, GLuint program, GLuint color, const GLch
     BindFragDataLocationIndexed(ctx, program, color, 0, name);
 }
 
+namespace {
+
+// Links `p` from `input` (glLinkProgram, glProgramBinary). `log` and `ok`
+// carry problems found while gathering the input.
+void linkFrom(Context& ctx, Program* p, shader::LinkInput input, std::string log, bool ok) {
+    const GLuint program = p->name;
+    p->linkAttempted = true;
+    if (ok && input.shaders.empty()) {
+        log += "error: no shaders attached\n";
+        ok = false;
+    }
+    shader::LinkResult result;
+    if (ok) {
+        result = shader::link(input);
+        ok = result.ok;
+        log += result.log;
+    }
+    p->linkStatus = ok;
+    p->infoLog = log;
+    p->validateStatus = false;
+    if (!ok) {
+        WMGL_INFO("program %u failed to link:\n%s", program, log.c_str());
+        // A failed relink of the current program keeps its old executable in use.
+        if (p->useCount == 0) p->linked.reset();
+        return;
+    }
+    auto linked = std::make_shared<LinkedProgram>();
+    linked->link = std::move(result);
+    linked->input = std::move(input);
+    linked->uid = nextLinkedProgramId();
+    p->uniformData.assign((linked->link.defaultBlockSize + 15) & ~15u, 0);
+    p->uniformBlockBindings.assign(linked->link.blocks.size(), 0);
+    p->samplerUnits.assign(linked->link.samplers.size(), 0);
+    p->linked = std::move(linked);
+    ++p->uniformVersion;
+    if (ctx.state.program.get() == p) ctx.markDirty(kDirtyProgram | kDirtyUniforms | kDirtyTextures | kDirtyVertexInput);
+}
+
+}  // namespace
+
 void LinkProgram(Context& ctx, GLuint program) {
     Program* p = programOrError(ctx, program);
     if (!p) return;
@@ -476,35 +516,7 @@ void main() {
 }
 )"});
     }
-    p->linkAttempted = true;
-    if (ok && input.shaders.empty()) {
-        log += "error: no shaders attached\n";
-        ok = false;
-    }
-    shader::LinkResult result;
-    if (ok) {
-        result = shader::link(input);
-        ok = result.ok;
-        log += result.log;
-    }
-    p->linkStatus = ok;
-    p->infoLog = log;
-    p->validateStatus = false;
-    if (!ok) {
-        WMGL_INFO("program %u failed to link:\n%s", program, log.c_str());
-        // A failed relink of the current program keeps its old executable in use.
-        if (p->useCount == 0) p->linked.reset();
-        return;
-    }
-    auto linked = std::make_shared<LinkedProgram>();
-    linked->link = std::move(result);
-    linked->uid = nextLinkedProgramId();
-    p->uniformData.assign((linked->link.defaultBlockSize + 15) & ~15u, 0);
-    p->uniformBlockBindings.assign(linked->link.blocks.size(), 0);
-    p->samplerUnits.assign(linked->link.samplers.size(), 0);
-    p->linked = std::move(linked);
-    ++p->uniformVersion;
-    if (ctx.state.program.get() == p) ctx.markDirty(kDirtyProgram | kDirtyUniforms | kDirtyTextures | kDirtyVertexInput);
+    linkFrom(ctx, p, std::move(input), std::move(log), ok);
 }
 
 void UseProgram(Context& ctx, GLuint program) {
@@ -535,8 +547,6 @@ void releaseCurrentProgram(Context& ctx) {
     maybeDeleteProgram(ctx, previous.get());
 }
 
-// GL_ARB_get_program_binary with NUM_PROGRAM_BINARY_FORMATS = 0: programs
-// are always compiled from source; applications fall back to that.
 void ProgramParameteri(Context& ctx, GLuint program, GLenum pname, GLint value) {
     Program* p = programOrError(ctx, program);
     if (!p) return;
@@ -556,22 +566,134 @@ void ProgramParameteri(Context& ctx, GLuint program, GLenum pname, GLint value) 
     ctx.setError(GL_INVALID_ENUM);
 }
 
+// GL_ARB_get_program_binary: the one binary format holds what the program
+// was linked from (shader sources, attribute/fragment data bindings,
+// transform feedback varyings, separability); glProgramBinary relinks it.
+// Binaries are portable between WineMetalGL versions because they keep the
+// GLSL, not compiled code.
+namespace {
+
+constexpr char kBinaryMagic[8] = {'W', 'M', 'G', 'L', 'P', 'B', '0', '1'};
+
+void put32(std::string& out, uint32_t v) { out.append(reinterpret_cast<const char*>(&v), 4); }
+void putString(std::string& out, const std::string& s) {
+    put32(out, static_cast<uint32_t>(s.size()));
+    out += s;
+}
+
+std::string serialize(const shader::LinkInput& in) {
+    std::string out(kBinaryMagic, sizeof(kBinaryMagic));
+    put32(out, static_cast<uint32_t>(in.shaders.size()));
+    for (const shader::ShaderSource& s : in.shaders) {
+        put32(out, static_cast<uint32_t>(s.stage));
+        putString(out, s.source);
+    }
+    put32(out, static_cast<uint32_t>(in.attribBindings.size()));
+    for (const auto& [name, index] : in.attribBindings) {
+        putString(out, name);
+        put32(out, index);
+    }
+    put32(out, static_cast<uint32_t>(in.fragDataBindings.size()));
+    for (const auto& [name, binding] : in.fragDataBindings) {
+        putString(out, name);
+        put32(out, binding.first);
+        put32(out, binding.second);
+    }
+    put32(out, static_cast<uint32_t>(in.transformFeedbackVaryings.size()));
+    for (const std::string& v : in.transformFeedbackVaryings) putString(out, v);
+    put32(out, in.transformFeedbackMode);
+    put32(out, in.separable ? 1 : 0);
+    return out;
+}
+
+struct Reader {
+    const uint8_t* p;
+    size_t left;
+    bool ok = true;
+    uint32_t u32() {
+        uint32_t v = 0;
+        if (left < 4) { ok = false; return 0; }
+        std::memcpy(&v, p, 4);
+        p += 4;
+        left -= 4;
+        return v;
+    }
+    std::string str() {
+        const uint32_t n = u32();
+        if (!ok || n > left) { ok = false; return {}; }
+        std::string s(reinterpret_cast<const char*>(p), n);
+        p += n;
+        left -= n;
+        return s;
+    }
+};
+
+bool deserialize(const void* data, size_t size, shader::LinkInput& in) {
+    if (!data || size < sizeof(kBinaryMagic) || std::memcmp(data, kBinaryMagic, sizeof(kBinaryMagic))) return false;
+    Reader r{static_cast<const uint8_t*>(data) + sizeof(kBinaryMagic), size - sizeof(kBinaryMagic)};
+    const uint32_t shaders = r.u32();
+    for (uint32_t i = 0; r.ok && i < shaders; ++i) {
+        const uint32_t stage = r.u32();
+        if (stage >= static_cast<uint32_t>(shader::kStageCount)) return false;
+        in.shaders.push_back({static_cast<shader::Stage>(stage), r.str()});
+    }
+    const uint32_t attribs = r.u32();
+    for (uint32_t i = 0; r.ok && i < attribs; ++i) {
+        std::string name = r.str();
+        in.attribBindings[name] = r.u32();
+    }
+    const uint32_t outputs = r.u32();
+    for (uint32_t i = 0; r.ok && i < outputs; ++i) {
+        std::string name = r.str();
+        const uint32_t location = r.u32();
+        in.fragDataBindings[name] = {location, r.u32()};
+    }
+    const uint32_t varyings = r.u32();
+    for (uint32_t i = 0; r.ok && i < varyings; ++i) in.transformFeedbackVaryings.push_back(r.str());
+    in.transformFeedbackMode = r.u32();
+    in.separable = r.u32() != 0;
+    return r.ok && r.left == 0;
+}
+
+}  // namespace
+
+GLsizei programBinaryLength(const Program& p) {
+    return p.linkStatus && p.linked ? static_cast<GLsizei>(serialize(p.linked->input).size()) : 0;
+}
+
 void GetProgramBinary(Context& ctx, GLuint program, GLsizei bufSize, GLsizei* length, GLenum* binaryFormat, void* binary) {
-    (void)binaryFormat;
-    (void)binary;
     Program* p = programOrError(ctx, program);
     if (!p) return;
     if (bufSize < 0) return ctx.setError(GL_INVALID_VALUE);
-    if (!p->linkStatus) return ctx.setError(GL_INVALID_OPERATION);
-    if (length) *length = 0;  // PROGRAM_BINARY_LENGTH is 0
+    if (!p->linkStatus || !p->linked) return ctx.setError(GL_INVALID_OPERATION);
+    const std::string blob = serialize(p->linked->input);
+    if (blob.size() > static_cast<size_t>(bufSize)) return ctx.setError(GL_INVALID_OPERATION);
+    if (binary) std::memcpy(binary, blob.data(), blob.size());
+    if (length) *length = static_cast<GLsizei>(blob.size());
+    if (binaryFormat) *binaryFormat = kProgramBinaryFormat;
 }
 
 void ProgramBinary(Context& ctx, GLuint program, GLenum binaryFormat, const void* binary, GLsizei length) {
-    (void)binaryFormat;
-    (void)binary;
-    (void)length;
-    if (!programOrError(ctx, program)) return;
-    ctx.setError(GL_INVALID_ENUM);  // not one of PROGRAM_BINARY_FORMATS (there are none)
+    Program* p = programOrError(ctx, program);
+    if (!p) return;
+    if (binaryFormat != kProgramBinaryFormat) return ctx.setError(GL_INVALID_ENUM);
+    const TransformFeedback& xfb = *ctx.state.transformFeedback;
+    if (xfb.active && xfb.program.get() == p) return ctx.setError(GL_INVALID_OPERATION);
+    shader::LinkInput input;
+    if (length < 0 || !deserialize(binary, static_cast<size_t>(length), input)) {
+        // An unusable binary is not an error: the program is just not linked.
+        p->linkAttempted = true;
+        p->linkStatus = false;
+        p->infoLog = "error: the program binary is not a WineMetalGL binary\n";
+        if (p->useCount == 0) p->linked.reset();
+        return;
+    }
+    p->attribBindings = input.attribBindings;
+    p->fragDataBindings = input.fragDataBindings;
+    p->transformFeedbackVaryings = input.transformFeedbackVaryings;
+    p->transformFeedbackMode = input.transformFeedbackMode;
+    p->separable = input.separable;
+    linkFrom(ctx, p, std::move(input), std::string(), true);
 }
 
 void ValidateProgram(Context& ctx, GLuint program) {
@@ -631,7 +753,7 @@ void GetProgramiv(Context& ctx, GLuint program, GLenum pname, GLint* params) {
         if (programBinaries(ctx)) { *params = p->binaryRetrievableHint; return; }
         break;
     case GL_PROGRAM_BINARY_LENGTH:
-        if (programBinaries(ctx)) { *params = 0; return; }  // no binary formats
+        if (programBinaries(ctx)) { *params = programBinaryLength(*p); return; }
         break;
     case GL_PROGRAM_SEPARABLE:
         if (separateShaderObjects(ctx)) { *params = p->separable; return; }
@@ -940,6 +1062,16 @@ void getUniform(Context& ctx, GLuint program, GLint location, T* params) {
 }
 
 }  // namespace
+
+int uniformComponents(Context& ctx, GLuint program, GLint location) {
+    Program* p = ctx.share().program(program);
+    if (!p || !p->linked || !p->linkStatus || location < 0) return -1;
+    int element = 0;
+    const shader::UniformInfo* u = uniformAt(*p, location, element);
+    if (!u) return -1;
+    const TypeInfo info = typeInfo(u->type);
+    return info.base == 's' ? 1 : info.columns * info.rows;
+}
 
 void GetUniformfv(Context& ctx, GLuint program, GLint location, GLfloat* params) { getUniform(ctx, program, location, params); }
 void GetUniformiv(Context& ctx, GLuint program, GLint location, GLint* params) { getUniform(ctx, program, location, params); }

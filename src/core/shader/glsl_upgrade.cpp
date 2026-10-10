@@ -357,6 +357,8 @@ UpgradeResult upgradeLegacyGlsl(Stage stage, const std::string& source, const Up
             "  vec4 wmgl_EyePlaneQ[8]; vec4 wmgl_ObjectPlaneS[8]; vec4 wmgl_ObjectPlaneT[8]; vec4 wmgl_ObjectPlaneR[8];\n"
             "  vec4 wmgl_ObjectPlaneQ[8]; wmgl_FogParameters wmgl_Fog;\n"
             "  vec4 wmgl_AlphaTest;\n"
+            "  vec4 wmgl_LineParams;\n"
+            "  uvec4 wmgl_Stipple[8];\n"
             "};\n";
         if (fragment)
             decls +=

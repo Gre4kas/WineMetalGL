@@ -400,7 +400,7 @@ void GetBufferParameteri64v(Context& ctx, GLenum target, GLenum pname, GLint64* 
     case GL_BUFFER_MAP_LENGTH: *params = buffer->mapped ? buffer->mapLength : 0; return;
     default: break;
     }
-    if (ctx.version() >= 44) {
+    if (ctx.version() >= 44 || ctx.hasExtension("GL_ARB_buffer_storage")) {
         if (pname == GL_BUFFER_IMMUTABLE_STORAGE) { *params = buffer->immutable; return; }
         if (pname == GL_BUFFER_STORAGE_FLAGS) { *params = buffer->storageFlags; return; }
     }

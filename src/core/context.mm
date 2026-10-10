@@ -128,6 +128,9 @@ void Context::initStrings() {
     extensions_.push_back("GL_KHR_debug");
     extensions_.push_back("GL_ARB_debug_output");
     extensions_.push_back("GL_ARB_separate_shader_objects");
+    for (const char* name : {"GL_KHR_robustness", "GL_ARB_robustness", "GL_ARB_internalformat_query",
+                             "GL_ARB_invalidate_subdata", "GL_ARB_copy_image", "GL_NVX_gpu_memory_info", "GL_ATI_meminfo"})
+        extensions_.push_back(name);
     extensionString_.clear();
     for (const std::string& ext : extensions_) {
         if (!extensionString_.empty()) extensionString_ += ' ';

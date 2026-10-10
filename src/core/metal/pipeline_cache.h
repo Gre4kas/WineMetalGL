@@ -30,7 +30,7 @@ struct VertexLayoutKey {
 
 struct PipelineKey {
     uint64_t programId;
-    VertexAttributeKey attributes[29];  // VertexArray::kAttribSlots
+    VertexAttributeKey attributes[31];  // VertexArray::kAttribSlots
     VertexLayoutKey layouts[13];
     uint8_t layoutCount;
     uint8_t sampleCount;

@@ -7,6 +7,7 @@
 #include <cstring>
 
 #include "core/compat/compat_api.h"
+#include "core/objects.h"
 #include "core/compat/fixed_state.h"
 #include "core/context.h"
 #include "gl_api.gen.h"
@@ -750,9 +751,40 @@ void LineStipple(Context& ctx, GLint factor, GLushort pattern) {
     f.lineStipplePattern = pattern;
 }
 
+// The fixed-function program discards fragments whose stipple bit (window
+// x mod 32, y mod 32) is clear (fixed_function.mm).
 void PolygonStipple(Context& ctx, const GLubyte* mask) {
-    (void)mask;  // stored state only: stippling is not emulated (W22 slice 7)
-    compatOnly(ctx);
+    if (!compatOnly(ctx)) return;
+    const uint8_t* bits = mask;
+    if (Buffer* pbo = ctx.state.pixelUnpackBuffer.get()) {
+        if (!pbo->mtl) return ctx.setError(GL_INVALID_OPERATION);
+        if (pbo->lastWriteSerial) ctx.stream().waitFor(pbo->lastWriteSerial);
+        bits = pbo->contents() + reinterpret_cast<uintptr_t>(mask);
+    }
+    if (!bits) return;
+    const std::vector<uint8_t> pixels = unpackBitmap(ctx.state.unpack, bits, 32, 32);
+    FixedState& f = fixedState(ctx);
+    for (int y = 0; y < 32; ++y) {
+        uint32_t row = 0;
+        for (int x = 0; x < 32; ++x)
+            if (pixels[static_cast<size_t>(y * 32 + x)]) row |= 1u << x;
+        f.stipple[static_cast<size_t>(y)] = row;
+    }
+}
+
+void GetPolygonStipple(Context& ctx, GLubyte* mask) {
+    if (!compatOnly(ctx) || !mask) return;
+    // Packed most significant bit first, 4 bytes per row (GL_PACK_ALIGNMENT <= 4 rows are tight).
+    const PixelStore& pack = ctx.state.pack;
+    const size_t rowBytes = pack.alignment == 8 ? 8 : 4;
+    for (int y = 0; y < 32; ++y)
+        for (int byte = 0; byte < 4; ++byte) {
+            uint8_t value = 0;
+            for (int bit = 0; bit < 8; ++bit)
+                if (ctx.state.fixed.stipple[static_cast<size_t>(y)] & (1u << (byte * 8 + bit)))
+                    value |= pack.lsbFirst ? static_cast<uint8_t>(1u << bit) : static_cast<uint8_t>(0x80u >> bit);
+            mask[static_cast<size_t>(y) * rowBytes + static_cast<size_t>(byte)] = value;
+        }
 }
 
 void ClientActiveTexture(Context& ctx, GLenum texture) {

@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
+#include <string>
 
 #include "core/compat/compat_api.h"
 #include "core/context.h"
@@ -544,9 +546,20 @@ void Finish(Context& ctx) { ctx.stream().finish(); }
 
 const GLubyte* GetString(Context& ctx, GLenum name) {
     switch (name) {
-    case GL_VENDOR: return reinterpret_cast<const GLubyte*>("WineMetalGL");
+    // WINEMETALGL_VENDOR / WINEMETALGL_RENDERER override the strings for
+    // games that refuse unknown vendors (see docs and tests/games notes).
+    case GL_VENDOR: {
+        static const std::string vendor = [] {
+            const char* v = std::getenv("WINEMETALGL_VENDOR");
+            return std::string(v && *v ? v : "WineMetalGL");
+        }();
+        return reinterpret_cast<const GLubyte*>(vendor.c_str());
+    }
     case GL_RENDERER: {
-        static std::string renderer = std::string(Device::get().name()) + " (WineMetalGL)";
+        static const std::string renderer = [] {
+            const char* r = std::getenv("WINEMETALGL_RENDERER");
+            return r && *r ? std::string(r) : std::string(Device::get().name()) + " (WineMetalGL)";
+        }();
         return reinterpret_cast<const GLubyte*>(renderer.c_str());
     }
     case GL_VERSION: return reinterpret_cast<const GLubyte*>(ctx.versionString().c_str());

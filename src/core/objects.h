@@ -198,7 +198,7 @@ public:
     // Generic attributes, then the compatibility profile's conventional arrays
     // (vertex, normal, colours, fog coordinate, texture coordinates; see
     // compat/fixed_state.h), which the lowered legacy built-ins read.
-    static constexpr int kAttribSlots = 29;
+    static constexpr int kAttribSlots = 31;  // + 2 internal (compat/fixed_state.h InternalAttrib)
     std::array<VertexAttrib, kAttribSlots> attribs;
     RefPtr<Buffer> elementBuffer;
     uint64_t version = 0;

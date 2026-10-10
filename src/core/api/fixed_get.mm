@@ -218,9 +218,10 @@ int getFixedState(Context& ctx, GLenum pname, double* values, char& kind) {
     case GL_MAX_EVAL_ORDER: return o.ints({8});
     case GL_MAX_PIXEL_MAP_TABLE: return o.ints({256});
     case GL_MAX_NAME_STACK_DEPTH: return o.ints({64});
-    case GL_NAME_STACK_DEPTH: case GL_SELECTION_BUFFER_SIZE: case GL_FEEDBACK_BUFFER_SIZE: return o.ints({0});
+    case GL_NAME_STACK_DEPTH: return o.ints({static_cast<double>(f.nameStack.size())});
+    case GL_SELECTION_BUFFER_SIZE: case GL_FEEDBACK_BUFFER_SIZE: return o.ints({0});
     case GL_FEEDBACK_BUFFER_TYPE: return o.ints({GL_2D});
-    case GL_RENDER_MODE: return o.ints({GL_RENDER});
+    case GL_RENDER_MODE: return o.ints({static_cast<double>(f.renderMode)});
     // --- framebuffer
     case GL_RED_BITS: case GL_GREEN_BITS: case GL_BLUE_BITS: case GL_ALPHA_BITS: case GL_DEPTH_BITS: case GL_STENCIL_BITS:
         return o.ints({static_cast<double>(framebufferBits(ctx, pname))});

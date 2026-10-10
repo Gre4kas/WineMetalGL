@@ -217,6 +217,8 @@ void drawRectangle(Context& ctx, Blit kind, const RefPtr<Texture>& tex, float x0
     ctx.markDirty(kDirtyAll);
 }
 
+}  // namespace
+
 // Unpacks a GL bitmap (1 bit per pixel, GL 3.3 compatibility section 3.7.4)
 // to one byte per pixel.
 std::vector<uint8_t> unpackBitmap(const PixelStore& s, const uint8_t* bits, GLsizei width, GLsizei height) {
@@ -236,8 +238,6 @@ std::vector<uint8_t> unpackBitmap(const PixelStore& s, const uint8_t* bits, GLsi
     }
     return out;
 }
-
-}  // namespace
 
 void RasterPos2d(Context& ctx, GLdouble x, GLdouble y) { setRasterPos(ctx, fv(x), fv(y), 0, 1); }
 void RasterPos2dv(Context& ctx, const GLdouble* v) { setRasterPos(ctx, fv(v[0]), fv(v[1]), 0, 1); }

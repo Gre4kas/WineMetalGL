@@ -40,6 +40,13 @@ Program* fixedFunctionProgram(Context& ctx, GLenum mode);
 // parameters with distance attenuation) rather than glPointSize.
 bool fixedFunctionWritesPointSize(Context& ctx);
 
+// Lines wider than one pixel (GL_ALIASED_LINE_WIDTH_RANGE) are drawn by the
+// fixed-function program as two triangles per segment, offset along the
+// segment's window-space minor axis (GL 3.3 compatibility section 3.5.2):
+// true when a fixed-function draw of `mode` needs that.
+constexpr float kMaxLineWidth = 64.0f;
+bool fixedFunctionWideLines(Context& ctx, GLenum mode);
+
 // GLSL of the fixed-function vertex and fragment shaders for the current
 // state (tests and WINEMETALGL_LOG=trace dumps).
 void fixedFunctionSources(Context& ctx, GLenum mode, std::string& vertex, std::string& fragment);

@@ -105,6 +105,9 @@ private:
     // segment) through the geometry shader emulation (shader/geometry.h).
     // primitiveBase is the gl_PrimitiveIDIn of the first primitive.
     void drawGeometry(GLenum mode, const std::vector<uint32_t>& vertices, GLsizei instances, uint32_t& primitiveBase);
+    // Fixed-function wide lines (compat/fixed_function.h): `vertices` (one
+    // restart-free line stream) drawn as two triangles per segment.
+    void drawWideLines(GLenum mode, const std::vector<uint32_t>& vertices, GLsizei instances);
     // Uniforms, uniform blocks and samplers of a compute function (the
     // Stage::Compute slots: a compute program or the geometry kernel).
     void bindKernelResources(id<MTLComputeCommandEncoder> encoder, LinkedProgram& program, bool usesDefaultUniforms);
@@ -138,7 +141,10 @@ private:
     // Fixed-function program of the current draw (owned by the share group's cache).
     Program* ownerProgram();
     GLenum drawMode_ = GL_TRIANGLES;
-    bool ffChosen_ = false, ffPointSize_ = false;
+    bool ffChosen_ = false, ffPointSize_ = false, ffWideLines_ = false;
+    // Wide line draws: the other endpoint and side of each expanded vertex.
+    const std::vector<uint32_t>* linePartners_ = nullptr;
+    const std::vector<float>* lineSides_ = nullptr;
     Program* ffProgram_ = nullptr;
     struct {
         id<MTLBuffer> buffer = nil;

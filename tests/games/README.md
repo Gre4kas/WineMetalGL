@@ -47,3 +47,9 @@ the trace to `corpus.json` with the frames to compare.
   instanced draws, mipmapped texture, RGBA16F + depth FBO, post-process pass,
   point sprites, orphaned stream buffer). `--profile core|compat`,
   `--no-forward`, `--frames`, `--dump`.
+- `demos/legacy.c`: a deterministic fixed-function frame in the style of GL
+  1.x/2.x games (lighting, display lists, immediate mode, client arrays with
+  quads, multitexture, sphere-map texgen, fog, alpha test, clip plane, point
+  sprites, glBitmap text, glDrawPixels, glPushAttrib). `--profile legacy`
+  (wglCreateContext; Apple's OpenGL records the reference) or `compat33`
+  (a 3.3 compatibility-profile context, Tier B).

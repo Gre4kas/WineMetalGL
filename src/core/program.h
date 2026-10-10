@@ -15,6 +15,9 @@ class Program;
 struct LinkedProgram {
     shader::LinkResult link;
     uint64_t uid = 0;  // unique per link (pipeline-cache key)
+    // What was linked (shader sources and link-time bindings): the contents
+    // of the program's binary (glGetProgramBinary), which relinks from it.
+    shader::LinkInput input;
 
     // Program pipelines (GL_ARB_separate_shader_objects): an executable
     // assembled from stage programs. Each stage's functions and state
@@ -68,6 +71,12 @@ bool validateProgramPipeline(ProgramPipeline& pipeline);
 // Drops a destroyed context's use of its current program (which may then be
 // deleted, if deletion was pending).
 void releaseCurrentProgram(Context& ctx);
+// GL_ARB_get_program_binary: the one binary format ('WMG1'; see api/program.mm).
+constexpr GLenum kProgramBinaryFormat = 0x574D4731;
+GLsizei programBinaryLength(const Program& p);
+// Components glGetUniform* writes for `location` of `program`, or -1 if the
+// query is invalid (the GL error is left to glGetUniform*).
+int uniformComponents(Context& ctx, GLuint program, GLint location);
 }  // namespace api
 
 }  // namespace wmgl

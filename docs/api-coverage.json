@@ -122,6 +122,13 @@
   "GL_ARB_buffer_storage",
   "GL_KHR_debug",
   "GL_ARB_debug_output",
-  "GL_ARB_separate_shader_objects"
+  "GL_ARB_separate_shader_objects",
+  "GL_KHR_robustness",
+  "GL_ARB_robustness",
+  "GL_ARB_internalformat_query",
+  "GL_ARB_invalidate_subdata",
+  "GL_ARB_copy_image",
+  "GL_NVX_gpu_memory_info",
+  "GL_ATI_meminfo"
  ]
 }
