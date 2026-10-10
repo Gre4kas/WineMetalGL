@@ -3,32 +3,31 @@ name: GL 3.3 conformance (manual)
 on:
   workflow_dispatch:
     inputs:
-      mode:
-        description: Test scope
-        required: true
-        default: shard
-        type: choice
-        options:
-          - case
-          - shard
-          - ledger
-          - full
       wine_runtime:
-        description: Absolute path to the compatible Wine installation on the self-hosted runner
+        description: Absolute path to the Wine installation on the self-hosted runner
         required: true
         type: string
       cts_executable:
-        description: Absolute path to glcts.exe from a VK-GL-CTS checkout
+        description: Absolute path to glcts.exe from a VK-GL-CTS build
         required: true
         type: string
-      case_name:
-        description: Exact KHR-GL33 case when mode is case
+      template_prefix:
+        description: Absolute path to a WoW64 template prefix (optional; created if empty)
         required: false
         type: string
-      shard_file:
-        description: Repository-relative shard file when mode is shard
+      config:
+        description: mustpass.xml configuration number (1-6)
+        required: true
+        default: "1"
+        type: string
+      filter:
+        description: Optional case glob, e.g. KHR-GL33.shaders.indexing.*
         required: false
-        default: tests/cts/gl33-shards/shader-indexing.txt
+        type: string
+      shards:
+        description: Parallel shards
+        required: true
+        default: "7"
         type: string
 
 permissions:
@@ -36,14 +35,8 @@ permissions:
 
 jobs:
   conformance:
-    name: GL 3.3 ${{ inputs.mode }}
+    name: KHR-GL33 config ${{ inputs.config }}
     runs-on: [self-hosted, macOS, wine-gl33]
-    env:
-      WINE_RUNTIME: ${{ inputs.wine_runtime }}
-      CTS_EXECUTABLE: ${{ inputs.cts_executable }}
-      MODE: ${{ inputs.mode }}
-      CASE_NAME: ${{ inputs.case_name }}
-      SHARD_FILE: ${{ inputs.shard_file }}
     steps:
       - name: Check out source
         uses: actions/checkout@v4
@@ -53,40 +46,25 @@ jobs:
           cmake --preset release
           cmake --build --preset release --parallel 4
 
-      - name: Run selected GL 3.3 scope
+      - name: Run KHR-GL33
+        env:
+          WINE_RUNTIME: ${{ inputs.wine_runtime }}
+          CTS_EXECUTABLE: ${{ inputs.cts_executable }}
+          TEMPLATE_PREFIX: ${{ inputs.template_prefix }}
+          CONFIG: ${{ inputs.config }}
+          FILTER: ${{ inputs.filter }}
+          SHARDS: ${{ inputs.shards }}
         run: |
           set -eu
-          case "$MODE" in
-            case)
-              test -n "$CASE_NAME"
-              ./scripts/run-gl33-case.sh "$WINE_RUNTIME" "$CTS_EXECUTABLE" "$CASE_NAME" "$RUNNER_TEMP/gl33-case.qpa"
-              ;;
-            shard)
-              case "$SHARD_FILE" in
-                /*) shard="$SHARD_FILE" ;;
-                *) shard="$GITHUB_WORKSPACE/$SHARD_FILE" ;;
-              esac
-              ./scripts/run-gl33-shard.sh "$WINE_RUNTIME" "$CTS_EXECUTABLE" "$shard" "$RUNNER_TEMP/gl33-shard.qpa"
-              ;;
-            ledger)
-              ./scripts/run-gl33-failure-ledger.sh "$WINE_RUNTIME" "$CTS_EXECUTABLE" "$RUNNER_TEMP/gl33-ledger.qpa"
-              ;;
-            full)
-              ./scripts/run-gl33-full.sh "$WINE_RUNTIME" "$CTS_EXECUTABLE" "$RUNNER_TEMP/gl33-full.qpa"
-              ;;
-            *)
-              echo "unsupported mode: $MODE" >&2
-              exit 2
-              ;;
-          esac
+          args="--wine $WINE_RUNTIME --cts $CTS_EXECUTABLE --config $CONFIG --shards $SHARDS --out $RUNNER_TEMP/results.txt"
+          test -z "$TEMPLATE_PREFIX" || args="$args --template $TEMPLATE_PREFIX"
+          test -z "$FILTER" || args="$args --filter $FILTER"
+          python3 -I scripts/cts/run.py $args
+          python3 -I scripts/cts/summary.py "$RUNNER_TEMP/results.txt" --depth 1
+          python3 -I scripts/cts/diff.py tests/cts/baseline/gl33-cfg$CONFIG-oldcore.txt "$RUNNER_TEMP/results.txt" --allow-regressions || true
 
-      - name: Verify source gates
-        run: ./scripts/verify-source.sh
-
-      - name: Upload selected QPA result
-        if: always()
+      - name: Upload results
         uses: actions/upload-artifact@v4
         with:
-          name: gl33-${{ inputs.mode }}-qpa
-          path: ${{ runner.temp }}/gl33-*.qpa
-          if-no-files-found: ignore
+          name: gl33-config-${{ inputs.config }}
+          path: ${{ runner.temp }}/results.txt

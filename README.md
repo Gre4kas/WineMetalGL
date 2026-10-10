@@ -5,33 +5,18 @@ reference backend translates Wine OpenGL calls to Metal on macOS 15 or newer
 and can be integrated with any compatible Wine build. It supports x86_64 and i386
 Windows programs together in a WoW64 prefix.
 
-## Feature-level implementation
+## Conformance status
 
-These are implementation-coverage estimates, not a claim that every Khronos
-case passes. The detailed scope, tests, and unsupported behavior are in
-[`docs/conformance.md`](docs/conformance.md).
+Earlier releases published per-version percentages and Khronos CTS pass counts
+that depended on code which recognised CTS shaders and produced their expected
+results. That code has been removed (see `docs/decisions/` and the
+`feat/gl33-core` work), and only measured results are published now.
 
-| OpenGL level | Implementation | Short description |
-|---|---:|---|
-| 1.0 | 100% | Compatibility entry points and basic immediate mode |
-| 1.1 | 100% | Textures, arrays, and legacy objects |
-| 1.2 | 95% | Core legacy rendering and transfer paths |
-| 1.3 | 95% | Multitexture and texture-coordinate paths |
-| 1.4 | 90% | Blending, fog, point/line state, and legacy queries |
-| 1.5 | 90% | Buffer objects, queries, and sync foundations |
-| 2.0 | 90% | GLSL 1.10/1.20, shaders, FBO, and vertex attributes |
-| 2.1 | 85% | Compatibility GLSL and fixed-function integration |
-| 3.0 | 97% | Core resources, FBOs, instancing, textures, and GLSL 3.30 |
-| 3.1 | 96% | UBOs, primitive restart, texture promotion, and indirect work |
-| 3.2 | 99% | MSAA, geometry-adjacent paths, and expanded FBO behavior |
-| 3.3 | 93% | Transfer/shader/resource paths |
-| 4.0 | 45% | Tessellation compilation and limited draw support |
-| 4.1 | 35% | Separable programs and pipeline lifecycle |
-| 4.2 | 25% | Image, atomic, and expanded texture/resource subsets |
-| 4.3 | 20% | Compute, SSBO, image, and reflection subsets |
-| 4.4 | 15% | Limited newer resource and robustness entry points |
-| 4.5 | 10% | Selected DSA and robustness entry points |
-| 4.6 | 0% | Not implemented or claimed |
+The current measured baseline for the shipped (legacy) path is
+[`tests/cts/baseline/gl33-cfg1-oldcore.txt`](tests/cts/baseline/gl33-cfg1-oldcore.txt):
+`KHR-GL33` mustpass, first configuration, 5,783 Pass / 3,393 Fail /
+702 NotSupported / 8 InternalError of 9,886 cases. `docs/conformance.md`
+explains how to reproduce it and how results are reported.
 
 ## Build
 
