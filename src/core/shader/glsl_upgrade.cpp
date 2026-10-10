@@ -5,6 +5,7 @@
 #include <map>
 #include <set>
 #include <sstream>
+#include <vector>
 
 namespace wmgl::shader {
 namespace {
@@ -131,14 +132,31 @@ UpgradeResult upgradeLegacyGlsl(Stage stage, const std::string& source, const Up
         {"texture1DProjLod", "textureProjLod"}, {"texture2DProjLod", "textureProjLod"},
         {"texture3DProjLod", "textureProjLod"}, {"texture1DGradARB", "textureGrad"}, {"texture2DGradARB", "textureGrad"},
         {"texture3DGradARB", "textureGrad"}, {"textureCubeGradARB", "textureGrad"},
-        {"shadow1D", "wmgl_shadow"}, {"shadow2D", "wmgl_shadow"}, {"shadow2DRect", "wmgl_shadow"},
-        {"shadow1DProj", "wmgl_shadowProj"}, {"shadow2DProj", "wmgl_shadowProj"}, {"shadow2DRectProj", "wmgl_shadowProj"},
-        {"shadow1DLod", "wmgl_shadowLod"}, {"shadow2DLod", "wmgl_shadowLod"},
-        {"shadow1DProjLod", "wmgl_shadowProjLod"}, {"shadow2DProjLod", "wmgl_shadowProjLod"},
     };
     for (const auto& [from, to] : kTextureFunctions) rename[from] = to;
+    // shadow*() returned vec4 in GLSL 1.x; texture() on shadow samplers
+    // returns float: the call becomes vec4(texture(...)). (Inline, not a
+    // helper function: several shader objects of a stage may use them.)
+    static const std::map<std::string, std::string> kShadowFunctions = {
+        {"shadow1D", "texture"}, {"shadow2D", "texture"}, {"shadow2DRect", "texture"},
+        {"shadow1DProj", "textureProj"}, {"shadow2DProj", "textureProj"}, {"shadow2DRectProj", "textureProj"},
+        {"shadow1DLod", "textureLod"}, {"shadow2DLod", "textureLod"},
+        {"shadow1DProjLod", "textureProjLod"}, {"shadow2DProjLod", "textureProjLod"},
+    };
+    // Built-in varyings a shader may redeclare (GLSL 1.10 sizes gl_TexCoord,
+    // 1.30 adds interpolation qualifiers), by the key `used` records them under.
+    static const std::map<std::string, std::string> kVertexRedeclarable = {
+        {"gl_FrontColor", "gl_FrontColor"}, {"gl_BackColor", "gl_BackColor"},
+        {"gl_FrontSecondaryColor", "gl_FrontSecondaryColor"}, {"gl_BackSecondaryColor", "gl_BackSecondaryColor"},
+        {"gl_FogFragCoord", "gl_FogFragCoord"}, {"gl_TexCoord", "gl_TexCoord"},
+    };
+    static const std::map<std::string, std::string> kFragmentRedeclarable = {
+        {"gl_Color", "fs:FrontColor"}, {"gl_SecondaryColor", "fs:FrontSecondaryColor"},
+        {"gl_TexCoord", "fs:TexCoord"}, {"gl_FogFragCoord", "fs:FogFragCoord"},
+    };
 
     std::set<std::string> used;
+    std::set<std::string> redeclared;  // built-in varyings the shader declares itself (keys of `used`)
     bool hasMain = false;
     std::string out;
     out.reserve(source.size() + 512);
@@ -147,6 +165,13 @@ UpgradeResult upgradeLegacyGlsl(Stage stage, const std::string& source, const Up
     bool versionReplaced = false;
     bool lineStart = true;
     size_t insertAt = std::string::npos;  // after the leading directive block
+    // Declarations go before the first token, outside any #if block (which
+    // may be compiled out, as in "#ifdef GL_ES precision ... #endif").
+    int conditionalDepth = 0;
+    size_t conditionalStart = 0;
+    int braceDepth = 0, parenDepth = 0;
+    std::vector<int> shadowCalls;  // paren depth of each open shadow*() call
+    std::string previousWord;      // the identifier just emitted ("" after other tokens)
     while (i < n) {
         const char c = source[i];
         if (c == '\n') {
@@ -180,6 +205,14 @@ UpgradeResult upgradeLegacyGlsl(Stage stage, const std::string& source, const Up
             std::string directive = source.substr(i, lineEnd - i);
             size_t k = 1;
             while (k < directive.size() && (directive[k] == ' ' || directive[k] == '\t')) ++k;
+            size_t nameEnd = k;
+            while (nameEnd < directive.size() && isIdent(directive[nameEnd])) ++nameEnd;
+            const std::string name = directive.substr(k, nameEnd - k);
+            if (name == "if" || name == "ifdef" || name == "ifndef") {
+                if (conditionalDepth++ == 0) conditionalStart = out.size();
+            } else if (name == "endif" && conditionalDepth > 0) {
+                --conditionalDepth;
+            }
             if (!versionReplaced && directive.compare(k, 7, "version") == 0) {
                 out += "#version " + std::to_string(newVersion);
                 versionReplaced = true;
@@ -191,8 +224,9 @@ UpgradeResult upgradeLegacyGlsl(Stage stage, const std::string& source, const Up
             continue;
         }
         if (insertAt == std::string::npos) {
-            // First real token: declarations go before it, on their own line.
-            insertAt = out.size();
+            // First real token: declarations go before it (or before the
+            // #if block holding it), on their own line.
+            insertAt = conditionalDepth > 0 ? conditionalStart : out.size();
         }
         lineStart = false;
         if (isIdentStart(c)) {
@@ -200,11 +234,45 @@ UpgradeResult upgradeLegacyGlsl(Stage stage, const std::string& source, const Up
             while (end < n && isIdent(source[end])) ++end;
             std::string word = source.substr(i, end - i);
             i = end;
+            const std::string previous = previousWord;
+            previousWord = word;
             auto it = rename.find(word);
             if (it != rename.end()) {
-                if (it->second.rfind("wmgl_shadow", 0) == 0) used.insert(it->second);
                 out += it->second;
                 continue;
+            }
+            if (auto shadow = kShadowFunctions.find(word); shadow != kShadowFunctions.end()) {
+                out += "vec4(" + shadow->second;
+                shadowCalls.push_back(parenDepth);
+                continue;
+            }
+            if (word.rfind("gl_", 0) == 0 && braceDepth == 0 && (previous == "vec4" || previous == "float")) {
+                // A redeclared built-in varying: the shader's declaration
+                // (with its qualifiers) replaces the generated one.
+                const auto& redeclarable = vertex ? kVertexRedeclarable : kFragmentRedeclarable;
+                if (auto r = redeclarable.find(word); (vertex || fragment) && r != redeclarable.end()) {
+                    redeclared.insert(r->second);
+                    if (r->second.compare(0, 3, "fs:") == 0) {
+                        result.builtinVaryingsRead.insert(r->second.substr(3));
+                        used.insert(r->second);
+                        out += "wmgl_" + r->second.substr(3);
+                    } else {
+                        used.insert(word);
+                        out += "wmgl_" + word.substr(3);
+                    }
+                    if (word == "gl_TexCoord") {
+                        // Every stage declares all 8 so the interfaces match.
+                        size_t j = i;
+                        while (j < n && std::isspace(static_cast<unsigned char>(source[j]))) ++j;
+                        if (j < n && source[j] == '[') {
+                            const size_t close = source.find(']', j);
+                            i = close == std::string::npos ? n : close + 1;
+                        }
+                        out += "[8]";
+                    }
+                    previousWord.clear();
+                    continue;
+                }
             }
             if (word.rfind("gl_", 0) == 0) {
                 if (fragment && (word == "gl_FragColor" || word == "gl_FragData")) {
@@ -255,8 +323,15 @@ UpgradeResult upgradeLegacyGlsl(Stage stage, const std::string& source, const Up
             out += word;
             continue;
         }
+        previousWord.clear();
+        braceDepth += c == '{' ? 1 : c == '}' ? -1 : 0;
         out += c;
         ++i;
+        if (c == '(') ++parenDepth;
+        if (c == ')' && --parenDepth >= 0 && !shadowCalls.empty() && parenDepth == shadowCalls.back()) {
+            out += ')';  // closes vec4( of a shadow*() call
+            shadowCalls.pop_back();
+        }
     }
 
     // Declarations for everything that was renamed.
@@ -271,13 +346,16 @@ UpgradeResult upgradeLegacyGlsl(Stage stage, const std::string& source, const Up
     for (const BuiltinDecl& b : kVertexInputs)
         if ((b.stages & stageBit) && used.count(b.name)) decls += std::string(b.decl) + "\n";
     for (const BuiltinDecl& b : kVaryings)
-        if ((b.stages & stageBit) && used.count(b.name)) decls += std::string(b.decl) + "\n";
-    if (vertex && used.count("gl_TexCoord")) decls += "out vec4 wmgl_TexCoord[8];\n";
+        if ((b.stages & stageBit) && used.count(b.name) && !redeclared.count(b.name)) decls += std::string(b.decl) + "\n";
+    if (vertex && used.count("gl_TexCoord") && !redeclared.count("gl_TexCoord")) decls += "out vec4 wmgl_TexCoord[8];\n";
     if (fragment) {
-        if (used.count("fs:FrontColor")) decls += "in vec4 wmgl_FrontColor;\n";
-        if (used.count("fs:FrontSecondaryColor")) decls += "in vec4 wmgl_FrontSecondaryColor;\n";
-        if (used.count("fs:TexCoord")) decls += "in vec4 wmgl_TexCoord[8];\n";
-        if (used.count("fs:FogFragCoord")) decls += "in float wmgl_FogFragCoord;\n";
+        auto declare = [&](const char* key, const char* decl) {
+            if (used.count(key) && !redeclared.count(key)) decls += decl;
+        };
+        declare("fs:FrontColor", "in vec4 wmgl_FrontColor;\n");
+        declare("fs:FrontSecondaryColor", "in vec4 wmgl_FrontSecondaryColor;\n");
+        declare("fs:TexCoord", "in vec4 wmgl_TexCoord[8];\n");
+        declare("fs:FogFragCoord", "in float wmgl_FogFragCoord;\n");
     }
     // The generated main (see glsl_upgrade.h).
     std::string prologue, epilogue;
@@ -307,25 +385,6 @@ UpgradeResult upgradeLegacyGlsl(Stage stage, const std::string& source, const Up
         epilogue += std::string("    wmgl_alphaTest(") + (used.count("gl_FragColor") ? "wmgl_FragColor" : "wmgl_FragData[0]") +
                     ".a);\n";
     }
-    // shadow*() returned vec4 in GLSL 1.x; texture() on shadow samplers returns float.
-    if (used.count("wmgl_shadow"))
-        decls += "vec4 wmgl_shadow(sampler1DShadow s, vec3 c) { return vec4(texture(s, c)); }\n"
-                 "vec4 wmgl_shadow(sampler1DShadow s, vec3 c, float b) { return vec4(texture(s, c, b)); }\n"
-                 "vec4 wmgl_shadow(sampler2DShadow s, vec3 c) { return vec4(texture(s, c)); }\n"
-                 "vec4 wmgl_shadow(sampler2DShadow s, vec3 c, float b) { return vec4(texture(s, c, b)); }\n"
-                 "vec4 wmgl_shadow(sampler2DRectShadow s, vec3 c) { return vec4(texture(s, c)); }\n";
-    if (used.count("wmgl_shadowProj"))
-        decls += "vec4 wmgl_shadowProj(sampler1DShadow s, vec4 c) { return vec4(textureProj(s, c)); }\n"
-                 "vec4 wmgl_shadowProj(sampler1DShadow s, vec4 c, float b) { return vec4(textureProj(s, c, b)); }\n"
-                 "vec4 wmgl_shadowProj(sampler2DShadow s, vec4 c) { return vec4(textureProj(s, c)); }\n"
-                 "vec4 wmgl_shadowProj(sampler2DShadow s, vec4 c, float b) { return vec4(textureProj(s, c, b)); }\n"
-                 "vec4 wmgl_shadowProj(sampler2DRectShadow s, vec4 c) { return vec4(textureProj(s, c)); }\n";
-    if (used.count("wmgl_shadowLod"))
-        decls += "vec4 wmgl_shadowLod(sampler1DShadow s, vec3 c, float l) { return vec4(textureLod(s, c, l)); }\n"
-                 "vec4 wmgl_shadowLod(sampler2DShadow s, vec3 c, float l) { return vec4(textureLod(s, c, l)); }\n";
-    if (used.count("wmgl_shadowProjLod"))
-        decls += "vec4 wmgl_shadowProjLod(sampler1DShadow s, vec4 c, float l) { return vec4(textureProjLod(s, c, l)); }\n"
-                 "vec4 wmgl_shadowProjLod(sampler2DShadow s, vec4 c, float l) { return vec4(textureProjLod(s, c, l)); }\n";
     if (result.usesFixedFunctionState) {
         // Fixed-function state, fed by the compatibility profile.
         decls +=
@@ -360,7 +419,9 @@ UpgradeResult upgradeLegacyGlsl(Stage stage, const std::string& source, const Up
             "  vec4 wmgl_LineParams;\n"
             "  uvec4 wmgl_Stipple[8];\n"
             "};\n";
-        if (fragment)
+        // Only the object with main calls it (from the generated main), and
+        // a stage may have several objects.
+        if (fragment && hasMain)
             decls +=
                 "void wmgl_alphaTest(float a) {\n"
                 "  int f = int(wmgl_AlphaTest.x); float r = wmgl_AlphaTest.y;\n"
@@ -368,7 +429,7 @@ UpgradeResult upgradeLegacyGlsl(Stage stage, const std::string& source, const Up
                 "      (f == 5 && a > r) || (f == 6 && a != r) || (f == 7 && a >= r))) discard;\n"
                 "}\n";
         if (vertex && used.count("ftransform"))
-            decls += "vec4 wmgl_ftransform() { return wmgl_ModelViewProjectionMatrix * wmgl_Vertex; }\n";
+            decls += "#define wmgl_ftransform() (wmgl_ModelViewProjectionMatrix * wmgl_Vertex)\n";
         if (vertex && used.count("ftransform") && !used.count("gl_Vertex")) decls += "in vec4 wmgl_Vertex;\n";
     }
     if (decls.size() > 1) {

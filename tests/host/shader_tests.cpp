@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <cstdio>
+#include <set>
 
 #include "core/shader/compiler.h"
 #include "core/shader/glsl_upgrade.h"
@@ -246,4 +247,133 @@ TEST(shader_instance_id_excludes_base_instance) {
     // GL's gl_InstanceID does not include the base instance (GL_ARB_base_instance).
     const std::string& msl = r.stages[static_cast<int>(Stage::Vertex)].msl;
     CHECK(msl.find("[[base_instance]]") != std::string::npos);
+}
+
+TEST(shader_explicit_attrib_location_beats_binding) {
+    // layout(location) wins over glBindAttribLocation, and stays reserved.
+    LinkInput in;
+    in.shaders.push_back({Stage::Vertex, "#version 330 core\nlayout(location = 0) in vec4 pos; in vec4 color; out vec4 c;\n"
+                                         "void main() { c = color; gl_Position = pos; }\n"});
+    in.shaders.push_back({Stage::Fragment, "#version 330 core\nin vec4 c; out vec4 o; void main() { o = c; }\n"});
+    in.attribBindings["pos"] = 5;
+    LinkResult r = link(in);
+    CHECK(r.ok);
+    CHECK(findAttrib(r, "pos") && findAttrib(r, "pos")->location == 0);
+    CHECK(findAttrib(r, "color") && findAttrib(r, "color")->location == 1);
+}
+
+TEST(shader_fragment_output_explicit_index) {
+    LinkInput in;
+    in.shaders.push_back({Stage::Vertex, "#version 330 core\nin vec4 pos; void main() { gl_Position = pos; }\n"});
+    in.shaders.push_back({Stage::Fragment, "#version 330 core\nlayout(location = 0, index = 0) out vec4 o0;\n"
+                                           "layout(location = 0, index = 1) out vec4 o1;\n"
+                                           "void main() { o0 = vec4(1.0); o1 = vec4(0.5); }\n"});
+    LinkResult r = link(in);
+    CHECK(r.ok);
+    bool sawIndex1 = false;
+    for (const FragOutputInfo& f : r.fragOutputs) {
+        if (f.name == "o0") CHECK(f.location == 0 && f.index == 0);
+        if (f.name == "o1") sawIndex1 = f.location == 0 && f.index == 1;
+    }
+    CHECK(sawIndex1);
+}
+
+TEST(shader_struct_sampler_members) {
+    // glslang moves samplers out of struct uniforms; its place holder is not a uniform.
+    LinkInput in;
+    in.shaders.push_back({Stage::Vertex, "#version 330 core\nin vec4 pos; out vec2 uv; void main() { uv = pos.xy; gl_Position = pos; }\n"});
+    in.shaders.push_back({Stage::Fragment, "#version 330 core\nstruct S { sampler2D t; float k; };\nuniform S s;\nin vec2 uv; out vec4 o;\n"
+                                           "void main() { o = texture(s.t, uv) * s.k; }\n"});
+    LinkResult r = link(in);
+    CHECK(r.ok);
+    CHECK_EQ(r.uniforms.size(), size_t(2));
+    for (const UniformInfo& u : r.uniforms) CHECK(u.name.find("/*") == std::string::npos);
+    const UniformInfo* k = findUniform(r, "s.k");
+    const UniformInfo* t = findUniform(r, "s.t");
+    CHECK(k && k->samplerSlot < 0);
+    CHECK(t && t->samplerSlot >= 0);
+}
+
+TEST(shader_legacy_declarations_outside_conditionals) {
+    // Declarations must not land inside a compiled-out #ifdef block.
+    const char* fs = "#version 120\n#ifdef GL_ES\nprecision mediump float;\n#endif\nvarying vec4 vv;\n"
+                     "void main() { gl_FragColor = vv; }\n";
+    UpgradeResult u = upgradeLegacyGlsl(Stage::Fragment, fs);
+    CHECK(u.ok);
+    CHECK(u.source.find("out vec4 wmgl_FragColor;") < u.source.find("#ifdef GL_ES"));
+    LinkInput in;
+    in.shaders.push_back({Stage::Vertex, "attribute vec4 pos; varying vec4 vv; void main() { gl_Position = pos; vv = pos; }\n"});
+    in.shaders.push_back({Stage::Fragment, fs});
+    LinkResult r = link(in);
+    if (!r.ok) std::fprintf(stderr, "%s\n", r.log.c_str());
+    CHECK(r.ok);
+}
+
+TEST(shader_legacy_redeclared_builtin_varyings) {
+    // GLSL 1.10 lets shaders size gl_TexCoord; 1.30 adds interpolation qualifiers.
+    LinkInput in;
+    in.shaders.push_back({Stage::Vertex, "#version 120\nvarying vec4 gl_TexCoord[2];\n"
+                                         "void main() { gl_Position = ftransform(); gl_TexCoord[0] = gl_MultiTexCoord0; }\n"});
+    in.shaders.push_back({Stage::Fragment, "#version 120\nuniform sampler2D t;\nvarying vec4 gl_TexCoord[2];\n"
+                                           "void main() { gl_FragColor = texture2D(t, gl_TexCoord[0].xy); }\n"});
+    LinkResult r = link(in);
+    if (!r.ok) std::fprintf(stderr, "%s\n", r.log.c_str());
+    CHECK(r.ok);
+    LinkInput flat;
+    flat.shaders.push_back({Stage::Vertex, "#version 130\nflat out vec4 gl_FrontColor;\n"
+                                           "void main() { gl_Position = ftransform(); gl_FrontColor = gl_Color; }\n"});
+    flat.shaders.push_back({Stage::Fragment, "#version 130\nflat in vec4 gl_Color;\nvoid main() { gl_FragColor = gl_Color; }\n"});
+    r = link(flat);
+    if (!r.ok) std::fprintf(stderr, "%s\n", r.log.c_str());
+    CHECK(r.ok);
+    CHECK(r.ok && r.stages[static_cast<int>(Stage::Fragment)].flatInputs);
+}
+
+TEST(shader_legacy_helpers_in_several_objects) {
+    // Generated helpers must not be defined once per shader object of a stage.
+    LinkInput in;
+    in.shaders.push_back({Stage::Vertex, "#version 120\nvec4 xf() { return ftransform(); }\n"});
+    in.shaders.push_back({Stage::Vertex, "#version 120\nvec4 xf();\n"
+                                         "void main() { gl_Position = xf() + ftransform(); gl_TexCoord[0] = gl_MultiTexCoord0; }\n"});
+    in.shaders.push_back({Stage::Fragment, "#version 120\nuniform sampler2DShadow sh;\n"
+                                           "vec4 light() { return gl_LightSource[0].diffuse * shadow2D(sh, vec3(0.5)); }\n"});
+    in.shaders.push_back({Stage::Fragment, "#version 120\nuniform sampler2DShadow sh; uniform sampler2D t;\nvec4 light();\n"
+                                           "void main() { gl_FragColor = light() + shadow2DProj(sh, vec4(texture2D(t, gl_TexCoord[0].xy).xy, "
+                                           "0.5, 1.0)).r * vec4(1.0); }\n"});
+    LinkResult r = link(in);
+    if (!r.ok) std::fprintf(stderr, "%s\n", r.log.c_str());
+    CHECK(r.ok);
+    UpgradeResult u = upgradeLegacyGlsl(Stage::Fragment, "#version 120\nuniform sampler2DShadow s;\n"
+                                                         "void main() { gl_FragColor = shadow2D(s, vec3(f(1.0), 0.5, 0.5)); }\n");
+    CHECK(u.source.find("vec4(texture(s, vec3(f(1.0), 0.5, 0.5)))") != std::string::npos);
+}
+
+TEST(shader_separable_block_varyings_match_by_block_name) {
+    auto locations = [](const std::string& msl) {
+        std::set<std::string> found;
+        for (size_t at = msl.find("[[user(locn"); at != std::string::npos; at = msl.find("[[user(locn", at + 1))
+            found.insert(msl.substr(at, msl.find(')', at) - at));
+        return found;
+    };
+    LinkInput vs;
+    vs.separable = true;
+    vs.shaders.push_back({Stage::Vertex, "#version 330 core\nin vec4 pos; out VS_OUT { vec4 c; } vs_out;\n"
+                                         "void main() { gl_Position = pos; vs_out.c = pos; }\n"});
+    LinkInput fs;
+    fs.separable = true;
+    fs.shaders.push_back({Stage::Fragment, "#version 330 core\nin VS_OUT { vec4 c; } fs_in; out vec4 o; void main() { o = fs_in.c; }\n"});
+    LinkResult v = link(vs), f = link(fs);
+    CHECK(v.ok && f.ok);
+    CHECK(!locations(f.stages[static_cast<int>(Stage::Fragment)].msl).empty());
+    CHECK(locations(v.stages[static_cast<int>(Stage::Vertex)].msl) == locations(f.stages[static_cast<int>(Stage::Fragment)].msl));
+    // With a geometry stage, the pass-through stage declares the same hashed locations.
+    LinkInput vg = vs;
+    vg.shaders.push_back({Stage::Geometry, "#version 330 core\nlayout(triangles) in; layout(triangle_strip, max_vertices = 3) out;\n"
+                                           "in VS_OUT { vec4 c; } gs_in[]; out VS_OUT { vec4 c; } gs_out;\n"
+                                           "void main() { for (int i = 0; i < 3; ++i) { gs_out.c = gs_in[i].c; "
+                                           "gl_Position = gl_in[i].gl_Position; EmitVertex(); } }\n"});
+    LinkResult g = link(vg);
+    if (!g.ok) std::fprintf(stderr, "%s\n", g.log.c_str());
+    CHECK(g.ok && g.geometry.active);
+    CHECK(g.ok && locations(g.geometry.passthrough.msl) == locations(f.stages[static_cast<int>(Stage::Fragment)].msl));
 }

@@ -189,3 +189,47 @@ void main() {
     glDeleteProgram(p);
     CHECK_GL();
 }
+
+GPU_TEST(gpu_geometry_generated_names_and_array_members) {
+    // Variables named like the emulation's own temporaries (b, o), and an
+    // input block with an array member.
+    const char* vs = R"(#version 330 core
+in vec2 position;
+out vec4 b;
+out VS { vec4 tint; float w[2]; } vs;
+void main() {
+    b = vec4(0.0, 1.0, 0.0, 1.0);
+    vs.tint = vec4(1.0, 0.0, 0.0, 0.0);
+    vs.w[0] = 0.25;
+    vs.w[1] = 0.5;
+    gl_Position = vec4(position, 0.0, 1.0);
+})";
+    const char* gs = R"(#version 330 core
+layout(triangles) in;
+layout(triangle_strip, max_vertices = 3) out;
+in vec4 b[];
+in VS { vec4 tint; float w[2]; } vs[];
+out vec4 o;
+void main() {
+    for (int i = 0; i < 3; ++i) {
+        o = b[i] + vs[i].tint * vs[i].w[1];
+        gl_Position = gl_in[i].gl_Position;
+        EmitVertex();
+    }
+    EndPrimitive();
+})";
+    const char* fs = R"(#version 330 core
+in vec4 o; out vec4 color; void main() { color = o; })";
+    GLuint p = linkWithGeometry(vs, gs, fs);
+    glUseProgram(p);
+    GLuint vao = gpu::quad();
+    glClearColor(0, 0, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    CHECK_GL();
+    const uint8_t want[4] = {128, 255, 0, 255};
+    CHECK(gpu::near(gpu::readRGBA8(32, 32, 1, 1).data(), want, 2));
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
+    CHECK_GL();
+}

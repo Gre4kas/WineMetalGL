@@ -7,6 +7,7 @@
 #include <spirv_msl.hpp>
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
@@ -196,16 +197,63 @@ void instanceIdFromZero(std::string& msl) {
 // Varyings without an explicit location get a location derived from their
 // name (the block name for blocks), so separately linked stages match by
 // name as GL requires. Metal matches [[user(locnN)]] names, so the large
-// numbers are fine; 64 locations per name leave room for arrays.
+// numbers are fine; 64 locations per name leave room for arrays. They are
+// only ever set in SPIR-V: GLSL locations stop at 4095 (see
+// stripHashedLocations).
+constexpr uint32_t kHashedLocationBase = 1024;
+
 uint32_t nameLocation(const std::string& name) {
     uint32_t h = 2166136261u;
     for (char c : name) h = (h ^ static_cast<uint8_t>(c)) * 16777619u;
-    return 1024u + (h % 1000000u) * 64u;
+    return kHashedLocationBase + (h % 1000000u) * 64u;
+}
+
+// Removes hashed varying locations from GLSL (SPIRV-Cross output of a
+// separable stage): "layout(location = 5389312) out vec4 c;" becomes
+// "out vec4 c;" and "layout(location = 5389312, component = 1)" keeps the
+// other qualifiers. The stage is then hashed again by name.
+std::string stripHashedLocations(const std::string& glsl) {
+    std::string out;
+    size_t i = 0;
+    for (size_t at = glsl.find("layout("); at != std::string::npos; at = glsl.find("layout(", i)) {
+        const size_t close = glsl.find(')', at);
+        if (close == std::string::npos) break;
+        std::vector<std::string> kept;
+        bool stripped = false;
+        std::istringstream parts(glsl.substr(at + 7, close - at - 7));
+        std::string part;
+        while (std::getline(parts, part, ',')) {
+            const size_t first = part.find_first_not_of(' ');
+            const size_t eq = part.find('=');
+            if (first != std::string::npos && part.compare(first, 8, "location") == 0 && eq != std::string::npos &&
+                std::strtoul(part.c_str() + eq + 1, nullptr, 10) >= kHashedLocationBase) {
+                stripped = true;
+                continue;
+            }
+            kept.push_back(part.substr(first == std::string::npos ? 0 : first));
+        }
+        out.append(glsl, i, at - i);
+        i = close + 1;
+        if (!stripped) {
+            out.append(glsl, at, close + 1 - at);
+            continue;
+        }
+        if (kept.empty()) {
+            if (i < glsl.size() && glsl[i] == ' ') ++i;
+            continue;
+        }
+        out += "layout(";
+        for (size_t k = 0; k < kept.size(); ++k) out += (k ? ", " : "") + kept[k];
+        out += ")";
+    }
+    out.append(glsl, i, std::string::npos);
+    return out;
 }
 
 void hashVaryingLocations(std::vector<uint32_t>& spirv, Stage stage, const std::set<std::string>& explicitNames) {
     if (spirv.size() < 5) return;
     std::map<uint32_t, std::string> names;
+    std::set<uint32_t> blockTypes;                       // structs decorated Block
     std::map<uint32_t, uint32_t> pointee, arrayElement;  // pointer -> type, array -> element
     std::map<uint32_t, uint32_t> storage;                // variable -> storage class
     std::map<uint32_t, uint32_t> varType;                // variable -> pointer type
@@ -227,6 +275,7 @@ void hashVaryingLocations(std::vector<uint32_t>& spirv, Stage stage, const std::
             break;
         case 71:  // OpDecorate
             if (spirv[i + 2] == 11) builtins.insert(spirv[i + 1]);
+            if (spirv[i + 2] == 2) blockTypes.insert(spirv[i + 1]);
             if (spirv[i + 2] == 30) locationWords.push_back(i);
             break;
         default: break;
@@ -239,11 +288,12 @@ void hashVaryingLocations(std::vector<uint32_t>& spirv, Stage stage, const std::
         if (s == storage.end() || builtins.count(var)) continue;
         const bool input = s->second == 1, output = s->second == 3;
         if (!(input && stage != Stage::Vertex) && !(output && stage != Stage::Fragment)) continue;
-        // The variable's name, or its block's name.
+        // The variable's name, or its block's name (GL matches blocks by
+        // block name, not instance name).
         uint32_t type = pointee[varType[var]];
         while (arrayElement.count(type)) type = arrayElement[type];
         std::string name = names[var];
-        if (name.empty() || name.compare(0, 3, "gl_") == 0) name = names[type];
+        if (blockTypes.count(type) || name.empty() || name.compare(0, 3, "gl_") == 0) name = names[type];
         name = unescapeName(name);
         if (name.empty() || name.compare(0, 3, "gl_") == 0 || explicitNames.count(name)) continue;
         spirv[at + 3] = nameLocation(name);
@@ -289,6 +339,58 @@ std::string insertAfterDirectives(const std::string& source, const std::string& 
 }
 
 std::string raiseComputeVersion(Stage stage, const std::string& source);
+
+// Whether a shader object defines main() (one of several objects per stage
+// may only hold helper functions). Comments and directives are skipped.
+bool definesMain(const std::string& source) {
+    const size_t n = source.size();
+    // Skips whitespace and comments from j; returns the next position.
+    auto skip = [&](size_t j, bool* newline) {
+        while (j < n) {
+            if (source[j] == '\n' && newline) *newline = true;
+            if (std::isspace(static_cast<unsigned char>(source[j]))) {
+                ++j;
+            } else if (source.compare(j, 2, "//") == 0) {
+                const size_t end = source.find('\n', j);
+                j = end == std::string::npos ? n : end;
+            } else if (source.compare(j, 2, "/*") == 0) {
+                const size_t end = source.find("*/", j + 2);
+                j = end == std::string::npos ? n : end + 2;
+            } else {
+                break;
+            }
+        }
+        return j;
+    };
+    size_t i = 0;
+    int depth = 0;
+    bool lineStart = true;
+    while ((i = skip(i, &lineStart)) < n) {
+        const char c = source[i];
+        if (c == '#' && lineStart) {
+            while (i < n && source[i] != '\n') i += source[i] == '\\' && i + 1 < n ? 2 : 1;
+            continue;
+        }
+        lineStart = false;
+        if (std::isalpha(static_cast<unsigned char>(c)) || c == '_') {
+            size_t end = i;
+            while (end < n && (std::isalnum(static_cast<unsigned char>(source[end])) || source[end] == '_')) ++end;
+            const bool isMain = depth == 0 && end - i == 4 && source.compare(i, 4, "main") == 0;
+            i = end;
+            if (!isMain) continue;
+            size_t j = skip(i, nullptr);
+            if (j >= n || source[j] != '(') continue;
+            j = source.find(')', j);
+            if (j == std::string::npos) return false;
+            j = skip(j + 1, nullptr);
+            if (j < n && source[j] == '{') return true;
+            continue;
+        }
+        depth += c == '{' ? 1 : c == '}' ? -1 : 0;
+        ++i;
+    }
+    return false;
+}
 
 bool parseForCodegen(Stage stage, const std::string& original, ParsedShader& out, std::string& log,
                      const CaptureCode* capture = nullptr, const UpgradeOptions& upgrade = {}) {
@@ -482,7 +584,12 @@ void expandMember(const spirv_cross::Compiler& compiler, const spirv_cross::SPIR
                   const std::string& prefix, uint32_t baseOffset, int blockIndex, std::vector<UniformInfo>& out) {
     const uint32_t typeId = parent.member_types[index];
     const spirv_cross::SPIRType& type = compiler.get_type(typeId);
-    std::string name = prefix + unescapeName(compiler.get_member_name(parent.self, index));
+    const std::string memberName = compiler.get_member_name(parent.self, index);
+    // A sampler member of a struct uniform is hoisted out of the struct by
+    // glslang (it is reported as a sampler uniform); its place holder, named
+    // "/*member*/", is not a GL uniform.
+    if (memberName.compare(0, 2, "/*") == 0) return;
+    std::string name = prefix + unescapeName(memberName);
     const uint32_t offset = baseOffset + compiler.type_struct_member_offset(parent, index);
     const bool isArray = !type.array.empty();
     const uint32_t arraySize = isArray ? type.array.back() : 1;
@@ -699,14 +806,17 @@ std::vector<StageOutputVar> captureableOutputs(glslang::TIntermediate* intermedi
                     }
                     continue;
                 }
-                const std::string name = unescapeName(symbol->getName().c_str());
+                const std::string codegenName = symbol->getName().c_str();
+                const std::string name = unescapeName(codegenName);
                 if (name.rfind("gl_", 0) == 0) continue;
                 // Lowered legacy varyings are captured by their built-in names (gl_FrontColor, gl_TexCoord, ...).
                 static const char* const kLegacy[] = {"wmgl_FrontColor", "wmgl_BackColor", "wmgl_FrontSecondaryColor",
                                                       "wmgl_BackSecondaryColor", "wmgl_TexCoord", "wmgl_FogFragCoord"};
                 const bool legacy = std::find(std::begin(kLegacy), std::end(kLegacy), name) != std::end(kLegacy);
+                // The capture code reads the codegen name (escaped keywords keep their prefix there).
                 outputs.push_back({legacy ? "gl_" + name.substr(5) : name, glTypeOfAst(type),
-                                   type.isSizedArray() ? type.getOuterArraySize() : 0, legacy ? name : std::string()});
+                                   type.isSizedArray() ? type.getOuterArraySize() : 0,
+                                   legacy || codegenName != name ? codegenName : std::string()});
             }
         }
     }
@@ -769,7 +879,7 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
                 for (const std::string& v : upgradeLegacyGlsl(Stage::Fragment, shader.source).builtinVaryingsRead)
                     vertexUpgrade.provideVaryings.insert(v);
     for (size_t i = 0; i < input.shaders.size(); ++i) {
-        const bool captureHere = capture && input.shaders[i].stage == Stage::Vertex;
+        const bool captureHere = capture && input.shaders[i].stage == Stage::Vertex && definesMain(input.shaders[i].source);
         if (!parseForCodegen(input.shaders[i].stage, input.shaders[i].source, parsed[i], result.log,
                              captureHere ? capture : nullptr,
                              input.shaders[i].stage == Stage::Vertex ? vertexUpgrade : UpgradeOptions()))
@@ -854,6 +964,9 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
     // GL treats uniform blocks declared shared or std140 as active even when
     // nothing references them (only packed blocks may be eliminated). The
     // packing qualifier is gone in SPIR-V, so read it from the linker objects.
+    // Separable programs: varyings declared with layout(location) keep it
+    // (reflection reports only the program's own inputs and outputs).
+    std::set<std::string> explicitVaryings;
     for (int s = 0; s < kStageCount; ++s) {
         if (!stagePresent[s]) continue;
         glslang::TIntermediate* intermediate = program.getIntermediate(language(static_cast<Stage>(s)));
@@ -869,6 +982,11 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
                 if (!symbol) continue;
                 const glslang::TType& type = symbol->getType();
                 const glslang::TQualifier& q = type.getQualifier();
+                const bool varying = (q.storage == glslang::EvqVaryingIn && s != static_cast<int>(Stage::Vertex)) ||
+                                     (q.storage == glslang::EvqVaryingOut && s != static_cast<int>(Stage::Fragment));
+                if (varying && q.hasLocation())
+                    explicitVaryings.insert(unescapeName(type.getBasicType() == glslang::EbtBlock ? type.getTypeName().c_str()
+                                                                                                    : symbol->getName().c_str()));
                 if (q.storage == glslang::EvqUniform) {
                     if (type.getBasicType() == glslang::EbtBlock) {
                         const bool anonymous = glslang::IsAnonymous(symbol->getName());
@@ -912,18 +1030,20 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
 
     // Collect attributes/outputs from this pre-mapIO reflection (see below),
     // then assign locations for codegen.
-    struct PipeVar { std::string name; GLenum type; int size; unsigned location; uint32_t stages; };
+    struct PipeVar { std::string name; GLenum type; int size; unsigned location; uint32_t stages; int index; };
     std::vector<PipeVar> pipeInputs, pipeOutputs;
     for (int i = 0; i < program.getNumPipeInputs(); ++i) {
         const auto& v = program.getPipeInput(i);
-        pipeInputs.push_back({unescapeName(v.name), static_cast<GLenum>(v.glDefineType), v.size, v.layoutLocation(), static_cast<uint32_t>(v.stages)});
+        pipeInputs.push_back({unescapeName(v.name), static_cast<GLenum>(v.glDefineType), v.size, v.layoutLocation(),
+                              static_cast<uint32_t>(v.stages), 0});
     }
     for (int i = 0; i < program.getNumPipeOutputs(); ++i) {
         const auto& v = program.getPipeOutput(i);
-        pipeOutputs.push_back({unescapeName(v.name), static_cast<GLenum>(v.glDefineType), v.size, v.layoutLocation(), static_cast<uint32_t>(v.stages)});
+        const glslang::TType* type = v.getType();
+        const int index = type && type->getQualifier().hasIndex() ? static_cast<int>(type->getQualifier().layoutIndex) : 0;
+        pipeOutputs.push_back({unescapeName(v.name), static_cast<GLenum>(v.glDefineType), v.size, v.layoutLocation(),
+                               static_cast<uint32_t>(v.stages), index});
     }
-    // Separable programs: varyings declared with layout(location) keep it.
-    std::set<std::string> explicitVaryings;
     for (const PipeVar& v : pipeInputs)
         if (v.location != kNoLocation && !(v.stages & EShLangVertexMask)) explicitVaryings.insert(v.name);
     for (const PipeVar& v : pipeOutputs)
@@ -1106,24 +1226,22 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
         }
         result.attribs.push_back(a);
     }
-    // Explicit locations from source were already applied; mark them used.
-    // Then glBindAttribLocation, then the lowest free locations.
+    // Explicit locations from source were already applied and take
+    // precedence over glBindAttribLocation; mark them used. Then
+    // glBindAttribLocation, then the lowest free locations.
     std::vector<int> needsLocation;
     for (size_t i = 0; i < result.attribs.size(); ++i) {
         AttribInfo& a = result.attribs[i];
         if (a.conventional) continue;
-        if (a.location >= 0 && a.location < 64 && input.attribBindings.find(a.name) == input.attribBindings.end()) {
-            for (int l = 0; l < a.locationCount && a.location + l < 64; ++l) usedLocations[a.location + l] = true;
-            continue;
-        }
-        auto bound = input.attribBindings.find(a.name);
-        if (bound != input.attribBindings.end() && a.location < 0) {
+        if (a.location < 0) {
+            auto bound = input.attribBindings.find(a.name);
+            if (bound == input.attribBindings.end()) {
+                needsLocation.push_back(static_cast<int>(i));
+                continue;
+            }
             a.location = static_cast<GLint>(bound->second);
-            for (int l = 0; l < a.locationCount && a.location + l < 64; ++l) usedLocations[a.location + l] = true;
-            continue;
         }
-        if (a.location >= 0) continue;
-        needsLocation.push_back(static_cast<int>(i));
+        for (int l = 0; l < a.locationCount && a.location + l < 64; ++l) usedLocations[a.location + l] = true;
     }
     for (int i : needsLocation) {
         AttribInfo& a = result.attribs[i];
@@ -1156,6 +1274,7 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
         auto bound = input.fragDataBindings.find(f.name);
         if (explicitLocation != kNoLocation) {
             f.location = static_cast<GLint>(explicitLocation);
+            f.index = out.index;  // layout(index = N) (GL_ARB_blend_func_extended)
         } else if (bound != input.fragDataBindings.end()) {
             f.location = static_cast<GLint>(bound->second.first);
             f.index = static_cast<GLint>(bound->second.second);
@@ -1423,9 +1542,12 @@ bool buildGeometryEmulation(const LinkInput& input, const GeometryShaderInfo& in
     g.kernel = kernel.stages[cs];
     copyStageSlots(kernel, cs, result, cs);
     LinkInput passthroughInput;
-    passthroughInput.shaders = {{Stage::Vertex, sources.passthrough}};
     passthroughInput.separable = true;
-    passthroughInput.internal = true;
+    // A separable program's geometry outputs have locations hashed from
+    // their names: the pass-through declares them without and is hashed
+    // the same way.
+    passthroughInput.internal = !input.separable;
+    passthroughInput.shaders = {{Stage::Vertex, input.separable ? stripHashedLocations(sources.passthrough) : sources.passthrough}};
     LinkResult passthrough = linkImpl(passthroughInput, nullptr);
     if (!passthrough.ok) {
         result.log += "error: internal error building the geometry shader output stage:\n" + passthrough.log;

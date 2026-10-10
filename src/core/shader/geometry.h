@@ -39,7 +39,7 @@ struct GeometryVar {
     std::string name;         // GLSL access path ("col", "gs_in" + member below)
     std::string member;       // block member name, empty for plain variables
     std::string blockName;    // interface block name for block members
-    int arraySize = 0;        // outputs: array size (0 = not an array)
+    int arraySize = 0;        // array size (0 = not an array); for inputs, of a block member (not the vertex index)
     std::string declaration;  // outputs: the original declaration line(s)
 };
 

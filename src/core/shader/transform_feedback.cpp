@@ -149,17 +149,17 @@ CaptureCode vertexCaptureCode(const LinkResult& layout, int glslVersion) {
          "void main() {\n"
          "    wmgl_capture_main();\n"
          "    if (wmgl_xfb_active != 0u) {\n"
-         "        uint v = uint(gl_VertexID) + uint(gl_InstanceID) * wmgl_xfb_vertex_count;\n"
-         "        if (v < wmgl_xfb_limit) {\n";
+         "        uint wmgl_xfb_v = uint(gl_VertexID) + uint(gl_InstanceID) * wmgl_xfb_vertex_count;\n"
+         "        if (wmgl_xfb_v < wmgl_xfb_limit) {\n";
     for (int b = 0; b < layout.xfbBufferCount; ++b)
-        e += "            uint p" + std::to_string(b) + " = wmgl_xfb_base[" + std::to_string(b) + "] + v * wmgl_xfb_stride[" +
+        e += "            uint wmgl_xfb_p" + std::to_string(b) + " = wmgl_xfb_base[" + std::to_string(b) + "] + wmgl_xfb_v * wmgl_xfb_stride[" +
              std::to_string(b) + "];\n";
     for (const TransformFeedbackVarying& v : layout.transformFeedback) {
         uint32_t word = v.offset;
         for (int element = 0; element < v.size; ++element) {
             const std::string expr = v.array ? v.expression + "[" + std::to_string(element) + "]" : v.expression;
             for (const std::string& w : captureWords(expr, v.type)) {
-                e += "            wmgl_xfb_data" + std::to_string(v.buffer) + "[p" + std::to_string(v.buffer) + " + " +
+                e += "            wmgl_xfb_data" + std::to_string(v.buffer) + "[wmgl_xfb_p" + std::to_string(v.buffer) + " + " +
                      std::to_string(word++) + "u] = " + w + ";\n";
             }
         }
