@@ -130,6 +130,12 @@ tests/games/build-demos.sh
 tests/games/corpus.json
 tests/games/demos/scene33.c
 tests/games/README.md
+tests/gpu/basic_tests.cpp
+tests/gpu/framebuffer_tests.cpp
+tests/gpu/gpu.h
+tests/gpu/main.cpp
+tests/gpu/query_tests.cpp
+tests/gpu/texture_tests.cpp
 tests/host/format_tests.cpp
 tests/host/main.cpp
 tests/host/shader_tests.cpp

@@ -11,9 +11,15 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_OSX_DEPLOYMENT_TARGET "15.0" CACHE STRING "Minimum macOS deployment target" FORCE)
-set(CMAKE_OSX_ARCHITECTURES "x86_64" CACHE STRING "Host architecture" FORCE)
-if(NOT CMAKE_OSX_ARCHITECTURES STREQUAL "x86_64")
-    message(FATAL_ERROR "WineMetalGL only supports x86_64 Mach-O output; universal and ARM targets are not supported.")
+# WMGL_HOST_ONLY builds the core and its tests for the build machine's
+# architecture (arm64 on Apple silicon) so they run without Rosetta. The
+# legacy dylib is skipped; Wine needs the default x86_64 build.
+option(WMGL_HOST_ONLY "Build the core and tests for the build machine only" OFF)
+if(NOT WMGL_HOST_ONLY)
+    set(CMAKE_OSX_ARCHITECTURES "x86_64" CACHE STRING "Host architecture" FORCE)
+    if(NOT CMAKE_OSX_ARCHITECTURES STREQUAL "x86_64")
+        message(FATAL_ERROR "WineMetalGL only supports x86_64 Mach-O output; universal and ARM targets are not supported.")
+    endif()
 endif()
 
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
@@ -45,6 +51,7 @@ find_library(METAL_FRAMEWORK Metal REQUIRED)
 find_library(OPENGL_FRAMEWORK OpenGL REQUIRED)
 find_library(QUARTZCORE_FRAMEWORK QuartzCore REQUIRED)
 
+if(NOT WMGL_HOST_ONLY)
 add_library(winemetalgl SHARED
     src/opengl/EntryPoint.cpp
     src/opengl/GLErrorTracker.cpp
@@ -91,6 +98,7 @@ set_target_properties(winemetalgl PROPERTIES
 )
 
 install(TARGETS winemetalgl LIBRARY DESTINATION lib)
+endif()
 
 # ---------------------------------------------------------------------------
 # WineMetalGL core (feat/gl33-core): the GL 3.3 implementation on Metal.
@@ -103,7 +111,8 @@ set(WMGL_GEN_OUTPUTS
     "${WMGL_GEN_DIR}/gl_api.gen.h"
     "${WMGL_GEN_DIR}/gl_entry.gen.cpp"
     "${WMGL_GEN_DIR}/gl_stubs.gen.cpp"
-    "${WMGL_GEN_DIR}/gl_commands.gen.json")
+    "${WMGL_GEN_DIR}/gl_commands.gen.json"
+    "${WMGL_GEN_DIR}/gl_pfn.gen.h")
 add_custom_command(
     OUTPUT ${WMGL_GEN_OUTPUTS}
     COMMAND "${Python3_EXECUTABLE}" -I "${CMAKE_CURRENT_SOURCE_DIR}/tools/gen/gl_gen.py"
@@ -156,11 +165,21 @@ target_compile_options(winemetalgl_core PRIVATE
 set_target_properties(winemetalgl_core PROPERTIES
     OUTPUT_NAME "winemetalgl"
     PREFIX "lib"
-    INSTALL_NAME_DIR "@rpath"
-    OSX_ARCHITECTURES "x86_64")
+    INSTALL_NAME_DIR "@rpath")
+if(NOT WMGL_HOST_ONLY)
+    set_target_properties(winemetalgl_core PROPERTIES OSX_ARCHITECTURES "x86_64")
+endif()
+# Only the driver ABI is exported; GL entry points are reached via wmgl_get_proc_address.
+target_link_options(winemetalgl_core PRIVATE "LINKER:-exported_symbol,_wmgl_*")
 
 # Host tests (no GPU, no Wine).
 add_executable(wmgl_host_tests tests/host/main.cpp tests/host/shader_tests.cpp tests/host/format_tests.cpp)
 target_link_libraries(wmgl_host_tests PRIVATE wmgl_portable)
-# Only the driver ABI is exported; GL entry points are reached via wmgl_get_proc_address.
-target_link_options(winemetalgl_core PRIVATE "LINKER:-exported_symbol,_wmgl_*")
+
+# GPU tests: drive the core through the driver ABI on pbuffers (Metal, no Wine).
+file(GLOB WMGL_GPU_TEST_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tests/gpu/*.cpp")
+add_executable(wmgl_gpu_tests ${WMGL_GPU_TEST_SOURCES})
+add_dependencies(wmgl_gpu_tests wmgl_generated)
+target_include_directories(wmgl_gpu_tests PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}/include" "${WMGL_GEN_DIR}")
+target_link_libraries(wmgl_gpu_tests PRIVATE winemetalgl_core)

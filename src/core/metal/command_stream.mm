@@ -150,7 +150,8 @@ void CommandStream::resolvePendingClear() {
 }
 
 id<MTLBlitCommandEncoder> CommandStream::blit() {
-    if (blit_) return blit_;
+    // A clear recorded after this encoder opened must run before new commands.
+    if (blit_ && !pending_.any()) return blit_;
     resolvePendingClear();
     endEncoder();
     blit_ = [commandBuffer() blitCommandEncoder];
@@ -158,7 +159,7 @@ id<MTLBlitCommandEncoder> CommandStream::blit() {
 }
 
 id<MTLComputeCommandEncoder> CommandStream::compute() {
-    if (compute_) return compute_;
+    if (compute_ && !pending_.any()) return compute_;
     resolvePendingClear();
     endEncoder();
     compute_ = [commandBuffer() computeCommandEncoder];
