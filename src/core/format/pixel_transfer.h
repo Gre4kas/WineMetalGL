@@ -54,6 +54,13 @@ void packPixels(const void* storage, const FormatInfo& info, int width, int heig
 void decodeStorage(Storage storage, const uint8_t* texel, Texel& out);
 void encodeStorage(Storage storage, const Texel& in, uint8_t* texel);
 
+// RGTC (BC4/BC5) block compression between canonical RGBA float texels
+// (tightly packed, 4 floats per texel) and blocks. Images are compressed
+// one 4x4 block at a time; partial edge blocks repeat the edge texels.
+bool isRgtcStorage(Storage storage);
+void encodeRgtc(Storage storage, const float* rgba, int width, int height, int depth, uint8_t* blocks);
+void decodeRgtc(Storage storage, const uint8_t* blocks, int width, int height, int depth, float* rgba);
+
 float halfToFloat(uint16_t h);
 uint16_t floatToHalf(float f);
 

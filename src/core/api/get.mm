@@ -5,6 +5,7 @@
 #include <cstring>
 
 #include "core/context.h"
+#include "core/draw.h"
 #include "core/limits.h"
 #include "core/metal/device.h"
 #include "gl_api.gen.h"
@@ -47,6 +48,25 @@ Value bools(std::initializer_list<bool> list) {
 }
 
 GLuint nameOf(const RefPtr<Buffer>& b) { return b ? b->name : 0; }
+
+// The preferred (format, type) for reading the current read buffer.
+bool implementationReadFormat(Context& ctx, GLenum& format, GLenum& type) {
+    if (CheckFramebufferStatus(ctx, GL_READ_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) return false;
+    uint32_t level, slice;
+    GLenum internalFormat = 0;
+    int w, h;
+    if (!ctx.draw().readColorTexture(level, slice, internalFormat, w, h)) return false;
+    const FormatInfo* info = formatInfo(internalFormat);
+    if (!info) return false;
+    format = info->isInteger() ? GL_RGBA_INTEGER : GL_RGBA;
+    type = info->isSignedInteger() ? GL_INT : info->isInteger() ? GL_UNSIGNED_INT
+           : info->isFloat() ? GL_FLOAT : GL_UNSIGNED_BYTE;
+    if (info->defaultTransferFormat && info->defaultTransferType && !info->isInteger() && !info->isFloat()) {
+        format = info->defaultTransferFormat;
+        type = info->defaultTransferType;
+    }
+    return true;
+}
 
 GLint samples(Context& ctx) {
     Framebuffer* fb = ctx.state.drawFramebuffer.get();
@@ -123,6 +143,21 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
         return true;
     case GL_MAX_VARYING_COMPONENTS: out = ints({64}); return true;
     case GL_MAX_VARYING_VECTORS: out = ints({16}); return true;
+    // GL_ARB_ES2_compatibility.
+    case GL_SHADER_COMPILER: out = bools({true}); return true;
+    case GL_NUM_SHADER_BINARY_FORMATS: out = ints({0}); return true;
+    case GL_SHADER_BINARY_FORMATS: out = ints({}); return true;
+    case GL_IMPLEMENTATION_COLOR_READ_FORMAT:
+    case GL_IMPLEMENTATION_COLOR_READ_TYPE: {
+        GLenum format = GL_RGBA, type = GL_UNSIGNED_BYTE;
+        if (!implementationReadFormat(ctx, format, type)) {
+            ctx.setError(GL_INVALID_OPERATION);
+            out = ints({0});
+            return true;
+        }
+        out = ints({pname == GL_IMPLEMENTATION_COLOR_READ_FORMAT ? format : type});
+        return true;
+    }
     case GL_MAX_VERTEX_OUTPUT_COMPONENTS: out = ints({64}); return true;
     case GL_MAX_GEOMETRY_INPUT_COMPONENTS: out = ints({64}); return true;
     case GL_MAX_GEOMETRY_OUTPUT_COMPONENTS: out = ints({128}); return true;

@@ -336,6 +336,21 @@ void uploadCompressed(Context& ctx, Texture& tex, int face, int level, int x, in
     imageChanged(ctx, tex);
 }
 
+// Converts client pixels to RGTC blocks and uploads them (TexImage/TexSubImage
+// with an RGTC internal format and uncompressed data).
+void uploadRgtcRegion(Context& ctx, Texture& tex, int face, int level, int x, int y, int z, int w, int h, int d,
+                      GLenum format, GLenum type, const uint8_t* src) {
+    if (!src || w <= 0 || h <= 0 || d <= 0) return;
+    const TextureImage& image = tex.image(face, level);
+    const FormatInfo* rgba = formatInfo(GL_RGBA32F);
+    std::vector<float> texels(static_cast<size_t>(w) * h * d * 4);
+    unpackPixels(src, format, type, w, h, d, storeParams(ctx.state.unpack), *rgba, texels.data());
+    std::vector<uint8_t> blocks(compressedSize(*image.format, w, h, d));
+    encodeRgtc(image.format->storage, texels.data(), w, h, d, blocks.data());
+    metalRegion(tex, x, y, z, w, h, d);
+    uploadCompressed(ctx, tex, face, level, x, y, z, w, h, d, blocks.data());
+}
+
 // Image size validation shared by TexImage and CopyTexImage. Returns false
 // (setting INVALID_VALUE unless `proxy`) when the size is not allowed.
 bool sizeAllowed(Context& ctx, const ImageTarget& t, GLint level, GLsizei w, GLsizei h, GLsizei d, GLint border,
@@ -353,6 +368,14 @@ bool sizeAllowed(Context& ctx, const ImageTarget& t, GLint level, GLsizei w, GLs
     if (t.target == GL_TEXTURE_CUBE_MAP_ARRAY && (w != h || d % 6)) return ctx.setError(GL_INVALID_VALUE), false;
     if (tooLarge && !t.proxy) return ctx.setError(GL_INVALID_VALUE), false;
     return true;
+}
+
+// TexImage/TexSubImage source formats for depth images: DEPTH_COMPONENT or
+// DEPTH_STENCIL data (the depth part is used for depth-only images);
+// STENCIL_INDEX uploads need stencil texturing (GL 4.4).
+bool textureTransferCompatible(GLenum format, GLenum type, const FormatInfo& info) {
+    if (info.isDepthOrStencil()) return format == GL_DEPTH_COMPONENT || format == GL_DEPTH_STENCIL;
+    return transferCompatible(format, type, info);
 }
 
 // Whether an internal format may be used with a target (depth formats only
@@ -379,7 +402,7 @@ void texImage(Context& ctx, int dims, GLenum target, GLint level, GLint internal
     if (!info) return ctx.setError(GL_INVALID_VALUE);
     if (!formatAllowedOnTarget(*info, t.target)) return ctx.setError(GL_INVALID_OPERATION);
     if (info->compressed && !compressedFormatSupported(ctx, info)) return ctx.setError(GL_INVALID_ENUM);
-    if (!info->compressed && !transferCompatible(format, type, *info)) return ctx.setError(GL_INVALID_OPERATION);
+    if (!textureTransferCompatible(format, type, *info)) return ctx.setError(GL_INVALID_OPERATION);
     if (t.proxy) {
         TextureImage& image = t.tex->image(t.face, level);
         if (tooLarge || mtlPixelFormat(info->storage) == MTLPixelFormatInvalid) return clearImage(image);
@@ -397,8 +420,13 @@ void texImage(Context& ctx, int dims, GLenum target, GLint level, GLint internal
     if (!unpackSource(ctx, pixels, width && height && depth ? layout.bytesNeeded : 0, typeSize(type), src)) return;
     defineImage(ctx, *t.tex, t.face, level, requested, info, width, height, depth);
     if (info->compressed) {
-        // Compressing client data on upload is not supported; the image is defined with undefined contents.
-        if (src) logOnce(LogLevel::Warn, "compress-on-upload", "uncompressed upload to a compressed internal format ignored");
+        if (isRgtcStorage(info->storage)) {
+            if (imageHasStorage(ctx, *t.tex, t.face, level))
+                uploadRgtcRegion(ctx, *t.tex, t.face, level, 0, 0, 0, width, height, depth, format, type, src);
+        } else if (src) {
+            // S3TC/BPTC encoders are not implemented; the image keeps undefined contents.
+            logOnce(LogLevel::Warn, "compress-on-upload", "uncompressed upload to a compressed internal format ignored");
+        }
         return;
     }
     uploadRegion(ctx, *t.tex, t.face, level, 0, 0, 0, width, height, depth, format, type, src);
@@ -415,11 +443,19 @@ void texSubImage(Context& ctx, int dims, GLenum target, GLint level, GLint x, GL
     if (!image.defined()) return ctx.setError(GL_INVALID_OPERATION);
     if (x < 0 || y < 0 || z < 0 || x + w > image.width || y + h > image.height || z + d > image.depth)
         return ctx.setError(GL_INVALID_VALUE);
-    if (image.format->compressed) return ctx.setError(GL_INVALID_OPERATION);
-    if (!transferCompatible(format, type, *image.format)) return ctx.setError(GL_INVALID_OPERATION);
+    const bool rgtc = isRgtcStorage(image.format->storage);
+    if (image.format->compressed && !rgtc) return ctx.setError(GL_INVALID_OPERATION);
+    // RGTC regions must be block aligned, except where they reach the image edge (GL 3.3 section 3.8.4).
+    if (rgtc && ((x % 4) || (y % 4) || ((w % 4) && x + w != image.width) || ((h % 4) && y + h != image.height)))
+        return ctx.setError(GL_INVALID_OPERATION);
+    if (!textureTransferCompatible(format, type, *image.format)) return ctx.setError(GL_INVALID_OPERATION);
     const TransferLayout layout = transferLayout(format, type, w, h, d, storeParams(ctx.state.unpack));
     const uint8_t* src = nullptr;
     if (!unpackSource(ctx, pixels, w && h && d ? layout.bytesNeeded : 0, typeSize(type), src)) return;
+    if (rgtc) {
+        if (imageHasStorage(ctx, *t.tex, t.face, level)) uploadRgtcRegion(ctx, *t.tex, t.face, level, x, y, z, w, h, d, format, type, src);
+        return;
+    }
     uploadRegion(ctx, *t.tex, t.face, level, x, y, z, w, h, d, format, type, src);
 }
 
@@ -1371,6 +1407,8 @@ void GetTexImage(Context& ctx, GLenum target, GLint level, GLenum format, GLenum
     if (!imageTarget(ctx, target, dims, false, t)) return;
     if (level < 0 || level > maxLevelFor(t.target)) return ctx.setError(GL_INVALID_VALUE);
     if (!checkFormatType(ctx, format, type)) return;
+    // Reading stencil indices from a texture needs stencil texturing (GL 4.4).
+    if (format == GL_STENCIL_INDEX && ctx.version() < 44) return ctx.setError(GL_INVALID_ENUM);
     const TextureImage& image = t.tex->image(t.face, level);
     if (!image.defined()) return;
     const FormatInfo& info = *image.format;
@@ -1380,8 +1418,8 @@ void GetTexImage(Context& ctx, GLenum target, GLint level, GLenum format, GLenum
         (stencilRequest && !info.stencilBits) || (!depthRequest && !stencilRequest && !depthStencilRequest && info.isDepthOrStencil()))
         return ctx.setError(GL_INVALID_OPERATION);
     if (!info.isDepthOrStencil() && !transferCompatible(format, type, info)) return ctx.setError(GL_INVALID_OPERATION);
-    if (info.compressed) {
-        logOnce(LogLevel::Warn, "get-compressed-uncompressed", "GetTexImage of a compressed image is not supported");
+    if (info.compressed && !isRgtcStorage(info.storage)) {
+        logOnce(LogLevel::Warn, "get-compressed-uncompressed", "GetTexImage of an S3TC/BPTC image is not supported");
         return;
     }
     const PixelStoreParams ps = storeParams(ctx.state.pack);
@@ -1392,6 +1430,27 @@ void GetTexImage(Context& ctx, GLenum target, GLint level, GLenum format, GLenum
     int x = 0, y = 0, z = 0, w = image.width, h = image.height, d = image.depth;
     metalRegion(*t.tex, x, y, z, w, h, d);
     const uint32_t slice = static_cast<uint32_t>(t.tex->target == GL_TEXTURE_CUBE_MAP ? t.face : 0);
+    if (isRgtcStorage(info.storage)) {
+        // Read the blocks and decode them to float texels.
+        const size_t rowBytes = ((static_cast<size_t>(image.width) + 3) / 4) * storageBytes(info.storage);
+        const size_t imageBytes = rowBytes * ((static_cast<size_t>(image.height) + 3) / 4);
+        id<MTLBuffer> staging = [Device::get().mtl() newBufferWithLength:std::max<size_t>(1, imageBytes * image.depth)
+                                                                 options:MTLResourceStorageModeShared];
+        id<MTLBlitCommandEncoder> blit = ctx.stream().blit();
+        for (int layer = 0; layer < image.depth; ++layer)
+            [blit copyFromTexture:t.tex->mtl
+                      sourceSlice:static_cast<NSUInteger>(t.tex->target == GL_TEXTURE_CUBE_MAP ? t.face : layer)
+                      sourceLevel:static_cast<NSUInteger>(level) sourceOrigin:MTLOriginMake(0, 0, 0)
+                       sourceSize:MTLSizeMake(image.width, image.height, 1) toBuffer:staging
+                destinationOffset:imageBytes * static_cast<size_t>(layer) destinationBytesPerRow:rowBytes
+          destinationBytesPerImage:imageBytes];
+        ctx.stream().finish();
+        std::vector<float> rgba(static_cast<size_t>(image.width) * image.height * image.depth * 4);
+        decodeRgtc(info.storage, static_cast<const uint8_t*>(staging.contents), image.width, image.height, image.depth,
+                   rgba.data());
+        packPixels(rgba.data(), *formatInfo(GL_RGBA32F), image.width, image.height, image.depth, format, type, ps, true, dst);
+        return;
+    }
     std::vector<uint8_t> texels =
         readImageTexels(ctx, t.tex->mtl, info.storage, static_cast<uint32_t>(level), slice, x, y, z, w, h, d);
     const bool clampColor = ctx.state.clampReadColorMode == GL_TRUE ||

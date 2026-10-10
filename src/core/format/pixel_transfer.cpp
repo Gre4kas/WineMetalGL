@@ -256,6 +256,7 @@ void readGroup(const uint8_t* p, GLenum format, GLenum type, bool integerDest, b
         case GL_UNSIGNED_BYTE: case GL_BYTE: t.stencil = p[0]; break;
         case GL_UNSIGNED_SHORT: case GL_SHORT: t.stencil = static_cast<uint32_t>(readWord(p, 2, swap)); break;
         case GL_FLOAT: { const uint32_t v = static_cast<uint32_t>(readWord(p, 4, swap)); float f; std::memcpy(&f, &v, 4); t.stencil = static_cast<uint32_t>(f); break; }
+        case GL_HALF_FLOAT: t.stencil = static_cast<uint32_t>(halfToFloat(static_cast<uint16_t>(readWord(p, 2, swap)))); break;
         default: t.stencil = static_cast<uint32_t>(readWord(p, 4, swap)); break;
         }
         return;
@@ -345,6 +346,7 @@ void writeGroup(uint8_t* p, GLenum format, GLenum type, bool integerSource, bool
         case GL_UNSIGNED_BYTE: case GL_BYTE: p[0] = static_cast<uint8_t>(t.stencil); break;
         case GL_UNSIGNED_SHORT: case GL_SHORT: writeWord(p, t.stencil, 2, swap); break;
         case GL_FLOAT: { const float f = static_cast<float>(t.stencil); uint32_t x; std::memcpy(&x, &f, 4); writeWord(p, x, 4, swap); break; }
+        case GL_HALF_FLOAT: writeWord(p, floatToHalf(static_cast<float>(t.stencil)), 2, swap); break;
         default: writeWord(p, t.stencil, 4, swap); break;
         }
         return;
@@ -716,6 +718,116 @@ void packPixels(const void* storage, const FormatInfo& info, int width, int heig
                 writeGroup(row + static_cast<size_t>(x) * l.groupBytes, format, type, integerSource, swap, t);
             }
         }
+}
+
+// -------------------------------------------------------------- RGTC
+
+bool isRgtcStorage(Storage storage) {
+    return storage == Storage::BC4_RUnorm || storage == Storage::BC4_RSnorm || storage == Storage::BC5_RGUnorm ||
+           storage == Storage::BC5_RGSnorm;
+}
+
+namespace {
+
+// One BC4 channel block: 16 values (row-major) -> 8 bytes.
+void encodeBc4(const float values[16], bool snorm, uint8_t* out) {
+    int q[16];
+    int lo = snorm ? 127 : 255, hi = snorm ? -127 : 0;
+    for (int i = 0; i < 16; ++i) {
+        const float v = snorm ? std::clamp(values[i], -1.0f, 1.0f) : std::clamp(values[i], 0.0f, 1.0f);
+        q[i] = static_cast<int>(std::lround(v * (snorm ? 127.0f : 255.0f)));
+        lo = std::min(lo, q[i]);
+        hi = std::max(hi, q[i]);
+    }
+    // r0 > r1 selects the 8-value palette (6 interpolated values).
+    const int r0 = hi, r1 = lo;
+    out[0] = snorm ? static_cast<uint8_t>(static_cast<int8_t>(r0)) : static_cast<uint8_t>(r0);
+    out[1] = snorm ? static_cast<uint8_t>(static_cast<int8_t>(r1)) : static_cast<uint8_t>(r1);
+    double palette[8];
+    palette[0] = r0;
+    palette[1] = r1;
+    for (int k = 1; k <= 6; ++k) palette[k + 1] = ((7 - k) * r0 + k * r1) / 7.0;
+    uint64_t bits = 0;
+    for (int i = 0; i < 16; ++i) {
+        int best = 0;
+        double bestError = 1e30;
+        for (int k = 0; k < (r0 > r1 ? 8 : 1); ++k) {
+            const double e = std::fabs(palette[k] - q[i]);
+            if (e < bestError) {
+                bestError = e;
+                best = k;
+            }
+        }
+        bits |= static_cast<uint64_t>(best) << (3 * i);
+    }
+    for (int b = 0; b < 6; ++b) out[2 + b] = static_cast<uint8_t>(bits >> (8 * b));
+}
+
+void decodeBc4(const uint8_t* in, bool snorm, float values[16]) {
+    const int r0 = snorm ? static_cast<int8_t>(in[0]) : in[0];
+    const int r1 = snorm ? static_cast<int8_t>(in[1]) : in[1];
+    const double scale = snorm ? 127.0 : 255.0;
+    double palette[8];
+    palette[0] = r0;
+    palette[1] = r1;
+    if (r0 > r1) {
+        for (int k = 1; k <= 6; ++k) palette[k + 1] = ((7 - k) * r0 + k * r1) / 7.0;
+    } else {
+        for (int k = 1; k <= 4; ++k) palette[k + 1] = ((5 - k) * r0 + k * r1) / 5.0;
+        palette[6] = snorm ? -127.0 : 0.0;
+        palette[7] = scale;
+    }
+    uint64_t bits = 0;
+    for (int b = 0; b < 6; ++b) bits |= static_cast<uint64_t>(in[2 + b]) << (8 * b);
+    for (int i = 0; i < 16; ++i) {
+        const double v = palette[(bits >> (3 * i)) & 7] / scale;
+        values[i] = static_cast<float>(snorm ? std::max(-1.0, v) : v);
+    }
+}
+
+}  // namespace
+
+void encodeRgtc(Storage storage, const float* rgba, int width, int height, int depth, uint8_t* blocks) {
+    const bool snorm = storage == Storage::BC4_RSnorm || storage == Storage::BC5_RGSnorm;
+    const int channels = storage == Storage::BC5_RGUnorm || storage == Storage::BC5_RGSnorm ? 2 : 1;
+    const int bw = (width + 3) / 4, bh = (height + 3) / 4;
+    for (int z = 0; z < depth; ++z)
+        for (int by = 0; by < bh; ++by)
+            for (int bx = 0; bx < bw; ++bx)
+                for (int c = 0; c < channels; ++c) {
+                    float values[16];
+                    for (int y = 0; y < 4; ++y)
+                        for (int x = 0; x < 4; ++x) {
+                            const int sx = std::min(bx * 4 + x, width - 1), sy = std::min(by * 4 + y, height - 1);
+                            values[y * 4 + x] = rgba[((static_cast<size_t>(z) * height + sy) * width + sx) * 4 + c];
+                        }
+                    encodeBc4(values, snorm, blocks);
+                    blocks += 8;
+                }
+}
+
+void decodeRgtc(Storage storage, const uint8_t* blocks, int width, int height, int depth, float* rgba) {
+    const bool snorm = storage == Storage::BC4_RSnorm || storage == Storage::BC5_RGSnorm;
+    const int channels = storage == Storage::BC5_RGUnorm || storage == Storage::BC5_RGSnorm ? 2 : 1;
+    const int bw = (width + 3) / 4, bh = (height + 3) / 4;
+    for (size_t i = 0; i < static_cast<size_t>(width) * height * depth; ++i) {
+        rgba[i * 4 + 0] = rgba[i * 4 + 1] = rgba[i * 4 + 2] = 0.0f;
+        rgba[i * 4 + 3] = 1.0f;
+    }
+    for (int z = 0; z < depth; ++z)
+        for (int by = 0; by < bh; ++by)
+            for (int bx = 0; bx < bw; ++bx)
+                for (int c = 0; c < channels; ++c) {
+                    float values[16];
+                    decodeBc4(blocks, snorm, values);
+                    blocks += 8;
+                    for (int y = 0; y < 4; ++y)
+                        for (int x = 0; x < 4; ++x) {
+                            const int dx = bx * 4 + x, dy = by * 4 + y;
+                            if (dx >= width || dy >= height) continue;
+                            rgba[((static_cast<size_t>(z) * height + dy) * width + dx) * 4 + c] = values[y * 4 + x];
+                        }
+                }
 }
 
 }  // namespace wmgl

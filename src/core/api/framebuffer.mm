@@ -99,10 +99,9 @@ GLenum completeness(Context& ctx, Framebuffer* fb) {
     if (GLenum status = check(fb->depth, 1); status != GL_FRAMEBUFFER_COMPLETE) return status;
     if (GLenum status = check(fb->stencil, 2); status != GL_FRAMEBUFFER_COMPLETE) return status;
     if (!any) return GL_FRAMEBUFFER_INCOMPLETE_MISSING_ATTACHMENT;
-    for (GLenum buffer : fb->drawBuffers)
-        if (buffer != GL_NONE && !attachmentPoint(*fb, buffer)->attached()) return GL_FRAMEBUFFER_INCOMPLETE_DRAW_BUFFER;
-    if (fb->readBuffer != GL_NONE && !attachmentPoint(*fb, fb->readBuffer)->attached())
-        return GL_FRAMEBUFFER_INCOMPLETE_READ_BUFFER;
+    // GL_ARB_ES2_compatibility (advertised in every context, core in 4.1)
+    // removes the INCOMPLETE_DRAW_BUFFER / INCOMPLETE_READ_BUFFER rules:
+    // draw and read buffers naming empty attachments are simply ignored.
     // Metal: a combined depth/stencil image must be bound to both points as the same image.
     if (fb->depth.attached() && fb->stencil.attached()) {
         GLsizei w, h, s;

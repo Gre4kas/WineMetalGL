@@ -325,6 +325,13 @@ void GetShaderSource(Context& ctx, GLuint shader, GLsizei bufSize, GLsizei* leng
 
 void ReleaseShaderCompiler(Context& ctx) {}
 
+void ShaderBinary(Context& ctx, GLsizei count, const GLuint* shaders, GLenum binaryFormat, const void* binary,
+                  GLsizei length) {
+    if (count < 0 || length < 0) return ctx.setError(GL_INVALID_VALUE);
+    // NUM_SHADER_BINARY_FORMATS is 0: no binary format is accepted.
+    ctx.setError(GL_INVALID_ENUM);
+}
+
 void GetShaderPrecisionFormat(Context& ctx, GLenum shadertype, GLenum precisiontype, GLint* range, GLint* precision) {
     if (shadertype != GL_VERTEX_SHADER && shadertype != GL_FRAGMENT_SHADER) return ctx.setError(GL_INVALID_ENUM);
     const bool isInt = precisiontype == GL_LOW_INT || precisiontype == GL_MEDIUM_INT || precisiontype == GL_HIGH_INT;
