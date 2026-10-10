@@ -87,8 +87,10 @@ void maybeDeleteShader(Context& ctx, Shader* shader) {
     }
 }
 
+}  // namespace
+
 void maybeDeleteProgram(Context& ctx, Program* program) {
-    if (!program->deletePending || program->useCount > 0) return;
+    if (!program->deletePending || program->useCount > 0 || program->stageUses > 0) return;
     for (RefPtr<Shader>& s : program->attached) {
         --s->attachCount;
         maybeDeleteShader(ctx, s.get());
@@ -97,6 +99,8 @@ void maybeDeleteProgram(Context& ctx, Program* program) {
     ShareLock lock(ctx);
     ctx.share().programs.erase(program->name);
 }
+
+namespace {
 
 // --- uniform type information
 

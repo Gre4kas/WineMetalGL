@@ -2,6 +2,7 @@
 
 #include "winemetalgl/driver.h"
 
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 
@@ -162,7 +163,9 @@ WMGL_EXPORT wmgl_context* wmgl_context_create(int format, wmgl_context* share, c
         return nullptr;
     }
     // Profiles exist from 3.2; earlier requests (and legacy wglCreateContext) get compatibility.
-    config.coreProfile = profiles && profile == kCoreBit;
+    // A forward-compatible 3.0 or 3.1 context drops the deprecated features:
+    // the core profile is its backwards-compatible successor.
+    config.coreProfile = profiles ? profile == kCoreBit : (flags & kForwardCompatibleBit) && requestedMajor >= 3;
     config.forwardCompatible = flags & kForwardCompatibleBit;
     config.debug = flags & kDebugBit;
     config.robustAccess = flags & kRobustAccessBit;
@@ -196,8 +199,20 @@ WMGL_EXPORT int wmgl_make_current(wmgl_context* handle, wmgl_surface* draw, wmgl
 WMGL_EXPORT void* wmgl_get_proc_address(const char* name) { return lookupProc(name); }
 
 WMGL_EXPORT const char* wmgl_renderer_string(void) {
-    static std::string renderer = std::string(Device::get().name()) + " (WineMetalGL)";
+    // GL_RENDERER's string, WINEMETALGL_RENDERER included.
+    static const std::string renderer = [] {
+        const char* r = std::getenv("WINEMETALGL_RENDERER");
+        return r && *r ? std::string(r) : std::string(Device::get().name()) + " (WineMetalGL)";
+    }();
     return renderer.c_str();
+}
+
+WMGL_EXPORT void wmgl_version(int* major, int* minor, int* patch) {
+    int v[3] = {0, 0, 0};
+    std::sscanf(WMGL_VERSION, "%d.%d.%d", &v[0], &v[1], &v[2]);
+    if (major) *major = v[0];
+    if (minor) *minor = v[1];
+    if (patch) *patch = v[2];
 }
 
 WMGL_EXPORT unsigned int wmgl_video_memory_mb(void) {

@@ -46,7 +46,9 @@ std::unordered_map<GLenum, FormatInfo> buildTable() {
         f.stencilRenderable = f.stencilBits != 0;
         f.textureFilterable = !f.isInteger();
         // RGB formats are stored with four channels; alpha reads as one.
-        if (base == GL_RGB && f.swizzle[3] == SwzA && !f.compressed) {
+        // (The packed float formats store no alpha at all.)
+        if (base == GL_RGB && f.swizzle[3] == SwzA && !f.compressed && f.storage != S::RG11B10Float &&
+            f.storage != S::RGB9E5Float) {
             f.swizzle[3] = SwzOne;
             f.storedAlphaIsOne = true;
         }

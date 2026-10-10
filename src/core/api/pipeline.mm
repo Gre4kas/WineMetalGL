@@ -87,6 +87,12 @@ void DeleteProgramPipelines(Context& ctx, GLsizei n, const GLuint* pipelines) {
         if (!pipelines[i]) continue;
         RefPtr<ProgramPipeline> pp = ctx.programPipelines.remove(pipelines[i]);
         if (pp && ctx.state.programPipeline == pp) ctx.state.programPipeline.reset();
+        // Programs deleted while they were its stages go now.
+        for (int stage = 0; pp && stage < 6; ++stage) {
+            RefPtr<Program> previous = pp->stages[stage];
+            pp->setStage(stage, RefPtr<Program>());
+            if (previous) maybeDeleteProgram(ctx, previous.get());
+        }
     }
     ctx.markDirty(kDirtyProgram);
 }
@@ -122,7 +128,9 @@ void UseProgramStages(Context& ctx, GLuint pipeline, GLbitfield stages, GLuint p
     }
     for (const StageBit& s : kStageBits) {
         if (!(stages & s.bit)) continue;
+        RefPtr<Program> previous = pp->stages[static_cast<int>(s.stage)];
         pp->setStage(static_cast<int>(s.stage), p && hasStage(*p, s.stage) ? p : RefPtr<Program>());
+        if (previous) maybeDeleteProgram(ctx, previous.get());  // deleted while it was this stage
     }
     pp->executable.reset();
     ctx.markDirty(kDirtyProgram | kDirtyUniforms | kDirtyTextures | kDirtyVertexInput);

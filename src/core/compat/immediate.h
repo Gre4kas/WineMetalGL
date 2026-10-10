@@ -82,7 +82,10 @@ void drawBatch(Context& ctx, const ImmediateBatch& batch);
 // now (always true when no list is being compiled), and recording.
 bool listExecutes(const Context& ctx);
 bool listCompiling(const Context& ctx);
-void recordCommand(Context& ctx, std::function<void(Context&)> command);
+// `emitsVertices`: see list::record (a compiled glBegin's batch is split
+// before it); state commands keep the batch whole and run before its draw,
+// which is what immediate mode shows too (the batch draws at glEnd).
+void recordCommand(Context& ctx, std::function<void(Context&)> command, bool emitsVertices = false);
 // Ends batching of a compiled glBegin (see ListCompiler::split).
 void splitBatch(ListCompiler& lc);
 

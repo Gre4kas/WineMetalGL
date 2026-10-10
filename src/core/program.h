@@ -96,6 +96,9 @@ bool validateProgramPipeline(ProgramPipeline& pipeline);
 // Drops a destroyed context's use of its current program (which may then be
 // deleted, if deletion was pending).
 void releaseCurrentProgram(Context& ctx);
+// Deletes a program flagged by glDeleteProgram once nothing uses it (current
+// program or program pipeline stage).
+void maybeDeleteProgram(Context& ctx, Program* program);
 // GL_ARB_get_program_binary: the one binary format ('WMG1'; see api/program.mm).
 constexpr GLenum kProgramBinaryFormat = 0x574D4731;
 GLsizei programBinaryLength(const Program& p);

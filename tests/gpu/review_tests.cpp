@@ -545,3 +545,119 @@ out vec4 o; void main() { o = vec4(1, 0, 0, 1); })");
     glDeleteProgram(p);
     CHECK_GL();
 }
+
+GPU_TEST(gpu_review_sample_mask_depth_only) {
+    // A fragment shader without outputs writes depth to one sample of four
+    // (GL_SAMPLE_MASK 0x1); a red pass behind it then covers three samples.
+    loadReview();
+    GLuint rb[2] = {}, fbo[2] = {}, resolved = 0;
+    glGenRenderbuffers(2, rb);
+    glBindRenderbuffer(GL_RENDERBUFFER, rb[0]);
+    glRenderbufferStorageMultisample(GL_RENDERBUFFER, 4, GL_RGBA8, 8, 8);
+    glBindRenderbuffer(GL_RENDERBUFFER, rb[1]);
+    glRenderbufferStorageMultisample(GL_RENDERBUFFER, 4, GL_DEPTH_COMPONENT32F, 8, 8);
+    glGenFramebuffers(2, fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo[0]);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, rb[0]);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, rb[1]);
+    CHECK_EQ(glCheckFramebufferStatus(GL_FRAMEBUFFER), static_cast<GLenum>(GL_FRAMEBUFFER_COMPLETE));
+    glGenTextures(1, &resolved);
+    glBindTexture(GL_TEXTURE_2D, resolved);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 8, 8, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo[1]);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, resolved, 0);
+    GLuint depthOnly = gpu::program(R"(#version 330 core
+in vec2 position; void main() { gl_Position = vec4(position, -0.5, 1.0); })",
+                                    R"(#version 330 core
+void main() {})");
+    GLuint red = gpu::program(R"(#version 330 core
+in vec2 position; void main() { gl_Position = vec4(position, 0.0, 1.0); })",
+                              R"(#version 330 core
+out vec4 o; void main() { o = vec4(1, 0, 0, 1); })");
+    GLuint vao = gpu::quad();
+    glViewport(0, 0, 8, 8);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo[0]);
+    glClearColor(0, 0, 0, 1);
+    glClearDepth(1.0);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LESS);
+    glEnable(GL_SAMPLE_MASK);
+    glSampleMaski_(0, 0x1);
+    glUseProgram(depthOnly);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glDisable(GL_SAMPLE_MASK);
+    glUseProgram(red);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glDisable(GL_DEPTH_TEST);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo[0]);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo[1]);
+    glBlitFramebuffer(0, 0, 8, 8, 0, 0, 8, 8, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo[1]);
+    const int value = gpu::readRGBA8(4, 4, 1, 1)[0];
+    std::printf("  resolved red behind a one-sample depth write: %d\n", value);
+    CHECK(value > 175 && value < 205);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glViewport(0, 0, 64, 64);
+    glDeleteFramebuffers(2, fbo);
+    glDeleteRenderbuffers_(2, rb);
+    glDeleteTextures(1, &resolved);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(depthOnly);
+    glDeleteProgram(red);
+    CHECK_GL();
+}
+
+GPU_TEST(gpu_review_rgb_array_alpha_and_immutable_base) {
+    // Every layer of a new RGB array texture starts with alpha one.
+    GLuint array = 0, rgba = 0, fbo = 0;
+    glGenTextures(1, &array);
+    glBindTexture(GL_TEXTURE_2D_ARRAY, array);
+    glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_RGB8, 4, 4, 4, 0, GL_RGB, GL_UNSIGNED_BYTE, nullptr);
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, array, 0, 3);
+    CHECK_EQ(glCheckFramebufferStatus(GL_FRAMEBUFFER), static_cast<GLenum>(GL_FRAMEBUFFER_COMPLETE));
+    glGenTextures(1, &rgba);
+    glBindTexture(GL_TEXTURE_2D, rgba);
+    glCopyTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 0, 0, 4, 4, 0);
+    uint8_t texels[4 * 4 * 4] = {};
+    glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, texels);
+    bool ok = true;
+    for (int i = 0; i < 16; ++i) ok &= texels[i * 4 + 3] == 255;
+    CHECK(ok);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &array);
+    // An immutable texture's base level past its levels samples its last level.
+    auto glTexStorage2D_ = reinterpret_cast<PFN_glTexStorage2D>(wmgl_get_proc_address("glTexStorage2D"));
+    glBindTexture(GL_TEXTURE_2D, rgba);
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexStorage2D_(GL_TEXTURE_2D, 3, GL_RGBA8, 4, 4);
+    const uint8_t redTexels[16 * 4] = {255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255,
+                                       255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255,
+                                       255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255,
+                                       255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255};
+    const uint8_t green[4] = {0, 255, 0, 255};
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 4, 4, GL_RGBA, GL_UNSIGNED_BYTE, redTexels);
+    glTexSubImage2D(GL_TEXTURE_2D, 1, 0, 0, 2, 2, GL_RGBA, GL_UNSIGNED_BYTE, redTexels);
+    glTexSubImage2D(GL_TEXTURE_2D, 2, 0, 0, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, green);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 5);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    GLuint p = gpu::program(R"(#version 330 core
+in vec2 position; out vec2 uv; void main() { uv = position * 0.5 + 0.5; gl_Position = vec4(position, 0.0, 1.0); })",
+                            R"(#version 330 core
+uniform sampler2D t; in vec2 uv; out vec4 o; void main() { o = texture(t, uv); })");
+    GLuint vao = gpu::quad();
+    glUseProgram(p);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    CHECK(pixelIs(32, 32, kGreen));
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
+    glDeleteTextures(1, &tex);
+    glDeleteTextures(1, &rgba);
+    CHECK_GL();
+}

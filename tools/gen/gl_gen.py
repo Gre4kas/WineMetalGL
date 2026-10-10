@@ -238,8 +238,10 @@ def list_recorder(cmd, info, api_name):
     # (GL parameter names include "c": the closure's context is "wmgl_ctx".)
     call = "wmgl::api::%s(wmgl_ctx%s)" % (api_name, "".join(", " + a for a in args))
     inner = ("wmgl::list::UnpackScope scope(wmgl_ctx, %s.unpack); %s;" % (scope, call)) if scope else call + ";"
-    body.append("    return wmgl::list::record(ctx, [%s](wmgl::Context& wmgl_ctx) mutable { %s });" % (
-        ", ".join(captures), inner))
+    # glCallList(s) inside a compiled glBegin add the called list's vertices there.
+    emits = ", true" if cmd in ("glCallList", "glCallLists") else ""
+    body.append("    return wmgl::list::record(ctx, [%s](wmgl::Context& wmgl_ctx) mutable { %s }%s);" % (
+        ", ".join(captures), inner, emits))
     return "bool record_%s(%s) {\n%s\n}\n" % (api_name, sig, "\n".join(body))
 
 

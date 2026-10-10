@@ -1,8 +1,8 @@
 diff --git a/dlls/winemac.drv/opengl.c b/dlls/winemac.drv/opengl.c
-index 696734f..a9585f2 100644
+index 696734f..0ee7f73 100644
 --- a/dlls/winemac.drv/opengl.c
 +++ b/dlls/winemac.drv/opengl.c
-@@ -2518,6 +2518,422 @@ static void macdrv_init_extensions(struct opengl_funcs *funcs, BOOLEAN extension
+@@ -2518,6 +2518,435 @@ static void macdrv_init_extensions(struct opengl_funcs *funcs, BOOLEAN extension
      funcs->p_wglQueryRendererStringWINE = macdrv_wglQueryRendererStringWINE;
  }
  
@@ -45,6 +45,7 @@ index 696734f..a9585f2 100644
 +static const char *(*p_wmgl_renderer_string)(void);
 +static unsigned int (*p_wmgl_video_memory_mb)(void);
 +static void (*p_wmgl_max_versions)(int *, int *, int *, int *);
++static void (*p_wmgl_version)(int *, int *, int *);  /* optional */
 +
 +static struct wmgl_pixel_format *wmgl_formats;
 +static unsigned int wmgl_format_count, wmgl_onscreen_count;
@@ -153,8 +154,19 @@ index 696734f..a9585f2 100644
 +            *value = WGL_CONTEXT_CORE_PROFILE_BIT_ARB;
 +            return TRUE;
 +        case WGL_RENDERER_VERSION_WINE:
-+            value[0] = value[1] = value[2] = 0;
-+            get_fallback_renderer_version(value);
++            if (p_wmgl_version)
++            {
++                int major, minor, patch;
++                p_wmgl_version(&major, &minor, &patch);
++                value[0] = major;
++                value[1] = minor;
++                value[2] = patch;
++            }
++            else
++            {
++                value[0] = value[1] = value[2] = 0;
++                get_fallback_renderer_version(value);
++            }
 +            return TRUE;
 +        case WGL_RENDERER_VIDEO_MEMORY_WINE:
 +            *value = p_wmgl_video_memory_mb();
@@ -403,6 +415,7 @@ index 696734f..a9585f2 100644
 +    LOAD(wmgl_video_memory_mb);
 +    LOAD(wmgl_max_versions);
 +#undef LOAD
++    p_wmgl_version = dlsym(wmgl_handle, "wmgl_version");
 +    if (p_wmgl_initialize(WMGL_DRIVER_ABI_VERSION))
 +    {
 +        ERR("WineMetalGL core refused to initialize\n");
@@ -425,7 +438,7 @@ index 696734f..a9585f2 100644
  /**********************************************************************
   *              macdrv_OpenGLInit
   */
-@@ -2532,6 +2948,8 @@ UINT macdrv_OpenGLInit(UINT version, const struct opengl_funcs *opengl_funcs, co
+@@ -2532,6 +2961,8 @@ UINT macdrv_OpenGLInit(UINT version, const struct opengl_funcs *opengl_funcs, co
      }
      funcs = opengl_funcs;
  

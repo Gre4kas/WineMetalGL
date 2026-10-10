@@ -58,7 +58,9 @@ struct UnpackScope {
 size_t callListsBytes(GLsizei n, GLenum type);
 
 // Appends to the list being compiled; returns whether the command also runs now.
-bool record(Context& ctx, std::function<void(Context&)> command);
+// `emitsVertices`: the command can add vertices to a primitive (glCallList),
+// so inside a compiled glBegin it must run between the vertices around it.
+bool record(Context& ctx, std::function<void(Context&)> command, bool emitsVertices = false);
 
 }  // namespace list
 }  // namespace wmgl

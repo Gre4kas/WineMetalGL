@@ -125,8 +125,8 @@ size_t callListsBytes(GLsizei n, GLenum type) {
     }
 }
 
-bool record(Context& ctx, std::function<void(Context&)> command) {
-    compat::recordCommand(ctx, std::move(command));
+bool record(Context& ctx, std::function<void(Context&)> command, bool emitsVertices) {
+    compat::recordCommand(ctx, std::move(command), emitsVertices);
     return compat::listExecutes(ctx);
 }
 

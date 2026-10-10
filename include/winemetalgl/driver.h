@@ -81,6 +81,9 @@ void *wmgl_get_proc_address(const char *name);
 const char *wmgl_renderer_string(void);
 unsigned int wmgl_video_memory_mb(void);
 void wmgl_max_versions(int *core_major, int *core_minor, int *compat_major, int *compat_minor);
+/* WineMetalGL's own version (WGL_RENDERER_VERSION_WINE). Optional: cores
+ * before 2.0.0 do not export it. */
+void wmgl_version(int *major, int *minor, int *patch);
 
 #ifdef __cplusplus
 }

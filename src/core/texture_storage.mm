@@ -88,13 +88,15 @@ void initAlphaOne(Context& ctx, id<MTLTexture> texture) {
                              : texture.textureType == MTLTextureTypeCubeArray ? 6 * texture.arrayLength
                                                                                : texture.arrayLength;
     for (NSUInteger level = 0; level < texture.mipmapLevelCount; ++level) {
-        const NSUInteger count = volume ? std::max<NSUInteger>(1, texture.depth >> level) : faces;
+        // Array and cube layers are cleared by one layered pass per level;
+        // 3D depth planes one pass each.
+        const NSUInteger count = volume ? std::max<NSUInteger>(1, texture.depth >> level) : 1;
         for (NSUInteger i = 0; i < count; ++i) {
             MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
             pass.colorAttachments[0].texture = texture;
             pass.colorAttachments[0].level = level;
             if (volume) pass.colorAttachments[0].depthPlane = i;
-            else pass.colorAttachments[0].slice = i;
+            else if (faces > 1) pass.renderTargetArrayLength = faces;
             pass.colorAttachments[0].loadAction = MTLLoadActionClear;
             pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1);
             pass.colorAttachments[0].storeAction = MTLStoreActionStore;

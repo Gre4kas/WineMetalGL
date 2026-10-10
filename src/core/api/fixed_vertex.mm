@@ -135,11 +135,11 @@ void splitBatch(ListCompiler& lc) {
     lc.split = true;
 }
 
-void recordCommand(Context& ctx, std::function<void(Context&)> command) {
+void recordCommand(Context& ctx, std::function<void(Context&)> command, bool emitsVertices) {
     ListCompiler* lc = ctx.listCompiler.get();
     if (!lc) return;
-    // A command compiled inside a compiled glBegin runs between its vertices.
-    splitBatch(*lc);
+    // A command that adds vertices inside a compiled glBegin runs between the vertices around it.
+    if (emitsVertices) splitBatch(*lc);
     lc->list->commands.push_back(std::move(command));
 }
 
@@ -401,7 +401,7 @@ void Begin(Context& ctx, GLenum mode) {
             lc->batch.begin(mode, nullptr);
         } else {
             // Begin inside a compiled Begin: an error when the list runs.
-            compat::recordCommand(ctx, [mode](Context& c) { Begin(c, mode); });
+            compat::recordCommand(ctx, [mode](Context& c) { Begin(c, mode); }, true);
         }
         if (lc->mode == GL_COMPILE) return;
     }

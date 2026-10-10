@@ -241,12 +241,48 @@ std::string fragmentWithLogicOp(const std::string& msl, unsigned op, const Logic
     return out;
 }
 
+namespace {
+
+// A fragment function without outputs (depth/stencil only): returns a struct
+// holding just the sample mask.
+std::string voidFragmentWithSampleMask(const std::string& msl) {
+    const std::string signature = "fragment void main0(";
+    const size_t fn = msl.find(signature);
+    if (fn == std::string::npos) return std::string();
+    const size_t bodyOpen = msl.find('{', fn);
+    if (bodyOpen == std::string::npos) return std::string();
+    size_t bodyClose = std::string::npos;
+    int depth = 0;
+    for (size_t i = bodyOpen; i < msl.size(); ++i) {
+        if (msl[i] == '{') ++depth;
+        else if (msl[i] == '}' && --depth == 0) {
+            bodyClose = i;
+            break;
+        }
+    }
+    if (bodyClose == std::string::npos) return std::string();
+    const std::string ret = "return wmgl_mask_out{wmgl_fs_driver[1]};";
+    std::string body = msl.substr(bodyOpen, bodyClose - bodyOpen);
+    for (size_t at = body.find("return;"); at != std::string::npos; at = body.find("return;", at + ret.size()))
+        body.replace(at, 7, ret);
+    std::string params = msl.substr(fn + signature.size(), bodyOpen - fn - signature.size());
+    const bool hasDriver = params.find("wmgl_fs_driver [[buffer(") != std::string::npos;
+    std::string head = "struct wmgl_mask_out\n{\n    uint wmgl_sample_mask [[sample_mask]];\n};\n\n"
+                       "fragment wmgl_mask_out main0(";
+    if (!hasDriver)
+        head += "constant uint* wmgl_fs_driver [[buffer(" + std::to_string(kSlotDriverUniforms) + ")]]" +
+                (params.compare(0, 1, ")") == 0 ? "" : ", ");
+    return msl.substr(0, fn) + head + params + body + "    " + ret + "\n" + msl.substr(bodyClose);
+}
+
+}  // namespace
+
 std::string fragmentWithSampleMask(const std::string& msl) {
     const std::string signature = "fragment main0_out main0(", member = "struct main0_out\n{\n";
     const size_t structAt = msl.find(member);
-    if (msl.find("[[sample_mask]]") != std::string::npos || structAt == std::string::npos ||
-        msl.find(signature) == std::string::npos || structAt > msl.find(signature))
-        return std::string();
+    if (msl.find("[[sample_mask]]") != std::string::npos) return std::string();
+    if (structAt == std::string::npos || msl.find(signature) == std::string::npos || structAt > msl.find(signature))
+        return voidFragmentWithSampleMask(msl);
     std::string out = msl;
     out.insert(structAt + member.size(), "    uint wmgl_sample_mask [[sample_mask]];\n");
     const size_t fn = out.find(signature);

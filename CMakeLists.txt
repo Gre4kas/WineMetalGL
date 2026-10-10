@@ -108,6 +108,7 @@ add_library(winemetalgl_core SHARED
     "${WMGL_GEN_DIR}/gl_entry.gen.cpp"
     "${WMGL_GEN_DIR}/gl_stubs.gen.cpp"
     "${WMGL_GEN_DIR}/gl_list.gen.cpp")
+target_compile_definitions(winemetalgl_core PRIVATE WMGL_VERSION="${PROJECT_VERSION}")
 add_dependencies(winemetalgl_core wmgl_generated)
 # Generated and other .cpp sources include Metal-using headers: build them as Objective-C++.
 set_source_files_properties(

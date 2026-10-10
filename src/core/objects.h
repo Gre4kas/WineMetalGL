@@ -130,7 +130,12 @@ public:
     int faceCount() const { return target == GL_TEXTURE_CUBE_MAP ? 6 : 1; }
     const TextureImage& image(int face, int level) const { return images[face][level]; }
     TextureImage& image(int face, int level) { return images[face][level]; }
-    const TextureImage& baseImage() const { return images[0][baseLevel < kMaxLevels ? baseLevel : 0]; }
+    // The base level's image (an immutable texture's base level is clamped to its levels).
+    const TextureImage& baseImage() const {
+        int base = baseLevel < kMaxLevels ? baseLevel : 0;
+        if (immutable && immutableLevels > 0 && base > immutableLevels - 1) base = immutableLevels - 1;
+        return images[0][base];
+    }
 };
 
 // --------------------------------------------------------- renderbuffers
@@ -250,7 +255,7 @@ public:
     uint64_t uniformVersion = 0;
     bool deletePending = false;
     int useCount = 0;  // contexts with this program current
-    int stageUses = 0;  // program pipeline stages using it
+    std::atomic<int> stageUses{0};  // program pipeline stages using it (pipelines die outside the share lock)
 };
 
 // GL_ARB_separate_shader_objects program pipeline (per context).
