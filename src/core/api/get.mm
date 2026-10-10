@@ -244,6 +244,9 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
     case GL_MAX_TRANSFORM_FEEDBACK_SEPARATE_COMPONENTS: out = ints({4}); return true;
     case GL_MAX_CLIP_DISTANCES: out = ints({8}); return true;
     case GL_MAX_SERVER_WAIT_TIMEOUT: out = int64v(INT64_MAX); return true;
+    // GL 4.3 / GL_ARB_ES3_compatibility, which the KHR-GL32 API coverage test queries in
+    // every core context. Element arrays take full 32-bit indices.
+    case GL_MAX_ELEMENT_INDEX: out = int64v(UINT32_MAX); return true;
     case GL_SUBPIXEL_BITS: out = ints({8}); return true;
     case GL_MAX_PROGRAM_TEXEL_OFFSET: out = ints({7}); return true;
     case GL_MIN_PROGRAM_TEXEL_OFFSET: out = ints({-8}); return true;
