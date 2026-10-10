@@ -530,7 +530,14 @@ LinkResult link(const LinkInput& input) {
         const auto& v = program.getPipeOutput(i);
         pipeOutputs.push_back({unescapeName(v.name), static_cast<GLenum>(v.glDefineType), v.size, v.layoutLocation(), static_cast<uint32_t>(v.stages)});
     }
-    if (!program.mapIO()) {
+    // The GLSL I/O mapper matches varyings between stages by name (GL rules);
+    // the default (Vulkan) mapper numbers each stage's interface in
+    // declaration order, which swaps varyings declared in different orders.
+    std::unique_ptr<glslang::TIoMapper> ioMapper(glslang::GetGlslIoMapper());
+    std::unique_ptr<glslang::TIoMapResolver> resolver;
+    for (int s = 0; s < kStageCount && !resolver; ++s)
+        if (stagePresent[s]) resolver.reset(program.getGlslIoResolver(language(static_cast<Stage>(s))));
+    if (!program.mapIO(resolver.get(), ioMapper.get())) {
         result.log += unescapeName(cleanLog(program.getInfoLog(), program.getInfoDebugLog()));
         return result;
     }
@@ -616,7 +623,7 @@ LinkResult link(const LinkInput& input) {
             const spirv_cross::SPIRType& type = compiler.get_type(image.type_id);
             const spirv_cross::SPIRType& base = compiler.get_type(image.base_type_id);
             const std::string name = unescapeName(compiler.get_name(image.id));
-            if (!liveSamplers.count(name)) continue;
+            if (!liveSamplers.count(topLevelName(name))) continue;
             const spirv_cross::SPIRType& sampled = compiler.get_type(base.image.type);
             const GLenum glType = samplerTypeWithComponent(glTypeOf(base), sampled.basetype);
             const uint32_t count = type.array.empty() ? 1 : std::max(1u, type.array.back());

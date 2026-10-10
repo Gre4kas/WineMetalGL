@@ -3,6 +3,7 @@
 #pragma once
 
 #include <cstdint>
+#include <cstdio>
 #include <vector>
 
 #include "../host/test.h"
@@ -36,7 +37,7 @@
     X(glBeginConditionalRender) X(glEndConditionalRender) X(glFenceSync) X(glClientWaitSync)               \
     X(glGetSynciv) X(glDeleteSync) X(glIsSync) X(glVertexAttribP4ui) X(glGetVertexAttribfv)                \
     X(glGetMultisamplefv) X(glGetUniformBlockIndex) X(glUniformBlockBinding) X(glBindBufferBase)        \
-    X(glBindBufferRange)
+    X(glBindBufferRange) X(glUniformMatrix3fv) X(glUniformMatrix4fv) X(glGetAttribLocation)
 
 #define WMGL_DECLARE_FUNC(name) extern PFN_##name name;
 WMGL_GPU_FUNCS(WMGL_DECLARE_FUNC)

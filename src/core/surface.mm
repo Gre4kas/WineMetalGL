@@ -1,5 +1,8 @@
 #include "core/surface.h"
 
+#include <cstdio>
+#include <cstdlib>
+
 #include <algorithm>
 
 #include "core/metal/command_stream.h"
@@ -159,7 +162,37 @@ void Surface::resolveForRead(CommandStream& stream) {
     [[stream.commandBuffer() renderCommandEncoderWithDescriptor:pass] endEncoding];
 }
 
+namespace {
+
+// WINEMETALGL_DUMP_FRAMES=<dir> writes every swapped back buffer to
+// <dir>/frame-<n>.ppm (debugging aid; GL row 0 is the bottom of the image).
+void dumpFrame(CommandStream& stream, id<MTLTexture> color, int width, int height) {
+    static const char* dir = std::getenv("WINEMETALGL_DUMP_FRAMES");
+    if (!dir || !color || color.sampleCount > 1) return;
+    static int frame = 0;
+    const NSUInteger rowBytes = static_cast<NSUInteger>(width) * 4;
+    id<MTLBuffer> staging = [Device::get().mtl() newBufferWithLength:rowBytes * static_cast<NSUInteger>(height)
+                                                             options:MTLResourceStorageModeShared];
+    [stream.blit() copyFromTexture:color sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0)
+                        sourceSize:MTLSizeMake(width, height, 1) toBuffer:staging destinationOffset:0
+            destinationBytesPerRow:rowBytes destinationBytesPerImage:rowBytes * static_cast<NSUInteger>(height)];
+    stream.finish();
+    char path[1024];
+    std::snprintf(path, sizeof(path), "%s/frame-%04d.ppm", dir, frame++);
+    if (FILE* f = std::fopen(path, "wb")) {
+        std::fprintf(f, "P6\n%d %d\n255\n", width, height);
+        const uint8_t* p = static_cast<const uint8_t*>(staging.contents);
+        for (int y = height - 1; y >= 0; --y)
+            for (int x = 0; x < width; ++x) std::fwrite(p + (static_cast<size_t>(y) * width + x) * 4, 1, 3, f);
+        std::fclose(f);
+    }
+}
+
+}  // namespace
+
 bool Surface::swap(CommandStream& stream) {
+    resolveForRead(stream);
+    dumpFrame(stream, resolvedColor(), width_, height_);
     if (!layer_) {
         stream.flush();
         return true;
