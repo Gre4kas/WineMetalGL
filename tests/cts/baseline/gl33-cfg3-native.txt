@@ -1,5 +1,6 @@
 # mustpass gl33-main.txt config 3: --deqp-screen-rotation=unspecified --deqp-surface-width=64 --deqp-surface-height=-1 --deqp-base-seed=3 --deqp-gl-config-name=rgba8888d24s8 --deqp-surface-type=fbo --deqp-watchdog=disable
-# commit e1c0681-dirty, path winemetalgl-native, 9886 cases, 323 s
+# commit efa7879, path winemetalgl-native, 9886 cases, 283 s
+# cts dEQP Core 1942832354c96f0de379f491519734256fbd4f9d
 # totals NotSupported=620 Pass=9266
 KHR-GL33.CommonBugs.CommonBug_GetProgramivActiveUniformBlockMaxNameLength Pass
 KHR-GL33.CommonBugs.CommonBug_InputVariablesCannotBeModified Pass

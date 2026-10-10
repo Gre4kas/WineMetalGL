@@ -122,10 +122,15 @@ tests/cts/baseline/gl33-cfg1-native.txt
 tests/cts/baseline/gl33-cfg1-oldcore.txt
 tests/cts/baseline/gl33-cfg1-wine.txt
 tests/cts/baseline/gl33-cfg2-native.txt
+tests/cts/baseline/gl33-cfg2-wine.txt
 tests/cts/baseline/gl33-cfg3-native.txt
+tests/cts/baseline/gl33-cfg3-wine.txt
 tests/cts/baseline/gl33-cfg4-native.txt
+tests/cts/baseline/gl33-cfg4-wine.txt
 tests/cts/baseline/gl33-cfg5-native.txt
+tests/cts/baseline/gl33-cfg5-wine.txt
 tests/cts/baseline/gl33-cfg6-native.txt
+tests/cts/baseline/gl33-cfg6-wine.txt
 tests/cts/native/build.sh
 tests/cts/native/README.md
 tests/cts/native/tcuWmglPlatform.cpp

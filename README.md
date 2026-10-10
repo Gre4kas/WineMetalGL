@@ -18,7 +18,7 @@ it through the small driver ABI in `include/winemetalgl/driver.h`.
 <!-- BEGIN GENERATED: status (scripts/docs/generate.py) -->
 ## Status
 
-`KHR-GL33` (9,886 cases), under Wine (`glcts.exe` through Wine's `opengl32`) in configuration 1 and natively (the core's driver ABI) in configurations 1, 2, 3, 4, 5, 6, at commit 40e1973-dirty, e1c0681-dirty, f2f0044-dirty: 0 cases that neither pass nor are NotSupported in the worst run; NotSupported only for unadvertised extensions, newer GL versions and cases the test marks invalid. Per-run numbers: [`docs/conformance.md`](docs/conformance.md).
+`KHR-GL33` (9,886 cases), under Wine (`glcts.exe` through Wine's `opengl32`) in configurations 1, 2, 3, 4, 5, 6 and natively (the core's driver ABI) in configurations 1, 2, 3, 4, 5, 6, at commit efa7879: 0 cases that neither pass nor are NotSupported in the worst run; NotSupported only for unadvertised extensions, newer GL versions and cases the test marks invalid. Per-run numbers: [`docs/conformance.md`](docs/conformance.md).
 
 Game corpus: 8 of 8 entries match their reference frames ([`docs/games.md`](docs/games.md)).
 Frame-time budgets met by 8 of 8 entries.

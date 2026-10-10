@@ -15,7 +15,7 @@ if missing:
     raise SystemExit('manifest missing: ' + ', '.join(missing))
 PY
 python3 -m json.tool docs/api-coverage.json >/dev/null
-python3 -I scripts/docs/generate.py --check
+python3 -I scripts/docs/generate.py --check --check-provenance
 shasum -a 256 -c SHA256SUMS >/dev/null
 if grep -i -n 'VKMT' scripts/build.sh scripts/stage-host-libs.sh scripts/stage-release.sh scripts/stage-wine.sh README.md CMakeLists.txt || grep -R -i -n 'VKMT' tests; then
     printf '%s\n' 'standalone source contains VKMT-specific naming' >&2
