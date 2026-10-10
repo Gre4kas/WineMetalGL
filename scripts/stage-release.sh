@@ -64,6 +64,7 @@ cp "$project_root/docs/release.md" "$output/docs/release.md"
 # The evidence the generated documents were built from.
 cp "$project_root"/tests/cts/baseline/*.txt "$output/evidence/cts/"
 cp "$project_root/tests/cts/notsupported.json" "$output/evidence/cts/notsupported.json"
+cp "$project_root/tests/cts/known-failures.json" "$output/evidence/cts/known-failures.json"
 cp "$project_root/tests/games/corpus.json" "$project_root/tests/games/results.json" "$output/evidence/games/"
 if test -f "$project_root/tests/games/perf.json"; then cp "$project_root/tests/games/perf.json" "$output/evidence/games/"; fi
 

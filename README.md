@@ -31,7 +31,7 @@ it through the small driver ABI in `include/winemetalgl/driver.h`.
 | 3.0 | GLSL 1.30, framebuffer objects, vertex array objects, transform feedback, integer textures | Not measured | No committed `KHR-GL30` baseline |
 | 3.1 | Instancing, texture buffers, uniform buffers, primitive restart | Not measured | No committed `KHR-GL31` baseline |
 | 3.2 | Profiles, geometry shaders, sync objects, multisample textures, base vertex | Not measured | No committed `KHR-GL32` baseline |
-| 3.3 | GLSL 3.30, sampler objects, timer queries, instanced arrays, dual-source blending | 100% | `KHR-GL33`: 9,266 of 9,266 applicable cases (9,886 cases) in each of 12 runs |
+| 3.3 | GLSL 3.30, sampler objects, timer queries, instanced arrays, dual-source blending | 100% | `KHR-GL33`: 9,266 of 9,266 applicable cases (9,886 cases) in each of 8 runs |
 | 4.0 | Tessellation, GLSL 4.00, double precision, indirect draws, per-sample shading | Not supported | Contexts stop at 3.3. Of the 13 extensions 4.0 promoted, advertised: `GL_ARB_draw_buffers_blend` |
 | 4.1 | Separate shader objects, program binaries, viewport arrays, 64-bit attributes | Not supported | Contexts stop at 3.3. Of the 6 extensions 4.1 promoted, advertised: `GL_ARB_ES2_compatibility`, `GL_ARB_get_program_binary`, `GL_ARB_separate_shader_objects` |
 | 4.2 | Image load/store, atomic counters, immutable texture storage | Not supported | Contexts stop at 3.3. Of the 11 extensions 4.2 promoted, advertised: `GL_ARB_base_instance`, `GL_ARB_compressed_texture_pixel_storage`, `GL_ARB_internalformat_query`, `GL_ARB_map_buffer_alignment`, `GL_ARB_texture_storage` |
@@ -40,7 +40,7 @@ it through the small driver ABI in `include/winemetalgl/driver.h`.
 | 4.5 | Direct state access, clip control, robustness, cull distances | Not supported | Contexts stop at 3.3. Of the 11 extensions 4.5 promoted, advertised: `GL_ARB_clip_control`, `GL_KHR_robustness` |
 | 4.6 | SPIR-V shaders, anisotropic filtering, indirect draw counts | Not supported | Contexts stop at 3.3. Of the 11 extensions 4.6 promoted, advertised: `GL_ARB_texture_filter_anisotropic` |
 
-Percentages are passing cases over applicable cases (those that are not NotSupported) in the worst run. Each mustpass list runs in every `mustpass.xml` configuration, under Wine (`glcts.exe` through Wine's `opengl32`) and natively (the core's driver ABI), at commit efa7879. NotSupported cases are unadvertised extensions, newer GL versions and cases the test marks invalid; [`docs/conformance.md`](docs/conformance.md) lists each with its reason, and the per-run numbers.
+Percentages are passing cases over applicable cases (those that are not NotSupported) in the worst run. Each mustpass list runs in configurations 1 to 4 of `mustpass.xml` (5 and 6 repeat the command lines of 1 and 2; their only difference, `useForFirstEGLConfig`, applies to EGL), under Wine (`glcts.exe` through Wine's `opengl32`) and natively (the core's driver ABI), at commit efa7879. NotSupported cases are unadvertised extensions, newer GL versions and cases the test marks invalid; [`docs/conformance.md`](docs/conformance.md) lists each with its reason, and the per-run numbers.
 
 Game corpus: 8 of 8 entries match their reference frames ([`docs/games.md`](docs/games.md)).
 Frame-time budgets met by 8 of 8 entries.
