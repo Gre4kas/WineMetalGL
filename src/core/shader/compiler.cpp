@@ -84,13 +84,13 @@ bool parseForCodegen(Stage stage, const std::string& original, ParsedShader& out
         log += upgraded.log;
         return false;
     }
-    out.source = upgraded.source;
+    out.source = escapeVulkanKeywords(upgraded.source);
     out.shader = std::make_unique<glslang::TShader>(lang);
     const char* text = out.source.c_str();
     out.shader->setStrings(&text, 1);
     configure(*out.shader, lang);
     if (!out.shader->parse(GetDefaultResources(), 140, ENoProfile, false, false, kMessages)) {
-        log += cleanLog(out.shader->getInfoLog(), out.shader->getInfoDebugLog());
+        log += unescapeName(cleanLog(out.shader->getInfoLog(), out.shader->getInfoDebugLog()));
         return false;
     }
     return true;
@@ -235,7 +235,7 @@ void collectBoolMembers(const glslang::TType& type, const std::string& prefix, s
     if (!type.isStruct()) return;
     for (const glslang::TTypeLoc& member : *type.getStruct()) {
         const glslang::TType& m = *member.type;
-        const std::string name = prefix + m.getFieldName().c_str();
+        const std::string name = prefix + unescapeName(m.getFieldName().c_str());
         if (m.isStruct()) collectBoolMembers(m, name + ".", out);
         else if (m.getBasicType() == glslang::EbtBool) out[name] = boolType(m);
     }
@@ -251,7 +251,7 @@ void expandMember(const spirv_cross::Compiler& compiler, const spirv_cross::SPIR
                   const std::string& prefix, uint32_t baseOffset, int blockIndex, std::vector<UniformInfo>& out) {
     const uint32_t typeId = parent.member_types[index];
     const spirv_cross::SPIRType& type = compiler.get_type(typeId);
-    std::string name = prefix + compiler.get_member_name(parent.self, index);
+    std::string name = prefix + unescapeName(compiler.get_member_name(parent.self, index));
     const uint32_t offset = baseOffset + compiler.type_struct_member_offset(parent, index);
     const bool isArray = !type.array.empty();
     const uint32_t arraySize = isArray ? type.array.back() : 1;
@@ -387,7 +387,7 @@ LinkResult link(const LinkInput& input) {
     glslang::TProgram program;
     for (auto& p : parsed) program.addShader(p.shader.get());
     if (!program.link(kMessages)) {
-        result.log += cleanLog(program.getInfoLog(), program.getInfoDebugLog());
+        result.log += unescapeName(cleanLog(program.getInfoLog(), program.getInfoDebugLog()));
         return result;
     }
     // Reflect before mapIO: afterwards every input/output has a location and
@@ -401,7 +401,7 @@ LinkResult link(const LinkInput& input) {
     for (int i = 0; i < program.getNumUniformBlocks(); ++i) {
         const auto& block = program.getUniformBlock(i);
         if (block.name == kDefaultBlockName) defaultBlockReflectionIndex = i;
-        else liveBlocks.insert(topLevelName(block.name));
+        else liveBlocks.insert(unescapeName(topLevelName(block.name)));
     }
     // SPIR-V stores bools in blocks as uint; the AST keeps the GL types.
     std::map<std::string, GLenum> boolTypes;
@@ -440,7 +440,7 @@ LinkResult link(const LinkInput& input) {
                 if (q.storage == glslang::EvqUniform) {
                     if (type.getBasicType() == glslang::EbtBlock) {
                         const bool anonymous = glslang::IsAnonymous(symbol->getName());
-                        const std::string blockName = type.getTypeName().c_str();
+                        const std::string blockName = unescapeName(type.getTypeName().c_str());
                         collectBoolMembers(type, anonymous ? "" : blockName + ".", boolTypes);
                         if (blockName != kDefaultBlockName) {
                             auto [it, inserted] = blockAnonymous.emplace(blockName, anonymous);
@@ -449,15 +449,15 @@ LinkResult link(const LinkInput& input) {
                                                  "' has an instance name in one stage but not in another\n";
                             if (anonymous)
                                 for (const glslang::TTypeLoc& member : *type.getStruct())
-                                    claimGlobal(member.type->getFieldName().c_str(), blockName);
+                                    claimGlobal(unescapeName(member.type->getFieldName().c_str()), blockName);
                         } else {
                             // Loose uniforms gathered into the default block.
                             for (const glslang::TTypeLoc& member : *type.getStruct())
-                                claimGlobal(member.type->getFieldName().c_str(), "");
+                                claimGlobal(unescapeName(member.type->getFieldName().c_str()), "");
                         }
                     } else {
-                        collectBoolMembers(type, symbol->getName().c_str(), boolTypes, true);
-                        claimGlobal(symbol->getName().c_str(), "");
+                        collectBoolMembers(type, unescapeName(symbol->getName().c_str()), boolTypes, true);
+                        claimGlobal(unescapeName(symbol->getName().c_str()), "");
                     }
                 }
                 if (type.getBasicType() == glslang::EbtBlock && q.storage == glslang::EvqUniform &&
@@ -474,8 +474,8 @@ LinkResult link(const LinkInput& input) {
     std::set<std::string> liveSamplers;
     for (int i = 0; i < program.getNumUniformVariables(); ++i) {
         const auto& u = program.getUniform(i);
-        if (u.index == defaultBlockReflectionIndex && defaultBlockReflectionIndex >= 0) liveDefault.insert(topLevelName(u.name));
-        else if (u.index < 0) liveSamplers.insert(topLevelName(u.name));
+        if (u.index == defaultBlockReflectionIndex && defaultBlockReflectionIndex >= 0) liveDefault.insert(unescapeName(topLevelName(u.name)));
+        else if (u.index < 0) liveSamplers.insert(unescapeName(topLevelName(u.name)));
     }
 
     // Collect attributes/outputs from this pre-mapIO reflection (see below),
@@ -484,14 +484,14 @@ LinkResult link(const LinkInput& input) {
     std::vector<PipeVar> pipeInputs, pipeOutputs;
     for (int i = 0; i < program.getNumPipeInputs(); ++i) {
         const auto& v = program.getPipeInput(i);
-        pipeInputs.push_back({v.name, static_cast<GLenum>(v.glDefineType), v.size, v.layoutLocation(), static_cast<uint32_t>(v.stages)});
+        pipeInputs.push_back({unescapeName(v.name), static_cast<GLenum>(v.glDefineType), v.size, v.layoutLocation(), static_cast<uint32_t>(v.stages)});
     }
     for (int i = 0; i < program.getNumPipeOutputs(); ++i) {
         const auto& v = program.getPipeOutput(i);
-        pipeOutputs.push_back({v.name, static_cast<GLenum>(v.glDefineType), v.size, v.layoutLocation(), static_cast<uint32_t>(v.stages)});
+        pipeOutputs.push_back({unescapeName(v.name), static_cast<GLenum>(v.glDefineType), v.size, v.layoutLocation(), static_cast<uint32_t>(v.stages)});
     }
     if (!program.mapIO()) {
-        result.log += cleanLog(program.getInfoLog(), program.getInfoDebugLog());
+        result.log += unescapeName(cleanLog(program.getInfoLog(), program.getInfoDebugLog()));
         return result;
     }
 
@@ -517,7 +517,7 @@ LinkResult link(const LinkInput& input) {
         const spirv_cross::ShaderResources resources = compiler.get_shader_resources();
         for (const auto& ubo : resources.uniform_buffers) {
             const spirv_cross::SPIRType& type = compiler.get_type(ubo.base_type_id);
-            const std::string blockName = compiler.get_name(ubo.base_type_id);
+            const std::string blockName = unescapeName(compiler.get_name(ubo.base_type_id));
             const uint32_t binding = compiler.get_decoration(ubo.id, spv::DecorationBinding);
             if (binding == kDefaultBlockBinding || blockName == kDefaultBlockName) {
                 result.defaultBlockSize = std::max<uint32_t>(result.defaultBlockSize,
@@ -575,7 +575,7 @@ LinkResult link(const LinkInput& input) {
         for (const auto& image : resources.sampled_images) {
             const spirv_cross::SPIRType& type = compiler.get_type(image.type_id);
             const spirv_cross::SPIRType& base = compiler.get_type(image.base_type_id);
-            const std::string name = compiler.get_name(image.id);
+            const std::string name = unescapeName(compiler.get_name(image.id));
             if (!liveSamplers.count(name)) continue;
             const spirv_cross::SPIRType& sampled = compiler.get_type(base.image.type);
             const GLenum glType = samplerTypeWithComponent(glTypeOf(base), sampled.basetype);
@@ -728,7 +728,7 @@ LinkResult link(const LinkInput& input) {
             uint32_t uniqueBinding = 0;
             for (const auto& ubo : resources.uniform_buffers) {
                 const uint32_t binding = msl.get_decoration(ubo.id, spv::DecorationBinding);
-                const std::string blockName = msl.get_name(ubo.base_type_id);
+                const std::string blockName = unescapeName(msl.get_name(ubo.base_type_id));
                 const bool defaultBlock = binding == kDefaultBlockBinding || blockName == kDefaultBlockName;
                 if (!defaultBlock) msl.set_decoration(ubo.id, spv::DecorationBinding, uniqueBinding++);
                 spirv_cross::MSLResourceBinding b;
@@ -758,7 +758,7 @@ LinkResult link(const LinkInput& input) {
             // Samplers.
             uint32_t nextTexture = 0;
             for (const auto& image : resources.sampled_images) {
-                const std::string name = msl.get_name(image.id);
+                const std::string name = unescapeName(msl.get_name(image.id));
                 const spirv_cross::SPIRType& type = msl.get_type(image.type_id);
                 const uint32_t count = type.array.empty() ? 1 : std::max(1u, type.array.back());
                 msl.set_decoration(image.id, spv::DecorationBinding, uniqueBinding++);
@@ -784,7 +784,7 @@ LinkResult link(const LinkInput& input) {
             // Vertex inputs: GL locations.
             if (s == static_cast<int>(Stage::Vertex)) {
                 for (const auto& in : resources.stage_inputs) {
-                    const std::string name = msl.get_name(in.id);
+                    const std::string name = unescapeName(msl.get_name(in.id));
                     auto it = std::find_if(result.attribs.begin(), result.attribs.end(),
                                            [&](const AttribInfo& a) { return a.name == name; });
                     const spirv_cross::SPIRType& type = msl.get_type(in.type_id);
@@ -798,7 +798,7 @@ LinkResult link(const LinkInput& input) {
             }
             if (s == static_cast<int>(Stage::Fragment)) {
                 for (const auto& out : resources.stage_outputs) {
-                    const std::string name = msl.get_name(out.id);
+                    const std::string name = unescapeName(msl.get_name(out.id));
                     auto it = std::find_if(result.fragOutputs.begin(), result.fragOutputs.end(),
                                            [&](const FragOutputInfo& f) { return f.name == name; });
                     if (it == result.fragOutputs.end()) continue;

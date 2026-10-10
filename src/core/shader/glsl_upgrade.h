@@ -31,4 +31,12 @@ struct UpgradeResult {
 
 UpgradeResult upgradeLegacyGlsl(Stage stage, const std::string& source);
 
+// Codegen parses with Vulkan GLSL rules, which reserve type names that are
+// ordinary identifiers in desktop GLSL (sampler, texture2D, subpassInput...).
+// escapeVulkanKeywords renames such identifiers to kEscapePrefix + name;
+// unescapeName undoes it for every name the program interface reports.
+inline constexpr const char* kEscapePrefix = "wmglK_";
+std::string escapeVulkanKeywords(const std::string& source);
+std::string unescapeName(std::string name);
+
 }  // namespace wmgl::shader

@@ -75,6 +75,8 @@ std::unordered_map<GLenum, FormatInfo> buildTable() {
     add(Builder(GL_RGB4, GL_RGB, S::RGBA8Unorm, CT::UnsignedNormalized).rgba(4, 4, 4, 0).transfer(GL_RGB, UB));
     add(Builder(GL_RGB5, GL_RGB, S::RGBA8Unorm, CT::UnsignedNormalized).rgba(5, 5, 5, 0).transfer(GL_RGB, UB));
     add(Builder(GL_RGB8, GL_RGB, S::RGBA8Unorm, CT::UnsignedNormalized).rgba(8, 8, 8, 0).transfer(GL_RGB, UB));
+    // GL 4.1 / ARB_ES2_compatibility, accepted in every version as other drivers do.
+    add(Builder(GL_RGB565, GL_RGB, S::RGBA8Unorm, CT::UnsignedNormalized).rgba(5, 6, 5, 0).transfer(GL_RGB, GL_UNSIGNED_SHORT_5_6_5).rb());
     add(Builder(GL_RGB8_SNORM, GL_RGB, S::RGBA8Snorm, CT::SignedNormalized).rgba(8, 8, 8, 0).transfer(GL_RGB, B));
     add(Builder(GL_RGB10, GL_RGB, S::RGBA16Unorm, CT::UnsignedNormalized).rgba(10, 10, 10, 0).transfer(GL_RGB, US));
     add(Builder(GL_RGB12, GL_RGB, S::RGBA16Unorm, CT::UnsignedNormalized).rgba(12, 12, 12, 0).transfer(GL_RGB, US));

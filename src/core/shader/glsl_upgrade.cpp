@@ -333,4 +333,67 @@ UpgradeResult upgradeLegacyGlsl(Stage stage, const std::string& source) {
     return result;
 }
 
+namespace {
+
+const std::set<std::string>& vulkanOnlyKeywords() {
+    static const std::set<std::string> words = [] {
+        std::set<std::string> w = {"sampler", "samplerShadow", "subpassInput", "isubpassInput", "usubpassInput",
+                                   "subpassInputMS", "isubpassInputMS", "usubpassInputMS"};
+        for (const char* prefix : {"", "i", "u"})
+            for (const char* dim : {"1D", "1DArray", "2D", "2DArray", "2DRect", "3D", "Cube", "CubeArray", "Buffer",
+                                    "2DMS", "2DMSArray"})
+                w.insert(std::string(prefix) + "texture" + dim);
+        return w;
+    }();
+    return words;
+}
+
+}  // namespace
+
+std::string escapeVulkanKeywords(const std::string& source) {
+    const std::set<std::string>& words = vulkanOnlyKeywords();
+    std::string out;
+    out.reserve(source.size());
+    const size_t n = source.size();
+    size_t i = 0;
+    while (i < n) {
+        if (source.compare(i, 2, "//") == 0) {
+            const size_t end = source.find('\n', i);
+            const size_t stop = end == std::string::npos ? n : end;
+            out.append(source, i, stop - i);
+            i = stop;
+            continue;
+        }
+        if (source.compare(i, 2, "/*") == 0) {
+            const size_t end = source.find("*/", i + 2);
+            const size_t stop = end == std::string::npos ? n : end + 2;
+            out.append(source, i, stop - i);
+            i = stop;
+            continue;
+        }
+        if (isIdentStart(source[i])) {
+            size_t end = i;
+            while (end < n && isIdent(source[end])) ++end;
+            const std::string word = source.substr(i, end - i);
+            if (words.count(word)) out += kEscapePrefix;
+            out += word;
+            i = end;
+            continue;
+        }
+        if (std::isdigit(static_cast<unsigned char>(source[i]))) {
+            // Numbers can contain identifier characters (1e5, 0x1Fu); copy them whole.
+            while (i < n && isIdent(source[i])) out += source[i++];
+            continue;
+        }
+        out += source[i++];
+    }
+    return out;
+}
+
+std::string unescapeName(std::string name) {
+    const std::string prefix = kEscapePrefix;
+    for (size_t at = name.find(prefix); at != std::string::npos; at = name.find(prefix, at)) name.erase(at, prefix.size());
+    return name;
+}
+
 }  // namespace wmgl::shader
