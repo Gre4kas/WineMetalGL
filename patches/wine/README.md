@@ -1,8 +1,9 @@
 # Wine integration
 
-The patches in `wine-11.17/` integrate WineMetalGL with Wine 11.17 (the
-reference build is WineForge 11.17) for x86_64 Unix Wine with x86_64 and i386
-guests in one WoW64 prefix. Other Wine revisions may need a small rebase when
+The patches in `wine-11.17/` integrate WineMetalGL with Wine 11.17 for x86_64
+Unix Wine with x86_64 and i386 guests in one WoW64 prefix. They are made
+against WineForge (https://github.com/Alien4042x/WineForge), Wine 11.17,
+commit `a05564c`, and apply with `git apply` from the top of that tree. Other Wine revisions may need a small rebase when
 Wine's OpenGL driver interface changes.
 
 - `0001-opengl-wgl-fixes.patch`: two Wine OpenGL fixes the core relies on.

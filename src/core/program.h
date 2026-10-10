@@ -6,6 +6,8 @@
 
 #include <atomic>
 #include <mutex>
+#include <string>
+#include <unordered_map>
 
 #include "core/shader/compiler.h"
 
@@ -34,9 +36,12 @@ struct LinkedProgram {
     id<MTLFunction> function(shader::Stage stage);
     // Vertex function returning void, for pipelines with rasterization disabled.
     id<MTLFunction> vertexNoRaster();
-    // Fragment function writing GL_SAMPLE_MASK / GL_SAMPLE_COVERAGE's mask
-    // (shader::fragmentWithSampleMask); nil if it cannot.
-    id<MTLFunction> fragmentSampleMask();
+    // Fragment function variants: writing GL_SAMPLE_MASK / GL_SAMPLE_COVERAGE's
+    // mask (shader::fragmentWithSampleMask), and applying logical operation
+    // `logicOp` - 1 (0: none; shader::fragmentWithLogicOp) to attachments of
+    // `colorFormats` (MTLPixelFormat). Nil if the stage cannot have it.
+    id<MTLFunction> fragmentVariant(bool sampleMask, unsigned logicOp, const uint16_t colorFormats[8]);
+    id<MTLFunction> fragmentSampleMask() { return fragmentVariant(true, 0, nullptr); }
     bool functionFailed(shader::Stage stage) const { return failed_[static_cast<int>(stage)]; }
     // Geometry shader emulation (link.geometry): the drawing vertex function
     // and the geometry kernel.
@@ -66,8 +71,7 @@ private:
     bool failed_[shader::kStageCount] = {};
     id<MTLFunction> vertexNoRaster_ = nil;
     bool vertexNoRasterFailed_ = false;
-    id<MTLFunction> fragmentSampleMask_ = nil;
-    bool fragmentSampleMaskFailed_ = false;
+    std::unordered_map<std::string, id<MTLFunction>> fragmentVariants_;  // nil entries: failed
     id<MTLFunction> passthrough_ = nil;
     id<MTLComputePipelineState> kernel_ = nil;
     bool passthroughFailed_ = false, kernelFailed_ = false;
@@ -76,6 +80,9 @@ private:
 };
 
 uint64_t nextLinkedProgramId();
+// Whether GL_COLOR_LOGIC_OP applies to an attachment of this format
+// (unsigned normalized and integer formats).
+bool logicOpApplies(MTLPixelFormat format);
 
 class ProgramPipeline;
 // The executable of a program pipeline's current stage programs (rebuilt

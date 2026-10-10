@@ -6,6 +6,7 @@
 #include <string>
 
 #include "core/context.h"
+#include "core/limits.h"
 #include "core/program.h"
 #include "core/stats.h"
 #include "core/util/log.h"
@@ -642,15 +643,21 @@ bool deserialize(const void* data, size_t size, shader::LinkInput& in) {
         in.shaders.push_back({static_cast<shader::Stage>(stage), r.str()});
     }
     const uint32_t attribs = r.u32();
+    // Bindings are range-checked as glBindAttribLocation/glBindFragDataLocationIndexed
+    // check them: a damaged binary must not index past the linker's tables.
     for (uint32_t i = 0; r.ok && i < attribs; ++i) {
         std::string name = r.str();
-        in.attribBindings[name] = r.u32();
+        const uint32_t location = r.u32();
+        if (location >= static_cast<uint32_t>(limits::kMaxVertexAttribs)) return false;
+        in.attribBindings[name] = location;
     }
     const uint32_t outputs = r.u32();
     for (uint32_t i = 0; r.ok && i < outputs; ++i) {
         std::string name = r.str();
         const uint32_t location = r.u32();
-        in.fragDataBindings[name] = {location, r.u32()};
+        const uint32_t index = r.u32();
+        if (location >= static_cast<uint32_t>(limits::kMaxDrawBuffers) || index > 1) return false;
+        in.fragDataBindings[name] = {location, index};
     }
     const uint32_t varyings = r.u32();
     for (uint32_t i = 0; r.ok && i < varyings; ++i) in.transformFeedbackVaryings.push_back(r.str());

@@ -13,6 +13,11 @@ class Context;
 // covers the full mip chain derived from level 0 so later levels fit.
 // Returns false if the texture has no base image.
 bool ensureTextureStorage(Context& ctx, Texture& tex);
+// The size of `level` in tex.mtl.
+void storageLevelSize(const Texture& tex, int level, GLsizei& w, GLsizei& h, GLsizei& d);
+// True if image (face, level) has storage in tex.mtl that matches its size
+// (a level defined off the mip chain has none).
+bool imageHasStorage(Context& ctx, Texture& tex, int face, int level);
 
 // GL texture completeness (GL 3.3 section 3.8.14) for sampling with `params`.
 bool textureComplete(Context& ctx, Texture& tex, const SamplerParams* params);

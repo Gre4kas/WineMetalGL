@@ -165,6 +165,82 @@ bool patchPointCoord(std::string& msl) {
 
 }  // namespace
 
+std::string fragmentWithLogicOp(const std::string& msl, unsigned op, const LogicOpTarget targets[8]) {
+    const std::string signature = "fragment main0_out main0(", member = "struct main0_out\n{\n";
+    const size_t structAt = msl.find(member);
+    const size_t fnAt = msl.find(signature);
+    if (structAt == std::string::npos || fnAt == std::string::npos || structAt > fnAt) return std::string();
+    // The colour outputs: "    <type> <name> [[color(N)]];" (dual-source outputs carry ", index(1)").
+    struct Output { std::string type, name; int location; };
+    std::vector<Output> outputs;
+    {
+        const size_t end = msl.find("};", structAt);
+        std::istringstream lines(msl.substr(structAt, end - structAt));
+        std::string line;
+        while (std::getline(lines, line)) {
+            const size_t attr = line.find(" [[color(");
+            if (attr == std::string::npos || line.find("index(") != std::string::npos) continue;
+            std::istringstream words(line.substr(0, attr));
+            Output o;
+            words >> o.type >> o.name;
+            o.location = std::atoi(line.c_str() + attr + 9);
+            if (!o.name.empty() && o.location >= 0 && o.location < 8) outputs.push_back(o);
+        }
+    }
+    static const char* const kOps[16] = {
+        "uint4(0u)", "s & d", "s & ~d", "s", "~s & d", "d", "s ^ d", "s | d",
+        "~(s | d)", "~(s ^ d)", "~d", "s | ~d", "~s", "~s | d", "~(s & d)", "uint4(0xffffffffu)"};
+    std::string helpers = "static inline uint4 wmgl_logic_op(uint4 s, uint4 d) { return " + std::string(kOps[op & 15]) +
+                          "; }\n"
+                          "static inline float4 wmgl_logic_unorm(float4 s, float4 d, float4 m) {\n"
+                          "    uint4 r = wmgl_logic_op(uint4(rint(saturate(s) * m)), uint4(rint(saturate(d) * m)));\n"
+                          "    return float4(r & uint4(m)) / max(m, float4(1.0));\n}\n"
+                          "static inline uint4 wmgl_logic_uint(uint4 s, uint4 d, uint4 mask) { return wmgl_logic_op(s, d) & mask; }\n"
+                          "static inline int4 wmgl_logic_int(int4 s, int4 d, uint4 shift) {\n"
+                          "    return as_type<int4>(wmgl_logic_op(as_type<uint4>(s), as_type<uint4>(d)) << shift) >> int4(shift);\n}\n\n";
+    std::string params, assign;
+    for (const Output& o : outputs) {
+        const LogicOpTarget& t = targets[o.location];
+        if (!t.kind) continue;
+        const char base = o.type.rfind("float", 0) == 0 ? 'n' : o.type.rfind("uint", 0) == 0 ? 'u' : o.type.rfind("int", 0) == 0 ? 'i' : 0;
+        if (base != t.kind) continue;  // an output of the wrong kind for its attachment is undefined in GL
+        const int n = std::isdigit(static_cast<unsigned char>(o.type.back())) ? o.type.back() - '0' : 1;
+        const std::string vec = base == 'n' ? "float4" : base == 'u' ? "uint4" : "int4";
+        const std::string scalar = base == 'n' ? "0.0" : base == 'u' ? "0u" : "0";
+        const std::string dst = "wmgl_dst" + std::to_string(o.location);
+        params += vec + " " + dst + " [[color(" + std::to_string(o.location) + ")]], ";
+        std::string source = "out." + o.name;
+        if (n < 4) {
+            source = vec + "(" + source;
+            for (int c = n; c < 4; ++c) source += ", " + scalar;
+            source += ")";
+        }
+        std::string extra;
+        for (int c = 0; c < 4; ++c) {
+            const unsigned bits = t.bits[c];
+            if (c) extra += ", ";
+            if (base == 'n') extra += std::to_string(bits ? (1u << bits) - 1 : 0) + ".0";
+            else if (base == 'u') extra += std::to_string(bits >= 32 ? 0xffffffffu : (1u << bits) - 1) + "u";
+            else extra += std::to_string(bits >= 32 ? 0u : 32u - bits) + "u";
+        }
+        const std::string fn = base == 'n' ? "wmgl_logic_unorm" : base == 'u' ? "wmgl_logic_uint" : "wmgl_logic_int";
+        std::string value = fn + "(" + source + ", " + dst + ", " + vec + "(" + extra + "))";
+        static const char* const kSwizzle[5] = {"", ".x", ".xy", ".xyz", ""};
+        if (n < 4) value = "(" + value + ")" + kSwizzle[n];
+        assign += "out." + o.name + " = " + value + "; ";
+    }
+    if (assign.empty()) return msl;
+    std::string out = msl;
+    out.insert(fnAt, helpers);
+    const size_t fn = out.find(signature);
+    const size_t open = fn + signature.size() - 1;
+    if (out[open + 1] == ')') params.resize(params.size() - 2);
+    out.insert(open + 1, params);
+    for (size_t at = out.find("return out;", fn); at != std::string::npos; at = out.find("return out;", at + assign.size() + 11))
+        out.insert(at, assign);
+    return out;
+}
+
 std::string fragmentWithSampleMask(const std::string& msl) {
     const std::string signature = "fragment main0_out main0(", member = "struct main0_out\n{\n";
     const size_t structAt = msl.find(member);

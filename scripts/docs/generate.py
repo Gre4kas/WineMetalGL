@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generates WineMetalGL's published claims from committed evidence.
 
-    scripts/docs/generate.py [--check]
+    scripts/docs/generate.py [--check] [--check-provenance]
 
 Inputs (all tracked):
   tests/cts/baseline/gl33-cfgN-*.txt   KHR-GL33 results (scripts/cts/run.py)
@@ -16,7 +16,8 @@ Outputs:
   docs/conformance.md, docs/games.md, docs/api-coverage.json, and the
   section of README.md between the GENERATED markers.
 
---check exits non-zero if any output differs from what is committed.
+--check exits non-zero if any output differs from what is committed;
+--check-provenance if any evidence was recorded from uncommitted changes.
 """
 
 import argparse
@@ -56,6 +57,8 @@ def load_baselines():
                 meta["command_line"] = line.split(":", 1)[1].strip()
             elif line.startswith("# commit"):
                 meta["commit"] = line.split(",")[0].replace("# commit", "").strip()
+            elif line.startswith("# cts"):
+                meta["cts"] = line.replace("# cts", "").strip()
         out[(meta["config"], meta["runner"])] = (meta, results)
     return out
 
@@ -63,8 +66,14 @@ def load_baselines():
 def totals(results):
     counts = {s: 0 for s in STATUSES}
     for status in results.values():
-        counts["Pass" if status in cts.PASSING else status] = counts.get(status, 0) + 1
+        key = "Pass" if status in cts.PASSING else status
+        counts[key] = counts.get(key, 0) + 1
     return counts
+
+
+def problems(results):
+    """Cases that neither pass nor are NotSupported (Fail, Crash, Timeout, Missing, ...)."""
+    return sum(n for status, n in totals(results).items() if status not in ("Pass", "NotSupported"))
 
 
 def classify_not_supported(baselines):
@@ -194,15 +203,29 @@ def render(baselines):
           "`KHR-GL33` mustpass (`gl33-main.txt`) under each `mustpass.xml` configuration. "
           "`native` runs the core directly through its driver ABI (`tests/cts/native`); `wine` runs "
           "`glcts.exe` in a WoW64 prefix through Wine's `opengl32`.", "",
-          "| Config | Runner | Pass | Fail | NotSupported | InternalError | Crash | Timeout | Cases | Commit | File |",
-          "|---|---|---:|---:|---:|---:|---:|---:|---:|---|---|"]
+          "| Config | Runner | Pass | Fail | NotSupported | InternalError | Crash | Timeout | Missing | Other | Cases | Commit | File |",
+          "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|"]
     for (config, runner) in sorted(baselines):
         meta, results = baselines[(config, runner)]
         t = totals(results)
-        md.append("| %d | %s | %d | %d | %d | %d | %d | %d | %d | %s | `%s` |" % (
+        other = sum(n for status, n in t.items() if status not in STATUSES)
+        md.append("| %d | %s | %d | %d | %d | %d | %d | %d | %d | %d | %d | %s | `%s` |" % (
             config, runner, t["Pass"], t["Fail"], t["NotSupported"], t["InternalError"], t["Crash"], t["Timeout"],
-            len(results), meta.get("commit", "?"), meta["file"]))
-    md += ["", "Command lines: `scripts/cts/run.py --config N` reads them from `mustpass.xml`.", "",
+            t["Missing"], other, len(results), meta.get("commit", "?"), meta["file"]))
+    revisions = sorted({meta.get("cts", "not recorded") for meta, _ in baselines.values()})
+    md += ["", "Command lines: `scripts/cts/run.py --config N` reads them from `mustpass.xml`. CTS build: %s." %
+           ", ".join(revisions), ""]
+    # Configurations whose command line repeats an earlier one (they differ only in
+    # mustpass.xml attributes that apply to EGL).
+    lines_by_config = {}
+    for (config, _), (meta, _) in sorted(baselines.items()):
+        lines_by_config.setdefault(config, meta.get("command_line"))
+    for config, line in sorted(lines_by_config.items()):
+        earlier = [c for c, other in sorted(lines_by_config.items()) if c < config and other == line]
+        if earlier:
+            md.append("Configuration %d runs the same command line as configuration %d (`mustpass.xml` sets "
+                      "`useForFirstEGLConfig`, which only applies to EGL)." % (config, earlier[0]))
+    md += ["",
            "### NotSupported", "",
            "Every NotSupported case matches an entry of `tests/cts/notsupported.json`:", "",
            "| Cases | Kind | Pattern | Reason |", "|---:|---|---|---|"]
@@ -269,23 +292,30 @@ def render(baselines):
                 p["name"], p["tier"], p["status"] + (" (" + "; ".join(p["problems"]) + ")" if p.get("problems") else ""),
                 times, "%.3f" % p["apple"]["avg_ms"] if p.get("apple") else "-",
                 "%.2fx" % p["ratio"] if p.get("ratio") else "-"))
-        untimed = [p["name"] for p in perf.get("entries", []) if p.get("apple_note")]
+        untimed = [p for p in perf.get("entries", []) if p.get("apple_note")]
         if untimed:
-            g += ["", "Not timed under Apple's OpenGL: %s (traces are timed with WineMetalGL's frame statistics, "
-                      "which Apple's OpenGL lacks)." % ", ".join("`%s`" % n for n in untimed)]
+            g += ["", "Without an Apple's OpenGL time: %s." % "; ".join(
+                "`%s` (%s)" % (p["name"], p["apple_note"]) for p in untimed)]
     games_md = "\n".join(g) + "\n"
 
     # ---- README status
     lines = [BEGIN, "## Status", ""]
     if baselines:
         rows = sorted(baselines)
-        worst_fail = max(totals(baselines[k][1])["Fail"] + totals(baselines[k][1])["InternalError"] +
-                         totals(baselines[k][1])["Crash"] + totals(baselines[k][1])["Timeout"] for k in rows)
-        configs = sorted({c for c, _ in rows})
-        lines.append("`KHR-GL33` (9,886 cases) under mustpass configurations %s: %s Fail, InternalError, Crash or "
-                     "Timeout in the worst run; NotSupported only for unadvertised extensions, newer GL versions "
-                     "and cases the test marks invalid. Per-run numbers: [`docs/conformance.md`](docs/conformance.md)."
-                     % (", ".join(str(c) for c in configs), worst_fail))
+        worst = max(problems(baselines[k][1]) for k in rows)
+        cases = max(len(baselines[k][1]) for k in rows)
+        runs = []
+        for runner, label in (("wine", "under Wine (`glcts.exe` through Wine's `opengl32`)"),
+                              ("native", "natively (the core's driver ABI)")):
+            configs = sorted(c for c, r in rows if r == runner)
+            if configs:
+                runs.append("%s in configuration%s %s" % (label, "s" if len(configs) > 1 else "",
+                                                          ", ".join(str(c) for c in configs)))
+        commits = sorted({baselines[k][0].get("commit", "?") for k in rows})
+        lines.append("`KHR-GL33` (%s cases), %s, at commit %s: %d cases that neither pass nor are NotSupported in "
+                     "the worst run; NotSupported only for unadvertised extensions, newer GL versions and cases the "
+                     "test marks invalid. Per-run numbers: [`docs/conformance.md`](docs/conformance.md)."
+                     % ("{:,}".format(cases), " and ".join(runs), ", ".join(commits), worst))
     passed = [e for e in game_entries if game_results.get(e["name"], {}).get("status") == "PASS"]
     lines += ["", "Game corpus: %d of %d entries match their reference frames ([`docs/games.md`](docs/games.md))."
               % (len(passed), len(game_entries))]
@@ -293,7 +323,8 @@ def render(baselines):
         within = [p for p in perf.get("entries", []) if p["status"] == "PASS"]
         lines.append("Frame-time budgets met by %d of %d entries." % (len(within), len(perf.get("entries", []))))
     lines += ["",
-              "GL 3.3 core commands implemented: %d of %d." % (len(core) - len(missing), len(core)), END]
+              "GL 3.3 core commands with an implementation: %d of %d (their behaviour is what the CTS results "
+              "above measure)." % (len(core) - len(missing), len(core)), END]
     status = "\n".join(lines)
     return {"docs/conformance.md": conformance, "docs/api-coverage.json": coverage, "docs/games.md": games_md}, status
 
@@ -301,8 +332,24 @@ def render(baselines):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--check", action="store_true")
+    parser.add_argument("--check-provenance", action="store_true",
+                        help="fail if any evidence file was recorded from a tree with uncommitted changes")
     args = parser.parse_args()
-    outputs, status = render(load_baselines())
+    baselines = load_baselines()
+    if args.check_provenance:
+        # Evidence recorded from a tree with uncommitted changes does not describe a commit.
+        recorded = [(meta["file"], meta.get("commit", "")) for meta, _ in baselines.values()]
+        for name in ("results.json", "perf.json"):
+            path = rel("tests", "games", name)
+            if os.path.exists(path):
+                record = json.load(open(path))
+                recorded.append((os.path.relpath(path, ROOT), record.get("commit", "")))
+                recorded += [("%s: %s" % (os.path.relpath(path, ROOT), e["name"]), e["commit"])
+                             for e in record.get("entries", []) if "commit" in e]
+        dirty = ["%s (%s)" % (f, c) for f, c in recorded if c.endswith("-dirty") or "uncommitted" in c]
+        if dirty:
+            raise SystemExit("evidence recorded from uncommitted trees:\n  " + "\n  ".join(dirty))
+    outputs, status = render(baselines)
     readme = open(rel("README.md")).read()
     if BEGIN not in readme or END not in readme:
         raise SystemExit("README.md has no generated status section")

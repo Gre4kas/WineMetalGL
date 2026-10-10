@@ -40,7 +40,7 @@ jobs:
 
       - name: Verify the core exports only the driver ABI and does not use OpenGL.framework
         run: |
-          ! otool -L build/release/libwinemetalgl.dylib | grep -q OpenGL.framework
+          if otool -L build/release/libwinemetalgl.dylib | grep -q OpenGL.framework; then exit 1; fi
           test -z "$(nm -gU build/release/libwinemetalgl.dylib | awk '{print $3}' | grep -v '^_wmgl_')"
 
       - name: Verify source and artifact gates

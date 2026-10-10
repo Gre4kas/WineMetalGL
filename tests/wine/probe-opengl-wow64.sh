@@ -64,7 +64,7 @@ done
 
 export WINEPREFIX="$PREFIX" WINEARCH=wow64 WINEDEBUG=${WINEDEBUG:--all}
 unset WINEMETALGL
-"${TIMEOUT[@]}" "$WINE" wineboot -u >"$RUN_ROOT/wineboot.log" 2>&1
+${TIMEOUT[@]+"${TIMEOUT[@]}"} "$WINE" wineboot -u >"$RUN_ROOT/wineboot.log" 2>&1
 
 failed=0
 summary=()
@@ -91,7 +91,7 @@ while read -r source defines scope markers; do
             continue
         fi
         marker_file="$exe.marker"
-        "${TIMEOUT[@]}" "$WINE" "$exe" "Z:$marker_file" >"$out" 2>&1
+        ${TIMEOUT[@]+"${TIMEOUT[@]}"} "$WINE" "$exe" "Z:$marker_file" >"$out" 2>&1
         rc=$?
         test -f "$marker_file" && cat "$marker_file" >>"$out"
         missing=()
@@ -109,6 +109,10 @@ while read -r source defines scope markers; do
     done
 done <"$PROJECT_ROOT/tests/wine/fixtures.txt"
 
+if test "${#summary[@]}" -eq 0; then
+    echo 'no fixtures matched' >&2
+    exit 1
+fi
 printf '%s\n' "${summary[@]}"
 if test "$failed" = 0; then
     echo WINEMETALGL_WOW64_FIXTURES_OK

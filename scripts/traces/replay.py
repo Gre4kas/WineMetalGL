@@ -130,7 +130,16 @@ def run_entry(entry, args, env, workdir):
     keep = entry.get("frames")
     if keep:
         images = [images[i] for i in keep if i < len(images)]
+        if not images:
+            return None, elapsed, "none of frames %s was rendered" % keep
     return images, elapsed, ""
+
+
+def git_head():
+    """HEAD's short hash, with "-dirty" when tracked files differ from it."""
+    head = subprocess.run(["git", "-C", ROOT, "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
+    dirty = subprocess.run(["git", "-C", ROOT, "diff", "--quiet", "HEAD"]).returncode != 0
+    return (head or "unknown") + ("-dirty" if dirty else "")
 
 
 def main():
@@ -207,8 +216,7 @@ def main():
     if args.json and not args.update_references:
         record = {
             "path": args.path,
-            "commit": subprocess.run(["git", "-C", ROOT, "rev-parse", "--short", "HEAD"], capture_output=True,
-                                     text=True).stdout.strip(),
+            "commit": git_head(),
             "date": time.strftime("%Y-%m-%d"),
             "threshold": args.threshold,
             "entries": [{"name": entry["name"], "tier": entry.get("tier", ""), "status": status,

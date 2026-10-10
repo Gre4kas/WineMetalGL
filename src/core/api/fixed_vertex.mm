@@ -211,15 +211,19 @@ namespace {
 // missing components default to (0, 0, 0, 1)).
 bool fetch(Context& ctx, const VertexAttrib& a, uint32_t index, ImmediateBatch::Value& out, GLenum& type) {
     const uint8_t* base;
+    const size_t at = static_cast<size_t>(index) * static_cast<size_t>(a.effectiveStride());
     if (a.buffer) {
         if (!a.buffer->mtl) return false;
+        // Elements past the end of the buffer are not transferred.
+        const size_t readable = a.buffer->size > a.offset ? static_cast<size_t>(a.buffer->size - a.offset) : 0;
+        if (at > readable || readable - at < a.elementBytes()) return false;
         if (a.buffer->lastWriteSerial) ctx.stream().waitFor(a.buffer->lastWriteSerial);
         base = a.buffer->contents() + a.offset;
     } else {
         base = reinterpret_cast<const uint8_t*>(a.offset);
     }
     if (!base) return false;
-    const uint8_t* p = base + static_cast<size_t>(index) * static_cast<size_t>(a.effectiveStride());
+    const uint8_t* p = base + at;
     if (a.integer) {
         int32_t v[4] = {0, 0, 0, 1};
         for (int c = 0; c < std::min(a.size, 4); ++c) {

@@ -15,11 +15,16 @@ Local changes to vendored sources (each marked `WineMetalGL:` in the code):
   (`gl_PerVertex`) and redeclared built-in inputs (`gl_ClipDistance`), which
   GL provides implicitly.
 
-The built dylib dynamically links only Apple system frameworks and libraries:
-Metal, OpenGL, Foundation, QuartzCore, AppKit, CoreFoundation, libc++,
-libSystem, and libobjc.
+The built dylib dynamically links only Apple system frameworks and libraries
+(Metal, Foundation, QuartzCore, CoreFoundation, libc++, libSystem and
+libobjc); it never links OpenGL.framework (`scripts/verify-source.sh` and CI
+check this).
 
-Wine integration requires the Wine patch series in `patches/wine/`. The
-prebuilt Wine artifacts are an accepted reference snapshot, not a substitute
-for applying the integration changes to a compatible Wine source tree. The
-adapter is not tied to WineForge, CrossOver, or MetalSharp.
+Wine integration requires the Wine patch series in `patches/wine/`, applied to
+a compatible Wine 11.17 source tree (`patches/wine/README.md` names the tree the
+patches are made against).
+
+Test tooling that is not vendored: the Khronos VK-GL-CTS (commit `1942832`,
+built with `tests/cts/windows/build.sh` and `tests/cts/native/build.sh`),
+MinGW-w64 for the Wine fixtures and demos, and apitrace for trace corpus
+entries (`tests/games/README.md`).

@@ -8,6 +8,7 @@
 #include "core/context.h"
 #include "core/draw.h"
 #include "core/format/pixel_transfer.h"
+#include "core/limits.h"
 #include "core/metal/device.h"
 #include "core/metal/pixel_format.h"
 #include "core/texture_storage.h"
@@ -294,6 +295,7 @@ void FramebufferTexture2D(Context& ctx, GLenum target, GLenum attachment, GLenum
 void FramebufferTexture3D(Context& ctx, GLenum target, GLenum attachment, GLenum textarget, GLuint texture, GLint level,
                           GLint zoffset) {
     if (texture && textarget != GL_TEXTURE_3D) return ctx.setError(GL_INVALID_OPERATION);
+    if (texture && (zoffset < 0 || zoffset >= limits::kMax3DTextureSize)) return ctx.setError(GL_INVALID_VALUE);
     attachTexture(ctx, target, attachment, texture ? textarget : 0, texture, level, zoffset, false, false);
 }
 
@@ -655,7 +657,8 @@ void ReadPixels(Context& ctx, GLint x, GLint y, GLsizei width, GLsizei height, G
             const FormatInfo* f = attachmentFormat(*a, w, h, s, fl);
             if (!f || s > 1) return ctx.setError(GL_INVALID_OPERATION);
             if (a->type == GL_TEXTURE) {
-                ensureTextureStorage(ctx, *a->texture);
+                const int face = a->cubeFace ? static_cast<int>(a->cubeFace - GL_TEXTURE_CUBE_MAP_POSITIVE_X) : 0;
+                if (!imageHasStorage(ctx, *a->texture, face, a->level)) return ctx.setError(GL_INVALID_OPERATION);
                 source = a->texture->mtl;
                 level = static_cast<uint32_t>(a->level);
                 slice = a->cubeFace ? a->cubeFace - GL_TEXTURE_CUBE_MAP_POSITIVE_X : static_cast<uint32_t>(a->layer);

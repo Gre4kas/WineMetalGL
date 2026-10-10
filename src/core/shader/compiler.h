@@ -201,6 +201,16 @@ struct LinkResult {
     }
 };
 
+// GL_COLOR_LOGIC_OP: how the logical operation treats one colour attachment.
+struct LogicOpTarget {
+    char kind = 0;         // 0: not applied (float formats, no attachment); 'n': unsigned normalized; 'i', 'u': integer
+    uint8_t bits[4] = {};  // bits per channel
+};
+// The fragment function applying logical operation `op` (0..15: GL_CLEAR + op)
+// between every colour output and the attachment's current value, read with
+// framebuffer fetch (empty if the stage has no output struct).
+std::string fragmentWithLogicOp(const std::string& msl, unsigned op, const LogicOpTarget targets[8]);
+
 // GL_SAMPLE_MASK / GL_SAMPLE_COVERAGE: the fragment function with a
 // [[sample_mask]] output, word 1 of buffer kSlotDriverUniforms (empty if the
 // stage has no output struct or writes the sample mask itself).

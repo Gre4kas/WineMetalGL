@@ -278,21 +278,21 @@ int lightParamCount(GLenum pname) {
     }
 }
 
-void getLight(Context& ctx, GLenum light, GLenum pname, float* out) {
+bool getLight(Context& ctx, GLenum light, GLenum pname, float* out) {
     FixedState::Light* l = lightOrError(ctx, light);
-    if (!l) return;
+    if (!l) return false;
     switch (pname) {
-    case GL_AMBIENT: std::copy(l->ambient, l->ambient + 4, out); return;
-    case GL_DIFFUSE: std::copy(l->diffuse, l->diffuse + 4, out); return;
-    case GL_SPECULAR: std::copy(l->specular, l->specular + 4, out); return;
-    case GL_POSITION: std::copy(l->position, l->position + 4, out); return;
-    case GL_SPOT_DIRECTION: std::copy(l->spotDirection, l->spotDirection + 3, out); return;
-    case GL_SPOT_EXPONENT: out[0] = l->spotExponent; return;
-    case GL_SPOT_CUTOFF: out[0] = l->spotCutoff; return;
+    case GL_AMBIENT: std::copy(l->ambient, l->ambient + 4, out); return true;
+    case GL_DIFFUSE: std::copy(l->diffuse, l->diffuse + 4, out); return true;
+    case GL_SPECULAR: std::copy(l->specular, l->specular + 4, out); return true;
+    case GL_POSITION: std::copy(l->position, l->position + 4, out); return true;
+    case GL_SPOT_DIRECTION: std::copy(l->spotDirection, l->spotDirection + 3, out); return true;
+    case GL_SPOT_EXPONENT: out[0] = l->spotExponent; return true;
+    case GL_SPOT_CUTOFF: out[0] = l->spotCutoff; return true;
     case GL_CONSTANT_ATTENUATION: case GL_LINEAR_ATTENUATION: case GL_QUADRATIC_ATTENUATION:
         out[0] = l->attenuation[pname - GL_CONSTANT_ATTENUATION];
-        return;
-    default: ctx.setError(GL_INVALID_ENUM);
+        return true;
+    default: ctx.setError(GL_INVALID_ENUM); return false;
     }
 }
 
@@ -328,10 +328,10 @@ void Lighti(Context& ctx, GLenum light, GLenum pname, GLint param) {
     if (lightParamCount(pname) != 1) return ctx.setError(GL_INVALID_ENUM);
     Lightiv(ctx, light, pname, &param);
 }
-void GetLightfv(Context& ctx, GLenum light, GLenum pname, GLfloat* params) { getLight(ctx, light, pname, params); }
+void GetLightfv(Context& ctx, GLenum light, GLenum pname, GLfloat* params) { (void)getLight(ctx, light, pname, params); }
 void GetLightiv(Context& ctx, GLenum light, GLenum pname, GLint* params) {
     float v[4] = {};
-    getLight(ctx, light, pname, v);
+    if (!getLight(ctx, light, pname, v)) return;
     for (int i = 0; i < lightParamCount(pname); ++i) params[i] = queryInt(pname, v[i]);
 }
 
@@ -399,18 +399,18 @@ void setMaterial(Context& ctx, GLenum face, GLenum pname, const float* v) {
     trackColorMaterial(ctx);  // the parameters COLOR_MATERIAL tracks keep the current colour
 }
 
-void getMaterial(Context& ctx, GLenum face, GLenum pname, float* out) {
-    if (!compatOnly(ctx)) return;
-    if (face != GL_FRONT && face != GL_BACK) return ctx.setError(GL_INVALID_ENUM);
+bool getMaterial(Context& ctx, GLenum face, GLenum pname, float* out) {
+    if (!compatOnly(ctx)) return false;
+    if (face != GL_FRONT && face != GL_BACK) return ctx.setError(GL_INVALID_ENUM), false;
     const FixedState::Material& m = ctx.state.fixed.material[face == GL_BACK];
     switch (pname) {
-    case GL_AMBIENT: std::copy(m.ambient, m.ambient + 4, out); return;
-    case GL_DIFFUSE: std::copy(m.diffuse, m.diffuse + 4, out); return;
-    case GL_SPECULAR: std::copy(m.specular, m.specular + 4, out); return;
-    case GL_EMISSION: std::copy(m.emission, m.emission + 4, out); return;
-    case GL_SHININESS: out[0] = m.shininess; return;
-    case GL_COLOR_INDEXES: out[0] = 0; out[1] = 1; out[2] = 1; return;
-    default: ctx.setError(GL_INVALID_ENUM);
+    case GL_AMBIENT: std::copy(m.ambient, m.ambient + 4, out); return true;
+    case GL_DIFFUSE: std::copy(m.diffuse, m.diffuse + 4, out); return true;
+    case GL_SPECULAR: std::copy(m.specular, m.specular + 4, out); return true;
+    case GL_EMISSION: std::copy(m.emission, m.emission + 4, out); return true;
+    case GL_SHININESS: out[0] = m.shininess; return true;
+    case GL_COLOR_INDEXES: out[0] = 0; out[1] = 1; out[2] = 1; return true;
+    default: ctx.setError(GL_INVALID_ENUM); return false;
     }
 }
 
@@ -431,10 +431,10 @@ void Materiali(Context& ctx, GLenum face, GLenum pname, GLint param) {
     if (pname != GL_SHININESS) return ctx.setError(GL_INVALID_ENUM);
     Materialiv(ctx, face, pname, &param);
 }
-void GetMaterialfv(Context& ctx, GLenum face, GLenum pname, GLfloat* params) { getMaterial(ctx, face, pname, params); }
+void GetMaterialfv(Context& ctx, GLenum face, GLenum pname, GLfloat* params) { (void)getMaterial(ctx, face, pname, params); }
 void GetMaterialiv(Context& ctx, GLenum face, GLenum pname, GLint* params) {
     float v[4] = {};
-    getMaterial(ctx, face, pname, v);
+    if (!getMaterial(ctx, face, pname, v)) return;
     const int n = pname == GL_SHININESS ? 1 : pname == GL_COLOR_INDEXES ? 3 : 4;
     for (int i = 0; i < n; ++i) params[i] = queryInt(pname, v[i]);
 }
@@ -655,17 +655,17 @@ void setTexGen(Context& ctx, GLenum coord, GLenum pname, const double* v) {
     }
 }
 
-void getTexGen(Context& ctx, GLenum coord, GLenum pname, double* out) {
-    if (!compatOnly(ctx)) return;
-    if (coord < GL_S || coord > GL_Q) return ctx.setError(GL_INVALID_ENUM);
-    if (ctx.state.activeTexture >= FixedState::kTextureUnits) return ctx.setError(GL_INVALID_OPERATION);
+bool getTexGen(Context& ctx, GLenum coord, GLenum pname, double* out) {
+    if (!compatOnly(ctx)) return false;
+    if (coord < GL_S || coord > GL_Q) return ctx.setError(GL_INVALID_ENUM), false;
+    if (ctx.state.activeTexture >= FixedState::kTextureUnits) return ctx.setError(GL_INVALID_OPERATION), false;
     const FixedState::TexGen& g = ctx.state.fixed.texGen[ctx.state.activeTexture];
     const int c = static_cast<int>(coord - GL_S);
     switch (pname) {
-    case GL_TEXTURE_GEN_MODE: out[0] = g.mode[c]; return;
-    case GL_OBJECT_PLANE: for (int i = 0; i < 4; ++i) out[i] = g.objectPlane[c][i]; return;
-    case GL_EYE_PLANE: for (int i = 0; i < 4; ++i) out[i] = g.eyePlane[c][i]; return;
-    default: ctx.setError(GL_INVALID_ENUM);
+    case GL_TEXTURE_GEN_MODE: out[0] = g.mode[c]; return true;
+    case GL_OBJECT_PLANE: for (int i = 0; i < 4; ++i) out[i] = g.objectPlane[c][i]; return true;
+    case GL_EYE_PLANE: for (int i = 0; i < 4; ++i) out[i] = g.eyePlane[c][i]; return true;
+    default: ctx.setError(GL_INVALID_ENUM); return false;
     }
 }
 
@@ -688,15 +688,15 @@ void TexGend(Context& ctx, GLenum coord, GLenum pname, GLdouble param) {
 }
 void TexGenf(Context& ctx, GLenum coord, GLenum pname, GLfloat param) { TexGend(ctx, coord, pname, param); }
 void TexGeni(Context& ctx, GLenum coord, GLenum pname, GLint param) { TexGend(ctx, coord, pname, param); }
-void GetTexGendv(Context& ctx, GLenum coord, GLenum pname, GLdouble* params) { getTexGen(ctx, coord, pname, params); }
+void GetTexGendv(Context& ctx, GLenum coord, GLenum pname, GLdouble* params) { (void)getTexGen(ctx, coord, pname, params); }
 void GetTexGenfv(Context& ctx, GLenum coord, GLenum pname, GLfloat* params) {
     double v[4] = {};
-    getTexGen(ctx, coord, pname, v);
+    if (!getTexGen(ctx, coord, pname, v)) return;
     for (int i = 0; i < (pname == GL_TEXTURE_GEN_MODE ? 1 : 4); ++i) params[i] = static_cast<float>(v[i]);
 }
 void GetTexGeniv(Context& ctx, GLenum coord, GLenum pname, GLint* params) {
     double v[4] = {};
-    getTexGen(ctx, coord, pname, v);
+    if (!getTexGen(ctx, coord, pname, v)) return;
     for (int i = 0; i < (pname == GL_TEXTURE_GEN_MODE ? 1 : 4); ++i) params[i] = static_cast<GLint>(std::lround(v[i]));
 }
 

@@ -18,12 +18,12 @@ it through the small driver ABI in `include/winemetalgl/driver.h`.
 <!-- BEGIN GENERATED: status (scripts/docs/generate.py) -->
 ## Status
 
-`KHR-GL33` (9,886 cases) under mustpass configurations 1, 2, 3, 4, 5, 6: 0 Fail, InternalError, Crash or Timeout in the worst run; NotSupported only for unadvertised extensions, newer GL versions and cases the test marks invalid. Per-run numbers: [`docs/conformance.md`](docs/conformance.md).
+`KHR-GL33` (9,886 cases), under Wine (`glcts.exe` through Wine's `opengl32`) in configuration 1 and natively (the core's driver ABI) in configurations 1, 2, 3, 4, 5, 6, at commit 40e1973-dirty, e1c0681-dirty, f2f0044-dirty: 0 cases that neither pass nor are NotSupported in the worst run; NotSupported only for unadvertised extensions, newer GL versions and cases the test marks invalid. Per-run numbers: [`docs/conformance.md`](docs/conformance.md).
 
 Game corpus: 8 of 8 entries match their reference frames ([`docs/games.md`](docs/games.md)).
 Frame-time budgets met by 8 of 8 entries.
 
-GL 3.3 core commands implemented: 344 of 344.
+GL 3.3 core commands with an implementation: 344 of 344 (their behaviour is what the CTS results above measure).
 <!-- END GENERATED: status -->
 
 Earlier releases published conformance numbers that depended on code which
@@ -33,6 +33,13 @@ is generated from a committed result file (see `docs/decisions/` and
 `scripts/check-forbidden-identifiers.sh`).
 
 ## Build
+
+Prerequisites: macOS 15 or later on Apple silicon, Xcode 16 or later, CMake
+3.24 or later, Ninja and Python 3. The Wine fixtures and the game demos also
+need MinGW-w64 (`x86_64-w64-mingw32-gcc` and `i686-w64-mingw32-gcc`; Homebrew
+`mingw-w64`), and running anything under Wine needs a Wine 11.17 build with
+`patches/wine` applied (see `patches/wine/README.md`). glslang and SPIRV-Cross
+are vendored (`DEPENDENCIES.md`).
 
 ```sh
 ./scripts/build.sh            # build/release/libwinemetalgl.dylib (x86_64)
@@ -57,7 +64,7 @@ loaded.
 
 ```sh
 ./scripts/stage-wine.sh /path/to/wine-build      # libwinemetalgl.dylib next to winemac.so
-./scripts/stage-host-libs.sh /path/to/wine-runtime
+WINEMETALGL_HOST_LIB_DIR=/path/to/x86_64/libs ./scripts/stage-host-libs.sh /path/to/wine-runtime
 ./scripts/stage-release.sh /path/to/wine-build /path/to/output
 ```
 
@@ -76,6 +83,8 @@ arguments. Not implemented: evaluators (`glMap*`/`glEval*`), the accumulation
 buffer, selection and feedback records (`glRenderMode` draws nothing outside
 `GL_RENDER` and returns no records), line stipple, colour-index mode, the
 imaging subset, pixel maps and transfer scale/bias beyond their defaults,
+`GL_POINT_FADE_THRESHOLD_SIZE`, face culling in `GL_POINT` polygon mode (the
+vertices of every triangle are drawn),
 wide lines and polygon stipple with application shaders (the fixed-function
 programs draw both), and `GL_ARB_vertex_program`/`GL_ARB_fragment_program`.
 
@@ -83,7 +92,9 @@ programs draw both), and `GL_ARB_vertex_program`/`GL_ARB_fragment_program`.
 
 - `tests/host`, `tests/gpu`: the compiler and the core on Metal, no Wine.
 - `tests/cts`: Khronos CTS (`KHR-GL33`) natively and under Wine
-  (`scripts/cts/run.py`), with the committed baselines.
+  (`scripts/cts/run.py`), with the committed baselines. `glcts.exe` for Wine
+  is built with `tests/cts/windows/build.sh`, the native `glcts` with
+  `tests/cts/native/build.sh`.
 - `tests/wine`: Wine fixtures (`tests/wine/probe-opengl-wow64.sh`).
 - `tests/games`: rendered-frame comparisons (`scripts/traces/replay.py`).
 

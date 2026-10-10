@@ -147,6 +147,18 @@ template <class T>
 void getPixelMap(Context& ctx, GLenum map, GLsizei bufSize, T* values) {
     if (!ctx.isCompat()) return ctx.setError(GL_INVALID_OPERATION);
     if (!validPixelMap(map)) return ctx.setError(GL_INVALID_ENUM);
+    if (Buffer* pbo = ctx.state.pixelPackBuffer.get()) {
+        // `values` is an offset into the pixel pack buffer.
+        const uintptr_t offset = reinterpret_cast<uintptr_t>(values);
+        if (pbo->mappedNonPersistent() || !pbo->mtl || offset > static_cast<uintptr_t>(pbo->size) ||
+            static_cast<uintptr_t>(pbo->size) - offset < sizeof(T))
+            return ctx.setError(GL_INVALID_OPERATION);
+        if (pbo->lastUseSerial) ctx.stream().waitFor(pbo->lastUseSerial);
+        const T zero = 0;
+        std::memcpy(pbo->contents() + offset, &zero, sizeof(T));
+        ++pbo->version;
+        return;
+    }
     if (bufSize < static_cast<GLsizei>(sizeof(T))) return ctx.setError(GL_INVALID_OPERATION);
     if (values) values[0] = 0;
 }

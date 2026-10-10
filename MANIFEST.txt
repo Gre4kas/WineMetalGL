@@ -131,6 +131,9 @@ tests/cts/native/README.md
 tests/cts/native/tcuWmglPlatform.cpp
 tests/cts/native/wmgl.cmake
 tests/cts/notsupported.json
+tests/cts/windows/0001-tcuSubprocessTestExecutorWin-include-limits.patch
+tests/cts/windows/build.sh
+tests/cts/windows/mingw64-toolchain.cmake
 tests/forbidden-identifiers.txt
 tests/games/build-demos.sh
 tests/games/corpus.json

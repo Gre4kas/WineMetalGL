@@ -411,3 +411,137 @@ out vec4 o; void main() { o = vec4(1, 0, 0, 1); })");
     glDeleteProgram(p);
     CHECK_GL();
 }
+
+GPU_TEST(gpu_review_logic_op) {
+    // GL_COLOR_LOGIC_OP on an RGBA8 and an R32UI attachment; blending is ignored.
+    auto glLogicOp_ = reinterpret_cast<PFN_glLogicOp>(wmgl_get_proc_address("glLogicOp"));
+    GLuint tex[2] = {}, fbo = 0;
+    glGenTextures(2, tex);
+    glBindTexture(GL_TEXTURE_2D, tex[0]);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 8, 8, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glBindTexture(GL_TEXTURE_2D, tex[1]);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_R32UI, 8, 8, 0, GL_RED_INTEGER, GL_UNSIGNED_INT, nullptr);
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex[0], 0);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, tex[1], 0);
+    const GLenum buffers[2] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1};
+    glDrawBuffers(2, buffers);
+    CHECK_EQ(glCheckFramebufferStatus(GL_FRAMEBUFFER), static_cast<GLenum>(GL_FRAMEBUFFER_COMPLETE));
+    const float clear0[4] = {0x0F / 255.0f, 0xF0 / 255.0f, 0x33 / 255.0f, 1.0f};
+    const GLuint clear1[4] = {5, 0, 0, 0};
+    glClearBufferfv(GL_COLOR, 0, clear0);
+    glClearBufferuiv(GL_COLOR, 1, clear1);
+    GLuint p = gpu::program(R"(#version 330 core
+in vec2 position; void main() { gl_Position = vec4(position, 0.0, 1.0); })",
+                            R"(#version 330 core
+layout(location = 0) out vec4 color; layout(location = 1) out uint bits;
+void main() { color = vec4(1.0, 1.0, 15.0 / 255.0, 0.0); bits = 3u; })");
+    GLuint vao = gpu::quad();
+    glUseProgram(p);
+    glViewport(0, 0, 8, 8);
+    glEnable(GL_BLEND);  // ignored for these attachments while the logic op is on
+    glEnable(GL_COLOR_LOGIC_OP);
+    glLogicOp_(GL_XOR);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glLogicOp_(GL_OR);
+    glClearBufferfv(GL_COLOR, 0, clear0);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);  // (attachment 1 now 3 | (5 ^ 3) = 7)
+    glDisable(GL_COLOR_LOGIC_OP);
+    glDisable(GL_BLEND);
+    glReadBuffer(GL_COLOR_ATTACHMENT0);
+    const std::vector<uint8_t> rgba = gpu::readRGBA8(4, 4, 1, 1);
+    // OR of (0F, F0, 33, FF) with (FF, FF, 0F, 00).
+    CHECK(rgba[0] == 0xFF && rgba[1] == 0xFF && rgba[2] == 0x3F && rgba[3] == 0xFF);
+    GLuint value = 0;
+    glReadBuffer(GL_COLOR_ATTACHMENT1);
+    glReadPixels(4, 4, 1, 1, GL_RED_INTEGER, GL_UNSIGNED_INT, &value);
+    CHECK_EQ(value, 7u);
+    // XOR alone on the RGBA8 attachment.
+    glEnable(GL_COLOR_LOGIC_OP);
+    glLogicOp_(GL_XOR);
+    glClearBufferfv(GL_COLOR, 0, clear0);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glDisable(GL_COLOR_LOGIC_OP);
+    glReadBuffer(GL_COLOR_ATTACHMENT0);
+    const std::vector<uint8_t> x = gpu::readRGBA8(4, 4, 1, 1);
+    CHECK(x[0] == 0xF0 && x[1] == 0x0F && x[2] == 0x3C && x[3] == 0xFF);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glViewport(0, 0, 64, 64);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(2, tex);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
+    CHECK_GL();
+}
+
+GPU_TEST(gpu_review_polygon_mode_point) {
+    auto glPolygonMode_ = reinterpret_cast<PFN_glPolygonMode>(wmgl_get_proc_address("glPolygonMode"));
+    GLuint p = gpu::program(R"(#version 330 core
+in vec2 position; void main() { gl_Position = vec4(position, 0.0, 1.0); })",
+                            R"(#version 330 core
+out vec4 o; void main() { o = vec4(1, 0, 0, 1); })");
+    // Vertices at pixel centres (16.5, 16.5), (48.5, 16.5), (32.5, 48.5) of the 64x64 surface.
+    const float tri[] = {16.5f / 32 - 1, 16.5f / 32 - 1, 48.5f / 32 - 1, 16.5f / 32 - 1, 32.5f / 32 - 1, 48.5f / 32 - 1};
+    GLuint vao = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    GLuint vbo = arrayBuffer(tri, sizeof(tri));
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
+    glEnableVertexAttribArray(0);
+    glUseProgram(p);
+    glClearColor(0, 0, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glPolygonMode_(GL_FRONT_AND_BACK, GL_POINT);
+    glPointSize(1.0f);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glPolygonMode_(GL_FRONT_AND_BACK, GL_FILL);
+    const uint8_t black[4] = {0, 0, 0, 255};
+    CHECK(pixelIs(16, 16, kRed));
+    CHECK(pixelIs(48, 16, kRed));
+    CHECK(pixelIs(32, 48, kRed));
+    CHECK(pixelIs(32, 28, black));  // inside the triangle: not filled
+    glDeleteBuffers(1, &vbo);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
+    CHECK_GL();
+}
+
+GPU_TEST(gpu_review_robustness) {
+    // Out-of-range vertex fetches on the CPU conversion path read zeros, not
+    // past the buffer; oversized debug strings are errors, not reads.
+    GLuint p = gpu::program(R"(#version 330 core
+in vec2 position; void main() { gl_Position = vec4(position, 0.0, 1.0); })",
+                            R"(#version 330 core
+out vec4 o; void main() { o = vec4(1, 0, 0, 1); })");
+    const float tri[] = {-1, -1, 3, -1, -1, 3};
+    std::vector<uint8_t> data(3 * 10, 0);
+    for (int v = 0; v < 3; ++v) std::memcpy(&data[static_cast<size_t>(v) * 10], &tri[v * 2], 8);
+    GLuint vao = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    GLuint vbo = arrayBuffer(data.data(), data.size());
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 10, nullptr);  // converted (stride 10)
+    glEnableVertexAttribArray(0);
+    glUseProgram(p);
+    glDrawArrays(GL_TRIANGLES, 0, 3000000);  // far past the 3 vertices the buffer holds
+    const GLuint indices[] = {0, 1, 0x7fffffff};
+    GLuint ebo = 0;
+    glGenBuffers(1, &ebo);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
+    glDrawElements(GL_TRIANGLES, 3, GL_UNSIGNED_INT, nullptr);  // garbage index: skipped, no crash
+    glFinish();
+    CHECK_GL();
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glObjectLabel(GL_TEXTURE, tex, 0x7fffffff, "x");
+    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_INVALID_VALUE));
+    glDeleteTextures(1, &tex);
+    glDeleteBuffers(1, &ebo);
+    glDeleteBuffers(1, &vbo);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
+    CHECK_GL();
+}

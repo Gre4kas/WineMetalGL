@@ -11,10 +11,15 @@
 namespace wmgl::api {
 namespace {
 
+// A compiled draw keeps every attribute of every vertex (464 bytes each):
+// larger draws are refused with GL_OUT_OF_MEMORY rather than exhausting memory.
+constexpr GLsizei kMaxCompiledDrawVertices = 1 << 20;
+
 // Vertex array draws compiled into a display list read the arrays now
 // (compat/immediate.h). True if the draw must also run now.
 bool compileArrays(Context& ctx, GLenum mode, GLint first, GLsizei count) {
     if (!compat::listCompiling(ctx) || first < 0 || count < 0) return true;
+    if (count > kMaxCompiledDrawVertices) return ctx.setError(GL_OUT_OF_MEMORY), false;
     std::vector<uint32_t> indices(static_cast<size_t>(count));
     for (GLsizei i = 0; i < count; ++i) indices[static_cast<size_t>(i)] = static_cast<uint32_t>(first + i);
     return compat::compileArrayDraw(ctx, mode, indices);
@@ -22,6 +27,7 @@ bool compileArrays(Context& ctx, GLenum mode, GLint first, GLsizei count) {
 
 bool compileElements(Context& ctx, GLenum mode, GLsizei count, GLenum type, const void* indices, GLint baseVertex) {
     if (!compat::listCompiling(ctx) || count < 0) return true;
+    if (count > kMaxCompiledDrawVertices) return ctx.setError(GL_OUT_OF_MEMORY), false;
     const size_t size = type == GL_UNSIGNED_BYTE ? 1 : type == GL_UNSIGNED_SHORT ? 2 : type == GL_UNSIGNED_INT ? 4 : 0;
     if (!size) return true;  // the draw reports the error
     const uint8_t* source = static_cast<const uint8_t*>(indices);

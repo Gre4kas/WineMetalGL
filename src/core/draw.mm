@@ -30,6 +30,9 @@ DrawState::DrawState(Context& ctx) : ctx_(ctx), transient_(ctx.share().queue) {}
 
 namespace {
 
+// Vertices one draw converts on the CPU at most (16M: 256 MB of float4s).
+constexpr size_t kMaxConvertedVertices = size_t{1} << 24;
+
 // sRGB storage is written (and blitted) raw unless GL_FRAMEBUFFER_SRGB is
 // enabled: attachments then use a non-sRGB view of the same texture.
 MTLPixelFormat linearFormat(MTLPixelFormat format) {
@@ -67,7 +70,8 @@ bool attachmentTarget(Context& ctx, const Attachment& a, RenderTargetDesc::Targe
         if (!tex || !ensureTextureStorage(ctx, *tex)) return false;
         const int face = a.cubeFace ? static_cast<int>(a.cubeFace - GL_TEXTURE_CUBE_MAP_POSITIVE_X) : 0;
         const TextureImage& image = tex->image(face, a.level);
-        if (!image.defined() || a.level >= tex->mtlLevels) return false;
+        // A level defined off the mip chain has no storage of its size.
+        if (!image.defined() || !imageHasStorage(ctx, *tex, face, a.level)) return false;
         out.texture = tex->mtl;
         if (linear && linearFormat(tex->mtl.pixelFormat)) {
             id<MTLTexture> view = nil;
@@ -531,12 +535,16 @@ bool DrawState::bindVertexInputs(id<MTLRenderCommandEncoder> encoder, PipelineKe
         }
         // Conversion: expand the used range to 4 x 32-bit components.
         const uint8_t* source = nullptr;
+        // Bytes readable from `source` (a buffer object's size; client arrays are unbounded).
+        size_t readable = SIZE_MAX;
         if (a.buffer) {
             if (!a.buffer->mtl) {
                 ctx_.setError(GL_INVALID_OPERATION);
                 return false;
             }
-            source = a.buffer->contents() + a.offset;  // GPU writes were waited for in waitForCpuVertexReads
+            // GPU writes were waited for in waitForCpuVertexReads.
+            readable = a.buffer->size > a.offset ? static_cast<size_t>(a.buffer->size - a.offset) : 0;
+            source = a.buffer->contents() + std::min<size_t>(static_cast<size_t>(a.offset), static_cast<size_t>(a.buffer->size));
         } else {
             source = reinterpret_cast<const uint8_t*>(a.offset);
         }
@@ -555,12 +563,30 @@ bool DrawState::bindVertexInputs(id<MTLRenderCommandEncoder> encoder, PipelineKe
         // Element v of the draw is at v - rebase (vertices renumbered by issue()).
         const uint32_t rebase = gathered || a.divisor ? 0 : static_cast<uint32_t>(vertexRebase_);
         const size_t elements = static_cast<size_t>(first - rebase) + count;
+        if (elements > kMaxConvertedVertices) {
+            // An index range this wide is almost certainly garbage indices.
+            logOnce(LogLevel::Warn, "converted-span", "draw skipped: %zu vertices to convert", elements);
+            return false;
+        }
         TransientAllocation alloc = transient_.allocate(std::max<size_t>(1, elements) * 16, serial, 16);
         auto* dst = static_cast<uint8_t*>(alloc.data);
+        if (!dst) return false;
         for (uint32_t v = first; v < first + count; ++v) {
             const uint32_t fetch = gathered ? (*order)[v] : v;
-            const uint8_t* element = source + static_cast<size_t>(fetch) * stride;
+            const size_t at = static_cast<size_t>(fetch) * stride;
             uint8_t* to = dst + static_cast<size_t>(v - rebase) * 16;
+            if (readable != SIZE_MAX && (at > readable || readable - at < elementBytes)) {
+                // Past the end of the buffer: GPUs read zeros (robust access), never past the allocation.
+                if (a.integer) {
+                    const int32_t zero[4] = {0, 0, 0, 1};
+                    std::memcpy(to, zero, 16);
+                } else {
+                    const float zero[4] = {0, 0, 0, 1};
+                    std::memcpy(to, zero, 16);
+                }
+                continue;
+            }
+            const uint8_t* element = source + at;
             if (a.integer) {
                 int32_t values[4] = {0, 0, 0, 1};
                 for (int c = 0; c < std::min(a.size, 4); ++c) {
@@ -873,15 +899,20 @@ id<MTLRenderCommandEncoder> DrawState::prepare(GLenum mode, MTLPrimitiveType& pr
     }
     key.rasterization = !st.rasterizerDiscard;
     key.topologyClass = 0;
+    for (int i = 0; i < 8; ++i) key.colorFormats[i] = static_cast<uint16_t>(formats.color[i]);
+    // GL_COLOR_LOGIC_OP replaces blending on unsigned normalized and integer
+    // attachments; the fragment function applies the operation (framebuffer
+    // fetch). GL_COPY needs no variant.
+    if (st.colorLogicOp && st.logicOp != GL_COPY && program->fragmentVariant(false, st.logicOp - GL_CLEAR + 1, key.colorFormats))
+        key.logicOp = static_cast<uint8_t>(st.logicOp - GL_CLEAR + 1);
     for (int i = 0; i < 8; ++i) {
-        key.colorFormats[i] = static_cast<uint16_t>(formats.color[i]);
         if (!formats.color[i]) continue;
         PipelineKey::Blend& b = key.blend[i];
         const auto& mask = st.colorMask[i];
         b.writeMask = static_cast<uint8_t>((mask[0] ? MTLColorWriteMaskRed : 0) | (mask[1] ? MTLColorWriteMaskGreen : 0) |
                                            (mask[2] ? MTLColorWriteMaskBlue : 0) |
                                            (mask[3] && !formats.alphaIsOne[i] ? MTLColorWriteMaskAlpha : 0));
-        b.enabled = (st.blendEnable >> i) & 1 && !formats.integer[i];
+        b.enabled = (st.blendEnable >> i) & 1 && !formats.integer[i] && !(st.colorLogicOp && logicOpApplies(formats.color[i]));
         if (b.enabled) {
             b.srcRGB = static_cast<uint8_t>(mtlBlendFactor(st.blend[i].srcRGB));
             b.dstRGB = static_cast<uint8_t>(mtlBlendFactor(st.blend[i].dstRGB));
@@ -1098,8 +1129,13 @@ bool DrawState::issue(GLenum mode, GLint first, GLsizei count, GLsizei instances
     if (!current) return false;
     waitForCpuVertexReads(*current, false);
     prepareSamplerStorage(*current);
+    // GL_POINT polygon mode: Metal only fills or outlines triangles, so the
+    // vertices of every triangle are drawn as points. Face culling is not
+    // applied to them (FRONT_AND_BACK still draws nothing).
+    const bool points = pointPolygons(mode);
+    if (points && ctx_.state.cullFace && ctx_.state.cullFaceMode == GL_FRONT_AND_BACK) return true;
     MTLPrimitiveType primitive = MTLPrimitiveTypeTriangle;
-    id<MTLRenderCommandEncoder> encoder = prepare(mode, primitive);
+    id<MTLRenderCommandEncoder> encoder = prepare(points ? GL_POINTS : mode, primitive);
     if (!encoder) return false;
     queriesBeforeDraw(ctx_, encoder);
     LinkedProgram& program = *current;
@@ -1124,14 +1160,16 @@ bool DrawState::issue(GLenum mode, GLint first, GLsizei count, GLsizei instances
 
     bool needsIndices = false;
     MTLPrimitiveType native = nativePrimitive(mode, needsIndices);
-    const bool rotate = !listed && rotateProvoking(mode, program);
+    const bool rotate = !listed && !points && rotateProvoking(mode, program);
     if (rotate) native = topologyClass(mode) == MTLPrimitiveTopologyClassLine ? MTLPrimitiveTypeLine : MTLPrimitiveTypeTriangle;
+    if (points) native = MTLPrimitiveTypePoint;
     const uint64_t serial = ctx_.stream().serial();
-    if (needsIndices || rotate || (indexData && !indexBuffer)) {
+    if (needsIndices || rotate || points || (indexData && !indexBuffer)) {
         std::vector<uint32_t> in, out;
         in.reserve(static_cast<size_t>(count));
         for (GLsizei i = 0; i < count; ++i) in.push_back(indexData ? indexData[i] : static_cast<uint32_t>(first + i - rebase));
-        if (rotate) expandProvokingLast(mode, in, out);
+        if (points) appendMetalList(mode, in, false, out);  // each triangle's vertices, shared ones once per triangle
+        else if (rotate) expandProvokingLast(mode, in, out);
         else if (needsIndices) expandIndices(mode, in, out);
         else out.swap(in);
         if (out.empty()) return true;
@@ -1151,6 +1189,12 @@ bool DrawState::issue(GLenum mode, GLint first, GLsizei count, GLsizei instances
     }
     ctx_.stream().noteDraw();
     return true;
+}
+
+bool DrawState::pointPolygons(GLenum mode) const {
+    const ContextState& st = ctx_.state;
+    return topologyClass(mode) == MTLPrimitiveTopologyClassTriangle && st.polygonMode == GL_POINT &&
+           st.polygonModeBack == GL_POINT;
 }
 
 bool DrawState::rotateProvoking(GLenum mode, LinkedProgram& program) const {
@@ -1807,7 +1851,7 @@ void DrawState::drawElements(GLenum mode, GLsizei count, GLenum type, const void
         if (!captured.empty()) captureTransformFeedback(listMode(mode), captured, instances);
     }
     const GLint spanFirst = static_cast<GLint>(minIndex) + baseVertex;
-    const GLsizei span = static_cast<GLsizei>(maxIndex - minIndex + 1);
+    const GLsizei span = static_cast<GLsizei>(std::min<uint64_t>(uint64_t{maxIndex} - minIndex + 1, INT32_MAX));
     bool needsIndices = false;
     nativePrimitive(mode, needsIndices);
     const bool rotate = rotateProvoking(mode, *executable());
@@ -1821,7 +1865,8 @@ void DrawState::drawElements(GLenum mode, GLsizei count, GLenum type, const void
     }
     // Metal always restarts at the type's largest index; GL only when asked.
     const uint32_t metalRestart = indexSize == 2 ? 0xffffu : 0xffffffffu;
-    if (elementBuffer && !needsIndices && !rotate && indexSize != 1 && offset % indexSize == 0 && maxIndex != metalRestart) {
+    if (elementBuffer && !needsIndices && !rotate && !pointPolygons(mode) && indexSize != 1 && offset % indexSize == 0 &&
+        maxIndex != metalRestart) {
         elementBuffer->lastUseSerial = ctx_.stream().serial();
         issue(mode, 0, count, instances, nullptr, elementBuffer->mtl, offset,
               indexSize == 2 ? MTLIndexTypeUInt16 : MTLIndexTypeUInt32, baseVertex, spanFirst, span);

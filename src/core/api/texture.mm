@@ -237,26 +237,6 @@ bool packDestination(Context& ctx, void* pixels, size_t bytesNeeded, size_t alig
 }
 
 // Metal level dimensions of the texture storage.
-void storageLevelSize(const Texture& tex, int level, GLsizei& w, GLsizei& h, GLsizei& d) {
-    w = std::max(1, tex.mtlWidth >> level);
-    const bool oneD = tex.target == GL_TEXTURE_1D || tex.target == GL_TEXTURE_1D_ARRAY;
-    h = oneD ? tex.mtlHeight : std::max(1, tex.mtlHeight >> level);
-    d = tex.target == GL_TEXTURE_3D ? std::max(1, tex.mtlDepth >> level) : tex.mtlDepth;
-    if (tex.target == GL_TEXTURE_1D) h = 1;
-}
-
-// True if image (face, level) has storage in tex.mtl that matches its size.
-bool imageHasStorage(Context& ctx, Texture& tex, int face, int level) {
-    (void)face;
-    if (!ensureTextureStorage(ctx, tex) || level >= tex.mtlLevels) return false;
-    const TextureImage& image = tex.image(face, level);
-    GLsizei w, h, d;
-    storageLevelSize(tex, level, w, h, d);
-    if (tex.target == GL_TEXTURE_CUBE_MAP) d = 1;
-    return image.width == w && image.height == h && image.depth == d && image.format &&
-           image.format->storage == tex.storage;
-}
-
 // Maps a GL image region to the (x, y, z, w, h, d) uploadTexels expects:
 // the rows of a 1D array image are its layers.
 void metalRegion(const Texture& tex, int& x, int& y, int& z, int& w, int& h, int& d) {
@@ -494,7 +474,7 @@ void texSubImage(Context& ctx, int dims, GLenum target, GLint level, GLint x, GL
     if (w < 0 || h < 0 || d < 0) return ctx.setError(GL_INVALID_VALUE);
     const TextureImage& image = t.tex->image(t.face, level);
     if (!image.defined()) return ctx.setError(GL_INVALID_OPERATION);
-    if (x < 0 || y < 0 || z < 0 || x + w > image.width || y + h > image.height || z + d > image.depth)
+    if (x < 0 || y < 0 || z < 0 || w > image.width - x || h > image.height - y || d > image.depth - z)
         return ctx.setError(GL_INVALID_VALUE);
     const bool rgtc = isRgtcStorage(image.format->storage);
     if (image.format->compressed && !rgtc) return ctx.setError(GL_INVALID_OPERATION);
@@ -559,7 +539,7 @@ void compressedTexSubImage(Context& ctx, int dims, GLenum target, GLint level, G
     if (!info || !info->compressed || info->internalFormat != format) return ctx.setError(GL_INVALID_ENUM);
     const TextureImage& image = t.tex->image(t.face, level);
     if (!image.defined() || image.format != info) return ctx.setError(GL_INVALID_OPERATION);
-    if (x < 0 || y < 0 || z < 0 || x + w > image.width || y + h > image.height || z + d > image.depth)
+    if (x < 0 || y < 0 || z < 0 || w > image.width - x || h > image.height - y || d > image.depth - z)
         return ctx.setError(GL_INVALID_VALUE);
     // Regions must be block aligned, except where they reach the image edge.
     if ((x % 4) || (y % 4) || ((w % 4) && x + w != image.width) || ((h % 4) && y + h != image.height))
@@ -605,7 +585,8 @@ bool copySource(Context& ctx, bool depth, CopySource& out, bool stencil = false)
         if (!a.attached() || (stencil && !fb->stencil.attached())) return ctx.setError(GL_INVALID_OPERATION), false;
         if (a.type == GL_TEXTURE) {
             Texture& tex = *a.texture;
-            if (!ensureTextureStorage(ctx, tex)) return ctx.setError(GL_INVALID_OPERATION), false;
+            const int face = a.cubeFace ? static_cast<int>(a.cubeFace - GL_TEXTURE_CUBE_MAP_POSITIVE_X) : 0;
+            if (!imageHasStorage(ctx, tex, face, a.level)) return ctx.setError(GL_INVALID_OPERATION), false;
             const TextureImage& image = tex.image(a.cubeFace ? a.cubeFace - GL_TEXTURE_CUBE_MAP_POSITIVE_X : 0, a.level);
             out.texture = tex.mtl;
             out.level = static_cast<uint32_t>(a.level);
@@ -785,7 +766,7 @@ void copyTexSubImage(Context& ctx, int dims, GLenum target, GLint level, GLint x
     if (width < 0 || height < 0) return ctx.setError(GL_INVALID_VALUE);
     const TextureImage& image = t.tex->image(t.face, level);
     if (!image.defined()) return ctx.setError(GL_INVALID_OPERATION);
-    if (xoffset < 0 || yoffset < 0 || zoffset < 0 || xoffset + width > image.width || yoffset + height > image.height ||
+    if (xoffset < 0 || yoffset < 0 || zoffset < 0 || width > image.width - xoffset || height > image.height - yoffset ||
         zoffset >= image.depth)
         return ctx.setError(GL_INVALID_VALUE);
     if (image.format->compressed) return ctx.setError(GL_INVALID_OPERATION);
@@ -1184,7 +1165,7 @@ void texImageMultisample(Context& ctx, GLenum target, bool proxy, GLsizei sample
     if (tex->immutable) return ctx.setError(GL_INVALID_OPERATION);
     // Round up to a sample count Metal supports.
     GLsizei actual = 1;
-    while (actual < samples) actual *= 2;
+    while (actual < samples && actual < 64) actual *= 2;  // (larger requests are out of range anyway)
     while (actual < 8 && !caps.sampleCountSupported[actual]) actual *= 2;
     actual = std::min<GLsizei>(actual, static_cast<GLsizei>(caps.maxSamples));
     if (proxy) {

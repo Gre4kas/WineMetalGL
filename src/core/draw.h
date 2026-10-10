@@ -117,6 +117,8 @@ private:
     // Whether a draw must list its primitives with the provoking vertex first
     // (LAST_VERTEX_CONVENTION and flat fragment inputs).
     bool rotateProvoking(GLenum mode, LinkedProgram& program) const;
+    // GL_POINT polygon mode for both faces: triangles are drawn as their vertices.
+    bool pointPolygons(GLenum mode) const;
     // Depth/stencil, dynamic state, scissor, uniforms and textures for a draw.
     void bindDrawState(id<MTLRenderCommandEncoder> encoder, LinkedProgram& program);
     void uniformBlockBuffer(LinkedProgram& program, size_t block, __strong id<MTLBuffer>& buffer, NSUInteger& offset);

@@ -244,6 +244,8 @@ def git_head():
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--wine", help="Wine installation (contains bin/wine)")
+    parser.add_argument("--strict", action="store_true",
+                        help="exit 1 if any case is not Pass or NotSupported")
     parser.add_argument("--native", action="store_true",
                         help="run a native macOS glcts (tests/cts/native) without Wine")
     parser.add_argument("--cts", required=True, help="glcts.exe from a VK-GL-CTS build (or native glcts)")
@@ -315,6 +317,15 @@ def main():
     results = {}
     for shard in shards:
         results.update(shard.results)
+    # The CTS build that ran (dEQP prints its revision when it starts).
+    cts_revision = "unknown"
+    for shard in shards:
+        log = os.path.join(args.workdir, "shard-%d.log" % shard.index)
+        if os.path.exists(log):
+            found = re.search(rb"dEQP Core ([0-9a-f]+)", open(log, "rb").read())
+            if found:
+                cts_revision = found.group(1).decode()
+                break
     for case in cases:
         results.setdefault(case, "Missing")
     counts = collections.Counter(results.values())
@@ -325,6 +336,7 @@ def main():
         handle.write("# commit %s, path %s, %d cases, %.0f s\n" % (
             git_head(), "apple-reference" if args.reference else "winemetalgl-native" if args.native else "winemetalgl",
             len(cases), elapsed))
+        handle.write("# cts dEQP Core %s\n" % cts_revision)
         handle.write("# totals %s\n" % " ".join("%s=%d" % kv for kv in sorted(counts.items())))
         for case in sorted(results):
             handle.write("%s %s\n" % (case, results[case]))
@@ -332,7 +344,10 @@ def main():
                                        ", ".join("%s %d" % kv for kv in sorted(counts.items()))))
     if owns_workdir and not args.keep_qpa and not args.keep_prefix:
         shutil.rmtree(args.workdir, ignore_errors=True)
+    if args.strict and any(status not in ("Pass", "NotSupported") for status in results.values()):
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

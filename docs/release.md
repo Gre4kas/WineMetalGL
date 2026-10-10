@@ -32,11 +32,11 @@ driver ABI, and the SHA256 manifest.
 
 ## Preview builds and the release
 
-Checkpoint tags on the development branch (`gl33-cp3`, `gl33-cp4`,
-`gl33-cp5`) are published as GitHub pre-releases
-`winemetalgl-2.0.0-preview.N`. After the branch merges, `main` is tagged
-`winemetalgl-2.0.0` and released with the staged artifacts and the evidence
-directory.
+The C5 checkpoint (`gl33-cp5`) of the development branch is published as the
+GitHub pre-release `winemetalgl-2.0.0-preview.1`, staged with
+`scripts/stage-release.sh` from that tag (the earlier checkpoints were not
+published). After the branch merges, `main` is tagged `winemetalgl-2.0.0` and
+released with the staged artifacts and the evidence directory.
 
 ## MetalSharp
 

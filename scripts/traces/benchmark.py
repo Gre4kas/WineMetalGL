@@ -104,6 +104,13 @@ def measure(entry, impl, args, env):
     return result
 
 
+def git_head():
+    """HEAD's short hash, with "-dirty" when tracked files differ from it."""
+    head = subprocess.run(["git", "-C", ROOT, "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
+    dirty = subprocess.run(["git", "-C", ROOT, "diff", "--quiet", "HEAD"]).returncode != 0
+    return (head or "unknown") + ("-dirty" if dirty else "")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--wine", required=True)
@@ -142,6 +149,7 @@ def main():
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
 
     records, failures = [], 0
+    commit_now = git_head()  # each entry records the commit it was measured at (--only keeps older entries)
     for entry in entries:
         new = measure(entry, "new", args, env)
         # Apple's OpenGL is timed for demos only: traces are timed with
@@ -167,14 +175,16 @@ def main():
         ratio = round(new["avg_ms"] / apple["avg_ms"], 3) if new and apple else None
         records.append({"name": entry["name"], "tier": entry["tier"], "status": status, "new": new, "apple": apple,
                         "ratio": ratio, "problems": problems,
+                        "commit": commit_now,
                         "apple_note": None if compare or entry["tier"] == "B" else
+                        "not run on Apple's OpenGL (corpus.json)" if not entry.get("apple", True) else
                         "not timed: traces have no frame statistics under Apple's OpenGL"})
         print("%s %-22s new %s apple %s%s" % (
             status, entry["name"], "%.3f ms" % new["avg_ms"] if new else "-",
             "%.3f ms" % apple["avg_ms"] if apple else "-", ("  " + "; ".join(problems)) if problems else ""))
         sys.stdout.flush()
 
-    commit = subprocess.run(["git", "-C", ROOT, "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
+    commit = git_head()
     order = {e["name"]: i for i, e in enumerate(manifest["entries"])}
     record = {"commit": commit, "date": datetime.date.today().isoformat(), "runs": args.runs, "frames": args.frames,
               "budget": {"ratio": RATIO_BUDGET, "tier_b_frame_ms": round(TIER_B_FRAME_MS, 3), "hitch_ms": HITCH_MS,

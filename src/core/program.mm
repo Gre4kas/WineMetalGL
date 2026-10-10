@@ -61,18 +61,67 @@ id<MTLFunction> LinkedProgram::vertexNoRaster() {
     return vertexNoRaster_;
 }
 
-id<MTLFunction> LinkedProgram::fragmentSampleMask() {
+namespace {
+
+// How GL_COLOR_LOGIC_OP treats an attachment format: unsigned normalized and
+// integer formats take the operation; float, signed normalized and missing
+// attachments do not.
+shader::LogicOpTarget logicOpTarget(MTLPixelFormat format) {
+    shader::LogicOpTarget t;
+    auto set = [&](char kind, uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
+        t.kind = kind;
+        t.bits[0] = r;
+        t.bits[1] = g;
+        t.bits[2] = b;
+        t.bits[3] = a;
+    };
+    switch (format) {
+    case MTLPixelFormatR8Unorm: case MTLPixelFormatRG8Unorm: case MTLPixelFormatRGBA8Unorm:
+    case MTLPixelFormatRGBA8Unorm_sRGB: case MTLPixelFormatBGRA8Unorm: case MTLPixelFormatBGRA8Unorm_sRGB:
+        set('n', 8, 8, 8, 8); break;
+    case MTLPixelFormatR16Unorm: case MTLPixelFormatRG16Unorm: case MTLPixelFormatRGBA16Unorm: set('n', 16, 16, 16, 16); break;
+    case MTLPixelFormatRGB10A2Unorm: case MTLPixelFormatBGR10A2Unorm: set('n', 10, 10, 10, 2); break;
+    case MTLPixelFormatB5G6R5Unorm: set('n', 5, 6, 5, 0); break;
+    case MTLPixelFormatA1BGR5Unorm: set('n', 5, 5, 5, 1); break;
+    case MTLPixelFormatABGR4Unorm: set('n', 4, 4, 4, 4); break;
+    case MTLPixelFormatR8Uint: case MTLPixelFormatRG8Uint: case MTLPixelFormatRGBA8Uint: set('u', 8, 8, 8, 8); break;
+    case MTLPixelFormatR16Uint: case MTLPixelFormatRG16Uint: case MTLPixelFormatRGBA16Uint: set('u', 16, 16, 16, 16); break;
+    case MTLPixelFormatR32Uint: case MTLPixelFormatRG32Uint: case MTLPixelFormatRGBA32Uint: set('u', 32, 32, 32, 32); break;
+    case MTLPixelFormatRGB10A2Uint: set('u', 10, 10, 10, 2); break;
+    case MTLPixelFormatR8Sint: case MTLPixelFormatRG8Sint: case MTLPixelFormatRGBA8Sint: set('i', 8, 8, 8, 8); break;
+    case MTLPixelFormatR16Sint: case MTLPixelFormatRG16Sint: case MTLPixelFormatRGBA16Sint: set('i', 16, 16, 16, 16); break;
+    case MTLPixelFormatR32Sint: case MTLPixelFormatRG32Sint: case MTLPixelFormatRGBA32Sint: set('i', 32, 32, 32, 32); break;
+    default: break;
+    }
+    return t;
+}
+
+}  // namespace
+
+bool logicOpApplies(MTLPixelFormat format) { return logicOpTarget(format).kind != 0; }
+
+id<MTLFunction> LinkedProgram::fragmentVariant(bool sampleMask, unsigned logicOp, const uint16_t colorFormats[8]) {
     if (pipeline) {
         const auto& fs = stageExecutable[static_cast<int>(shader::Stage::Fragment)];
-        return fs ? fs->fragmentSampleMask() : nil;
+        return fs ? fs->fragmentVariant(sampleMask, logicOp, colorFormats) : nil;
     }
+    std::string key = std::string(sampleMask ? "m" : "-") + std::to_string(logicOp);
+    if (logicOp)
+        for (int i = 0; i < 8; ++i) key += "/" + std::to_string(colorFormats[i]);
     std::lock_guard<std::mutex> lock(mutex_);
-    if (fragmentSampleMask_ || fragmentSampleMaskFailed_) return fragmentSampleMask_;
+    if (auto it = fragmentVariants_.find(key); it != fragmentVariants_.end()) return it->second;
     const shader::StageOutput& output = link.stages[static_cast<int>(shader::Stage::Fragment)];
-    const std::string msl = output.present ? shader::fragmentWithSampleMask(output.msl) : std::string();
-    if (!msl.empty()) fragmentSampleMask_ = compileFunction(msl, output.entryPoint, static_cast<int>(shader::Stage::Fragment));
-    fragmentSampleMaskFailed_ = fragmentSampleMask_ == nil;
-    return fragmentSampleMask_;
+    std::string msl = output.present ? output.msl : std::string();
+    if (!msl.empty() && logicOp) {
+        shader::LogicOpTarget targets[8];
+        for (int i = 0; i < 8; ++i) targets[i] = logicOpTarget(static_cast<MTLPixelFormat>(colorFormats[i]));
+        msl = shader::fragmentWithLogicOp(msl, logicOp - 1, targets);
+    }
+    if (!msl.empty() && sampleMask) msl = shader::fragmentWithSampleMask(msl);
+    id<MTLFunction> function =
+        msl.empty() ? nil : compileFunction(msl, output.entryPoint, static_cast<int>(shader::Stage::Fragment));
+    fragmentVariants_[key] = function;
+    return function;
 }
 
 id<MTLFunction> LinkedProgram::geometryPassthrough() {

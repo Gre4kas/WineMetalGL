@@ -50,7 +50,9 @@ bool resolveImage(Context& ctx, GLuint name, GLenum target, GLint level, Image& 
     if (target == GL_TEXTURE_CUBE_MAP)
         for (int f = 1; f < 6; ++f)
             if (!tex->image(f, level).defined()) return ctx.setError(GL_INVALID_OPERATION), false;
-    if (!ensureTextureStorage(ctx, *tex) || !tex->mtl) return ctx.setError(GL_INVALID_OPERATION), false;
+    // Every face (cube maps) or the level itself must fit the storage's mip chain.
+    for (int f = 0; f < (target == GL_TEXTURE_CUBE_MAP ? 6 : 1); ++f)
+        if (!imageHasStorage(ctx, *tex, f, level)) return ctx.setError(GL_INVALID_OPERATION), false;
     out.mtl = tex->mtl;
     out.format = image.format;
     out.width = image.width;
@@ -96,12 +98,12 @@ void CopyImageSubData(Context& ctx, GLuint srcName, GLenum srcTarget, GLint srcL
     const uint32_t blocksW = (static_cast<uint32_t>(srcWidth) + sbw - 1) / sbw;
     const uint32_t blocksH = (static_cast<uint32_t>(srcHeight) + sbh - 1) / sbh;
     GLsizei dstWidth = static_cast<GLsizei>(blocksW * dbw), dstHeight = static_cast<GLsizei>(blocksH * dbh);
-    if (dbw > 1 && dstX + dstWidth > dst.width && dstX + dstWidth - dst.width < static_cast<GLsizei>(dbw))
+    if (dbw > 1 && dstX >= 0 && dstWidth > dst.width - dstX && dstWidth - (dst.width - dstX) < static_cast<GLsizei>(dbw))
         dstWidth = dst.width - dstX;
-    if (dbh > 1 && dstY + dstHeight > dst.height && dstY + dstHeight - dst.height < static_cast<GLsizei>(dbh))
+    if (dbh > 1 && dstY >= 0 && dstHeight > dst.height - dstY && dstHeight - (dst.height - dstY) < static_cast<GLsizei>(dbh))
         dstHeight = dst.height - dstY;
     auto inside = [](const Image& im, GLint x, GLint y, GLint z, GLsizei w, GLsizei h, GLsizei d) {
-        return x >= 0 && y >= 0 && z >= 0 && x + w <= im.width && y + h <= im.height && z + d <= im.depth;
+        return x >= 0 && y >= 0 && z >= 0 && w <= im.width - x && h <= im.height - y && d <= im.depth - z;
     };
     if (!inside(src, srcX, srcY, srcZ, srcWidth, srcHeight, srcDepth) ||
         !inside(dst, dstX, dstY, dstZ, dstWidth, dstHeight, srcDepth))

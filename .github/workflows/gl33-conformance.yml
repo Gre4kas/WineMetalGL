@@ -41,10 +41,13 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v4
 
-      - name: Build current source
+      - name: Build the core and stage it into the Wine runtime
+        env:
+          WINE_RUNTIME: ${{ inputs.wine_runtime }}
         run: |
-          cmake --preset release
-          cmake --build --preset release --parallel 4
+          set -eu
+          ./scripts/build.sh
+          ./scripts/stage-wine.sh "$WINE_RUNTIME/lib/wine/x86_64-unix"
 
       - name: Run KHR-GL33
         env:
@@ -59,11 +62,19 @@ jobs:
           args="--wine $WINE_RUNTIME --cts $CTS_EXECUTABLE --config $CONFIG --shards $SHARDS --out $RUNNER_TEMP/results.txt"
           test -z "$TEMPLATE_PREFIX" || args="$args --template $TEMPLATE_PREFIX"
           test -z "$FILTER" || args="$args --filter $FILTER"
-          python3 -I scripts/cts/run.py $args
+          # --strict: any Fail, Crash, Timeout, InternalError or Missing case fails the job.
+          status=0
+          python3 -I scripts/cts/run.py $args --strict || status=$?
           python3 -I scripts/cts/summary.py "$RUNNER_TEMP/results.txt" --depth 1
-          python3 -I scripts/cts/diff.py tests/cts/baseline/gl33-cfg$CONFIG-oldcore.txt "$RUNNER_TEMP/results.txt" --allow-regressions || true
+          # A full run is also compared with the committed baseline of its configuration.
+          baseline=tests/cts/baseline/gl33-cfg$CONFIG-wine.txt
+          if test -z "$FILTER" && test -f "$baseline"; then
+            python3 -I scripts/cts/diff.py "$baseline" "$RUNNER_TEMP/results.txt" || status=1
+          fi
+          exit "$status"
 
       - name: Upload results
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: gl33-config-${{ inputs.config }}

@@ -40,11 +40,19 @@ bool validSeverity(GLenum severity, bool dontCare) {
     }
 }
 
-// A message string: `length` < 0 means NUL-terminated.
+// A string of at most `limit` - 1 characters: `length` < 0 means
+// NUL-terminated. The length is checked before anything is read, so a bad
+// length never reads past the caller's string.
+bool boundedText(const GLchar* text, GLsizei length, size_t limit, std::string& out) {
+    const size_t n = length < 0 ? strnlen(text, limit) : static_cast<size_t>(length);
+    if (n >= limit) return false;
+    out.assign(text, n);
+    return true;
+}
+
 bool messageText(Context& ctx, const GLchar* text, GLsizei length, std::string& out) {
     if (!text) return false;
-    out = length < 0 ? std::string(text) : std::string(text, static_cast<size_t>(length));
-    if (out.size() >= Context::kMaxDebugMessageLength) {
+    if (!boundedText(text, length, Context::kMaxDebugMessageLength, out)) {
         ctx.setError(GL_INVALID_VALUE);
         return false;
     }
@@ -105,9 +113,9 @@ void setLabel(Context& ctx, std::string* slot, GLsizei length, const GLchar* lab
         slot->clear();
         return;
     }
-    const std::string text = length < 0 ? std::string(label) : std::string(label, static_cast<size_t>(length));
-    if (text.size() >= static_cast<size_t>(Context::kMaxLabelLength)) return ctx.setError(GL_INVALID_VALUE);
-    *slot = text;
+    std::string text;
+    if (!boundedText(label, length, static_cast<size_t>(Context::kMaxLabelLength), text)) return ctx.setError(GL_INVALID_VALUE);
+    *slot = std::move(text);
 }
 
 void getLabel(Context& ctx, const std::string* slot, GLsizei bufSize, GLsizei* length, GLchar* label) {

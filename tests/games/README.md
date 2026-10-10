@@ -26,7 +26,7 @@ outside git under a **corpus root**:
 ## Running
 
 ```sh
-tests/games/build-demos.sh /Volumes/AverySSD/wmgl-test/corpus
+tests/games/build-demos.sh /path/to/corpus
 scripts/traces/replay.py --wine /path/to/wine --corpus-root /path/to/corpus \
     --template /path/to/prefix-template --path new --html /tmp/corpus.html
 ```
@@ -34,6 +34,11 @@ scripts/traces/replay.py --wine /path/to/wine --corpus-root /path/to/corpus \
 `--path` selects the implementation: `new` (WineMetalGL, Wine's default) or
 `apple` (`WINEMETALGL=0`, Apple's OpenGL, which records the references).
 `--json tests/games/results.json` records the run that `docs/games.md` reports.
+
+The corpus directory is not tracked: `build-demos.sh` builds the demos into
+it, `replay.py --path apple --update-references` records the reference frames
+from Apple's OpenGL, and trace entries need apitrace in `tools/apitrace` and a
+trace captured as below (`scene33.trace` is a capture of `scene33-core.exe`).
 
 ## Capturing a trace
 

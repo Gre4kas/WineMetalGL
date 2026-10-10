@@ -180,6 +180,26 @@ bool ensureTextureStorage(Context& ctx, Texture& tex) {
     return true;
 }
 
+void storageLevelSize(const Texture& tex, int level, GLsizei& w, GLsizei& h, GLsizei& d) {
+    w = std::max(1, tex.mtlWidth >> level);
+    const bool oneD = tex.target == GL_TEXTURE_1D || tex.target == GL_TEXTURE_1D_ARRAY;
+    h = oneD ? tex.mtlHeight : std::max(1, tex.mtlHeight >> level);
+    d = tex.target == GL_TEXTURE_3D ? std::max(1, tex.mtlDepth >> level) : tex.mtlDepth;
+    if (tex.target == GL_TEXTURE_1D) h = 1;
+}
+
+// True if image (face, level) has storage in tex.mtl that matches its size.
+bool imageHasStorage(Context& ctx, Texture& tex, int face, int level) {
+    (void)face;
+    if (!ensureTextureStorage(ctx, tex) || level >= tex.mtlLevels) return false;
+    const TextureImage& image = tex.image(face, level);
+    GLsizei w, h, d;
+    storageLevelSize(tex, level, w, h, d);
+    if (tex.target == GL_TEXTURE_CUBE_MAP) d = 1;
+    return image.width == w && image.height == h && image.depth == d && image.format &&
+           image.format->storage == tex.storage;
+}
+
 namespace {
 
 // A texture view of a buffer texture's data store, rebuilt when the buffer's
