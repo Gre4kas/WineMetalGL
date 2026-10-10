@@ -91,6 +91,9 @@ private:
     // Stage::Compute slots: a compute program or the geometry kernel).
     void bindKernelResources(id<MTLComputeCommandEncoder> encoder, LinkedProgram& program, bool usesDefaultUniforms);
     void bindCaptureDefaults(id<MTLRenderCommandEncoder> encoder, LinkedProgram& program);
+    // Whether a draw must list its primitives with the provoking vertex first
+    // (LAST_VERTEX_CONVENTION and flat fragment inputs).
+    bool rotateProvoking(GLenum mode, LinkedProgram& program) const;
     // Depth/stencil, dynamic state, scissor, uniforms and textures for a draw.
     void bindDrawState(id<MTLRenderCommandEncoder> encoder, LinkedProgram& program);
     void uniformBlockBuffer(size_t block, __strong id<MTLBuffer>& buffer, NSUInteger& offset);
@@ -99,6 +102,8 @@ private:
     void waitForCpuVertexReads(LinkedProgram& program, bool gather);
     void bindUniforms(id<MTLRenderCommandEncoder> encoder, LinkedProgram& program);
     void bindTextures(id<MTLRenderCommandEncoder> encoder, LinkedProgram& program);
+    // Builds pending storage of every sampled texture before a draw opens its encoder.
+    void prepareSamplerStorage(LinkedProgram& program);
     void applyDynamicState(id<MTLRenderCommandEncoder> encoder, const RenderTargetDesc& target);
 
     Context& ctx_;

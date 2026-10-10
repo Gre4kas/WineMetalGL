@@ -211,6 +211,9 @@ def main():
             dflt = default_return(ret)
             out.write('    if (__builtin_expect(!ctx, 0)) { wmgl::noCurrentContext("%s"); return%s; }\n' % (
                 cmd, (" " + dflt) if dflt else ""))
+            # Every command runs under its share group's lock: contexts on
+            # different threads may use the same shared objects.
+            out.write("    wmgl::ShareLock shareLock(*ctx);\n")
             out.write("    %swmgl::api::%s(%s);\n}\n" % ("return " if dflt else "", api_name(impl), call))
         out.write("\n}  // namespace\n\nnamespace wmgl {\n\nconst ProcEntry kProcTable[] = {\n")
         for cmd in names:

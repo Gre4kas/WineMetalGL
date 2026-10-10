@@ -1,6 +1,7 @@
 #include "core/draw.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -78,7 +79,8 @@ bool attachmentTarget(Context& ctx, const Attachment& a, RenderTargetDesc::Targe
         out.level = static_cast<uint32_t>(a.level);
         out.slice = tex->target == GL_TEXTURE_CUBE_MAP ? static_cast<uint32_t>(face) : static_cast<uint32_t>(a.layer);
         width = static_cast<uint32_t>(image.width);
-        height = static_cast<uint32_t>(image.height);
+        // A 1D array image's height is its layer count; each layer is one row.
+        height = tex->target == GL_TEXTURE_1D_ARRAY ? 1u : static_cast<uint32_t>(image.height);
         samples = std::max(1, image.samples);
         format = out.texture.pixelFormat;
         info = image.format;
@@ -370,21 +372,42 @@ float readComponent(const uint8_t* p, GLenum type, bool normalized, int index) {
         std::memcpy(&v, p + index * 4, 4);
         return v;
     }
+    case GL_HALF_FLOAT: {
+        uint16_t h;
+        std::memcpy(&h, p + index * 2, 2);
+        const uint32_t sign = (h >> 15) & 1, exponent = (h >> 10) & 0x1f, mantissa = h & 0x3ff;
+        float v;
+        if (exponent == 0) v = std::ldexp(static_cast<float>(mantissa), -24);
+        else if (exponent == 31) v = mantissa ? NAN : INFINITY;
+        else v = std::ldexp(static_cast<float>(mantissa | 0x400), static_cast<int>(exponent) - 25);
+        return sign ? -v : v;
+    }
     default: return 0.0f;
     }
 }
 
-uint32_t typeBytes(GLenum type) {
-    switch (type) {
-    case GL_BYTE: case GL_UNSIGNED_BYTE: return 1;
-    case GL_SHORT: case GL_UNSIGNED_SHORT: case GL_HALF_FLOAT: return 2;
-    case GL_DOUBLE: return 8;
-    default: return 4;
+// Packed 32-bit vertex formats (GL 3.3 section 2.8.2), all four components.
+bool readPacked(const uint8_t* p, GLenum type, bool normalized, float out[4]) {
+    if (type != GL_INT_2_10_10_10_REV && type != GL_UNSIGNED_INT_2_10_10_10_REV) return false;
+    uint32_t word;
+    std::memcpy(&word, p, 4);
+    const int bits[4] = {10, 10, 10, 2};
+    int shift = 0;
+    for (int c = 0; c < 4; ++c) {
+        const uint32_t raw = (word >> shift) & ((1u << bits[c]) - 1);
+        shift += bits[c];
+        if (type == GL_UNSIGNED_INT_2_10_10_10_REV) {
+            out[c] = normalized ? raw / static_cast<float>((1u << bits[c]) - 1) : static_cast<float>(raw);
+        } else {
+            const int32_t value = static_cast<int32_t>(raw << (32 - bits[c])) >> (32 - bits[c]);
+            const float max = static_cast<float>((1 << (bits[c] - 1)) - 1);
+            out[c] = normalized ? std::max(-1.0f, value / max) : static_cast<float>(value);
+        }
     }
+    return true;
 }
 
 }  // namespace
-
 
 void DrawState::waitForCpuVertexReads(LinkedProgram& program, bool gather) {
     // Waiting flushes the command buffer, so it must happen before a draw opens its encoder.
@@ -509,7 +532,8 @@ bool DrawState::bindVertexInputs(id<MTLRenderCommandEncoder> encoder, PipelineKe
             } else {
                 float values[4] = {0, 0, 0, 1};
                 const int size = a.size == GL_BGRA ? 4 : a.size;
-                for (int c = 0; c < std::min(size, 4); ++c) values[c] = readComponent(element, a.type, a.normalized, c);
+                if (!readPacked(element, a.type, a.normalized, values))
+                    for (int c = 0; c < std::min(size, 4); ++c) values[c] = readComponent(element, a.type, a.normalized, c);
                 if (a.size == GL_BGRA) std::swap(values[0], values[2]);
                 std::memcpy(to, values, 16);
             }
@@ -544,12 +568,15 @@ void DrawState::bindUniforms(id<MTLRenderCommandEncoder> encoder, LinkedProgram&
     [encoder setVertexBytes:&driver length:sizeof(driver) atIndex:shader::kSlotDriverUniforms];
     const uint32_t size = (program.link.defaultBlockSize + 15) & ~15u;
     const uint64_t serial = ctx_.stream().serial();
-    static id<MTLBuffer> zero = nil;
-    if (!zero) zero = [Device::get().mtl() newBufferWithLength:65536 options:MTLResourceStorageModePrivate];
+    static id<MTLBuffer> zero = [Device::get().mtl() newBufferWithLength:65536 options:MTLResourceStorageModePrivate];
     for (int s : {static_cast<int>(Stage::Vertex), static_cast<int>(Stage::Fragment)}) {
         const shader::StageOutput& stage = program.link.stages[s];
         if (!stage.present) continue;
         const bool vertex = s == static_cast<int>(Stage::Vertex);
+        if (stage.usesPointCoord) {
+            const uint32_t flip = ctx_.state.pointSpriteCoordOrigin == GL_UPPER_LEFT ? 1u : 0u;
+            [encoder setFragmentBytes:&flip length:sizeof(flip) atIndex:shader::kSlotDriverUniforms];
+        }
         if (stage.usesDefaultUniforms && size) {
             if (p.uniformData.size() < size) p.uniformData.resize(size, 0);
             if (size <= 4096) {
@@ -606,6 +633,16 @@ void DrawState::samplerBinding(LinkedProgram& program, size_t index, __strong id
     }
 }
 
+void DrawState::prepareSamplerStorage(LinkedProgram& program) {
+    // textureComplete builds pending storage with the blit encoder, which
+    // would end the render or compute encoder of a draw in progress.
+    for (size_t i = 0; i < program.link.samplers.size(); ++i) {
+        id<MTLTexture> view = nil;
+        id<MTLSamplerState> sampler = nil;
+        samplerBinding(program, i, view, sampler);
+    }
+}
+
 void DrawState::bindTextures(id<MTLRenderCommandEncoder> encoder, LinkedProgram& program) {
     for (size_t i = 0; i < program.link.samplers.size(); ++i) {
         const shader::SamplerSlotInfo& slot = program.link.samplers[i];
@@ -649,8 +686,9 @@ void DrawState::applyDynamicState(id<MTLRenderCommandEncoder> encoder, const Ren
                slopeScale:offset ? st.polygonOffsetFactor : 0.0f
                     clamp:offset ? st.polygonOffsetClamp : 0.0f];
     [encoder setDepthClipMode:st.depthClamp ? MTLDepthClipModeClamp : MTLDepthClipModeClip];
-    [encoder setStencilFrontReferenceValue:static_cast<uint32_t>(st.stencilFront.ref) & 0xff
-                        backReferenceValue:static_cast<uint32_t>(st.stencilBack.ref) & 0xff];
+    // The reference is clamped to the stencil range (GL 3.3 section 4.1.5).
+    [encoder setStencilFrontReferenceValue:static_cast<uint32_t>(std::clamp(st.stencilFront.ref, 0, 255))
+                        backReferenceValue:static_cast<uint32_t>(std::clamp(st.stencilBack.ref, 0, 255))];
     [encoder setBlendColorRed:st.blendColor[0] green:st.blendColor[1] blue:st.blendColor[2] alpha:st.blendColor[3]];
     (void)target;
 }
@@ -742,6 +780,38 @@ MTLPrimitiveType nativePrimitive(GLenum mode, bool& needsIndices) {
     }
 }
 
+// Lists the primitives of a line or triangle stream with GL's last-vertex
+// provoking vertex first: Metal flat-shades from the first vertex. Each
+// triangle is rotated, so its winding is unchanged.
+void expandProvokingLast(GLenum mode, const std::vector<uint32_t>& v, std::vector<uint32_t>& out) {
+    const size_t n = v.size();
+    out.clear();
+    switch (mode) {
+    case GL_LINES:
+        for (size_t i = 0; i + 1 < n; i += 2) out.insert(out.end(), {v[i + 1], v[i]});
+        return;
+    case GL_LINE_STRIP: case GL_LINE_LOOP:
+        for (size_t i = 0; i + 1 < n; ++i) out.insert(out.end(), {v[i + 1], v[i]});
+        if (mode == GL_LINE_LOOP && n >= 2) out.insert(out.end(), {v[0], v[n - 1]});
+        return;
+    case GL_TRIANGLES:
+        for (size_t i = 0; i + 2 < n; i += 3) out.insert(out.end(), {v[i + 2], v[i], v[i + 1]});
+        return;
+    case GL_TRIANGLE_STRIP:
+        // Triangle i is (i, i+1, i+2) for even i and (i+1, i, i+2) for odd i.
+        for (size_t i = 0; i + 2 < n; ++i) {
+            if (i % 2 == 0) out.insert(out.end(), {v[i + 2], v[i], v[i + 1]});
+            else out.insert(out.end(), {v[i + 2], v[i + 1], v[i]});
+        }
+        return;
+    case GL_TRIANGLE_FAN:
+        for (size_t i = 1; i + 1 < n; ++i) out.insert(out.end(), {v[i + 1], v[0], v[i]});
+        return;
+    default:
+        return;
+    }
+}
+
 // Expands a GL primitive stream (vertex numbers in `in`) into a Metal list.
 void expandIndices(GLenum mode, const std::vector<uint32_t>& in, std::vector<uint32_t>& out) {
     const size_t n = in.size();
@@ -794,7 +864,10 @@ bool DrawState::issue(GLenum mode, GLint first, GLsizei count, GLsizei instances
                       id<MTLBuffer> indexBuffer, NSUInteger indexOffset, MTLIndexType indexType, GLint baseVertex,
                       GLint minVertex, GLsizei vertexSpan) {
     queriesCountPrimitives(ctx_, mode, count, instances);
-    if (ctx_.state.program && ctx_.state.program->linked) waitForCpuVertexReads(*ctx_.state.program->linked, false);
+    if (ctx_.state.program && ctx_.state.program->linked) {
+        waitForCpuVertexReads(*ctx_.state.program->linked, false);
+        prepareSamplerStorage(*ctx_.state.program->linked);
+    }
     MTLPrimitiveType primitive = MTLPrimitiveTypeTriangle;
     id<MTLRenderCommandEncoder> encoder = prepare(mode, primitive);
     if (!encoder) return false;
@@ -813,13 +886,16 @@ bool DrawState::issue(GLenum mode, GLint first, GLsizei count, GLsizei instances
     if (program.link.xfbVertexCapture) bindCaptureDefaults(encoder, program);
 
     bool needsIndices = false;
-    const MTLPrimitiveType native = nativePrimitive(mode, needsIndices);
+    MTLPrimitiveType native = nativePrimitive(mode, needsIndices);
+    const bool rotate = rotateProvoking(mode, program);
+    if (rotate) native = topologyClass(mode) == MTLPrimitiveTopologyClassLine ? MTLPrimitiveTypeLine : MTLPrimitiveTypeTriangle;
     const uint64_t serial = ctx_.stream().serial();
-    if (needsIndices || (indexData && !indexBuffer)) {
+    if (needsIndices || rotate || (indexData && !indexBuffer)) {
         std::vector<uint32_t> in, out;
         in.reserve(static_cast<size_t>(count));
         for (GLsizei i = 0; i < count; ++i) in.push_back(indexData ? indexData[i] : static_cast<uint32_t>(first + i));
-        if (needsIndices) expandIndices(mode, in, out);
+        if (rotate) expandProvokingLast(mode, in, out);
+        else if (needsIndices) expandIndices(mode, in, out);
         else out.swap(in);
         if (out.empty()) return true;
         TransientAllocation alloc = transient_.allocate(out.size() * 4, serial, 4);
@@ -837,6 +913,16 @@ bool DrawState::issue(GLenum mode, GLint first, GLsizei count, GLsizei instances
     }
     ctx_.stream().noteDraw();
     return true;
+}
+
+bool DrawState::rotateProvoking(GLenum mode, LinkedProgram& program) const {
+    if (ctx_.state.provokingVertex != GL_LAST_VERTEX_CONVENTION || !program.stage(Stage::Fragment).flatInputs) return false;
+    switch (mode) {
+    case GL_LINES: case GL_LINE_STRIP: case GL_LINE_LOOP: case GL_TRIANGLES: case GL_TRIANGLE_STRIP: case GL_TRIANGLE_FAN:
+        return true;
+    default:
+        return false;
+    }
 }
 
 void DrawState::bindDrawState(id<MTLRenderCommandEncoder> encoder, LinkedProgram& program) {
@@ -959,6 +1045,7 @@ bool DrawState::runVertexCapture(LinkedProgram& lp, const std::vector<uint32_t>&
                                  int bufferCount, const __strong id<MTLBuffer>* buffers, const uint32_t* baseWords,
                                  const uint32_t* strides) {
     waitForCpuVertexReads(lp, true);
+    prepareSamplerStorage(lp);
     RenderTargetDesc target;
     TargetFormats formats;
     if (!drawTarget(target, formats, false)) return false;
@@ -1092,6 +1179,7 @@ void DrawState::dispatch(GLuint x, GLuint y, GLuint z, Buffer* indirect, GLintpt
     id<MTLComputePipelineState> pipeline = lp.computePipeline();
     if (!pipeline) return;
     if (indirect && indirect->lastWriteSerial) ctx_.stream().waitFor(indirect->lastWriteSerial);
+    prepareSamplerStorage(lp);
     id<MTLComputeCommandEncoder> encoder = ctx_.stream().compute();
     [encoder setComputePipelineState:pipeline];
     bindKernelResources(encoder, lp, lp.stage(Stage::Compute).usesDefaultUniforms);
@@ -1119,6 +1207,7 @@ void DrawState::drawGeometry(GLenum mode, const std::vector<uint32_t>& vertices,
     if (!kernel || !lp.geometryPassthrough()) return;
     // Anything that flushes must happen before the transient allocations below.
     waitForCpuVertexReads(lp, true);
+    prepareSamplerStorage(lp);
     const uint64_t serial = ctx_.stream().serial();
 
     // 1. Vertex outputs of every input primitive, in primitive order.
@@ -1358,7 +1447,8 @@ void DrawState::drawElements(GLenum mode, GLsizei count, GLenum type, const void
         }
         return;
     }
-    if (elementBuffer && !needsIndices && indexSize != 1 && offset % indexSize == 0) {
+    const bool rotate = rotateProvoking(mode, *ctx_.state.program->linked);
+    if (elementBuffer && !needsIndices && !rotate && indexSize != 1 && offset % indexSize == 0) {
         elementBuffer->lastUseSerial = ctx_.stream().serial();
         issue(mode, 0, count, instances, nullptr, elementBuffer->mtl, offset,
               indexSize == 2 ? MTLIndexTypeUInt16 : MTLIndexTypeUInt32, baseVertex, spanFirst, span);
@@ -1539,6 +1629,7 @@ void DrawState::clearWithDraw(const RenderTargetDesc& target, const TargetFormat
     [encoder setCullMode:MTLCullModeNone];
     [encoder setTriangleFillMode:MTLTriangleFillModeFill];
     [encoder setDepthClipMode:MTLDepthClipModeClamp];
+    [encoder setDepthBias:0.0f slopeScale:0.0f clamp:0.0f];  // the encoder may carry a draw's polygon offset
     [encoder setStencilReferenceValue:clear.stencilValue];
     const float depth[4] = {static_cast<float>(clear.depthValue), 0, 0, 0};
     [encoder setVertexBytes:depth length:sizeof(depth) atIndex:0];

@@ -144,8 +144,9 @@ const shader::UniformInfo* uniformAt(Program& p, GLint location, int& element) {
 // Writes `count` elements of uniform data from `values` (kind f/i/u, `components` per element).
 template <class T>
 void setUniform(Context& ctx, Program* p, GLint location, GLsizei count, char kind, int components, const T* values) {
+    if (!p) return ctx.setError(GL_INVALID_OPERATION);  // checked before location -1 is ignored
     if (location == -1) return;
-    if (!p || !p->linked) return ctx.setError(GL_INVALID_OPERATION);
+    if (!p->linked) return ctx.setError(GL_INVALID_OPERATION);
     if (count < 0) return ctx.setError(GL_INVALID_VALUE);
     int element = 0;
     const shader::UniformInfo* u = uniformAt(*p, location, element);
@@ -192,8 +193,9 @@ void setUniform(Context& ctx, Program* p, GLint location, GLsizei count, char ki
 
 void setUniformMatrix(Context& ctx, Program* p, GLint location, GLsizei count, GLboolean transpose, int columns, int rows,
                       const GLfloat* values) {
+    if (!p) return ctx.setError(GL_INVALID_OPERATION);  // checked before location -1 is ignored
     if (location == -1) return;
-    if (!p || !p->linked) return ctx.setError(GL_INVALID_OPERATION);
+    if (!p->linked) return ctx.setError(GL_INVALID_OPERATION);
     if (count < 0) return ctx.setError(GL_INVALID_VALUE);
     int element = 0;
     const shader::UniformInfo* u = uniformAt(*p, location, element);
@@ -491,6 +493,13 @@ void UseProgram(Context& ctx, GLuint program) {
         maybeDeleteProgram(ctx, previous.get());
     }
     ctx.markDirty(kDirtyProgram | kDirtyUniforms | kDirtyTextures | kDirtyVertexInput);
+}
+
+void releaseCurrentProgram(Context& ctx) {
+    RefPtr<Program> previous = std::move(ctx.state.program);
+    if (!previous) return;
+    --previous->useCount;
+    maybeDeleteProgram(ctx, previous.get());
 }
 
 void ValidateProgram(Context& ctx, GLuint program) {

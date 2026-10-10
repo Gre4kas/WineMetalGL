@@ -44,4 +44,11 @@ private:
 
 uint64_t nextLinkedProgramId();
 
+class Context;
+namespace api {
+// Drops a destroyed context's use of its current program (which may then be
+// deleted, if deletion was pending).
+void releaseCurrentProgram(Context& ctx);
+}  // namespace api
+
 }  // namespace wmgl

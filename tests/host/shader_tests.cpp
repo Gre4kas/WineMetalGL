@@ -221,3 +221,18 @@ TEST(shader_geometry_emulation) {
     CHECK(findUniform(r, "scale") != nullptr);
     CHECK(r.stages[static_cast<int>(Stage::Vertex)].mslNoRaster.find("[[buffer(14)]]") != std::string::npos);
 }
+
+TEST(shader_fragment_point_coord_and_flat) {
+    LinkInput in;
+    in.shaders.push_back({Stage::Vertex, "#version 330 core\nin vec4 pos; flat out int id; void main() { id = 1; gl_Position = pos; }\n"});
+    in.shaders.push_back({Stage::Fragment, "#version 330 core\nflat in int id; out vec4 color;\n"
+                                           "void main() { color = vec4(gl_PointCoord, float(id), 1.0); }\n"});
+    LinkResult r = link(in);
+    CHECK(r.ok);
+    const StageOutput& fs = r.stages[static_cast<int>(Stage::Fragment)];
+    CHECK(fs.usesPointCoord && fs.flatInputs);
+    CHECK(fs.msl.find("wmgl_point_flip") != std::string::npos);
+    in.shaders[1].source = "#version 330 core\nout vec4 color; void main() { color = vec4(1.0); }\n";
+    r = link(in);
+    CHECK(r.ok && !r.stages[static_cast<int>(Stage::Fragment)].usesPointCoord && !r.stages[static_cast<int>(Stage::Fragment)].flatInputs);
+}

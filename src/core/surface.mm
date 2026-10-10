@@ -114,15 +114,33 @@ void Surface::allocate() {
     }
 }
 
-void Surface::resize(int width, int height) {
+void Surface::resize(int width, int height, CommandStream* stream) {
     width = std::max(1, width);
     height = std::max(1, height);
     std::lock_guard<std::mutex> lock(mutex_);
     if (width == width_ && height == height_) return;
+    id<MTLTexture> oldColor = color_;
+    const int oldWidth = width_, oldHeight = height_;
     width_ = width;
     height_ = height;
     if (layer_) layer_.drawableSize = CGSizeMake(width_, height_);
     allocate();
+    // Keep the overlapping contents: Wine reports a resize right before the
+    // swap that presents the frame drawn at the old size.
+    if (!oldColor || oldColor.sampleCount != color_.sampleCount) return;
+    const MTLSize size = MTLSizeMake(std::min(oldWidth, width_), std::min(oldHeight, height_), 1);
+    auto copy = [&](id<MTLBlitCommandEncoder> blit) {
+        [blit copyFromTexture:oldColor sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:size
+                    toTexture:color_ destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0, 0, 0)];
+    };
+    if (stream) {
+        copy(stream->blit());
+        return;
+    }
+    static Queue* queue = new Queue();
+    CommandStream own(*queue);
+    copy(own.blit());
+    own.flush();
 }
 
 void Surface::setSwapInterval(int interval) {

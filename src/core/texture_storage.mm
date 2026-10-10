@@ -377,6 +377,21 @@ id<MTLTexture> dummyTexture(GLenum samplerType) {
         break;
     default: break;
     }
+    if (samplerType == GL_SAMPLER_BUFFER || samplerType == GL_INT_SAMPLER_BUFFER || samplerType == GL_UNSIGNED_INT_SAMPLER_BUFFER) {
+        // Buffer samplers are MSL texture_buffers, which must be backed by a buffer.
+        const uint32_t texel[4] = {0, 0, 0, format == MTLPixelFormatRGBA8Unorm ? 0xffu : 1u};
+        const uint32_t rgba8 = 0xff000000u;
+        const bool unorm = format == MTLPixelFormatRGBA8Unorm;
+        id<MTLBuffer> storage = [Device::get().mtl() newBufferWithLength:256 options:MTLResourceStorageModeShared];
+        std::memcpy(storage.contents, unorm ? static_cast<const void*>(&rgba8) : texel, unorm ? 4 : 16);
+        MTLTextureDescriptor* desc = [MTLTextureDescriptor textureBufferDescriptorWithPixelFormat:format
+                                                                                            width:1
+                                                                                  resourceOptions:MTLResourceStorageModeShared
+                                                                                            usage:MTLTextureUsageShaderRead];
+        id<MTLTexture> texture = [storage newTextureWithDescriptor:desc offset:0 bytesPerRow:256];
+        cache[samplerType] = texture;
+        return texture;
+    }
     MTLTextureDescriptor* desc = [MTLTextureDescriptor new];
     desc.textureType = type;
     desc.pixelFormat = format;

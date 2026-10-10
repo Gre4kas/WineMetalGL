@@ -88,7 +88,10 @@ WMGL_EXPORT void wmgl_surface_destroy(wmgl_surface* surface) {
 WMGL_EXPORT void wmgl_surface_flush(wmgl_surface* handle, unsigned int flags, int width, int height, int interval) {
     Surface* surface = asSurface(handle);
     if (!surface) return;
-    if (flags & WMGL_FLUSH_UPDATED) surface->resize(width, height);
+    if (flags & WMGL_FLUSH_UPDATED) {
+        Context* ctx = currentContext();
+        surface->resize(width, height, ctx && ctx->drawSurface() == surface ? &ctx->stream() : nullptr);
+    }
     if (flags & WMGL_FLUSH_INTERVAL) surface->setSwapInterval(interval);
     if (flags & WMGL_FLUSH_PRESENT) {
         Context* ctx = currentContext();

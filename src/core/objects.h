@@ -135,7 +135,7 @@ class Renderbuffer : public RefCounted {
 public:
     explicit Renderbuffer(GLuint name) : name(name) {}
     GLuint name;
-    GLenum internalFormat = GL_RGBA4;
+    GLenum internalFormat = GL_RGBA;  // GL 3.3 table 6.31 initial value
     const FormatInfo* format = nullptr;
     GLsizei width = 0, height = 0, samples = 0;
     id<MTLTexture> mtl = nil;

@@ -6,6 +6,7 @@
 
 #include "core/draw.h"
 #include "core/metal/device.h"
+#include "core/program.h"
 #include "core/util/log.h"
 
 namespace wmgl {
@@ -50,6 +51,10 @@ Context::Context(RefPtr<ShareGroup> share, const ContextConfig& config, int pixe
 
 Context::~Context() {
     stream_.finish();
+    {
+        ShareLock lock(*this);
+        api::releaseCurrentProgram(*this);
+    }
     draw_.reset();
 }
 
@@ -68,7 +73,9 @@ void Context::initStrings() {
     if (!config_.coreProfile) extensions_.push_back("GL_ARB_compatibility");
     extensions_.push_back("GL_ARB_ES2_compatibility");
     extensions_.push_back("GL_ARB_texture_storage");
+    extensions_.push_back("GL_EXT_texture_storage");  // the same entry points (EXT aliases)
     extensions_.push_back("GL_ARB_compute_shader");
+    extensions_.push_back("GL_ARB_compressed_texture_pixel_storage");
     extensions_.push_back("GL_ARB_texture_storage_multisample");
     extensions_.push_back("GL_EXT_texture_compression_s3tc");
     extensions_.push_back("GL_EXT_texture_filter_anisotropic");

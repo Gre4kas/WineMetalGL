@@ -111,6 +111,8 @@ struct StageOutput {
     bool usesDriverUniforms = false;
     bool writesPointSize = false;
     bool discards = false;
+    bool usesPointCoord = false;  // fragment: reads gl_PointCoord (flip flag in kSlotDriverUniforms)
+    bool flatInputs = false;      // fragment: has flat inputs (provoking vertex matters)
     // Vertex stage: Metal [[attribute(n)]] -> GL location and input component type.
     struct VertexInput { GLint location; int components; char kind; /* 'f', 'i', 'u' */ };
     std::vector<VertexInput> vertexInputs;

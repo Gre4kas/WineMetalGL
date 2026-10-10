@@ -40,7 +40,8 @@
     X(glGetMultisamplefv) X(glGetUniformBlockIndex) X(glUniformBlockBinding) X(glBindBufferBase)        \
     X(glBindBufferRange) X(glUniformMatrix3fv) X(glUniformMatrix4fv) X(glGetAttribLocation) X(glTransformFeedbackVaryings) X(glBeginTransformFeedback)        \
     X(glEndTransformFeedback) X(glGetBufferSubData) X(glDispatchCompute) X(glDispatchComputeIndirect)     \
-    X(glGetIntegeri_v) X(glTexParameterf)
+    X(glGetIntegeri_v) X(glTexParameterf) X(glProvokingVertex) X(glPointSize)                    \
+    X(glPointParameteri)
 
 #define WMGL_DECLARE_FUNC(name) extern PFN_##name name;
 WMGL_GPU_FUNCS(WMGL_DECLARE_FUNC)

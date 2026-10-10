@@ -312,6 +312,51 @@ size_t compressedSize(const FormatInfo& info, GLsizei w, GLsizei h, GLsizei d) {
     return blocksX * blocksY * static_cast<size_t>(std::max(1, d)) * storageBytes(info.storage);
 }
 
+// GL_ARB_compressed_texture_pixel_storage: with the block parameters set,
+// ROW_LENGTH, IMAGE_HEIGHT and the SKIP values select blocks of a larger
+// image in client memory (or a pixel buffer).
+struct CompressedLayout {
+    bool active = false;
+    size_t blockBytes = 0, blocksX = 0, blocksY = 0, depth = 1;
+    size_t start = 0, rowStride = 0, imageStride = 0;
+    size_t bytesNeeded() const {
+        if (!active) return 0;
+        return blocksX && blocksY && depth ? start + (depth - 1) * imageStride + (blocksY - 1) * rowStride + blocksX * blockBytes : 0;
+    }
+};
+
+CompressedLayout compressedLayout(const PixelStore& ps, const FormatInfo& info, int dims, GLsizei w, GLsizei h, GLsizei d) {
+    CompressedLayout l;
+    const size_t bytes = storageBytes(info.storage);
+    // The parameters apply when set for every dimension of the call
+    // (and only if they describe this format's 4x4 blocks).
+    l.active = ps.blockSize > 0 && ps.blockWidth > 0 && (dims < 2 || ps.blockHeight > 0) && (dims < 3 || ps.blockDepth > 0) &&
+               static_cast<size_t>(ps.blockSize) == bytes && ps.blockWidth == 4 && (dims < 2 || ps.blockHeight == 4) &&
+               (dims < 3 || ps.blockDepth == 1);
+    if (!l.active) return l;
+    l.blockBytes = bytes;
+    l.blocksX = (static_cast<size_t>(w) + 3) / 4;
+    l.blocksY = (static_cast<size_t>(h) + 3) / 4;
+    l.depth = static_cast<size_t>(std::max(1, d));
+    const size_t rowBlocks = ps.rowLength > 0 ? (static_cast<size_t>(ps.rowLength) + 3) / 4 : l.blocksX;
+    const size_t imageRows = ps.imageHeight > 0 ? (static_cast<size_t>(ps.imageHeight) + 3) / 4 : l.blocksY;
+    l.rowStride = rowBlocks * bytes;
+    l.imageStride = imageRows * l.rowStride;
+    l.start = static_cast<size_t>(ps.skipPixels / 4) * bytes + static_cast<size_t>(ps.skipRows / 4) * l.rowStride +
+              (dims == 3 ? static_cast<size_t>(ps.skipImages) * l.imageStride : 0);
+    return l;
+}
+
+// Copies the selected blocks of `src` into consecutive blocks.
+std::vector<uint8_t> gatherBlocks(const CompressedLayout& l, const uint8_t* src) {
+    std::vector<uint8_t> out(l.blocksX * l.blocksY * l.depth * l.blockBytes);
+    uint8_t* to = out.data();
+    for (size_t z = 0; z < l.depth; ++z)
+        for (size_t y = 0; y < l.blocksY; ++y, to += l.blocksX * l.blockBytes)
+            std::memcpy(to, src + l.start + z * l.imageStride + y * l.rowStride, l.blocksX * l.blockBytes);
+    return out;
+}
+
 bool compressedFormatSupported(Context& ctx, const FormatInfo* info) {
     if (!info || !info->compressed || !Device::get().caps().bcTextures) return false;
     switch (info->storage) {
@@ -483,8 +528,14 @@ void compressedTexImage(Context& ctx, int dims, GLenum target, GLint level, GLen
     }
     if (imageSize < 0 || static_cast<size_t>(imageSize) != compressedSize(*info, width, height, depth))
         return ctx.setError(GL_INVALID_VALUE);
+    const CompressedLayout layout = compressedLayout(ctx.state.unpack, *info, dims, width, height, depth);
     const uint8_t* src = nullptr;
-    if (!unpackSource(ctx, data, static_cast<size_t>(imageSize), 1, src)) return;
+    if (!unpackSource(ctx, data, layout.active ? layout.bytesNeeded() : static_cast<size_t>(imageSize), 1, src)) return;
+    std::vector<uint8_t> gathered;
+    if (layout.active && src) {
+        gathered = gatherBlocks(layout, src);
+        src = gathered.data();
+    }
     defineImage(ctx, *t.tex, t.face, level, internalformat, info, width, height, depth);
     int x = 0, y = 0, z = 0, w = width, h = height, d = depth;
     metalRegion(*t.tex, x, y, z, w, h, d);
@@ -508,8 +559,14 @@ void compressedTexSubImage(Context& ctx, int dims, GLenum target, GLint level, G
         return ctx.setError(GL_INVALID_OPERATION);
     if (imageSize < 0 || static_cast<size_t>(imageSize) != compressedSize(*info, w, h, d))
         return ctx.setError(GL_INVALID_VALUE);
+    const CompressedLayout layout = compressedLayout(ctx.state.unpack, *info, dims, w, h, d);
     const uint8_t* src = nullptr;
-    if (!unpackSource(ctx, data, static_cast<size_t>(imageSize), 1, src)) return;
+    if (!unpackSource(ctx, data, layout.active ? layout.bytesNeeded() : static_cast<size_t>(imageSize), 1, src)) return;
+    std::vector<uint8_t> gathered;
+    if (layout.active && src) {
+        gathered = gatherBlocks(layout, src);
+        src = gathered.data();
+    }
     metalRegion(*t.tex, x, y, z, w, h, d);
     uploadCompressed(ctx, *t.tex, t.face, level, x, y, z, w, h, d, src);
 }
@@ -1578,8 +1635,9 @@ void GetCompressedTexImage(Context& ctx, GLenum target, GLint level, void* img) 
     const TextureImage& image = t.tex->image(t.face, level);
     if (!image.defined() || !image.format->compressed) return ctx.setError(GL_INVALID_OPERATION);
     const size_t size = compressedSize(*image.format, image.width, image.height, image.depth);
+    const CompressedLayout layout = compressedLayout(ctx.state.pack, *image.format, dims, image.width, image.height, image.depth);
     uint8_t* dst = nullptr;
-    if (!packDestination(ctx, img, size, 1, dst)) return;
+    if (!packDestination(ctx, img, layout.active ? layout.bytesNeeded() : size, 1, dst)) return;
     if (!dst || !imageHasStorage(ctx, *t.tex, t.face, level)) return;
     const size_t blockBytes = storageBytes(image.format->storage);
     const size_t rowBytes = ((static_cast<size_t>(image.width) + 3) / 4) * blockBytes;
@@ -1596,7 +1654,15 @@ void GetCompressedTexImage(Context& ctx, GLenum target, GLint level, void* img) 
        destinationBytesPerRow:rowBytes destinationBytesPerImage:imageBytes];
     }
     ctx.stream().finish();
-    std::memcpy(dst, staging.contents, size);
+    if (!layout.active) {
+        std::memcpy(dst, staging.contents, size);
+        return;
+    }
+    // Scatter the blocks into the layout PACK_COMPRESSED_BLOCK_* describes.
+    const uint8_t* from = static_cast<const uint8_t*>(staging.contents);
+    for (size_t z = 0; z < layout.depth; ++z)
+        for (size_t y = 0; y < layout.blocksY; ++y, from += layout.blocksX * layout.blockBytes)
+            std::memcpy(dst + layout.start + z * layout.imageStride + y * layout.rowStride, from, layout.blocksX * layout.blockBytes);
 }
 
 void GetTexLevelParameteriv(Context& ctx, GLenum target, GLint level, GLenum pname, GLint* params) {

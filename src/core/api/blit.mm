@@ -144,6 +144,7 @@ void drawBlit(Context& ctx, const RenderTargetDesc& target, id<MTLRenderPipeline
     [encoder setCullMode:MTLCullModeNone];
     [encoder setTriangleFillMode:MTLTriangleFillModeFill];
     [encoder setDepthClipMode:MTLDepthClipModeClamp];
+    [encoder setDepthBias:0.0f slopeScale:0.0f clamp:0.0f];
     const float zero[4] = {};
     [encoder setVertexBytes:zero length:sizeof(zero) atIndex:0];
     [encoder setFragmentTexture:source atIndex:0];
@@ -231,6 +232,7 @@ void writeStencilMultisample(Context& ctx, const RenderTargetDesc::Target& dst, 
     [encoder setCullMode:MTLCullModeNone];
     [encoder setTriangleFillMode:MTLTriangleFillModeFill];
     [encoder setDepthClipMode:MTLDepthClipModeClamp];
+    [encoder setDepthBias:0.0f slopeScale:0.0f clamp:0.0f];
     const float zero[4] = {};
     [encoder setVertexBytes:zero length:sizeof(zero) atIndex:0];
     [encoder setFragmentTexture:texture atIndex:0];

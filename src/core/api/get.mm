@@ -17,7 +17,8 @@ namespace limits = wmgl::limits;
 namespace {
 
 struct Value {
-    enum Kind { Int, Int64, Bool, Float, Double, NormFloat } kind = Int;
+    // UInt: 32-bit unsigned state, returned bit-for-bit by GetIntegerv.
+    enum Kind { Int, UInt, Int64, Bool, Float, Double, NormFloat } kind = Int;
     int count = 0;
     double v[16] = {};
 };
@@ -26,6 +27,12 @@ Value ints(std::initializer_list<int64_t> list) {
     Value r;
     r.kind = Value::Int;
     for (int64_t x : list) r.v[r.count++] = static_cast<double>(x);
+    return r;
+}
+Value uints(std::initializer_list<uint32_t> list) {
+    Value r;
+    r.kind = Value::UInt;
+    for (uint32_t x : list) r.v[r.count++] = static_cast<double>(x);
     return r;
 }
 Value int64v(int64_t x) {
@@ -195,7 +202,10 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
         out = ints({kMaxUniformBlocksPerStage});
         return true;
     case GL_MAX_COMBINED_UNIFORM_BLOCKS: out = ints({kMaxCombinedUniformBlocks}); return true;
-    case GL_MAX_UNIFORM_BUFFER_BINDINGS: out = ints({kMaxUniformBufferBindings}); return true;
+    case GL_MAX_UNIFORM_BUFFER_BINDINGS:
+        static_assert(kMaxUniformBufferBindings == ContextState::kMaxUniformBufferBindings);
+        out = ints({kMaxUniformBufferBindings});
+        return true;
     case GL_MAX_UNIFORM_BLOCK_SIZE: out = ints({kMaxUniformBlockSize}); return true;
     case GL_MAX_COMBINED_VERTEX_UNIFORM_COMPONENTS: case GL_MAX_COMBINED_GEOMETRY_UNIFORM_COMPONENTS:
     case GL_MAX_COMBINED_FRAGMENT_UNIFORM_COMPONENTS:
@@ -245,18 +255,18 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
         out = bools({s.colorMask[0][0], s.colorMask[0][1], s.colorMask[0][2], s.colorMask[0][3]});
         return true;
     case GL_DEPTH_WRITEMASK: out = bools({s.depthMask}); return true;
-    case GL_STENCIL_WRITEMASK: out = ints({static_cast<int64_t>(s.stencilFront.writeMask)}); return true;
-    case GL_STENCIL_BACK_WRITEMASK: out = ints({static_cast<int64_t>(s.stencilBack.writeMask)}); return true;
+    case GL_STENCIL_WRITEMASK: out = uints({s.stencilFront.writeMask}); return true;
+    case GL_STENCIL_BACK_WRITEMASK: out = uints({s.stencilBack.writeMask}); return true;
     case GL_DEPTH_FUNC: out = ints({s.depthFunc}); return true;
     case GL_STENCIL_FUNC: out = ints({s.stencilFront.func}); return true;
     case GL_STENCIL_REF: out = ints({s.stencilFront.ref}); return true;
-    case GL_STENCIL_VALUE_MASK: out = ints({static_cast<int64_t>(s.stencilFront.valueMask)}); return true;
+    case GL_STENCIL_VALUE_MASK: out = uints({s.stencilFront.valueMask}); return true;
     case GL_STENCIL_FAIL: out = ints({s.stencilFront.sfail}); return true;
     case GL_STENCIL_PASS_DEPTH_FAIL: out = ints({s.stencilFront.dpfail}); return true;
     case GL_STENCIL_PASS_DEPTH_PASS: out = ints({s.stencilFront.dppass}); return true;
     case GL_STENCIL_BACK_FUNC: out = ints({s.stencilBack.func}); return true;
     case GL_STENCIL_BACK_REF: out = ints({s.stencilBack.ref}); return true;
-    case GL_STENCIL_BACK_VALUE_MASK: out = ints({static_cast<int64_t>(s.stencilBack.valueMask)}); return true;
+    case GL_STENCIL_BACK_VALUE_MASK: out = uints({s.stencilBack.valueMask}); return true;
     case GL_STENCIL_BACK_FAIL: out = ints({s.stencilBack.sfail}); return true;
     case GL_STENCIL_BACK_PASS_DEPTH_FAIL: out = ints({s.stencilBack.dpfail}); return true;
     case GL_STENCIL_BACK_PASS_DEPTH_PASS: out = ints({s.stencilBack.dppass}); return true;
@@ -277,7 +287,7 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
     case GL_POINT_FADE_THRESHOLD_SIZE: out = floats({s.pointFadeThresholdSize}); return true;
     case GL_POINT_SPRITE_COORD_ORIGIN: out = ints({s.pointSpriteCoordOrigin}); return true;
     case GL_PROVOKING_VERTEX: out = ints({s.provokingVertex}); return true;
-    case GL_PRIMITIVE_RESTART_INDEX: out = ints({static_cast<int64_t>(s.primitiveRestartIndex)}); return true;
+    case GL_PRIMITIVE_RESTART_INDEX: out = uints({s.primitiveRestartIndex}); return true;
     case GL_LOGIC_OP_MODE: out = ints({s.logicOp}); return true;
     case GL_SAMPLE_COVERAGE_VALUE: out = floats({s.sampleCoverageValue}); return true;
     case GL_SAMPLE_COVERAGE_INVERT: out = bools({s.sampleCoverageInvert}); return true;
@@ -297,6 +307,14 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
     case GL_UNPACK_SKIP_ROWS: out = ints({s.unpack.skipRows}); return true;
     case GL_PACK_SKIP_IMAGES: out = ints({s.pack.skipImages}); return true;
     case GL_UNPACK_SKIP_IMAGES: out = ints({s.unpack.skipImages}); return true;
+    case GL_UNPACK_COMPRESSED_BLOCK_WIDTH: out = ints({s.unpack.blockWidth}); return true;
+    case GL_UNPACK_COMPRESSED_BLOCK_HEIGHT: out = ints({s.unpack.blockHeight}); return true;
+    case GL_UNPACK_COMPRESSED_BLOCK_DEPTH: out = ints({s.unpack.blockDepth}); return true;
+    case GL_UNPACK_COMPRESSED_BLOCK_SIZE: out = ints({s.unpack.blockSize}); return true;
+    case GL_PACK_COMPRESSED_BLOCK_WIDTH: out = ints({s.pack.blockWidth}); return true;
+    case GL_PACK_COMPRESSED_BLOCK_HEIGHT: out = ints({s.pack.blockHeight}); return true;
+    case GL_PACK_COMPRESSED_BLOCK_DEPTH: out = ints({s.pack.blockDepth}); return true;
+    case GL_PACK_COMPRESSED_BLOCK_SIZE: out = ints({s.pack.blockSize}); return true;
     case GL_PACK_SWAP_BYTES: out = bools({s.pack.swapBytes}); return true;
     case GL_UNPACK_SWAP_BYTES: out = bools({s.unpack.swapBytes}); return true;
     case GL_PACK_LSB_FIRST: out = bools({s.pack.lsbFirst}); return true;
@@ -397,7 +415,7 @@ bool getIndexed(Context& ctx, GLenum pname, GLuint index, Value& out, bool& badI
         return true;
     case GL_SAMPLE_MASK_VALUE:
         if (index >= 1) { badIndex = true; return true; }
-        out = ints({static_cast<int64_t>(s.sampleMaskValue)});
+        out = uints({s.sampleMaskValue});
         return true;
     default: return false;
     }
@@ -418,6 +436,8 @@ void convert(const Value& v, T* params) {
                 params[i] = static_cast<T>(std::llround(scaled));
             } else if (v.kind == Value::Float || v.kind == Value::Double) {
                 params[i] = static_cast<T>(std::llround(x));
+            } else if (v.kind == Value::UInt && sizeof(T) == 4) {
+                params[i] = static_cast<T>(static_cast<uint32_t>(x));
             } else if constexpr (sizeof(T) == 4) {
                 params[i] = static_cast<T>(std::clamp(x, -2147483648.0, 2147483647.0));
             } else {

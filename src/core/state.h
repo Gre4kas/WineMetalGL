@@ -46,6 +46,8 @@ struct PixelStore {
     GLint skipImages = 0;
     bool swapBytes = false;
     bool lsbFirst = false;
+    // GL_ARB_compressed_texture_pixel_storage (0 = not set).
+    GLint blockWidth = 0, blockHeight = 0, blockDepth = 0, blockSize = 0;
 };
 
 struct IndexedBufferBinding {
@@ -140,7 +142,7 @@ struct ContextState {
     RefPtr<Buffer> arrayBuffer, copyReadBuffer, copyWriteBuffer, pixelPackBuffer, pixelUnpackBuffer,
         textureBuffer, uniformBuffer, transformFeedbackBuffer, drawIndirectBuffer, dispatchIndirectBuffer,
         shaderStorageBuffer, atomicCounterBuffer, queryBuffer;
-    static constexpr int kMaxUniformBufferBindings = 72;
+    static constexpr int kMaxUniformBufferBindings = 36;  // = limits::kMaxUniformBufferBindings
     std::array<IndexedBufferBinding, kMaxUniformBufferBindings> uniformBufferBindings;
     static constexpr int kMaxTextureUnits = 80;
     std::array<TextureUnit, kMaxTextureUnits> textureUnits;

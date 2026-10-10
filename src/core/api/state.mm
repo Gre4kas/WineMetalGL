@@ -448,6 +448,14 @@ void PixelStorei(Context& ctx, GLenum pname, GLint param) {
     case GL_UNPACK_SKIP_ROWS: return nonNegative(unpack.skipRows);
     case GL_PACK_SKIP_IMAGES: return nonNegative(pack.skipImages);
     case GL_UNPACK_SKIP_IMAGES: return nonNegative(unpack.skipImages);
+    case GL_UNPACK_COMPRESSED_BLOCK_WIDTH: return nonNegative(unpack.blockWidth);
+    case GL_UNPACK_COMPRESSED_BLOCK_HEIGHT: return nonNegative(unpack.blockHeight);
+    case GL_UNPACK_COMPRESSED_BLOCK_DEPTH: return nonNegative(unpack.blockDepth);
+    case GL_UNPACK_COMPRESSED_BLOCK_SIZE: return nonNegative(unpack.blockSize);
+    case GL_PACK_COMPRESSED_BLOCK_WIDTH: return nonNegative(pack.blockWidth);
+    case GL_PACK_COMPRESSED_BLOCK_HEIGHT: return nonNegative(pack.blockHeight);
+    case GL_PACK_COMPRESSED_BLOCK_DEPTH: return nonNegative(pack.blockDepth);
+    case GL_PACK_COMPRESSED_BLOCK_SIZE: return nonNegative(pack.blockSize);
     case GL_PACK_SWAP_BYTES: pack.swapBytes = param != 0; return;
     case GL_UNPACK_SWAP_BYTES: unpack.swapBytes = param != 0; return;
     case GL_PACK_LSB_FIRST: pack.lsbFirst = param != 0; return;

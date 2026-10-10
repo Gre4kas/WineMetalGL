@@ -126,6 +126,41 @@ void addPointSize(std::string& msl) {
     msl = patched + main;
 }
 
+// Fragment stage: GL's gl_PointCoord origin is POINT_SPRITE_COORD_ORIGIN
+// (upper left by default); Metal's point_coord origin is the top of Metal's
+// framebuffer, which is GL's bottom row (GL row 0 = Metal row 0). The driver
+// passes a flip flag in buffer kSlotDriverUniforms.
+bool patchPointCoord(std::string& msl) {
+    const std::string param = "float2 gl_PointCoord [[point_coord]]";
+    const size_t at = msl.find(param);
+    const size_t fn = msl.find("fragment ");
+    if (at == std::string::npos || fn == std::string::npos || at < fn) return false;
+    msl.replace(at, param.size(), "float2 wmgl_point_coord [[point_coord]], constant uint& wmgl_point_flip [[buffer(" +
+                                      std::to_string(kSlotDriverUniforms) + ")]]");
+    const size_t body = msl.find('{', at);
+    msl.insert(body + 1, "\n    float2 gl_PointCoord = wmgl_point_flip != 0u ? float2(wmgl_point_coord.x, 1.0 - wmgl_point_coord.y) "
+                         ": wmgl_point_coord;");
+    return true;
+}
+
+// Fragment stage: whether any input is flat (explicitly, or as an integer,
+// which Metal never interpolates); flat inputs take the provoking vertex.
+bool hasFlatInputs(const std::string& msl) {
+    const size_t start = msl.find("struct main0_in\n{");
+    if (start == std::string::npos) return false;
+    const size_t end = msl.find("};", start);
+    std::istringstream lines(msl.substr(start, end - start));
+    std::string line;
+    while (std::getline(lines, line)) {
+        const size_t first = line.find_first_not_of(' ');
+        if (first == std::string::npos) continue;
+        if (line.find(", flat]]") != std::string::npos || line.compare(first, 3, "int") == 0 ||
+            line.compare(first, 4, "uint") == 0 || line.compare(first, 5, "short") == 0 || line.compare(first, 6, "ushort") == 0)
+            return true;
+    }
+    return false;
+}
+
 // Strips glslang's trailing "N compilation errors" noise but keeps messages.
 std::string cleanLog(const char* info, const char* debug) {
     std::string log = info ? info : "";
@@ -1129,6 +1164,10 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
             if (s == static_cast<int>(Stage::Vertex)) {
                 ensureVertexOutput(stage.msl);
                 addPointSize(stage.msl);
+            }
+            if (s == static_cast<int>(Stage::Fragment)) {
+                stage.usesPointCoord = patchPointCoord(stage.msl);
+                stage.flatInputs = hasFlatInputs(stage.msl);
             }
             // WINEMETALGL_DUMP_SHADERS=1 prints every generated MSL stage (debugging aid).
             static const bool dump = [] {

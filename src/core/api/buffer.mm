@@ -28,14 +28,23 @@ bool gpuBusy(Context& ctx, const Buffer& buffer) {
     return buffer.lastUseSerial && !ctx.share().queue.isComplete(buffer.lastUseSerial);
 }
 
-// Replaces the storage so in-flight work keeps the old contents.
+// Replaces the storage so in-flight work keeps the old contents. Without
+// memory for new storage it waits for the GPU and keeps the old one.
 void rename(Context& ctx, Buffer& buffer, bool preserveContents) {
     id<MTLBuffer> fresh = newStorage(buffer.size);
-    if (preserveContents && buffer.mtl && fresh) std::memcpy(fresh.contents, buffer.mtl.contents, static_cast<size_t>(buffer.size));
+    if (!fresh) {
+        ctx.stream().waitFor(buffer.lastUseSerial);
+        ++buffer.version;
+        return;
+    }
+    if (preserveContents && buffer.mtl) {
+        // Queued GPU writes (copies, transform feedback) must land first.
+        if (buffer.lastWriteSerial) ctx.stream().waitFor(buffer.lastWriteSerial);
+        std::memcpy(fresh.contents, buffer.mtl.contents, static_cast<size_t>(buffer.size));
+    }
     buffer.mtl = fresh;
-    buffer.lastUseSerial = 0;
+    buffer.lastUseSerial = buffer.lastWriteSerial = 0;
     ++buffer.version;
-    (void)ctx;
 }
 
 Buffer* boundBuffer(Context& ctx, GLenum target) {
@@ -188,8 +197,12 @@ void BufferData(Context& ctx, GLenum target, GLsizeiptr size, const void* data, 
         ++buffer->version;
     } else {
         buffer->mtl = newStorage(size);
-        buffer->lastUseSerial = 0;
+        buffer->lastUseSerial = buffer->lastWriteSerial = 0;
         ++buffer->version;
+        if (size && !buffer->mtl) {
+            buffer->size = 0;
+            return ctx.setError(GL_OUT_OF_MEMORY);
+        }
     }
     buffer->size = size;
     buffer->usage = usage;
@@ -214,7 +227,7 @@ void BufferSubData(Context& ctx, GLenum target, GLintptr offset, GLsizeiptr size
             std::memcpy(staging.data, data, static_cast<size_t>(size));
             [ctx.stream().blit() copyFromBuffer:staging.buffer sourceOffset:staging.offset toBuffer:buffer->mtl
                                 destinationOffset:static_cast<NSUInteger>(offset) size:static_cast<NSUInteger>(size)];
-            buffer->lastUseSerial = ctx.stream().serial();
+            buffer->lastUseSerial = buffer->lastWriteSerial = ctx.stream().serial();
             ++buffer->version;
             return;
         }
@@ -306,8 +319,8 @@ GLboolean UnmapBuffer(Context& ctx, GLenum target) {
 void FlushMappedBufferRange(Context& ctx, GLenum target, GLintptr offset, GLsizeiptr length) {
     Buffer* buffer = boundBuffer(ctx, target);
     if (!buffer) return;
-    if (offset < 0 || length < 0 || offset + length > buffer->mapLength) return ctx.setError(GL_INVALID_VALUE);
     if (!buffer->mapped || !(buffer->mapAccess & GL_MAP_FLUSH_EXPLICIT_BIT)) return ctx.setError(GL_INVALID_OPERATION);
+    if (offset < 0 || length < 0 || offset + length > buffer->mapLength) return ctx.setError(GL_INVALID_VALUE);
     ++buffer->version;  // shared storage: the CPU writes are already visible
 }
 
@@ -325,7 +338,7 @@ void CopyBufferSubData(Context& ctx, GLenum readTarget, GLenum writeTarget, GLin
     if (!size) return;
     [ctx.stream().blit() copyFromBuffer:src->mtl sourceOffset:static_cast<NSUInteger>(readOffset) toBuffer:dst->mtl
                         destinationOffset:static_cast<NSUInteger>(writeOffset) size:static_cast<NSUInteger>(size)];
-    src->lastUseSerial = dst->lastUseSerial = ctx.stream().serial();
+    src->lastUseSerial = dst->lastUseSerial = dst->lastWriteSerial = ctx.stream().serial();
     ++dst->version;
 }
 

@@ -37,7 +37,9 @@ public:
     uint32_t samples() const { return samples_; }
 
     // Resizes the buffers (contents become undefined, as GL allows).
-    void resize(int width, int height);
+    // `stream`: the current context's stream when it renders to this
+    // surface, so the copy of the old contents is ordered after its work.
+    void resize(int width, int height, CommandStream* stream = nullptr);
     void setSwapInterval(int interval);
 
     id<MTLTexture> color() const { return color_; }          // what draws render into (MSAA if samples > 1)

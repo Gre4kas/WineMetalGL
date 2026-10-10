@@ -108,7 +108,10 @@ def run_entry(entry, args, env, workdir):
     if entry["kind"] == "demo":
         exe = os.path.join(root, entry["binary"])
         out = os.path.join(workdir, entry["name"] + ".ppm")
-        command = [wine, exe] + entry.get("args", []) + ["--hidden", "--dump", out]
+        # Apple's OpenGL has no drawable for a hidden window (it reads back
+        # black), so the reference path renders on screen.
+        hidden = [] if args.path == "apple" else ["--hidden"]
+        command = [wine, exe] + entry.get("args", []) + hidden + ["--dump", out]
         started = time.monotonic()
         result = subprocess.run(command, cwd=os.path.dirname(exe), env=env, capture_output=True,
                                 timeout=entry.get("timeout", 300))

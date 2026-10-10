@@ -46,7 +46,7 @@ const FormatInfo* attachmentFormat(const Attachment& a, GLsizei& width, GLsizei&
         if (a.level < 0 || a.level >= Texture::kMaxLevels) return nullptr;
         const TextureImage& image = a.texture->image(face, a.level);
         width = image.width;
-        height = image.height;
+        height = a.texture->target == GL_TEXTURE_1D_ARRAY ? 1 : image.height;  // 1D array: height counts layers
         samples = image.samples;
         fixedLocations = image.fixedSampleLocations;
         return image.format;
@@ -465,7 +465,7 @@ void RenderbufferStorageMultisample(Context& ctx, GLenum target, GLsizei samples
     if (width < 0 || height < 0 || samples < 0) return ctx.setError(GL_INVALID_VALUE);
     if (width > 16384 || height > 16384) return ctx.setError(GL_INVALID_VALUE);
     const auto& caps = Device::get().caps();
-    if (samples > static_cast<GLsizei>(caps.maxSamples)) return ctx.setError(GL_INVALID_OPERATION);
+    if (samples > static_cast<GLsizei>(caps.maxSamples)) return ctx.setError(GL_INVALID_VALUE);  // GL 3.3 section 4.4.2.1
     if (f->isInteger() && samples > 0) {
         // GL 3.3: MAX_INTEGER_SAMPLES; Metal supports multisampled integer targets.
     }
@@ -726,7 +726,10 @@ void ReadPixels(Context& ctx, GLint x, GLint y, GLsizei width, GLsizei height, G
         id<MTLBuffer> staging = [Device::get().mtl() newBufferWithLength:rowBytes * static_cast<size_t>(h)
                                                                  options:MTLResourceStorageModeShared];
         id<MTLBlitCommandEncoder> blit = ctx.stream().blit();
-        [blit copyFromTexture:source sourceSlice:slice sourceLevel:level sourceOrigin:MTLOriginMake(x0, y0, 0)
+        // A 3D texture's layer is a depth plane, addressed through the origin.
+        const bool is3D = source.textureType == MTLTextureType3D;
+        [blit copyFromTexture:source sourceSlice:is3D ? 0 : slice sourceLevel:level
+                 sourceOrigin:MTLOriginMake(x0, y0, is3D ? slice : 0)
                    sourceSize:MTLSizeMake(w, h, 1) toBuffer:staging destinationOffset:0 destinationBytesPerRow:rowBytes
         destinationBytesPerImage:rowBytes * static_cast<size_t>(h) options:opt];
         ctx.stream().finish();

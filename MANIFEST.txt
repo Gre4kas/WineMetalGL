@@ -42,7 +42,6 @@ patches/wine/wine-11.17/0003-winemetalgl-core-driver.patch
 README.md
 scripts/build.sh
 scripts/check-forbidden-identifiers.sh
-scripts/cts/__pycache__/results.cpython-314.pyc
 scripts/cts/diff.py
 scripts/cts/results.py
 scripts/cts/run.py
@@ -148,6 +147,7 @@ tests/gpu/geometry_tests.cpp
 tests/gpu/gpu.h
 tests/gpu/main.cpp
 tests/gpu/query_tests.cpp
+tests/gpu/raster_tests.cpp
 tests/gpu/texture_tests.cpp
 tests/gpu/transform_feedback_tests.cpp
 tests/gpu/uniform_block_tests.cpp

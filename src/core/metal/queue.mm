@@ -30,10 +30,10 @@ void Queue::commit(id<MTLCommandBuffer> buffer, uint64_t serial) {
         if (done.status == MTLCommandBufferStatusError)
             WMGL_ERR("command buffer %llu failed: %s", static_cast<unsigned long long>(serial),
                      done.error.localizedDescription.UTF8String);
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            inflight_.erase(serial);
-        }
+        // Notify under the lock: once a waiter sees the queue idle it may
+        // destroy the queue, so nothing may touch it after the unlock.
+        std::lock_guard<std::mutex> lock(mutex_);
+        inflight_.erase(serial);
         completed_.notify_all();
     }];
     [buffer commit];
