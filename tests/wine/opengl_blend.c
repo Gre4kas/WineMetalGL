@@ -6,7 +6,7 @@
 typedef void (WINAPI *BC)(GLfloat,GLfloat,GLfloat,GLfloat);typedef void(WINAPI*BFI)(GLuint,GLenum,GLenum);typedef void(WINAPI*BEI)(GLuint,GLenum);typedef void(WINAPI*CMI)(GLuint,GLboolean,GLboolean,GLboolean,GLboolean);typedef void(WINAPI*EII)(GLenum,GLuint);
 int main(void) {
     PIXELFORMATDESCRIPTOR p={0}; HWND w; HDC dc; HGLRC c; int f; unsigned char px[4]={0}; BC blend_color; BFI blend_funci; BEI blend_equationi; CMI color_maski; EII enablei;
-    w=CreateWindowA("STATIC","WineMetalGL blend",WS_OVERLAPPEDWINDOW,0,0,64,64,0,0,0,0); if(!w)return 11;
+    w=CreateWindowA("STATIC","WineMetalGL blend",WS_POPUP,0,0,64,64,0,0,0,0); if(!w)return 11;
     dc=GetDC(w); p.nSize=sizeof(p); p.nVersion=1; p.dwFlags=PFD_DRAW_TO_WINDOW|PFD_SUPPORT_OPENGL; p.iPixelType=PFD_TYPE_RGBA; p.cColorBits=32;
     f=ChoosePixelFormat(dc,&p); if(!f||!SetPixelFormat(dc,f,&p))return 12; c=wglCreateContext(dc); if(!c||!wglMakeCurrent(dc,c))return 13; blend_color=(BC)wglGetProcAddress("glBlendColor"); blend_funci=(BFI)wglGetProcAddress("glBlendFunci"); blend_equationi=(BEI)wglGetProcAddress("glBlendEquationi"); color_maski=(CMI)wglGetProcAddress("glColorMaski"); enablei=(EII)wglGetProcAddress("glEnablei"); if(!blend_color||!blend_funci||!blend_equationi||!color_maski||!enablei)return 13;
     glViewport(0,0,64,64); glClearColor(0,0,0,1); glClear(GL_COLOR_BUFFER_BIT);

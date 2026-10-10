@@ -115,7 +115,7 @@ int main(void)
         printf("FAIL opengl32 load error=%lu\n", GetLastError());
         return 10;
     }
-    window = CreateWindowA("STATIC", "WineMetalGL GL330 Metal", WS_OVERLAPPEDWINDOW,
+    window = CreateWindowA("STATIC", "WineMetalGL GL330 Metal", WS_POPUP,
                            0, 0, 64, 64, NULL, NULL, NULL, NULL);
     if (!window) return 11;
     dc = GetDC(window);

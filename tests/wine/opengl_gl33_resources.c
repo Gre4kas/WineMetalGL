@@ -98,7 +98,7 @@ int main(void)
     PFNGLDRAWELEMENTSPROC draw_elements; PFNGLDRAWELEMENTSBASEVERTEXPROC draw_elements_base; PFNGLBINDVERTEXBUFFERPROC bind_vertex_buffer; PFNGLBINDVERTEXBUFFERSPROC bind_vertex_buffers; PFNGLVERTEXATTRIBBINDINGPROC attrib_binding; PFNGLVERTEXATTRIBFORMATPROC attrib_format;
 
     setvbuf(stdout, NULL, _IONBF, 0);
-    window = CreateWindowA("STATIC", "WineMetalGL GL33 resources", WS_OVERLAPPEDWINDOW,
+    window = CreateWindowA("STATIC", "WineMetalGL GL33 resources", WS_POPUP,
                            0, 0, 64, 64, NULL, NULL, NULL, NULL);
     if (!window) return 11;
     dc = GetDC(window);

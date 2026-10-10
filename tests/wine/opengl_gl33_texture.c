@@ -80,7 +80,7 @@ int main(void)
     PFNGLTEXIMAGE2DPROC tex_image_2d; PFNGLGETINTERNALFORMATIVPROC get_internal_format; PFNGLDELETETEXTURESPROC delete_textures;
     PFNGLGENSAMPLERSPROC gen_samplers; PFNGLBINDSAMPLERPROC bind_sampler; PFNGLBINDTEXTURESPROC bind_textures; PFNGLBINDSAMPLERSPROC bind_samplers; PFNGLSAMPLERPARAMETERIPROC sampler_parameteri; PFNGLSAMPLERPARAMETERFPROC sampler_parameterf; PFNGLSAMPLERPARAMETERFVPROC sampler_parameterfv; PFNGLGETTEXTUREIMAGEPROC get_texture_image; PFNGLGETTEXIMAGEPROC get_tex_image;
     setvbuf(stdout, NULL, _IONBF, 0);
-    window = CreateWindowA("STATIC", "WineMetalGL texture", WS_OVERLAPPEDWINDOW, 0, 0, 64, 64, NULL, NULL, NULL, NULL);
+    window = CreateWindowA("STATIC", "WineMetalGL texture", WS_POPUP, 0, 0, 64, 64, NULL, NULL, NULL, NULL);
     if (!window) return 11; dc = GetDC(window);
     pfd.nSize = sizeof(pfd); pfd.nVersion = 1; pfd.dwFlags = PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL; pfd.iPixelType = PFD_TYPE_RGBA; pfd.cColorBits = 32;
     format = ChoosePixelFormat(dc, &pfd); if (!format || !SetPixelFormat(dc, format, &pfd)) return 12;
