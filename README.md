@@ -18,7 +18,29 @@ it through the small driver ABI in `include/winemetalgl/driver.h`.
 <!-- BEGIN GENERATED: status (scripts/docs/generate.py) -->
 ## Status
 
-`KHR-GL33` (9,886 cases), under Wine (`glcts.exe` through Wine's `opengl32`) in configurations 1, 2, 3, 4, 5, 6 and natively (the core's driver ABI) in configurations 1, 2, 3, 4, 5, 6, at commit efa7879: 0 cases that neither pass nor are NotSupported in the worst run; NotSupported only for unadvertised extensions, newer GL versions and cases the test marks invalid. Per-run numbers: [`docs/conformance.md`](docs/conformance.md).
+| OpenGL | Adds | Result | Evidence |
+|---|---|---|---|
+| 1.0 | Immediate mode, display lists, fixed-function lighting, fog and texturing | Compatibility profile, with the gaps listed under [Compatibility profile](#compatibility-profile) | No public Khronos CTS; Wine fixtures, GPU tests and the game corpus |
+| 1.1 | Vertex arrays, texture objects, polygon offset | Compatibility profile | No public Khronos CTS; Wine fixtures, GPU tests and the game corpus |
+| 1.2 | 3D textures, BGRA and packed pixels, glDrawRangeElements | Compatibility profile | No public Khronos CTS; Wine fixtures, GPU tests and the game corpus |
+| 1.3 | Multitexture, cube maps, compressed textures, multisample, texture combiners | Compatibility profile | No public Khronos CTS; Wine fixtures, GPU tests and the game corpus |
+| 1.4 | Depth textures and shadow compare, window position, point parameters, mipmap generation | Compatibility profile, with the gaps listed under [Compatibility profile](#compatibility-profile) | No public Khronos CTS; Wine fixtures, GPU tests and the game corpus |
+| 1.5 | Buffer objects, occlusion queries | Compatibility profile | No public Khronos CTS; Wine fixtures, GPU tests and the game corpus |
+| 2.0 | GLSL 1.10, multiple draw buffers, point sprites, non-power-of-two textures | Compatibility profile | No public Khronos CTS; Wine fixtures, GPU tests and the game corpus |
+| 2.1 | GLSL 1.20, pixel buffer objects, sRGB textures | Compatibility profile | No public Khronos CTS; Wine fixtures, GPU tests and the game corpus |
+| 3.0 | GLSL 1.30, framebuffer objects, vertex array objects, transform feedback, integer textures | Not measured | No committed `KHR-GL30` baseline |
+| 3.1 | Instancing, texture buffers, uniform buffers, primitive restart | Not measured | No committed `KHR-GL31` baseline |
+| 3.2 | Profiles, geometry shaders, sync objects, multisample textures, base vertex | Not measured | No committed `KHR-GL32` baseline |
+| 3.3 | GLSL 3.30, sampler objects, timer queries, instanced arrays, dual-source blending | 100% | `KHR-GL33`: 9,266 of 9,266 applicable cases (9,886 cases) in each of 12 runs |
+| 4.0 | Tessellation, GLSL 4.00, double precision, indirect draws, per-sample shading | Not supported | Contexts stop at 3.3. Of the 13 extensions 4.0 promoted, advertised: `GL_ARB_draw_buffers_blend` |
+| 4.1 | Separate shader objects, program binaries, viewport arrays, 64-bit attributes | Not supported | Contexts stop at 3.3. Of the 6 extensions 4.1 promoted, advertised: `GL_ARB_ES2_compatibility`, `GL_ARB_get_program_binary`, `GL_ARB_separate_shader_objects` |
+| 4.2 | Image load/store, atomic counters, immutable texture storage | Not supported | Contexts stop at 3.3. Of the 11 extensions 4.2 promoted, advertised: `GL_ARB_base_instance`, `GL_ARB_compressed_texture_pixel_storage`, `GL_ARB_internalformat_query`, `GL_ARB_map_buffer_alignment`, `GL_ARB_texture_storage` |
+| 4.3 | Compute shaders, shader storage buffers, debug output, texture views | Not supported | Contexts stop at 3.3. Of the 22 extensions 4.3 promoted, advertised: `GL_ARB_copy_image`, `GL_ARB_invalidate_subdata`, `GL_ARB_texture_storage_multisample`, `GL_KHR_debug` |
+| 4.4 | Buffer storage, multi-bind, texture clears, enhanced layouts | Not supported | Contexts stop at 3.3. Of the 8 extensions 4.4 promoted, advertised: `GL_ARB_buffer_storage` |
+| 4.5 | Direct state access, clip control, robustness, cull distances | Not supported | Contexts stop at 3.3. Of the 11 extensions 4.5 promoted, advertised: `GL_ARB_clip_control`, `GL_KHR_robustness` |
+| 4.6 | SPIR-V shaders, anisotropic filtering, indirect draw counts | Not supported | Contexts stop at 3.3. Of the 11 extensions 4.6 promoted, advertised: `GL_ARB_texture_filter_anisotropic` |
+
+Percentages are passing cases over applicable cases (those that are not NotSupported) in the worst run. Each mustpass list runs in every `mustpass.xml` configuration, under Wine (`glcts.exe` through Wine's `opengl32`) and natively (the core's driver ABI), at commit efa7879. NotSupported cases are unadvertised extensions, newer GL versions and cases the test marks invalid; [`docs/conformance.md`](docs/conformance.md) lists each with its reason, and the per-run numbers.
 
 Game corpus: 8 of 8 entries match their reference frames ([`docs/games.md`](docs/games.md)).
 Frame-time budgets met by 8 of 8 entries.
@@ -95,8 +117,8 @@ programs draw both), and `GL_ARB_vertex_program`/`GL_ARB_fragment_program`.
 ## Testing
 
 - `tests/host`, `tests/gpu`: the compiler and the core on Metal, no Wine.
-- `tests/cts`: Khronos CTS (`KHR-GL33`) natively and under Wine
-  (`scripts/cts/run.py`), with the committed baselines. `glcts.exe` for Wine
+- `tests/cts`: Khronos CTS (`KHR-GL30` to `KHR-GL33`) natively and under
+  Wine (`scripts/cts/run.py`), with the committed baselines. `glcts.exe` for Wine
   is built with `tests/cts/windows/build.sh`, the native `glcts` with
   `tests/cts/native/build.sh`.
 - `tests/wine`: Wine fixtures (`tests/wine/probe-opengl-wow64.sh`).

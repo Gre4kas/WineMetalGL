@@ -134,6 +134,7 @@ tests/cts/baseline/gl33-cfg5-native.txt
 tests/cts/baseline/gl33-cfg5-wine.txt
 tests/cts/baseline/gl33-cfg6-native.txt
 tests/cts/baseline/gl33-cfg6-wine.txt
+tests/cts/known-failures.json
 tests/cts/native/build.sh
 tests/cts/native/README.md
 tests/cts/native/tcuWmglPlatform.cpp

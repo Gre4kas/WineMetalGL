@@ -4,8 +4,9 @@
     scripts/docs/generate.py [--check] [--check-provenance]
 
 Inputs (all tracked):
-  tests/cts/baseline/gl33-cfgN-*.txt   KHR-GL33 results (scripts/cts/run.py)
+  tests/cts/baseline/gl3M-cfgN-*.txt   KHR-GL30 to KHR-GL33 results (scripts/cts/run.py)
   tests/cts/notsupported.json          reason for every NotSupported case
+  tests/cts/known-failures.json        reasons for failing cases the core does not fix
   tests/games/corpus.json              game corpus manifest
   tests/games/results.json             last corpus run (scripts/traces/replay.py --json)
   tests/games/perf.json                frame times (scripts/traces/benchmark.py)
@@ -24,6 +25,7 @@ import argparse
 import fnmatch
 import glob
 import json
+import math
 import os
 import re
 import sys
@@ -36,18 +38,77 @@ import results as cts  # noqa: E402
 BEGIN = "<!-- BEGIN GENERATED: status (scripts/docs/generate.py) -->"
 END = "<!-- END GENERATED: status -->"
 STATUSES = ["Pass", "Fail", "NotSupported", "InternalError", "Crash", "Timeout", "Missing"]
+# Mustpass lists with committed baselines (tests/cts/baseline/<list>-cfgN-<runner>.txt).
+SUITES = [("gl30", "KHR-GL30"), ("gl31", "KHR-GL31"), ("gl32", "KHR-GL32"), ("gl33", "KHR-GL33")]
+# README rows: (version, what the version adds, mustpass list that measures it). Versions
+# without a list are either the compatibility profile's (no public Khronos suite) or above
+# what contexts offer.
+VERSIONS = [
+    ("1.0", "Immediate mode, display lists, fixed-function lighting, fog and texturing", None),
+    ("1.1", "Vertex arrays, texture objects, polygon offset", None),
+    ("1.2", "3D textures, BGRA and packed pixels, glDrawRangeElements", None),
+    ("1.3", "Multitexture, cube maps, compressed textures, multisample, texture combiners", None),
+    ("1.4", "Depth textures and shadow compare, window position, point parameters, mipmap generation", None),
+    ("1.5", "Buffer objects, occlusion queries", None),
+    ("2.0", "GLSL 1.10, multiple draw buffers, point sprites, non-power-of-two textures", None),
+    ("2.1", "GLSL 1.20, pixel buffer objects, sRGB textures", None),
+    ("3.0", "GLSL 1.30, framebuffer objects, vertex array objects, transform feedback, integer textures", "gl30"),
+    ("3.1", "Instancing, texture buffers, uniform buffers, primitive restart", "gl31"),
+    ("3.2", "Profiles, geometry shaders, sync objects, multisample textures, base vertex", "gl32"),
+    ("3.3", "GLSL 3.30, sampler objects, timer queries, instanced arrays, dual-source blending", "gl33"),
+    ("4.0", "Tessellation, GLSL 4.00, double precision, indirect draws, per-sample shading", None),
+    ("4.1", "Separate shader objects, program binaries, viewport arrays, 64-bit attributes", None),
+    ("4.2", "Image load/store, atomic counters, immutable texture storage", None),
+    ("4.3", "Compute shaders, shader storage buffers, debug output, texture views", None),
+    ("4.4", "Buffer storage, multi-bind, texture clears, enhanced layouts", None),
+    ("4.5", "Direct state access, clip control, robustness, cull distances", None),
+    ("4.6", "SPIR-V shaders, anisotropic filtering, indirect draw counts", None),
+]
+# Compatibility-profile versions with features listed as not implemented in README.md.
+COMPAT_GAPS = {"1.0", "1.4"}
+# Extensions each 4.x version promoted to core (the version's "new features" appendix).
+PROMOTED = {
+    "4.0": ["GL_ARB_draw_buffers_blend", "GL_ARB_draw_indirect", "GL_ARB_gpu_shader5", "GL_ARB_gpu_shader_fp64",
+            "GL_ARB_sample_shading", "GL_ARB_shader_subroutine", "GL_ARB_tessellation_shader",
+            "GL_ARB_texture_buffer_object_rgb32", "GL_ARB_texture_cube_map_array", "GL_ARB_texture_gather",
+            "GL_ARB_texture_query_lod", "GL_ARB_transform_feedback2", "GL_ARB_transform_feedback3"],
+    "4.1": ["GL_ARB_ES2_compatibility", "GL_ARB_get_program_binary", "GL_ARB_separate_shader_objects",
+            "GL_ARB_shader_precision", "GL_ARB_vertex_attrib_64bit", "GL_ARB_viewport_array"],
+    "4.2": ["GL_ARB_base_instance", "GL_ARB_compressed_texture_pixel_storage", "GL_ARB_conservative_depth",
+            "GL_ARB_internalformat_query", "GL_ARB_map_buffer_alignment", "GL_ARB_shader_atomic_counters",
+            "GL_ARB_shader_image_load_store", "GL_ARB_shading_language_420pack", "GL_ARB_shading_language_packing",
+            "GL_ARB_texture_storage", "GL_ARB_transform_feedback_instanced"],
+    "4.3": ["GL_ARB_arrays_of_arrays", "GL_ARB_clear_buffer_object", "GL_ARB_compute_shader", "GL_ARB_copy_image",
+            "GL_ARB_ES3_compatibility", "GL_ARB_explicit_uniform_location", "GL_ARB_fragment_layer_viewport",
+            "GL_ARB_framebuffer_no_attachments", "GL_ARB_internalformat_query2", "GL_ARB_invalidate_subdata",
+            "GL_ARB_multi_draw_indirect", "GL_ARB_program_interface_query", "GL_ARB_robust_buffer_access_behavior",
+            "GL_ARB_shader_image_size", "GL_ARB_shader_storage_buffer_object", "GL_ARB_stencil_texturing",
+            "GL_ARB_texture_buffer_range", "GL_ARB_texture_query_levels", "GL_ARB_texture_storage_multisample",
+            "GL_ARB_texture_view", "GL_ARB_vertex_attrib_binding", "GL_KHR_debug"],
+    "4.4": ["GL_ARB_buffer_storage", "GL_ARB_clear_texture", "GL_ARB_enhanced_layouts", "GL_ARB_multi_bind",
+            "GL_ARB_query_buffer_object", "GL_ARB_texture_mirror_clamp_to_edge", "GL_ARB_texture_stencil8",
+            "GL_ARB_vertex_type_10f_11f_11f_rev"],
+    "4.5": ["GL_ARB_clip_control", "GL_ARB_conditional_render_inverted", "GL_ARB_cull_distance",
+            "GL_ARB_derivative_control", "GL_ARB_direct_state_access", "GL_ARB_ES3_1_compatibility",
+            "GL_ARB_get_texture_sub_image", "GL_ARB_shader_texture_image_samples", "GL_ARB_texture_barrier",
+            "GL_KHR_context_flush_control", "GL_KHR_robustness"],
+    "4.6": ["GL_ARB_gl_spirv", "GL_ARB_indirect_parameters", "GL_ARB_pipeline_statistics_query",
+            "GL_ARB_polygon_offset_clamp", "GL_ARB_shader_atomic_counter_ops", "GL_ARB_shader_draw_parameters",
+            "GL_ARB_shader_group_vote", "GL_ARB_spirv_extensions", "GL_ARB_texture_filter_anisotropic",
+            "GL_ARB_transform_feedback_overflow_query", "GL_KHR_no_error"],
+}
 
 
 def rel(*parts):
     return os.path.join(ROOT, *parts)
 
 
-def load_baselines():
-    """{(config, path): (header dict, results)} for the new core's baselines."""
+def load_baselines(suite):
+    """{(config, runner): (header dict, results)} for one mustpass list's baselines."""
     out = {}
-    for path in sorted(glob.glob(rel("tests", "cts", "baseline", "gl33-cfg*-*.txt"))):
+    for path in sorted(glob.glob(rel("tests", "cts", "baseline", "%s-cfg*-*.txt" % suite))):
         name = os.path.basename(path)[:-4]
-        m = re.match(r"gl33-cfg(\d)-(.+)$", name)
+        m = re.match(re.escape(suite) + r"-cfg(\d)-(.+)$", name)
         if not m or m.group(2) == "oldcore":
             continue
         header, results = cts.load(path)
@@ -71,26 +132,73 @@ def totals(results):
     return counts
 
 
-def problems(results):
-    """Cases that neither pass nor are NotSupported (Fail, Crash, Timeout, Missing, ...)."""
-    return sum(n for status, n in totals(results).items() if status not in ("Pass", "NotSupported"))
+def applicable(results):
+    """(passing, applicable) for one run: applicable cases are those not NotSupported."""
+    t = totals(results)
+    return t["Pass"], len(results) - t["NotSupported"]
 
 
-def classify_not_supported(baselines):
+def percent(passed, total):
+    """Rounded down, so a run with one failure never shows as 100%."""
+    if passed == total:
+        return "100%"
+    return "%.2f%%" % (math.floor(10000.0 * passed / total) / 100)
+
+
+def classify_not_supported(suites):
     audit = json.load(open(rel("tests", "cts", "notsupported.json")))
     entries = audit["entries"]
     per_entry = {e["pattern"]: set() for e in entries}
     unexplained = []
-    for (config, runner), (_, results) in baselines.items():
-        for case, status in results.items():
-            if status != "NotSupported":
-                continue
-            match = next((e for e in entries if fnmatch.fnmatchcase(case, e["pattern"])), None)
-            if match:
-                per_entry[match["pattern"]].add(case)
-            else:
-                unexplained.append("%s (config %d, %s)" % (case, config, runner))
+    for suite, baselines in suites.items():
+        for (config, runner), (_, results) in baselines.items():
+            for case, status in results.items():
+                if status != "NotSupported":
+                    continue
+                match = next((e for e in entries if fnmatch.fnmatchcase(case, e["pattern"])), None)
+                if match:
+                    per_entry[match["pattern"]].add(case)
+                else:
+                    unexplained.append("%s (%s config %d, %s)" % (case, suite, config, runner))
     return entries, per_entry, unexplained
+
+
+def classify_failures(suites):
+    """{suite: {case: {"runs": [(config, runner, status)], "reason": str or None}}} for every
+    result that neither passes nor is NotSupported, with its tests/cts/known-failures.json reason."""
+    known = json.load(open(rel("tests", "cts", "known-failures.json")))["entries"]
+    used = set()
+    out = {}
+    for suite, baselines in suites.items():
+        for (config, runner), (_, results) in sorted(baselines.items()):
+            for case, status in sorted(results.items()):
+                if status in cts.PASSING or status == "NotSupported":
+                    continue
+                entry = out.setdefault(suite, {}).setdefault(case, {"runs": [], "reason": None})
+                entry["runs"].append((config, runner, status))
+                match = next((e for e in known if fnmatch.fnmatchcase(case, e["pattern"])), None)
+                if match:
+                    entry["reason"] = match["reason"]
+                    used.add(match["pattern"])
+    stale = [e["pattern"] for e in known if e["pattern"] not in used]
+    if stale:
+        raise SystemExit("tests/cts/known-failures.json entries that match no failing result:\n  " + "\n  ".join(stale))
+    return out
+
+
+def describe_runs(runs):
+    """'configurations 3, 4 under Wine and natively' style summary of failing runs."""
+    by_runner = {}
+    for config, runner, status in runs:
+        by_runner.setdefault(runner, []).append((config, status))
+    parts = []
+    for runner in sorted(by_runner):
+        items = by_runner[runner]
+        statuses = sorted({s for _, s in items})
+        parts.append("%s %s in configuration%s %s" % (
+            "/".join(statuses), "under Wine" if runner == "wine" else "natively", "s" if len(items) > 1 else "",
+            ", ".join(str(c) for c, _ in items)))
+    return "; ".join(parts)
 
 
 def core_commands():
@@ -170,11 +278,12 @@ def games():
     return manifest["entries"], by_name, record
 
 
-def render(baselines):
-    entries, per_entry, unexplained = classify_not_supported(baselines)
+def render(suites):
+    entries, per_entry, unexplained = classify_not_supported(suites)
     if unexplained:
         raise SystemExit("NotSupported cases without a reason in tests/cts/notsupported.json:\n  " +
                          "\n  ".join(sorted(unexplained)[:50]))
+    failures = classify_failures(suites)
     old = cts.load(rel("tests", "cts", "baseline", "gl33-cfg1-oldcore.txt"))[1]
     core = core_commands()
     implemented = implemented_commands()
@@ -199,46 +308,56 @@ def render(baselines):
     # ---- conformance.md
     md = ["# WineMetalGL conformance", "",
           "Generated by `scripts/docs/generate.py` from the committed result files; do not edit.", "",
-          "## KHR-GL33", "",
-          "`KHR-GL33` mustpass (`gl33-main.txt`) under each `mustpass.xml` configuration. "
+          "Khronos CTS mustpass lists (`glNN-main.txt`) under each `mustpass.xml` configuration. "
           "`native` runs the core directly through its driver ABI (`tests/cts/native`); `wine` runs "
-          "`glcts.exe` in a WoW64 prefix through Wine's `opengl32`.", "",
-          "| Config | Runner | Pass | Fail | NotSupported | InternalError | Crash | Timeout | Missing | Other | Cases | Commit | File |",
-          "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|"]
-    for (config, runner) in sorted(baselines):
-        meta, results = baselines[(config, runner)]
-        t = totals(results)
-        other = sum(n for status, n in t.items() if status not in STATUSES)
-        md.append("| %d | %s | %d | %d | %d | %d | %d | %d | %d | %d | %d | %s | `%s` |" % (
-            config, runner, t["Pass"], t["Fail"], t["NotSupported"], t["InternalError"], t["Crash"], t["Timeout"],
-            t["Missing"], other, len(results), meta.get("commit", "?"), meta["file"]))
-    revisions = sorted({meta.get("cts", "not recorded") for meta, _ in baselines.values()})
-    md += ["", "Command lines: `scripts/cts/run.py --config N` reads them from `mustpass.xml`. CTS build: %s." %
-           ", ".join(revisions), ""]
-    # Configurations whose command line repeats an earlier one (they differ only in
-    # mustpass.xml attributes that apply to EGL).
-    lines_by_config = {}
-    for (config, _), (meta, _) in sorted(baselines.items()):
-        lines_by_config.setdefault(config, meta.get("command_line"))
-    for config, line in sorted(lines_by_config.items()):
-        earlier = [c for c, other in sorted(lines_by_config.items()) if c < config and other == line]
-        if earlier:
-            md.append("Configuration %d runs the same command line as configuration %d (`mustpass.xml` sets "
-                      "`useForFirstEGLConfig`, which only applies to EGL)." % (config, earlier[0]))
-    md += ["",
-           "### NotSupported", "",
+          "`glcts.exe` in a WoW64 prefix through Wine's `opengl32`. Applicable cases are those that are not "
+          "NotSupported.", ""]
+    for suite, package in SUITES:
+        baselines = suites[suite]
+        if not baselines:
+            continue
+        md += ["## %s" % package, "",
+               "| Config | Runner | Pass | Fail | NotSupported | InternalError | Crash | Timeout | Missing | Other | Cases | Applicable passing | Commit | File |",
+               "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|"]
+        for (config, runner) in sorted(baselines):
+            meta, results = baselines[(config, runner)]
+            t = totals(results)
+            other = sum(n for status, n in t.items() if status not in STATUSES)
+            md.append("| %d | %s | %d | %d | %d | %d | %d | %d | %d | %d | %d | %s | %s | `%s` |" % (
+                config, runner, t["Pass"], t["Fail"], t["NotSupported"], t["InternalError"], t["Crash"], t["Timeout"],
+                t["Missing"], other, len(results), percent(*applicable(results)), meta.get("commit", "?"), meta["file"]))
+        revisions = sorted({meta.get("cts", "not recorded") for meta, _ in baselines.values()})
+        md += ["", "Command lines: `scripts/cts/run.py --mustpass %s-main.txt --config N` reads them from "
+               "`mustpass.xml`. CTS build: %s." % (suite, ", ".join(revisions))]
+        # Configurations whose command line repeats an earlier one (they differ only in
+        # mustpass.xml attributes that apply to EGL).
+        lines_by_config = {}
+        for (config, _), (meta, _) in sorted(baselines.items()):
+            lines_by_config.setdefault(config, meta.get("command_line"))
+        for config, line in sorted(lines_by_config.items()):
+            earlier = [c for c, other in sorted(lines_by_config.items()) if c < config and other == line]
+            if earlier:
+                md += ["", "Configuration %d runs the same command line as configuration %d (`mustpass.xml` sets "
+                       "`useForFirstEGLConfig`, which only applies to EGL)." % (config, earlier[0])]
+        failing = failures.get(suite, {})
+        if failing:
+            md += ["", "Cases that neither pass nor are NotSupported:", "", "| Case | Runs | Reason |", "|---|---|---|"]
+            for case, f in sorted(failing.items()):
+                md.append("| `%s` | %s | %s |" % (case, describe_runs(f["runs"]),
+                                                  f["reason"] or "Not yet explained."))
+        if suite == "gl33" and (1, "native") in baselines:
+            new = baselines[(1, "native")][1]
+            gained = sum(1 for c, s in new.items() if s in cts.PASSING and old.get(c) not in cts.PASSING)
+            lost = sum(1 for c, s in old.items() if s in cts.PASSING and new.get(c) not in cts.PASSING)
+            md += ["", "Against the legacy implementation: `tests/cts/baseline/gl33-cfg1-oldcore.txt` is the last "
+                   "result of the legacy (removed) implementation, configuration 1: %d Pass. The core passes %d "
+                   "cases it failed and fails %d cases it passed." % (totals(old)["Pass"], gained, lost)]
+        md.append("")
+    md += ["## NotSupported", "",
            "Every NotSupported case matches an entry of `tests/cts/notsupported.json`:", "",
            "| Cases | Kind | Pattern | Reason |", "|---:|---|---|---|"]
     for e in entries:
         md.append("| %d | %s | `%s` | %s |" % (len(per_entry[e["pattern"]]), e["kind"], e["pattern"], e["reason"]))
-    if (1, "native") in baselines:
-        new = baselines[(1, "native")][1]
-        gained = sum(1 for c, s in new.items() if s in cts.PASSING and old.get(c) not in cts.PASSING)
-        lost = sum(1 for c, s in old.items() if s in cts.PASSING and new.get(c) not in cts.PASSING)
-        md += ["", "### Against the legacy implementation", "",
-               "`tests/cts/baseline/gl33-cfg1-oldcore.txt` is the last result of the legacy (removed) "
-               "implementation, configuration 1: %d Pass. The core passes %d cases it failed and fails %d "
-               "cases it passed." % (totals(old)["Pass"], gained, lost)]
     md += ["", "## API", "",
            "GL 3.3 core profile commands in the Khronos registry: %d. Implemented: %d. Missing: %s." % (
                len(core), len(core) - len(missing), ", ".join("`%s`" % m for m in missing) if missing else "none"),
@@ -299,23 +418,51 @@ def render(baselines):
     games_md = "\n".join(g) + "\n"
 
     # ---- README status
-    lines = [BEGIN, "## Status", ""]
-    if baselines:
-        rows = sorted(baselines)
-        worst = max(problems(baselines[k][1]) for k in rows)
-        cases = max(len(baselines[k][1]) for k in rows)
-        runs = []
-        for runner, label in (("wine", "under Wine (`glcts.exe` through Wine's `opengl32`)"),
-                              ("native", "natively (the core's driver ABI)")):
-            configs = sorted(c for c, r in rows if r == runner)
-            if configs:
-                runs.append("%s in configuration%s %s" % (label, "s" if len(configs) > 1 else "",
-                                                          ", ".join(str(c) for c in configs)))
-        commits = sorted({baselines[k][0].get("commit", "?") for k in rows})
-        lines.append("`KHR-GL33` (%s cases), %s, at commit %s: %d cases that neither pass nor are NotSupported in "
-                     "the worst run; NotSupported only for unadvertised extensions, newer GL versions and cases the "
-                     "test marks invalid. Per-run numbers: [`docs/conformance.md`](docs/conformance.md)."
-                     % ("{:,}".format(cases), " and ".join(runs), ", ".join(commits), worst))
+    lines = [BEGIN, "## Status", "",
+             "| OpenGL | Adds | Result | Evidence |", "|---|---|---|---|"]
+    commits = sorted({meta.get("commit", "?") for b in suites.values() for meta, _ in b.values()})
+    for version, adds, suite in VERSIONS:
+        baselines = suites.get(suite) if suite else None
+        if baselines:
+            package = dict(SUITES)[suite]
+            runs = sorted(baselines)
+            rates = {k: applicable(baselines[k][1]) for k in runs}
+            worst = min(runs, key=lambda k: (rates[k][0] / max(rates[k][1], 1), k))
+            passed, total = rates[worst]
+            cases = len(baselines[worst][1])
+            if len(set(rates.values())) == 1:
+                evidence = "`%s`: %s of %s applicable cases (%s cases) in each of %d runs" % (
+                    package, "{:,}".format(passed), "{:,}".format(total), "{:,}".format(cases), len(runs))
+            else:
+                evidence = "`%s`: %s of %s applicable cases (%s cases) in the worst of %d runs (configuration %d, %s)" % (
+                    package, "{:,}".format(passed), "{:,}".format(total), "{:,}".format(cases), len(runs), worst[0],
+                    "Wine" if worst[1] == "wine" else "native")
+            result = percent(passed, total)
+        elif version < "3.0":
+            result = "Compatibility profile" + (", with the gaps listed under "
+                                                "[Compatibility profile](#compatibility-profile)" if version in COMPAT_GAPS else "")
+            evidence = "No public Khronos CTS; Wine fixtures, GPU tests and the game corpus"
+        elif version > "3.3":
+            available = [e for e in PROMOTED[version] if e in extensions]
+            result = "Not supported"
+            evidence = "Contexts stop at 3.3. " + (
+                "Of the %d extensions %s promoted, advertised: %s" % (
+                    len(PROMOTED[version]), version, ", ".join("`%s`" % e for e in available))
+                if available else "None of the %d extensions %s promoted is advertised" % (len(PROMOTED[version]), version))
+        else:
+            result, evidence = "Not measured", "No committed `%s` baseline" % dict(SUITES).get(suite, suite)
+        lines.append("| %s | %s | %s | %s |" % (version, adds, result, evidence))
+    lines += ["",
+              "Percentages are passing cases over applicable cases (those that are not NotSupported) in the worst run. "
+              "Each mustpass list runs in every `mustpass.xml` configuration, under Wine (`glcts.exe` through Wine's "
+              "`opengl32`) and natively (the core's driver ABI), at commit %s. NotSupported cases are unadvertised "
+              "extensions, newer GL versions and cases the test marks invalid; [`docs/conformance.md`]"
+              "(docs/conformance.md) lists each with its reason, and the per-run numbers." % ", ".join(commits)]
+    failing = [(case, f) for suite, _ in SUITES for case, f in sorted(failures.get(suite, {}).items())]
+    if failing:
+        lines += ["", "Cases that fail in some run:", ""]
+        lines += ["- `%s` (%s): %s" % (case, describe_runs(f["runs"]), f["reason"] or "not yet explained.")
+                  for case, f in failing]
     passed = [e for e in game_entries if game_results.get(e["name"], {}).get("status") == "PASS"]
     lines += ["", "Game corpus: %d of %d entries match their reference frames ([`docs/games.md`](docs/games.md))."
               % (len(passed), len(game_entries))]
@@ -335,10 +482,10 @@ def main():
     parser.add_argument("--check-provenance", action="store_true",
                         help="fail if any evidence file was recorded from a tree with uncommitted changes")
     args = parser.parse_args()
-    baselines = load_baselines()
+    suites = {suite: load_baselines(suite) for suite, _ in SUITES}
     if args.check_provenance:
         # Evidence recorded from a tree with uncommitted changes does not describe a commit.
-        recorded = [(meta["file"], meta.get("commit", "")) for meta, _ in baselines.values()]
+        recorded = [(meta["file"], meta.get("commit", "")) for b in suites.values() for meta, _ in b.values()]
         for name in ("results.json", "perf.json"):
             path = rel("tests", "games", name)
             if os.path.exists(path):
@@ -349,7 +496,7 @@ def main():
         dirty = ["%s (%s)" % (f, c) for f, c in recorded if c.endswith("-dirty") or "uncommitted" in c]
         if dirty:
             raise SystemExit("evidence recorded from uncommitted trees:\n  " + "\n  ".join(dirty))
-    outputs, status = render(baselines)
+    outputs, status = render(suites)
     readme = open(rel("README.md")).read()
     if BEGIN not in readme or END not in readme:
         raise SystemExit("README.md has no generated status section")

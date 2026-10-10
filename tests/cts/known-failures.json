@@ -1,0 +1,4 @@
+{
+  "comment": "Failing cases (Fail, Crash, Timeout, ...) in committed baselines that WineMetalGL does not change behaviour for, with the reason. scripts/docs/generate.py prints the reason next to the case and fails if an entry matches no failing result. A case without an entry is listed as not yet explained.",
+  "entries": []
+}
