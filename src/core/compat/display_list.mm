@@ -73,12 +73,8 @@ Pixels captureBitmap(Context& ctx, const void* data, GLsizei width, GLsizei heig
     Pixels p;
     p.unpack = ctx.state.unpack;
     if (!data && !ctx.state.pixelUnpackBuffer) return p;
-    const PixelStore& s = ctx.state.unpack;
-    const size_t rowPixels = static_cast<size_t>(s.rowLength > 0 ? s.rowLength : std::max(width, 0));
-    const size_t align = static_cast<size_t>(std::max(1, s.alignment));
-    const size_t rowBytes = ((rowPixels + 7) / 8 + align - 1) / align * align;
-    const size_t bytes = (static_cast<size_t>(s.skipRows) + static_cast<size_t>(std::max(height, 0))) * rowBytes +
-                         (static_cast<size_t>(s.skipPixels) + 7) / 8 + 1;
+    const size_t bytes = api::bitmapBytes(ctx.state.unpack, width, height);
+    if (!bytes) return p;
     if (const uint8_t* src = source(ctx, data, bytes)) {
         p.bytes.assign(src, src + bytes);
         p.null = false;
@@ -180,6 +176,9 @@ void EndList(Context& ctx) {
     if (!compatOnly(ctx)) return;
     if (!ctx.listCompiler || insideBeginEnd(ctx)) return ctx.setError(GL_INVALID_OPERATION);
     std::unique_ptr<ListCompiler> compiler = std::move(ctx.listCompiler);
+    // A compiled glBegin whose glEnd comes later (from another list or
+    // immediate mode): its vertices so far replay when the list runs.
+    compat::splitBatch(*compiler);
     ctx.share().displayLists[compiler->name] = compiler->list;
 }
 

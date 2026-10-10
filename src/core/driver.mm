@@ -22,7 +22,7 @@ namespace {
 constexpr int kMajorVersion = 0x2091, kMinorVersion = 0x2092, kLayerPlane = 0x2093, kFlags = 0x2094,
               kProfileMask = 0x9126, kResetStrategy = 0x8256, kNoError = 0x31B3, kReleaseBehavior = 0x2097;
 constexpr int kDebugBit = 0x1, kForwardCompatibleBit = 0x2, kRobustAccessBit = 0x4;
-constexpr int kCoreBit = 0x1, kCompatBit = 0x2, kES2Bit = 0x4;
+constexpr int kCoreBit = 0x1, kCompatBit = 0x2;
 constexpr int kLoseContextOnReset = 0x8252;
 
 void maxVersion(int& major, int& minor) {
@@ -141,11 +141,17 @@ WMGL_EXPORT wmgl_context* wmgl_context_create(int format, wmgl_context* share, c
         if (error) *error = WMGL_ERROR_INVALID_VERSION;
         return nullptr;
     }
-    if (profileGiven && (profile & kES2Bit)) {
-        if (error) *error = WMGL_ERROR_INVALID_PROFILE;
+    // WGL_ARB_create_context(_robustness): unknown flags, and the
+    // forward-compatible flag before 3.0, are ERROR_INVALID_VERSION_ARB.
+    if ((flags & ~(kDebugBit | kForwardCompatibleBit | kRobustAccessBit)) ||
+        ((flags & kForwardCompatibleBit) && requestedMajor < 3)) {
+        if (error) *error = WMGL_ERROR_INVALID_VERSION;
         return nullptr;
     }
-    if (profileGiven && !(profile & (kCoreBit | kCompatBit))) {
+    // The profile mask applies from 3.2 (it is ignored before): exactly one of
+    // the core and compatibility bits.
+    const bool profiles = requestedMajor > 3 || (requestedMajor == 3 && requestedMinor >= 2);
+    if (profiles && profileGiven && profile != kCoreBit && profile != kCompatBit) {
         if (error) *error = WMGL_ERROR_INVALID_PROFILE;
         return nullptr;
     }
@@ -156,9 +162,8 @@ WMGL_EXPORT wmgl_context* wmgl_context_create(int format, wmgl_context* share, c
         return nullptr;
     }
     // Profiles exist from 3.2; earlier requests (and legacy wglCreateContext) get compatibility.
-    const bool wantsCore = (requestedMajor > 3 || (requestedMajor == 3 && requestedMinor >= 2)) && (profile & kCoreBit);
-    config.coreProfile = wantsCore;
-    config.forwardCompatible = (flags & kForwardCompatibleBit) && requestedMajor >= 3;
+    config.coreProfile = profiles && profile == kCoreBit;
+    config.forwardCompatible = flags & kForwardCompatibleBit;
     config.debug = flags & kDebugBit;
     config.robustAccess = flags & kRobustAccessBit;
     // GL may return any later version that is backwards compatible with the request.

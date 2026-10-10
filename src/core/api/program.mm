@@ -457,8 +457,9 @@ void linkFrom(Context& ctx, Program* p, shader::LinkInput input, std::string log
     p->validateStatus = false;
     if (!ok) {
         WMGL_INFO("program %u failed to link:\n%s", program, log.c_str());
-        // A failed relink of the current program keeps its old executable in use.
-        if (p->useCount == 0) p->linked.reset();
+        // A failed relink of a program in use (current, or a program
+        // pipeline's stage) keeps its old executable in use.
+        if (p->useCount == 0 && p->stageUses == 0) p->linked.reset();
         return;
     }
     auto linked = std::make_shared<LinkedProgram>();
@@ -688,7 +689,7 @@ void ProgramBinary(Context& ctx, GLuint program, GLenum binaryFormat, const void
         p->linkAttempted = true;
         p->linkStatus = false;
         p->infoLog = "error: the program binary is not a WineMetalGL binary\n";
-        if (p->useCount == 0) p->linked.reset();
+        if (p->useCount == 0 && p->stageUses == 0) p->linked.reset();
         return;
     }
     p->attribBindings = input.attribBindings;

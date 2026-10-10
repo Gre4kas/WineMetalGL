@@ -826,6 +826,42 @@ COMPAT_TEST(compat_point_size_range) {
     CHECK_GL();
 }
 
+COMPAT_TEST(compat_texture_unit_lod_bias) {
+    // Level 0 red, level 1 green; drawn 1:1, a unit bias of +1 selects level 1.
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    std::vector<uint8_t> level0(64 * 64 * 4), level1(32 * 32 * 4);
+    for (size_t i = 0; i < level0.size(); i += 4) std::memcpy(&level0[i], kRed, 4);
+    for (size_t i = 0; i < level1.size(); i += 4) std::memcpy(&level1[i], kGreen, 4);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 64, 64, 0, GL_RGBA, GL_UNSIGNED_BYTE, level0.data());
+    glTexImage2D(GL_TEXTURE_2D, 1, GL_RGBA8, 32, 32, 0, GL_RGBA, GL_UNSIGNED_BYTE, level1.data());
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 1);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glEnable(GL_TEXTURE_2D);
+    glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
+    auto quad = [] {
+        glBegin(GL_QUADS);
+        glTexCoord2f(0, 0); glVertex2f(-1, -1);
+        glTexCoord2f(1, 0); glVertex2f(1, -1);
+        glTexCoord2f(1, 1); glVertex2f(1, 1);
+        glTexCoord2f(0, 1); glVertex2f(-1, 1);
+        glEnd();
+    };
+    clear();
+    quad();
+    CHECK(pixel(32, 32, kRed));
+    glTexEnvf(GL_TEXTURE_FILTER_CONTROL, GL_TEXTURE_LOD_BIAS, 1.0f);
+    clear();
+    quad();
+    CHECK(pixel(32, 32, kGreen));
+    glTexEnvf(GL_TEXTURE_FILTER_CONTROL, GL_TEXTURE_LOD_BIAS, 0.0f);
+    glDisable(GL_TEXTURE_2D);
+    glDeleteTextures(1, &tex);
+    CHECK_GL();
+}
+
 COMPAT_TEST(compat_integer_colour_queries) {
     // Integer queries of light and material colours map [-1, 1] to the full
     // integer range (GL 3.3 compatibility section 6.1.2).
@@ -931,5 +967,77 @@ void main() {
     glLoadIdentity();
     glUseProgram(0);
     glDeleteProgram(p);
+    CHECK_GL();
+}
+
+COMPAT_TEST(compat_display_list_split_primitives) {
+    pixelProjection();
+    const GLuint base = glGenLists(4);
+    // Vertices compiled outside glBegin belong to the primitive the list is called in.
+    glNewList(base, GL_COMPILE);
+    glColor3f(0, 1, 0);
+    glVertex2f(0, 0);
+    glVertex2f(64, 0);
+    glVertex2f(64, 64);
+    glVertex2f(0, 64);
+    glEndList();
+    clear();
+    glBegin(GL_QUADS);
+    glCallList(base);
+    glEnd();
+    CHECK(pixel(32, 32, kGreen));
+    // A list ending inside its glBegin: the primitive continues after the call.
+    glNewList(base + 1, GL_COMPILE);
+    glBegin(GL_TRIANGLES);
+    glColor3f(1, 0, 0);
+    glVertex2f(0, 0);
+    glVertex2f(128, 0);
+    glEndList();
+    clear();
+    glCallList(base + 1);
+    glVertex2f(0, 128);
+    glEnd();
+    CHECK(pixel(32, 32, kRed));
+    CHECK_GL();
+    // A list called inside a compiled glBegin runs between the vertices
+    // around it: with flat shading the quad takes its last vertex's colour.
+    glNewList(base + 2, GL_COMPILE);
+    glColor3f(0, 0, 1);
+    glEndList();
+    glNewList(base + 3, GL_COMPILE);
+    glBegin(GL_QUADS);
+    glColor3f(1, 0, 0);
+    glVertex2f(0, 0);
+    glVertex2f(64, 0);
+    glVertex2f(64, 64);
+    glCallList(base + 2);
+    glVertex2f(0, 64);
+    glEnd();
+    glEndList();
+    glShadeModel(GL_FLAT);
+    clear();
+    glCallList(base + 3);
+    glShadeModel(GL_SMOOTH);
+    CHECK(pixel(32, 32, kBlue));
+    glDeleteLists(base, 4);
+    CHECK_GL();
+}
+
+COMPAT_TEST(compat_array_element_generic_zero) {
+    // Generic array 0 is the vertex when enabled; the vertex array is not
+    // transferred as well.
+    const float generic[] = {-1, -1, 3, -1, -1, 3};
+    const float conventional[] = {5, 5, 5, 5, 5, 5};
+    glEnableClientState(GL_VERTEX_ARRAY);
+    glVertexPointer(2, GL_FLOAT, 0, conventional);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, generic);
+    glEnableVertexAttribArray(0);
+    clear();
+    glColor3f(1, 0, 0);
+    glBegin(GL_TRIANGLES);
+    for (int i = 0; i < 3; ++i) glArrayElement(i);
+    glEnd();
+    CHECK(pixel(32, 32, kRed));
+    glDisableClientState(GL_VERTEX_ARRAY);
     CHECK_GL();
 }

@@ -136,6 +136,9 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
         return true;
     case GL_NUM_EXTENSIONS: out = ints({static_cast<int64_t>(ctx.extensions().size())}); return true;
     case GL_RESET_NOTIFICATION_STRATEGY: out = ints({ctx.config().resetNotification}); return true;
+    case 0x90F3:  // GL_CONTEXT_ROBUST_ACCESS (GL_KHR_robustness)
+        out = bools({ctx.config().robustAccess});
+        return true;
     // --- limits
     case GL_MAX_TEXTURE_SIZE: case GL_MAX_CUBE_MAP_TEXTURE_SIZE: case GL_MAX_RECTANGLE_TEXTURE_SIZE:
     case GL_MAX_RENDERBUFFER_SIZE:

@@ -10,6 +10,7 @@
 #include "core/format/formats.h"
 #include "core/metal/device.h"
 #include "core/texture_storage.h"
+#include "core/util/log.h"
 #include "gl_api.gen.h"
 
 namespace wmgl::api {
@@ -88,9 +89,17 @@ void CopyImageSubData(Context& ctx, GLuint srcName, GLenum srcTarget, GLint srcL
     if (sbytes != dbytes || src.format->isDepthOrStencil() != dst.format->isDepthOrStencil() ||
         (src.format->isDepthOrStencil() && src.format != dst.format))
         return ctx.setError(GL_INVALID_OPERATION);
-    // The destination region covers the same blocks (a compressed source block is one destination texel).
-    const GLsizei dstWidth = static_cast<GLsizei>(srcWidth / static_cast<GLsizei>(sbw) * static_cast<GLsizei>(dbw));
-    const GLsizei dstHeight = static_cast<GLsizei>(srcHeight / static_cast<GLsizei>(sbh) * static_cast<GLsizei>(dbh));
+    // The destination region covers the same blocks (a compressed source
+    // block is one destination texel and the other way round). Blocks at the
+    // image edge may be partial: a source region reaching the edge counts its
+    // last block whole, and a destination block is clipped at the edge.
+    const uint32_t blocksW = (static_cast<uint32_t>(srcWidth) + sbw - 1) / sbw;
+    const uint32_t blocksH = (static_cast<uint32_t>(srcHeight) + sbh - 1) / sbh;
+    GLsizei dstWidth = static_cast<GLsizei>(blocksW * dbw), dstHeight = static_cast<GLsizei>(blocksH * dbh);
+    if (dbw > 1 && dstX + dstWidth > dst.width && dstX + dstWidth - dst.width < static_cast<GLsizei>(dbw))
+        dstWidth = dst.width - dstX;
+    if (dbh > 1 && dstY + dstHeight > dst.height && dstY + dstHeight - dst.height < static_cast<GLsizei>(dbh))
+        dstHeight = dst.height - dstY;
     auto inside = [](const Image& im, GLint x, GLint y, GLint z, GLsizei w, GLsizei h, GLsizei d) {
         return x >= 0 && y >= 0 && z >= 0 && x + w <= im.width && y + h <= im.height && z + d <= im.depth;
     };
@@ -106,15 +115,18 @@ void CopyImageSubData(Context& ctx, GLuint srcName, GLenum srcTarget, GLint srcL
     if (!aligned(src, srcX, srcY, srcWidth, srcHeight, sbw, sbh) || !aligned(dst, dstX, dstY, dstWidth, dstHeight, dbw, dbh))
         return ctx.setError(GL_INVALID_VALUE);
     if (!srcWidth || !srcHeight || !srcDepth) return;
-    if (src.samples > 1) {
-        // Metal blits do not copy multisample textures.
-        ctx.setError(GL_INVALID_OPERATION);
-        return;
+    id<MTLTexture> source = src.mtl;
+    if (src.samples > 1 && src.mtl.pixelFormat != dst.mtl.pixelFormat) {
+        // Multisample textures cannot go through a buffer: copy from a view
+        // of the source in the destination's format (same texel size).
+        source = [src.mtl newTextureViewWithPixelFormat:dst.mtl.pixelFormat];
+        if (!source) {
+            logOnce(LogLevel::Warn, "copy-image-ms-view", "multisample CopyImageSubData between these formats is not supported");
+            return;
+        }
     }
     id<MTLBlitCommandEncoder> blit = ctx.stream().blit();
-    const bool direct = src.mtl.pixelFormat == dst.mtl.pixelFormat;
-    const uint32_t blocksW = (static_cast<uint32_t>(srcWidth) + sbw - 1) / sbw;
-    const uint32_t blocksH = (static_cast<uint32_t>(srcHeight) + sbh - 1) / sbh;
+    const bool direct = source.pixelFormat == dst.mtl.pixelFormat;
     const NSUInteger bytesPerRow = static_cast<NSUInteger>(blocksW) * sbytes;
     const NSUInteger bytesPerImage = bytesPerRow * blocksH;
     id<MTLBuffer> staging = nil;
@@ -130,7 +142,7 @@ void CopyImageSubData(Context& ctx, GLuint srcName, GLenum srcTarget, GLint srcL
                                    dst.layered3D ? static_cast<NSUInteger>(dstZ + layer) : 0};
         const MTLSize sSize = {static_cast<NSUInteger>(srcWidth), static_cast<NSUInteger>(srcHeight), 1};
         if (direct) {
-            [blit copyFromTexture:src.mtl sourceSlice:sSlice sourceLevel:static_cast<NSUInteger>(srcLevel) sourceOrigin:sOrigin
+            [blit copyFromTexture:source sourceSlice:sSlice sourceLevel:static_cast<NSUInteger>(srcLevel) sourceOrigin:sOrigin
                        sourceSize:sSize toTexture:dst.mtl destinationSlice:dSlice destinationLevel:static_cast<NSUInteger>(dstLevel)
                 destinationOrigin:dOrigin];
             continue;
@@ -138,8 +150,7 @@ void CopyImageSubData(Context& ctx, GLuint srcName, GLenum srcTarget, GLint srcL
         [blit copyFromTexture:src.mtl sourceSlice:sSlice sourceLevel:static_cast<NSUInteger>(srcLevel) sourceOrigin:sOrigin
                    sourceSize:sSize toBuffer:staging destinationOffset:0 destinationBytesPerRow:bytesPerRow
         destinationBytesPerImage:bytesPerImage];
-        const MTLSize dSize = {static_cast<NSUInteger>(dstWidth ? dstWidth : static_cast<GLsizei>(blocksW * dbw)),
-                               static_cast<NSUInteger>(dstHeight ? dstHeight : static_cast<GLsizei>(blocksH * dbh)), 1};
+        const MTLSize dSize = {static_cast<NSUInteger>(dstWidth), static_cast<NSUInteger>(dstHeight), 1};
         [blit copyFromBuffer:staging sourceOffset:0 sourceBytesPerRow:bytesPerRow sourceBytesPerImage:bytesPerImage
                   sourceSize:dSize toTexture:dst.mtl destinationSlice:dSlice destinationLevel:static_cast<NSUInteger>(dstLevel)
            destinationOrigin:dOrigin];

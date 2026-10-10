@@ -18,6 +18,8 @@ thread_local Context* t_current = nullptr;
 
 }  // namespace
 
+thread_local int ShareLock::depth = 0;
+
 bool g_traceCalls = [] {
     const char* value = std::getenv("WINEMETALGL_TRACE");
     return value && value[0] == '1';

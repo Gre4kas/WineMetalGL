@@ -388,10 +388,10 @@ bool Surface::swapMailbox(CommandStream& stream) {
                         [commandBuffer presentDrawable:drawable];
                     }
                     [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer>) {
-                        {
-                            std::lock_guard<std::mutex> lock(box->mutex);
-                            box->state[slot] = Mailbox::Free;
-                        }
+                        // Notify under the lock: once it is released, stopMailbox()
+                        // may see no work left and free the mailbox.
+                        std::lock_guard<std::mutex> lock(box->mutex);
+                        box->state[slot] = Mailbox::Free;
                         box->changed.notify_all();
                     }];
                     [commandBuffer commit];
@@ -424,10 +424,9 @@ bool Surface::swapMailbox(CommandStream& stream) {
          destinationLevel:0 destinationOrigin:MTLOriginMake(0, 0, 0)];
     stream.endEncoder();
     [stream.commandBuffer() addCompletedHandler:^(id<MTLCommandBuffer>) {
-        {
-            std::lock_guard<std::mutex> lock(box->mutex);
-            box->state[slot] = Mailbox::Ready;
-        }
+        // Notify under the lock (see the present handler).
+        std::lock_guard<std::mutex> lock(box->mutex);
+        box->state[slot] = Mailbox::Ready;
         box->changed.notify_all();
     }];
     stream.flush();

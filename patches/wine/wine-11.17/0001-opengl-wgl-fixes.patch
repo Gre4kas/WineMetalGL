@@ -37,7 +37,7 @@ index 9ff082d..e4d4775 100644
      }
  
 diff --git a/dlls/win32u/opengl.c b/dlls/win32u/opengl.c
-index 6ab3a03..aa18799 100644
+index 6ab3a03..5679212 100644
 --- a/dlls/win32u/opengl.c
 +++ b/dlls/win32u/opengl.c
 @@ -275,9 +275,9 @@ static void parse_current_extensions( BOOLEAN extensions[GL_EXTENSION_COUNT] )
@@ -52,16 +52,4 @@ index 6ab3a03..aa18799 100644
 +        for (size_t i = 0; i < extension_count; i++) extensions[parsed_extensions[i]] = TRUE;
      }
  }
- 
-@@ -408,7 +408,10 @@ static BOOL opengl_drawable_swap( struct opengl_drawable *drawable )
- static struct opengl_context *internal_context_create(void)
- {
-     static const int attribs[] = { WGL_CONTEXT_PROFILE_MASK_ARB, WGL_CONTEXT_CORE_PROFILE_BIT_ARB, 0 };
--    struct opengl_context *context, *share = global_context ? global_context->driver_private : NULL;
-+    /* Client contexts must not inherit the internal core-profile context. The
-+     * compatibility/core mismatch marks every ordinary context as broken for
-+     * wglShareLists before applications can request sharing themselves. */
-+    struct opengl_context *context, *share = NULL;
-     BOOL shared = TRUE, doublebuffer;
-     int format;
  

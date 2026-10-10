@@ -122,7 +122,7 @@ void UseProgramStages(Context& ctx, GLuint pipeline, GLbitfield stages, GLuint p
     }
     for (const StageBit& s : kStageBits) {
         if (!(stages & s.bit)) continue;
-        pp->stages[static_cast<int>(s.stage)] = p && hasStage(*p, s.stage) ? p : RefPtr<Program>();
+        pp->setStage(static_cast<int>(s.stage), p && hasStage(*p, s.stage) ? p : RefPtr<Program>());
     }
     pp->executable.reset();
     ctx.markDirty(kDirtyProgram | kDirtyUniforms | kDirtyTextures | kDirtyVertexInput);

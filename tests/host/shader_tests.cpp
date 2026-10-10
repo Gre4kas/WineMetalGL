@@ -232,7 +232,7 @@ TEST(shader_fragment_point_coord_and_flat) {
     CHECK(r.ok);
     const StageOutput& fs = r.stages[static_cast<int>(Stage::Fragment)];
     CHECK(fs.usesPointCoord && fs.flatInputs);
-    CHECK(fs.msl.find("wmgl_point_flip") != std::string::npos);
+    CHECK(fs.msl.find("wmgl_fs_driver[0]") != std::string::npos);
     in.shaders[1].source = "#version 330 core\nout vec4 color; void main() { color = vec4(1.0); }\n";
     r = link(in);
     CHECK(r.ok && !r.stages[static_cast<int>(Stage::Fragment)].usesPointCoord && !r.stages[static_cast<int>(Stage::Fragment)].flatInputs);

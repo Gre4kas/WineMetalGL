@@ -7,13 +7,14 @@ Wine's OpenGL driver interface changes.
 
 - `0001-opengl-wgl-fixes.patch`: two Wine OpenGL fixes the core relies on.
   `win32u` indexes the parsed extension list correctly for drivers without
-  `GL_NUM_EXTENSIONS`, creates client contexts without inheriting its internal
-  core-profile context, and `wglChoosePixelFormatARB` keeps window requests
+  `GL_NUM_EXTENSIONS`, and `wglChoosePixelFormatARB` keeps window requests
   within the on-screen pixel formats.
 - `0002-winemac-winemetalgl-core.patch`: `winemac.drv` loads
   `libwinemetalgl.dylib` from its own directory and hands it a `CAMetalLayer`
   per window; contexts, surfaces, pbuffers and swaps go through the driver ABI
   in `include/winemetalgl/driver.h`. No CGL context is created.
+  `WGL_WINE_query_renderer` reports the core's renderer (vendor Apple, video
+  memory, GL versions), which wined3d uses to describe the GPU.
 
 The core is Wine's OpenGL once the patches are applied. `WINEMETALGL=0`
 selects Apple's OpenGL (reference frames), and `winemac.drv` falls back to

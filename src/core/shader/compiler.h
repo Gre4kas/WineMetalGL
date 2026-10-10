@@ -201,6 +201,11 @@ struct LinkResult {
     }
 };
 
+// GL_SAMPLE_MASK / GL_SAMPLE_COVERAGE: the fragment function with a
+// [[sample_mask]] output, word 1 of buffer kSlotDriverUniforms (empty if the
+// stage has no output struct or writes the sample mask itself).
+std::string fragmentWithSampleMask(const std::string& msl);
+
 LinkResult link(const LinkInput& input);
 
 // GL type helpers.

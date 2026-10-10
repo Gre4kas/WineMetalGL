@@ -2,8 +2,10 @@
 
 ## Artifacts
 
-`scripts/stage-release.sh /path/to/wine-build OUTPUT` stages a release from a
-Wine 11.17 build with `patches/wine` applied:
+`scripts/stage-release.sh /path/to/wine-build OUTPUT` builds the core from the
+checkout (`scripts/build.sh`), ad-hoc signs the Mach-O libraries and stages a
+release from a Wine 11.17 build with `patches/wine` applied. `STAGED-FROM.txt`
+records the commit, and says so when the tree had uncommitted changes:
 
 ```text
 OUTPUT/
@@ -24,9 +26,9 @@ the Wine build they were staged from; a different Wine tree applies
 `patches/wine` and takes only `libwinemetalgl.dylib`. `WINEMETALGL=0` selects
 Apple's OpenGL, and Wine falls back to it when the core cannot be loaded.
 
-`scripts/verify-release.sh OUTPUT` checks the layout, the architectures, that
-the core links no OpenGL.framework and exports only the driver ABI, and the
-SHA256 manifest.
+`scripts/verify-release.sh OUTPUT` checks the layout, the architectures and
+code signatures, that the core links no OpenGL.framework and exports only the
+driver ABI, and the SHA256 manifest.
 
 ## Preview builds and the release
 

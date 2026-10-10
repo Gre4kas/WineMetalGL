@@ -80,10 +80,6 @@ bool listExecutes(const Context& ctx) {
     return !ctx.listCompiler || ctx.listCompiler->mode == GL_COMPILE_AND_EXECUTE;
 }
 
-void recordCommand(Context& ctx, std::function<void(Context&)> command) {
-    if (ctx.listCompiler) ctx.listCompiler->list->commands.push_back(std::move(command));
-}
-
 namespace {
 
 void setAttributeNow(Context& ctx, int slot, const ImmediateBatch::Value& value, GLenum type) {
@@ -96,23 +92,66 @@ void setAttributeNow(Context& ctx, int slot, const ImmediateBatch::Value& value,
 
 void emitVertexRaw(Context& ctx, const ImmediateBatch::Value& position) {
     if (ListCompiler* lc = ctx.listCompiler.get()) {
-        if (lc->inBegin) lc->batch.vertex(position);
+        if (lc->inBegin && !lc->split) {
+            lc->batch.vertex(position);
+        } else {
+            // Outside a compiled glBegin the vertex belongs to the primitive
+            // the list is called in (GL 3.3 compatibility section 2.6.3).
+            lc->list->commands.push_back([position](Context& c) { emitVertexRaw(c, position); });
+        }
         if (lc->mode == GL_COMPILE) return;
     }
     if (ctx.immediate && ctx.immediate->active) ctx.immediate->batch.vertex(position);
     // A vertex outside glBegin/glEnd has no effect.
 }
 
+// Runs a compiled glBegin and the vertices batched after it through
+// immediate mode: each vertex with the values its varying slots took (from
+// a slot's first set on), then the values set after the last vertex.
+void replayBatch(Context& c, const ImmediateBatch& batch) {
+    api::Begin(c, batch.mode);
+    const size_t n = batch.vertexCount();
+    auto varying = [&](int slot) {
+        return slot != 0 && slot != kConvVertex && (batch.varying & (1u << slot));
+    };
+    for (size_t v = 0; v < n; ++v) {
+        for (int slot = 0; slot < kAttribSlotCount; ++slot) {
+            if (!varying(slot) || (!(batch.known & (1u << slot)) && v < batch.firstSet[static_cast<size_t>(slot)])) continue;
+            setAttributeNow(c, slot, batch.data[v * kAttribSlotCount + static_cast<size_t>(slot)],
+                            batch.types[static_cast<size_t>(slot)]);
+        }
+        emitVertexRaw(c, batch.data[v * kAttribSlotCount + kConvVertex]);
+    }
+    for (int slot = 0; slot < kAttribSlotCount; ++slot)
+        if (varying(slot)) setAttributeNow(c, slot, batch.current[static_cast<size_t>(slot)], batch.types[static_cast<size_t>(slot)]);
+}
+
 }  // namespace
+
+void splitBatch(ListCompiler& lc) {
+    if (!lc.inBegin || lc.split) return;
+    lc.list->commands.push_back([batch = std::move(lc.batch)](Context& c) { replayBatch(c, batch); });
+    lc.batch = ImmediateBatch();
+    lc.split = true;
+}
+
+void recordCommand(Context& ctx, std::function<void(Context&)> command) {
+    ListCompiler* lc = ctx.listCompiler.get();
+    if (!lc) return;
+    // A command compiled inside a compiled glBegin runs between its vertices.
+    splitBatch(*lc);
+    lc->list->commands.push_back(std::move(command));
+}
 
 void setAttribute(Context& ctx, int slot, const ImmediateBatch::Value& value, GLenum type) {
     if (slot == 0 && ctx.isCompat() && ((ctx.immediate && ctx.immediate->active) || (ctx.listCompiler && ctx.listCompiler->inBegin)))
         return emitVertexRaw(ctx, value);  // generic attribute 0 inside Begin/End specifies a vertex
     if (ListCompiler* lc = ctx.listCompiler.get()) {
-        if (lc->inBegin) {
+        if (lc->inBegin && !lc->split) {
             lc->batch.set(slot, value, type);
         } else {
-            lc->list->commands.push_back([slot, value, type](Context& c) { setAttributeNow(c, slot, value, type); });
+            // When the list runs inside glBegin/glEnd, generic attribute 0 is a vertex.
+            lc->list->commands.push_back([slot, value, type](Context& c) { setAttribute(c, slot, value, type); });
         }
         if (lc->mode == GL_COMPILE) return;
     }
@@ -275,6 +314,7 @@ bool compileArrayDraw(Context& ctx, GLenum mode, const std::vector<uint32_t>& in
         GLenum type;
         if (position && fetch(ctx, *position, index, value, type)) batch.vertex(value);
     }
+    splitBatch(*lc);
     lc->list->commands.push_back([batch = std::move(batch)](Context& c) { drawBatch(c, batch); });
     return lc->mode == GL_COMPILE_AND_EXECUTE;
 }
@@ -353,7 +393,11 @@ void Begin(Context& ctx, GLenum mode) {
     if (ListCompiler* lc = ctx.listCompiler.get()) {
         if (!lc->inBegin) {
             lc->inBegin = true;
+            lc->split = false;
             lc->batch.begin(mode, nullptr);
+        } else {
+            // Begin inside a compiled Begin: an error when the list runs.
+            compat::recordCommand(ctx, [mode](Context& c) { Begin(c, mode); });
         }
         if (lc->mode == GL_COMPILE) return;
     }
@@ -365,13 +409,19 @@ void Begin(Context& ctx, GLenum mode) {
 
 void End(Context& ctx) {
     if (!compatOnly(ctx)) return;
-    if (ListCompiler* lc = ctx.listCompiler.get(); lc && lc->inBegin) {
-        lc->inBegin = false;
-        lc->list->commands.push_back([batch = std::move(lc->batch)](Context& c) {
-            compat::drawBatch(c, batch);
-            applyBatchCurrent(c, batch);
-        });
-        lc->batch = ImmediateBatch();
+    if (ListCompiler* lc = ctx.listCompiler.get()) {
+        if (lc->inBegin && !lc->split) {
+            lc->list->commands.push_back([batch = std::move(lc->batch)](Context& c) {
+                compat::drawBatch(c, batch);
+                applyBatchCurrent(c, batch);
+            });
+            lc->batch = ImmediateBatch();
+        } else {
+            // The primitive was recorded command by command, or began
+            // outside this list (the list is called inside glBegin/glEnd).
+            lc->list->commands.push_back([](Context& c) { End(c); });
+        }
+        lc->inBegin = lc->split = false;
         if (lc->mode == GL_COMPILE) return;
     }
     ImmediateState& im = compat::immediate(ctx);
@@ -833,12 +883,14 @@ void ArrayElement(Context& ctx, GLint i) {
     if (!compatOnly(ctx)) return;
     if (i < 0) return ctx.setError(GL_INVALID_VALUE);
     const VertexArray& vao = *ctx.state.vertexArray;
-    const VertexAttrib* position = vao.attribs[kConvVertex].enabled ? &vao.attribs[kConvVertex]
-                                   : vao.attribs[0].enabled         ? &vao.attribs[0]
+    // Generic array 0 takes precedence over the vertex array (GL 3.3
+    // compatibility section 2.8.3); either one is transferred last, as the vertex.
+    const VertexAttrib* position = vao.attribs[0].enabled         ? &vao.attribs[0]
+                                   : vao.attribs[kConvVertex].enabled ? &vao.attribs[kConvVertex]
                                                                     : nullptr;
     for (int slot = 0; slot < kAttribSlotCount; ++slot) {
         const VertexAttrib& a = vao.attribs[static_cast<size_t>(slot)];
-        if (!a.enabled || &a == position || slot == kConvVertex) continue;
+        if (!a.enabled || slot == 0 || slot == kConvVertex) continue;
         ImmediateBatch::Value value;
         GLenum type;
         if (compat::fetch(ctx, a, static_cast<uint32_t>(i), value, type)) setAttribute(ctx, slot, value, type);

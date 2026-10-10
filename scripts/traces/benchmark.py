@@ -123,6 +123,10 @@ def main():
         for e in json.load(open(baseline_path)).get("entries", []):
             if e.get("new"):
                 baseline[e["name"]] = e["new"]["avg_ms"]
+    # With --only, the entries not measured keep their previous records.
+    previous = []
+    if args.only and os.path.exists(args.out):
+        previous = [e for e in json.load(open(args.out)).get("entries", []) if e["name"] not in args.only]
 
     manifest = json.load(open(args.manifest))
     entries = [e for e in manifest["entries"] if not args.only or e["name"] in args.only]
@@ -140,8 +144,13 @@ def main():
     records, failures = [], 0
     for entry in entries:
         new = measure(entry, "new", args, env)
-        apple = measure(entry, "apple", args, env) if entry["tier"] in ("A", "C") and entry.get("apple", True) else None
+        # Apple's OpenGL is timed for demos only: traces are timed with
+        # WineMetalGL's frame statistics, which Apple's OpenGL lacks.
+        compare = entry["tier"] in ("A", "C") and entry.get("apple", True) and entry["kind"] == "demo"
+        apple = measure(entry, "apple", args, env) if compare else None
         problems = []
+        if compare and not apple:
+            problems.append("no Apple OpenGL frame times")
         if not new:
             problems.append("no frame times")
         else:
@@ -157,17 +166,20 @@ def main():
         failures += status == "FAIL"
         ratio = round(new["avg_ms"] / apple["avg_ms"], 3) if new and apple else None
         records.append({"name": entry["name"], "tier": entry["tier"], "status": status, "new": new, "apple": apple,
-                        "ratio": ratio, "problems": problems})
+                        "ratio": ratio, "problems": problems,
+                        "apple_note": None if compare or entry["tier"] == "B" else
+                        "not timed: traces have no frame statistics under Apple's OpenGL"})
         print("%s %-22s new %s apple %s%s" % (
             status, entry["name"], "%.3f ms" % new["avg_ms"] if new else "-",
             "%.3f ms" % apple["avg_ms"] if apple else "-", ("  " + "; ".join(problems)) if problems else ""))
         sys.stdout.flush()
 
     commit = subprocess.run(["git", "-C", ROOT, "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
+    order = {e["name"]: i for i, e in enumerate(manifest["entries"])}
     record = {"commit": commit, "date": datetime.date.today().isoformat(), "runs": args.runs, "frames": args.frames,
               "budget": {"ratio": RATIO_BUDGET, "tier_b_frame_ms": round(TIER_B_FRAME_MS, 3), "hitch_ms": HITCH_MS,
                          "regression": REGRESSION},
-              "entries": records}
+              "entries": sorted(previous + records, key=lambda e: order.get(e["name"], len(order)))}
     with open(args.out, "w") as handle:
         json.dump(record, handle, indent=1)
         handle.write("\n")

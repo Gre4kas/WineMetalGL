@@ -269,6 +269,10 @@ def render(baselines):
                 p["name"], p["tier"], p["status"] + (" (" + "; ".join(p["problems"]) + ")" if p.get("problems") else ""),
                 times, "%.3f" % p["apple"]["avg_ms"] if p.get("apple") else "-",
                 "%.2fx" % p["ratio"] if p.get("ratio") else "-"))
+        untimed = [p["name"] for p in perf.get("entries", []) if p.get("apple_note")]
+        if untimed:
+            g += ["", "Not timed under Apple's OpenGL: %s (traces are timed with WineMetalGL's frame statistics, "
+                      "which Apple's OpenGL lacks)." % ", ".join("`%s`" % n for n in untimed)]
     games_md = "\n".join(g) + "\n"
 
     # ---- README status

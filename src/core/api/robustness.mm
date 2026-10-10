@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cstring>
 
+#include "core/compat/compat_api.h"
 #include "core/compat/fixed_state.h"
 #include "core/context.h"
 #include "core/format/pixel_transfer.h"
@@ -160,7 +161,9 @@ void GetnPixelMapuiv(Context& ctx, GLenum map, GLsizei bufSize, GLuint* values) 
 void GetnPixelMapusv(Context& ctx, GLenum map, GLsizei bufSize, GLushort* values) { getPixelMap(ctx, map, bufSize, values); }
 
 void GetnPolygonStipple(Context& ctx, GLsizei bufSize, GLubyte* pattern) {
-    if (!ctx.state.pixelPackBuffer && bufSize < 128) return ctx.setError(GL_INVALID_OPERATION);
+    // The pack state decides how many bytes the 32x32 pattern spans.
+    if (!ctx.state.pixelPackBuffer && (bufSize < 0 || static_cast<size_t>(bufSize) < bitmapBytes(ctx.state.pack, 32, 32)))
+        return ctx.setError(GL_INVALID_OPERATION);
     GetPolygonStipple(ctx, pattern);
 }
 

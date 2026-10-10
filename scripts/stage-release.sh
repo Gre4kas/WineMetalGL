@@ -20,6 +20,10 @@ wine_build=$1
 output=$2
 core="$project_root/build/release/libwinemetalgl.dylib"
 
+# Build the core from this checkout, so the staged library is the commit
+# recorded below.
+"$project_root/scripts/build.sh" >/dev/null
+
 for path in \
     "$core" \
     "$wine_build/dlls/opengl32/i386-windows/opengl32.dll" \
@@ -47,6 +51,11 @@ cp "$wine_build/dlls/win32u/win32u.so" "$output/artifacts/wine-driver/win32u.so"
 cp "$wine_build/dlls/opengl32/opengl32.so" "$output/artifacts/wine-driver/opengl32.so"
 cp "$wine_build/dlls/opengl32/i386-windows/opengl32.dll" "$output/artifacts/guest/i386/opengl32.dll"
 cp "$wine_build/dlls/opengl32/x86_64-windows/opengl32.dll" "$output/artifacts/guest/x86_64/opengl32.dll"
+# Ad-hoc signatures: a runtime that requires signed code refuses unsigned
+# libraries, and winemac.so would quietly fall back to Apple's OpenGL.
+for library in "$output"/artifacts/wine-driver/*; do
+    codesign --force --sign - "$library"
+done
 cp "$project_root/README.md" "$output/README.md"
 cp "$project_root/docs/conformance.md" "$output/docs/conformance.md"
 cp "$project_root/docs/api-coverage.json" "$output/docs/api-coverage.json"
@@ -58,8 +67,10 @@ cp "$project_root/tests/cts/notsupported.json" "$output/evidence/cts/notsupporte
 cp "$project_root/tests/games/corpus.json" "$project_root/tests/games/results.json" "$output/evidence/games/"
 if test -f "$project_root/tests/games/perf.json"; then cp "$project_root/tests/games/perf.json" "$output/evidence/games/"; fi
 
+commit=$(git -C "$project_root" rev-parse HEAD)
+if ! git -C "$project_root" diff --quiet HEAD; then commit="$commit (uncommitted changes)"; fi
 printf 'WineMetalGL staged from %s\nWine build: %s\nCommit: %s\n' \
-    "$project_root" "$wine_build" "$(git -C "$project_root" rev-parse HEAD)" > "$output/STAGED-FROM.txt"
+    "$project_root" "$wine_build" "$commit" > "$output/STAGED-FROM.txt"
 
 (
     cd "$output"

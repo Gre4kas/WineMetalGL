@@ -141,6 +141,8 @@ private:
     GLuint baseInstance_ = 0;
     // First vertex of the draw being bound when issue() renumbers vertices from it.
     GLint vertexRebase_ = 0;
+    // GL sample mask the current draw's fragment function writes (~0: none; prepare()).
+    uint32_t sampleMask_ = ~0u;
     std::shared_ptr<LinkedProgram> current_;  // keeps a pipeline executable alive during a draw
     // Fixed-function program of the current draw (owned by the share group's cache).
     Program* ownerProgram();

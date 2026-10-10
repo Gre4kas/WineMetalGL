@@ -315,7 +315,17 @@ void getQueryObject(Context& ctx, GLuint name, GLenum pname, T* params) {
     if (!q || !q->everActive || q->active) return ctx.setError(GL_INVALID_OPERATION);
     uint64_t value = 0;
     switch (pname) {
-    case GL_QUERY_RESULT: queryResultReady(ctx, *q, true); value = q->result; break;
+    case GL_QUERY_RESULT:
+        // Wait without the share-group lock (queries belong to one context;
+        // the wait touches only the queue), then collect the result.
+        if (q->pendingSerial && !q->resultFinal) {
+            if (!ctx.stream().queue().isCommitted(q->pendingSerial)) ctx.stream().flush();
+            ShareUnlock unlock(ctx);
+            ctx.stream().waitFor(q->pendingSerial);
+        }
+        queryResultReady(ctx, *q, true);
+        value = q->result;
+        break;
     case GL_QUERY_RESULT_AVAILABLE: value = queryResultReady(ctx, *q, false) ? 1 : 0; break;
     case GL_QUERY_RESULT_NO_WAIT:
         if (ctx.version() < 44) return ctx.setError(GL_INVALID_ENUM);
@@ -407,6 +417,7 @@ GLenum ClientWaitSync(Context& ctx, GLsync handle, GLbitfield flags, GLuint64 ti
     if (!sync->serial || queue.isComplete(sync->serial)) return GL_ALREADY_SIGNALED;
     if (flags & GL_SYNC_FLUSH_COMMANDS_BIT) ctx.stream().flush();
     if (timeout == 0) return GL_TIMEOUT_EXPIRED;
+    ShareUnlock unlock(ctx);  // `hold` keeps the sync alive
     return queue.wait(sync->serial, timeout) ? GL_CONDITION_SATISFIED : GL_TIMEOUT_EXPIRED;
 }
 

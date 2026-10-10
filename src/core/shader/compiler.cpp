@@ -148,19 +148,45 @@ void addPointSize(std::string& msl) {
 // Fragment stage: GL's gl_PointCoord origin is POINT_SPRITE_COORD_ORIGIN
 // (upper left by default); Metal's point_coord origin is the top of Metal's
 // framebuffer, which is GL's bottom row (GL row 0 = Metal row 0). The driver
-// passes a flip flag in buffer kSlotDriverUniforms.
+// passes a flip flag as word 0 of buffer kSlotDriverUniforms (word 1 is the
+// sample mask, fragmentWithSampleMask).
 bool patchPointCoord(std::string& msl) {
     const std::string param = "float2 gl_PointCoord [[point_coord]]";
     const size_t at = msl.find(param);
     const size_t fn = msl.find("fragment ");
     if (at == std::string::npos || fn == std::string::npos || at < fn) return false;
-    msl.replace(at, param.size(), "float2 wmgl_point_coord [[point_coord]], constant uint& wmgl_point_flip [[buffer(" +
+    msl.replace(at, param.size(), "float2 wmgl_point_coord [[point_coord]], constant uint* wmgl_fs_driver [[buffer(" +
                                       std::to_string(kSlotDriverUniforms) + ")]]");
     const size_t body = msl.find('{', at);
-    msl.insert(body + 1, "\n    float2 gl_PointCoord = wmgl_point_flip != 0u ? float2(wmgl_point_coord.x, 1.0 - wmgl_point_coord.y) "
+    msl.insert(body + 1, "\n    float2 gl_PointCoord = wmgl_fs_driver[0] != 0u ? float2(wmgl_point_coord.x, 1.0 - wmgl_point_coord.y) "
                          ": wmgl_point_coord;");
     return true;
 }
+
+}  // namespace
+
+std::string fragmentWithSampleMask(const std::string& msl) {
+    const std::string signature = "fragment main0_out main0(", member = "struct main0_out\n{\n";
+    const size_t structAt = msl.find(member);
+    if (msl.find("[[sample_mask]]") != std::string::npos || structAt == std::string::npos ||
+        msl.find(signature) == std::string::npos || structAt > msl.find(signature))
+        return std::string();
+    std::string out = msl;
+    out.insert(structAt + member.size(), "    uint wmgl_sample_mask [[sample_mask]];\n");
+    const size_t fn = out.find(signature);
+    if (out.find("wmgl_fs_driver [[buffer(") == std::string::npos) {
+        const size_t open = fn + signature.size() - 1;
+        const bool noParameters = out[open + 1] == ')';
+        out.insert(open + 1, "constant uint* wmgl_fs_driver [[buffer(" + std::to_string(kSlotDriverUniforms) + ")]]" +
+                                 (noParameters ? "" : ", "));
+    }
+    const std::string assign = "out.wmgl_sample_mask = wmgl_fs_driver[1]; ";
+    for (size_t at = out.find("return out;", fn); at != std::string::npos; at = out.find("return out;", at + assign.size() + 11))
+        out.insert(at, assign);
+    return out;
+}
+
+namespace {
 
 // Fragment stage: whether any input is flat (explicitly, or as an integer,
 // which Metal never interpolates); flat inputs take the provoking vertex.

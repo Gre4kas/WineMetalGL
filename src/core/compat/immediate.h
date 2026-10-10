@@ -54,8 +54,12 @@ struct ListCompiler {
     GLuint name = 0;
     GLenum mode = GL_COMPILE;  // or GL_COMPILE_AND_EXECUTE
     RefPtr<DisplayList> list;
-    bool inBegin = false;
-    ImmediateBatch batch;
+    bool inBegin = false;  // a compiled glBegin without its glEnd yet
+    ImmediateBatch batch;  // its vertices, drawn as one batch at glEnd
+    // The primitive is recorded command by command instead (another command
+    // was compiled inside it, or the list ends before its glEnd): the
+    // batch so far replays through immediate mode (compat::splitBatch).
+    bool split = false;
 };
 
 namespace compat {
@@ -79,6 +83,8 @@ void drawBatch(Context& ctx, const ImmediateBatch& batch);
 bool listExecutes(const Context& ctx);
 bool listCompiling(const Context& ctx);
 void recordCommand(Context& ctx, std::function<void(Context&)> command);
+// Ends batching of a compiled glBegin (see ListCompiler::split).
+void splitBatch(ListCompiler& lc);
 
 // A vertex array draw compiled into a display list: the arrays are read now
 // (GL 3.3 compatibility section 5.5.1) into a recorded batch. `indices` are

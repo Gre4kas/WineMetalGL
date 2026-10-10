@@ -36,6 +36,7 @@ struct PipelineKey {
     uint8_t sampleCount;
     uint8_t alphaToCoverage;
     uint8_t alphaToOne;
+    uint8_t sampleMask;     // fragment function writes the GL sample mask (LinkedProgram::fragmentSampleMask)
     uint8_t rasterization;
     uint8_t topologyClass;  // MTLPrimitiveTopologyClass
     uint8_t geometryPass;   // vertex function: the geometry emulation's pass-through

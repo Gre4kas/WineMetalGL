@@ -178,10 +178,31 @@ void traceCall(const char* command);
 void setCurrentContext(Context* context);
 void noCurrentContext(const char* command);
 
-// Scoped share-group lock.
+// Scoped share-group lock (every GL command runs under it).
 struct ShareLock {
-    explicit ShareLock(Context& ctx) : lock(ctx.share().mutex) {}
+    explicit ShareLock(Context& ctx) : lock(ctx.share().mutex) { ++depth; }
+    ~ShareLock() { --depth; }
     std::lock_guard<std::recursive_mutex> lock;
+    static thread_local int depth;  // share-group locks this thread holds
+};
+
+// Releases the calling thread's share-group lock around a GPU wait that
+// touches no shared state (fence and query waits, glFinish), so the other
+// contexts of the share group keep running meanwhile.
+class ShareUnlock {
+public:
+    explicit ShareUnlock(Context& ctx) : mutex_(ctx.share().mutex), depth_(ShareLock::depth) {
+        for (int i = 0; i < depth_; ++i) mutex_.unlock();
+    }
+    ~ShareUnlock() {
+        for (int i = 0; i < depth_; ++i) mutex_.lock();
+    }
+    ShareUnlock(const ShareUnlock&) = delete;
+    ShareUnlock& operator=(const ShareUnlock&) = delete;
+
+private:
+    std::recursive_mutex& mutex_;
+    int depth_;
 };
 
 }  // namespace wmgl

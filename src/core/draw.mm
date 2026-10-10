@@ -671,9 +671,10 @@ void DrawState::bindUniforms(id<MTLRenderCommandEncoder> encoder, LinkedProgram&
         const shader::StageOutput& stage = program.link.stages[s];
         if (!stage.present) continue;
         const bool vertex = s == static_cast<int>(Stage::Vertex);
-        if (stage.usesPointCoord) {
-            const uint32_t flip = ctx_.state.pointSpriteCoordOrigin == GL_UPPER_LEFT ? 1u : 0u;
-            [encoder setFragmentBytes:&flip length:sizeof(flip) atIndex:shader::kSlotDriverUniforms];
+        if (!vertex && (stage.usesPointCoord || sampleMask_ != ~0u)) {
+            // Fragment driver uniforms: the gl_PointCoord flip and the sample mask (compiler.cpp).
+            const uint32_t fragmentDriver[2] = {ctx_.state.pointSpriteCoordOrigin == GL_UPPER_LEFT ? 1u : 0u, sampleMask_};
+            [encoder setFragmentBytes:fragmentDriver length:sizeof(fragmentDriver) atIndex:shader::kSlotDriverUniforms];
         }
         // Default uniforms of the program that owns the stage.
         Program* owner = stageProgram(program, s);
@@ -747,7 +748,9 @@ void DrawState::samplerBinding(LinkedProgram& program, size_t index, __strong id
                                  : nullptr;
     if (texture && textureComplete(ctx_, *texture, samplerObject ? &samplerObject->params : &texture->sampler)) {
         view = samplingView(ctx_, *texture);
-        sampler = samplerState(ctx_, *texture, samplerObject ? samplerObject->params : texture->sampler, slot.shadow);
+        SamplerParams params = samplerObject ? samplerObject->params : texture->sampler;
+        params.lodBias += compat::textureUnitLodBias(ctx_, unit);  // glTexEnv(GL_TEXTURE_FILTER_CONTROL)
+        sampler = samplerState(ctx_, *texture, params, slot.shadow);
         texture->lastUseSerial = ctx_.stream().serial();
     } else {
         view = dummyTexture(slot.type);
@@ -851,6 +854,23 @@ id<MTLRenderCommandEncoder> DrawState::prepare(GLenum mode, MTLPrimitiveType& pr
     key.sampleCount = static_cast<uint8_t>(target.samples);
     key.alphaToCoverage = st.multisample && target.samples > 1 && st.sampleAlphaToCoverage;
     key.alphaToOne = st.multisample && target.samples > 1 && st.sampleAlphaToOne;
+    // GL_SAMPLE_MASK and GL_SAMPLE_COVERAGE: the fragment function writes the
+    // mask (a pipeline variant, so other draws keep Metal's fast paths).
+    sampleMask_ = ~0u;
+    if (st.multisample && target.samples > 1 && (st.sampleMask || st.sampleCoverage)) {
+        uint32_t mask = st.sampleMask ? st.sampleMaskValue : ~0u;
+        if (st.sampleCoverage) {
+            const uint32_t all = target.samples >= 32 ? ~0u : (1u << target.samples) - 1;
+            const long covered = std::lround(st.sampleCoverageValue * static_cast<float>(target.samples));
+            uint32_t coverage = covered >= 32 ? ~0u : (1u << covered) - 1;
+            if (st.sampleCoverageInvert) coverage = ~coverage & all;
+            mask &= coverage;
+        }
+        if (mask != ~0u && program->fragmentSampleMask()) {
+            key.sampleMask = 1;
+            sampleMask_ = mask;
+        }
+    }
     key.rasterization = !st.rasterizerDiscard;
     key.topologyClass = 0;
     for (int i = 0; i < 8; ++i) {

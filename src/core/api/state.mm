@@ -542,7 +542,12 @@ GLenum GetError(Context& ctx) { return ctx.takeError(); }
 
 void Flush(Context& ctx) { ctx.stream().flush(); }
 
-void Finish(Context& ctx) { ctx.stream().finish(); }
+void Finish(Context& ctx) {
+    const uint64_t serial = ctx.stream().flush();
+    if (!serial) return;
+    ShareUnlock unlock(ctx);  // the wait touches only the queue
+    ctx.stream().waitFor(serial);
+}
 
 const GLubyte* GetString(Context& ctx, GLenum name) {
     switch (name) {

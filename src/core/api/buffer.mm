@@ -374,7 +374,7 @@ void CopyBufferSubData(Context& ctx, GLenum readTarget, GLenum writeTarget, GLin
         return ctx.setError(GL_INVALID_VALUE);
     if (src == dst && std::max(readOffset, writeOffset) < std::min(readOffset, writeOffset) + size)
         return ctx.setError(GL_INVALID_VALUE);
-    if (src->mapped || dst->mapped) return ctx.setError(GL_INVALID_OPERATION);
+    if (src->mappedNonPersistent() || dst->mappedNonPersistent()) return ctx.setError(GL_INVALID_OPERATION);
     if (!size) return;
     [ctx.stream().blit() copyFromBuffer:src->mtl sourceOffset:static_cast<NSUInteger>(readOffset) toBuffer:dst->mtl
                         destinationOffset:static_cast<NSUInteger>(writeOffset) size:static_cast<NSUInteger>(size)];

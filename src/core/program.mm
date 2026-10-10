@@ -61,6 +61,20 @@ id<MTLFunction> LinkedProgram::vertexNoRaster() {
     return vertexNoRaster_;
 }
 
+id<MTLFunction> LinkedProgram::fragmentSampleMask() {
+    if (pipeline) {
+        const auto& fs = stageExecutable[static_cast<int>(shader::Stage::Fragment)];
+        return fs ? fs->fragmentSampleMask() : nil;
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (fragmentSampleMask_ || fragmentSampleMaskFailed_) return fragmentSampleMask_;
+    const shader::StageOutput& output = link.stages[static_cast<int>(shader::Stage::Fragment)];
+    const std::string msl = output.present ? shader::fragmentWithSampleMask(output.msl) : std::string();
+    if (!msl.empty()) fragmentSampleMask_ = compileFunction(msl, output.entryPoint, static_cast<int>(shader::Stage::Fragment));
+    fragmentSampleMaskFailed_ = fragmentSampleMask_ == nil;
+    return fragmentSampleMask_;
+}
+
 id<MTLFunction> LinkedProgram::geometryPassthrough() {
     if (pipeline) {
         const auto& vs = stageExecutable[static_cast<int>(shader::Stage::Vertex)];

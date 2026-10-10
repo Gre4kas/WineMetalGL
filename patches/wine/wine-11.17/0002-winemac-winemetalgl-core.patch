@@ -1,8 +1,8 @@
 diff --git a/dlls/winemac.drv/opengl.c b/dlls/winemac.drv/opengl.c
-index 696734f..2a8de1f 100644
+index 696734f..a9585f2 100644
 --- a/dlls/winemac.drv/opengl.c
 +++ b/dlls/winemac.drv/opengl.c
-@@ -2518,6 +2518,329 @@ static void macdrv_init_extensions(struct opengl_funcs *funcs, BOOLEAN extension
+@@ -2518,6 +2518,422 @@ static void macdrv_init_extensions(struct opengl_funcs *funcs, BOOLEAN extension
      funcs->p_wglQueryRendererStringWINE = macdrv_wglQueryRendererStringWINE;
  }
  
@@ -115,8 +115,101 @@ index 696734f..2a8de1f 100644
 +    return TRUE;
 +}
 +
++/* WGL_WINE_query_renderer for the core: one renderer, the Metal device.
++ * wined3d reads the vendor, device and video memory from it. */
++static BOOL wmgl_query_renderer_integer(GLenum attribute, GLuint *value)
++{
++    int core_major = 0, core_minor = 0, compat_major = 0, compat_minor = 0;
++
++    switch (attribute)
++    {
++        case WGL_RENDERER_ACCELERATED_WINE:
++            *value = 1;
++            return TRUE;
++        case WGL_RENDERER_UNIFIED_MEMORY_ARCHITECTURE_WINE:
++            *value = 1;  /* Apple silicon */
++            return TRUE;
++        case WGL_RENDERER_VENDOR_ID_WINE:
++            *value = 0x106b;  /* Apple */
++            return TRUE;
++        case WGL_RENDERER_DEVICE_ID_WINE:
++            *value = 0xffffffff;
++            return TRUE;
++        case WGL_RENDERER_OPENGL_CORE_PROFILE_VERSION_WINE:
++        case WGL_RENDERER_OPENGL_COMPATIBILITY_PROFILE_VERSION_WINE:
++            p_wmgl_max_versions(&core_major, &core_minor, &compat_major, &compat_minor);
++            if (attribute == WGL_RENDERER_OPENGL_CORE_PROFILE_VERSION_WINE)
++            {
++                value[0] = core_major;
++                value[1] = core_minor;
++            }
++            else
++            {
++                value[0] = compat_major;
++                value[1] = compat_minor;
++            }
++            return TRUE;
++        case WGL_RENDERER_PREFERRED_PROFILE_WINE:
++            *value = WGL_CONTEXT_CORE_PROFILE_BIT_ARB;
++            return TRUE;
++        case WGL_RENDERER_VERSION_WINE:
++            value[0] = value[1] = value[2] = 0;
++            get_fallback_renderer_version(value);
++            return TRUE;
++        case WGL_RENDERER_VIDEO_MEMORY_WINE:
++            *value = p_wmgl_video_memory_mb();
++            return TRUE;
++    }
++    FIXME("unrecognized attribute 0x%04x\n", attribute);
++    return FALSE;
++}
++
++static const char *wmgl_query_renderer_string(GLenum attribute)
++{
++    const char *vendor;
++
++    switch (attribute)
++    {
++        case WGL_RENDERER_DEVICE_ID_WINE:
++            return p_wmgl_renderer_string();
++        case WGL_RENDERER_VENDOR_ID_WINE:
++            /* The core's GL_VENDOR (WINEMETALGL_VENDOR overrides it). */
++            vendor = getenv("WINEMETALGL_VENDOR");
++            return vendor && *vendor ? vendor : "WineMetalGL";
++    }
++    FIXME("unrecognized attribute 0x%04x\n", attribute);
++    return NULL;
++}
++
++static BOOL wmgl_wglQueryCurrentRendererIntegerWINE(GLenum attribute, GLuint *value)
++{
++    return wmgl_query_renderer_integer(attribute, value);
++}
++
++static const char *wmgl_wglQueryCurrentRendererStringWINE(GLenum attribute)
++{
++    return wmgl_query_renderer_string(attribute);
++}
++
++static BOOL wmgl_wglQueryRendererIntegerWINE(HDC dc, GLint renderer, GLenum attribute, GLuint *value)
++{
++    if (renderer) return FALSE;
++    return wmgl_query_renderer_integer(attribute, value);
++}
++
++static const char *wmgl_wglQueryRendererStringWINE(HDC dc, GLint renderer, GLenum attribute)
++{
++    if (renderer) return NULL;
++    return wmgl_query_renderer_string(attribute);
++}
++
 +static void wmgl_init_extensions(struct opengl_funcs *funcs, BOOLEAN extensions[GL_EXTENSION_COUNT])
 +{
++    extensions[WGL_WINE_query_renderer] = 1;
++    funcs->p_wglQueryCurrentRendererIntegerWINE = wmgl_wglQueryCurrentRendererIntegerWINE;
++    funcs->p_wglQueryCurrentRendererStringWINE = wmgl_wglQueryCurrentRendererStringWINE;
++    funcs->p_wglQueryRendererIntegerWINE = wmgl_wglQueryRendererIntegerWINE;
++    funcs->p_wglQueryRendererStringWINE = wmgl_wglQueryRendererStringWINE;
 +}
 +
 +static void wmgl_surface_destroy(struct opengl_drawable *base)
@@ -332,7 +425,7 @@ index 696734f..2a8de1f 100644
  /**********************************************************************
   *              macdrv_OpenGLInit
   */
-@@ -2532,6 +2855,8 @@ UINT macdrv_OpenGLInit(UINT version, const struct opengl_funcs *opengl_funcs, co
+@@ -2532,6 +2948,8 @@ UINT macdrv_OpenGLInit(UINT version, const struct opengl_funcs *opengl_funcs, co
      }
      funcs = opengl_funcs;
  

@@ -158,7 +158,7 @@ glShaderSource glValidateProgram glFlush glFinish glNewList glEndList glMap1d gl
 # Begin/End build batches, vertex array draws dereference the arrays
 # (core/compat/immediate.h).
 SELF_RECORDED = re.compile(
-    r"^gl(Begin|End|EdgeFlagv?|ArrayElement|DrawArrays|DrawElements|DrawRangeElements|MultiDrawArrays|"
+    r"^gl(Begin$|End$|EdgeFlagv?$|ArrayElement|DrawArrays|DrawElements|DrawRangeElements|MultiDrawArrays|"
     r"MultiDrawElements|Rect[dfis]v?|Color[34]|SecondaryColor3|Normal3|TexCoord[1-4]|MultiTexCoord[1-4]|"
     r"FogCoord[df]|Vertex[234]|VertexAttrib(I|L|P|4N)?[1-4]|Index[dfisu])")
 
@@ -219,12 +219,13 @@ def list_recorder(cmd, info, api_name):
             count = "wmgl::list::callListsBytes(n, type)"
         elif comp is None and length and re.match(r"^[A-Za-z0-9_*]+$", length) and \
                 all(tok.isdigit() or tok in names for tok in length.split("*")):
-            count = "static_cast<size_t>(%s)" % length
+            count = "(%s)" % length  # a negative count captures nothing (the command reports it when run)
         else:
             return None
         t = base_type(ptype)
-        pre.append("std::vector<%s> v_%s; if (%s) v_%s.assign(reinterpret_cast<const %s*>(%s), reinterpret_cast<const %s*>(%s) + %s);"
-                   % (t, pname, pname, pname, t, pname, t, pname, count))
+        pre.append("std::vector<%s> v_%s; if (%s && %s > 0) v_%s.assign(reinterpret_cast<const %s*>(%s), "
+                   "reinterpret_cast<const %s*>(%s) + static_cast<size_t>(%s));"
+                   % (t, pname, pname, count, pname, t, pname, t, pname, count))
         pre.append("const bool null_%s = %s == nullptr;" % (pname, pname))
         captures.append("v_%s = std::move(v_%s)" % (pname, pname))
         captures.append("null_%s" % pname)

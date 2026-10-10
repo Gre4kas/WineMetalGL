@@ -250,14 +250,24 @@ public:
     uint64_t uniformVersion = 0;
     bool deletePending = false;
     int useCount = 0;  // contexts with this program current
+    int stageUses = 0;  // program pipeline stages using it
 };
 
 // GL_ARB_separate_shader_objects program pipeline (per context).
 class ProgramPipeline : public RefCounted, public Labeled {
 public:
     explicit ProgramPipeline(GLuint name) : name(name) {}
+    ~ProgramPipeline() {
+        for (RefPtr<Program>& stage : stages)
+            if (stage) --stage->stageUses;
+    }
     GLuint name;
-    RefPtr<Program> stages[6];   // indexed by shader::Stage
+    RefPtr<Program> stages[6];   // indexed by shader::Stage (set through setStage)
+    void setStage(int stage, RefPtr<Program> program) {
+        if (stages[stage]) --stages[stage]->stageUses;
+        if (program) ++program->stageUses;
+        stages[stage] = std::move(program);
+    }
     RefPtr<Program> activeProgram;
     bool validateStatus = false;
     std::string infoLog;

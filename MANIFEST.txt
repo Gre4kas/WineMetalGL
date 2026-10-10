@@ -151,6 +151,7 @@ tests/gpu/gpu.h
 tests/gpu/main.cpp
 tests/gpu/query_tests.cpp
 tests/gpu/raster_tests.cpp
+tests/gpu/review_tests.cpp
 tests/gpu/separate_shader_tests.cpp
 tests/gpu/texture_tests.cpp
 tests/gpu/transform_feedback_tests.cpp

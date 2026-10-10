@@ -34,6 +34,9 @@ struct LinkedProgram {
     id<MTLFunction> function(shader::Stage stage);
     // Vertex function returning void, for pipelines with rasterization disabled.
     id<MTLFunction> vertexNoRaster();
+    // Fragment function writing GL_SAMPLE_MASK / GL_SAMPLE_COVERAGE's mask
+    // (shader::fragmentWithSampleMask); nil if it cannot.
+    id<MTLFunction> fragmentSampleMask();
     bool functionFailed(shader::Stage stage) const { return failed_[static_cast<int>(stage)]; }
     // Geometry shader emulation (link.geometry): the drawing vertex function
     // and the geometry kernel.
@@ -63,6 +66,8 @@ private:
     bool failed_[shader::kStageCount] = {};
     id<MTLFunction> vertexNoRaster_ = nil;
     bool vertexNoRasterFailed_ = false;
+    id<MTLFunction> fragmentSampleMask_ = nil;
+    bool fragmentSampleMaskFailed_ = false;
     id<MTLFunction> passthrough_ = nil;
     id<MTLComputePipelineState> kernel_ = nil;
     bool passthroughFailed_ = false, kernelFailed_ = false;

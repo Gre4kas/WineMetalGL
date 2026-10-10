@@ -3,8 +3,10 @@
 set -eu
 
 project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+# The presets are read from the current directory.
+cd "$project_root"
 
-cmake --preset release -S "$project_root"
+cmake --preset release
 cmake --build --preset release
 
 library="$project_root/build/release/libwinemetalgl.dylib"
