@@ -161,13 +161,50 @@ void drawBlit(Context& ctx, const RenderTargetDesc& target, id<MTLRenderPipeline
     ctx.stream().noteDraw();
 }
 
+// Resolves a multisampled depth/stencil level to a single-sample texture
+// (sample 0 for both aspects, as GL allows any sample for stencil).
+RenderTargetDesc::Target resolveDepthStencil(Context& ctx, const RenderTargetDesc::Target& src, uint32_t width,
+                                             uint32_t height) {
+    MTLTextureDescriptor* desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:src.texture.pixelFormat
+                                                                                     width:width
+                                                                                    height:height
+                                                                                 mipmapped:NO];
+    desc.storageMode = MTLStorageModePrivate;
+    desc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+    id<MTLTexture> resolved = [Device::get().mtl() newTextureWithDescriptor:desc];
+    ctx.stream().resolvePendingClear();
+    ctx.stream().endEncoder();
+    MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
+    const bool combined = src.texture.pixelFormat == MTLPixelFormatDepth32Float_Stencil8;
+    if (combined || src.texture.pixelFormat != MTLPixelFormatStencil8) {
+        pass.depthAttachment.texture = src.texture;
+        pass.depthAttachment.resolveTexture = resolved;
+        pass.depthAttachment.loadAction = MTLLoadActionLoad;
+        pass.depthAttachment.storeAction = MTLStoreActionStoreAndMultisampleResolve;
+        pass.depthAttachment.depthResolveFilter = MTLMultisampleDepthResolveFilterSample0;
+    }
+    if (combined || src.texture.pixelFormat == MTLPixelFormatStencil8) {
+        pass.stencilAttachment.texture = src.texture;
+        pass.stencilAttachment.resolveTexture = resolved;
+        pass.stencilAttachment.loadAction = MTLLoadActionLoad;
+        pass.stencilAttachment.storeAction = MTLStoreActionStoreAndMultisampleResolve;
+        pass.stencilAttachment.stencilResolveFilter = MTLMultisampleStencilResolveFilterSample0;
+    }
+    [[ctx.stream().commandBuffer() renderCommandEncoderWithDescriptor:pass] endEncoding];
+    RenderTargetDesc::Target out;
+    out.texture = resolved;
+    return out;
+}
+
 // Stencil blit through the CPU (nearest filtering only, as GL requires).
-void blitStencil(Context& ctx, const RenderTargetDesc::Target& src, uint32_t srcW, uint32_t srcH,
+void blitStencil(Context& ctx, const RenderTargetDesc::Target& source, uint32_t srcW, uint32_t srcH,
                  const RenderTargetDesc::Target& dst, uint32_t dstW, uint32_t dstH, const GLint s[4], const GLint d[4]) {
-    if (src.texture.sampleCount > 1 || dst.texture.sampleCount > 1) {
-        logOnce(LogLevel::Warn, "blit-ms-stencil", "multisampled stencil blits are not supported");
+    if (dst.texture.sampleCount > 1) {
+        logOnce(LogLevel::Warn, "blit-ms-stencil", "stencil blits into multisampled buffers are not supported");
         return;
     }
+    const RenderTargetDesc::Target src =
+        source.texture.sampleCount > 1 ? resolveDepthStencil(ctx, source, srcW, srcH) : source;
     const Rect clip = writableRect(ctx, normalized(d[0], d[1], d[2], d[3]), dstW, dstH);
     if (clip.empty()) return;
     auto option = [](id<MTLTexture> t) {
@@ -256,7 +293,6 @@ void BlitFramebuffer(Context& ctx, GLint srcX0, GLint srcY0, GLint srcX1, GLint 
             const bool srcInt = colorInfo && colorInfo->isInteger();
             if (srcInt != dstFormats.integer[i]) return ctx.setError(GL_INVALID_OPERATION);
             if (srcInt && filter == GL_LINEAR) return ctx.setError(GL_INVALID_OPERATION);
-            if (srcSamples > 1 && srcColor.texture.pixelFormat != dstFormats.color[i]) return ctx.setError(GL_INVALID_OPERATION);
         }
     }
     if (doDepth && srcDepth.texture.pixelFormat != dstFormats.depth) return ctx.setError(GL_INVALID_OPERATION);

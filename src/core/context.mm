@@ -67,6 +67,8 @@ void Context::initStrings() {
     extensions_.clear();
     if (!config_.coreProfile) extensions_.push_back("GL_ARB_compatibility");
     extensions_.push_back("GL_ARB_ES2_compatibility");
+    extensions_.push_back("GL_ARB_texture_storage");
+    extensions_.push_back("GL_ARB_texture_storage_multisample");
     extensions_.push_back("GL_EXT_texture_compression_s3tc");
     extensions_.push_back("GL_EXT_texture_filter_anisotropic");
     extensions_.push_back("GL_ARB_texture_filter_anisotropic");

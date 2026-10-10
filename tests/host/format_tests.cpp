@@ -19,9 +19,10 @@ TEST(format_depth24_uses_d32f) {
     CHECK(d24s8 && d24s8->storage == Storage::Depth32Float_Stencil8 && d24s8->depthBits == 24 && d24s8->stencilBits == 8);
 }
 
-TEST(format_snorm_not_color_renderable) {
+TEST(format_snorm_color_renderable) {
+    // Not required by GL 3.3, but supported: Metal renders to SNORM formats.
     const FormatInfo* f = formatInfo(GL_RGBA8_SNORM);
-    CHECK(f && !f->colorRenderable && f->textureFilterable);
+    CHECK(f && f->colorRenderable && f->textureFilterable && !f->requiredRenderbuffer);
 }
 
 TEST(format_integer_not_filterable) {

@@ -46,7 +46,8 @@ void unpackPixels(const void* src, GLenum format, GLenum type, int width, int he
                   const PixelStoreParams& ps, const FormatInfo& info, void* out);
 
 // Converts tightly packed storage texels of `info` to client pixels.
-// `clampColor` applies GL's read colour clamping.
+// `clampColor` applies ReadPixels colour clamping to [0, 1] (CLAMP_READ_COLOR);
+// GetTexImage passes false.
 void packPixels(const void* storage, const FormatInfo& info, int width, int height, int depth, GLenum format,
                 GLenum type, const PixelStoreParams& ps, bool clampColor, void* dst);
 

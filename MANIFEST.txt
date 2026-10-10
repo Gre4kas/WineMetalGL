@@ -149,6 +149,7 @@ tests/host/test.h
 tests/native/glsl_translation_probe.c
 tests/native/probe-metalsharp-opengl.sh
 tests/wine/core_triangle.c
+tests/wine/cts_wgl_sequence.c
 tests/wine/opengl_1d.c
 tests/wine/opengl_blend.c
 tests/wine/opengl_clear_metal.c

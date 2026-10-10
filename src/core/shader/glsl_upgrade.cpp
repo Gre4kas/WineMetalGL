@@ -396,4 +396,78 @@ std::string unescapeName(std::string name) {
     return name;
 }
 
+std::string checkReservedWords(const std::string& source) {
+    const GlslVersion version = parseGlslVersion(source);
+    if (version.es || version.number < 130 || version.number >= 400) return "";
+    static const std::set<std::string> reserved = {
+        "common", "partition", "active", "asm", "class", "union", "enum", "typedef", "template", "this", "packed",
+        "goto", "inline", "noinline", "volatile", "public", "static", "extern", "external", "interface", "long",
+        "short", "double", "half", "fixed", "unsigned", "superp", "input", "output", "hvec2", "hvec3", "hvec4",
+        "dvec2", "dvec3", "dvec4", "fvec2", "fvec3", "fvec4", "sampler3DRect", "filter", "image1D", "image2D",
+        "image3D", "imageCube", "iimage1D", "iimage2D", "iimage3D", "iimageCube", "uimage1D", "uimage2D", "uimage3D",
+        "uimageCube", "image1DArray", "image2DArray", "iimage1DArray", "iimage2DArray", "uimage1DArray",
+        "uimage2DArray", "image1DShadow", "image2DShadow", "image1DArrayShadow", "image2DArrayShadow", "imageBuffer",
+        "iimageBuffer", "uimageBuffer", "sizeof", "cast", "namespace", "using", "row_major"};
+    std::string errors;
+    const size_t n = source.size();
+    size_t i = 0;
+    int line = 1;
+    bool lineStart = true;
+    int layoutDepth = -1;  // parenthesis depth inside layout(...), -1 outside
+    int depth = 0;
+    std::string previous;
+    while (i < n) {
+        const char c = source[i];
+        if (c == '\n') {
+            ++line;
+            ++i;
+            lineStart = true;
+            continue;
+        }
+        if (std::isspace(static_cast<unsigned char>(c))) {
+            ++i;
+            continue;
+        }
+        if (source.compare(i, 2, "//") == 0) {
+            while (i < n && source[i] != '\n') ++i;
+            continue;
+        }
+        if (source.compare(i, 2, "/*") == 0) {
+            const size_t end = source.find("*/", i + 2);
+            const size_t stop = end == std::string::npos ? n : end + 2;
+            for (size_t k = i; k < stop; ++k) line += source[k] == '\n';
+            i = stop;
+            continue;
+        }
+        if (c == '#' && lineStart) {
+            while (i < n && source[i] != '\n') {
+                if (source[i] == '\\' && i + 1 < n && source[i + 1] == '\n') ++line, ++i;
+                ++i;
+            }
+            continue;
+        }
+        lineStart = false;
+        if (isIdentStart(c)) {
+            size_t end = i;
+            while (end < n && isIdent(source[end])) ++end;
+            const std::string word = source.substr(i, end - i);
+            i = end;
+            if (layoutDepth < 0 && reserved.count(word))
+                errors += "ERROR: 0:" + std::to_string(line) + ": '" + word + "' : Reserved word.\n";
+            previous = word;
+            continue;
+        }
+        if (c == '(') {
+            if (previous == "layout" && layoutDepth < 0) layoutDepth = depth;
+            ++depth;
+        } else if (c == ')') {
+            --depth;
+            if (depth == layoutDepth) layoutDepth = -1;
+        }
+        previous.clear();
+        ++i;
+    }
+    return errors;
+}
+
 }  // namespace wmgl::shader

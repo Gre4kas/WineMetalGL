@@ -271,3 +271,54 @@ GPU_TEST(gpu_texture_errors) {
     CHECK(!glIsTexture(tex));
     CHECK_GL();
 }
+
+GPU_TEST(gpu_texture_rectangle_fetch) {
+    const uint8_t texels[4] = {32, 64, 96, 128};
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_RECTANGLE, tex);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_RECTANGLE, 0, GL_R8, 2, 2, 0, GL_RED, GL_UNSIGNED_BYTE, texels);
+    CHECK_GL();
+    const char* fs = R"(#version 330 core
+in vec2 uv; uniform sampler2DRect tex; out vec4 o;
+void main() { o = vec4(texelFetch(tex, ivec2(1, 0)).r, texture(tex, vec2(0.5, 1.5)).r, 0, 1); })";
+    const uint8_t want[4] = {64, 96, 0, 255};
+    CHECK(gpu::near(drawAndRead(fs).data(), want));
+    glDeleteTextures(1, &tex);
+    CHECK_GL();
+}
+
+GPU_TEST(gpu_texture_multisample_integer_fetch) {
+    // Render into a multisampled RGB10_A2UI texture, then fetch a sample with usampler2DMS.
+    GLuint ms = 0, fb = 0;
+    glGenTextures(1, &ms);
+    glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, ms);
+    glTexImage2DMultisample(GL_TEXTURE_2D_MULTISAMPLE, 4, GL_RGB10_A2UI, 8, 8, GL_TRUE);
+    glGenFramebuffers(1, &fb);
+    glBindFramebuffer(GL_FRAMEBUFFER, fb);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D_MULTISAMPLE, ms, 0);
+    CHECK_EQ(glCheckFramebufferStatus(GL_FRAMEBUFFER), static_cast<GLenum>(GL_FRAMEBUFFER_COMPLETE));
+    const char* writeFs = R"(#version 330 core
+out uvec4 o;
+void main() { o = uvec4(4u, 5u, 6u, 1u); })";
+    GLuint writer = gpu::program(R"(#version 330 core
+in vec2 position;
+void main() { gl_Position = vec4(position, 0.0, 1.0); })", writeFs);
+    GLuint vao = gpu::quad();
+    glViewport(0, 0, 8, 8);
+    glUseProgram(writer);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glViewport(0, 0, 64, 64);
+    const char* readFs = R"(#version 330 core
+in vec2 uv; uniform usampler2DMS tex; out vec4 o;
+void main() { uvec4 v = texelFetch(tex, ivec2(2, 2), 1); o = vec4(float(v.r) / 8.0, float(v.g) / 8.0, float(v.b) / 8.0, 1.0); })";
+    const uint8_t want[4] = {128, 159, 191, 255};
+    CHECK(gpu::near(drawAndRead(readFs).data(), want, 2));
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(writer);
+    glDeleteFramebuffers(1, &fb);
+    glDeleteTextures(1, &ms);
+    CHECK_GL();
+}

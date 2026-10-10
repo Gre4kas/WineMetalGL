@@ -26,18 +26,35 @@ DrawState::DrawState(Context& ctx) : ctx_(ctx), transient_(ctx.share().queue) {}
 
 namespace {
 
+// sRGB storage is written (and blitted) raw unless GL_FRAMEBUFFER_SRGB is
+// enabled: attachments then use a non-sRGB view of the same texture.
+MTLPixelFormat linearFormat(MTLPixelFormat format) {
+    switch (format) {
+    case MTLPixelFormatRGBA8Unorm_sRGB: return MTLPixelFormatRGBA8Unorm;
+    case MTLPixelFormatBGRA8Unorm_sRGB: return MTLPixelFormatBGRA8Unorm;
+    default: return MTLPixelFormatInvalid;
+    }
+}
+
+constexpr uint64_t kLinearRenderViewKey = ~0ull;
+
 bool attachmentTarget(Context& ctx, const Attachment& a, RenderTargetDesc::Target& out, MTLPixelFormat& format,
                       uint32_t& width, uint32_t& height, uint32_t& samples, const FormatInfo*& info) {
+    const bool linear = !ctx.state.framebufferSRGB;
     if (a.type == GL_RENDERBUFFER) {
         Renderbuffer* rb = a.renderbuffer.get();
         if (!rb || !rb->mtl) return false;
         out.texture = rb->mtl;
+        if (linear && linearFormat(rb->mtl.pixelFormat)) {
+            if (!rb->linearView) rb->linearView = [rb->mtl newTextureViewWithPixelFormat:linearFormat(rb->mtl.pixelFormat)];
+            out.texture = rb->linearView;
+        }
         out.level = 0;
         out.slice = 0;
         width = rb->width;
         height = rb->height;
         samples = std::max(1, rb->samples);
-        format = rb->mtl.pixelFormat;
+        format = out.texture.pixelFormat;
         info = rb->format;
         return true;
     }
@@ -48,12 +65,22 @@ bool attachmentTarget(Context& ctx, const Attachment& a, RenderTargetDesc::Targe
         const TextureImage& image = tex->image(face, a.level);
         if (!image.defined() || a.level >= tex->mtlLevels) return false;
         out.texture = tex->mtl;
+        if (linear && linearFormat(tex->mtl.pixelFormat)) {
+            id<MTLTexture> view = nil;
+            for (const Texture::View& v : tex->views)
+                if (v.key == kLinearRenderViewKey) view = v.view;
+            if (!view) {
+                view = [tex->mtl newTextureViewWithPixelFormat:linearFormat(tex->mtl.pixelFormat)];
+                tex->views.push_back({kLinearRenderViewKey, view});
+            }
+            out.texture = view;
+        }
         out.level = static_cast<uint32_t>(a.level);
         out.slice = tex->target == GL_TEXTURE_CUBE_MAP ? static_cast<uint32_t>(face) : static_cast<uint32_t>(a.layer);
         width = static_cast<uint32_t>(image.width);
         height = static_cast<uint32_t>(image.height);
         samples = std::max(1, image.samples);
-        format = tex->mtl.pixelFormat;
+        format = out.texture.pixelFormat;
         info = image.format;
         return true;
     }
@@ -70,8 +97,9 @@ bool DrawState::drawTarget(RenderTargetDesc& target, TargetFormats& formats, boo
         Surface* surface = ctx_.drawSurface();
         if (!surface) return false;
         surface->describe(target);
-        formats.color[0] = surface->color().pixelFormat;
-        formats.srgb[0] = surface->srgbCapable();
+        if (!ctx_.state.framebufferSRGB) target.color[0].texture = surface->linearColor();
+        formats.color[0] = target.color[0].texture.pixelFormat;
+        formats.srgb[0] = surface->srgbCapable() && ctx_.state.framebufferSRGB;
         if (target.depth.texture) formats.depth = target.depth.texture.pixelFormat;
         if (target.stencil.texture) formats.stencil = target.stencil.texture.pixelFormat;
         // GL_NONE / GL_FRONT_AND_BACK draw buffer selection on the default framebuffer.
@@ -187,6 +215,8 @@ bool DrawState::readTarget(GLenum buffer, RenderTargetDesc::Target& out, const F
             if (ctx_.state.defaultReadBuffer == GL_NONE) return false;
             surface->resolveForRead(ctx_.stream());
             out.texture = surface->resolvedColor();
+            if (!ctx_.state.framebufferSRGB && linearFormat(out.texture.pixelFormat))
+                out.texture = [out.texture newTextureViewWithPixelFormat:linearFormat(out.texture.pixelFormat)];
             info = formatInfo(surface->srgbCapable() ? GL_SRGB8_ALPHA8 : GL_RGBA8);
             return true;
         }

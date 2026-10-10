@@ -43,6 +43,8 @@ public:
     id<MTLTexture> color() const { return color_; }          // what draws render into (MSAA if samples > 1)
     id<MTLTexture> resolvedColor() const { return resolve_ ? resolve_ : color_; }
     id<MTLTexture> depthStencil() const { return depthStencil_; }
+    // Non-sRGB view of the colour buffer, for rendering with GL_FRAMEBUFFER_SRGB disabled.
+    id<MTLTexture> linearColor();
     bool hasDepth() const { return pixelFormat().depth_bits > 0; }
     bool hasStencil() const { return pixelFormat().stencil_bits > 0; }
     bool srgbCapable() const { return pixelFormat().srgb_capable; }
@@ -63,7 +65,7 @@ private:
     int width_ = 0, height_ = 0;
     uint32_t samples_ = 1;
     int interval_ = 1;
-    id<MTLTexture> color_ = nil, resolve_ = nil, depthStencil_ = nil;
+    id<MTLTexture> color_ = nil, resolve_ = nil, depthStencil_ = nil, linearColor_ = nil;
     id<MTLRenderPipelineState> presentPipeline_ = nil;
     id<MTLSamplerState> presentSampler_ = nil;
 };

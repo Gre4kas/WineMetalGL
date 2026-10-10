@@ -39,7 +39,9 @@ std::unordered_map<GLenum, FormatInfo> buildTable() {
         const GLenum base = f.baseFormat;
         const bool colorBase = base == GL_RED || base == GL_RG || base == GL_RGB || base == GL_RGBA;
         f.compressed = storageIsCompressed(f.storage);
-        f.colorRenderable = colorBase && !f.compressed && f.type != CT::SignedNormalized && f.storage != S::RGB9E5Float;
+        // SNORM formats are not required to be colour-renderable in GL 3.3, but
+        // Metal renders and blends them on every Apple GPU, so they are.
+        f.colorRenderable = colorBase && !f.compressed && f.storage != S::RGB9E5Float;
         f.depthRenderable = f.depthBits != 0;
         f.stencilRenderable = f.stencilBits != 0;
         f.textureFilterable = !f.isInteger();

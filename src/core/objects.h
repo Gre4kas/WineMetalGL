@@ -137,6 +137,7 @@ public:
     const FormatInfo* format = nullptr;
     GLsizei width = 0, height = 0, samples = 0;
     id<MTLTexture> mtl = nil;
+    id<MTLTexture> linearView = nil;  // non-sRGB view of sRGB storage (raw writes)
     uint64_t lastUseSerial = 0;
     std::string label;
 };

@@ -39,4 +39,9 @@ inline constexpr const char* kEscapePrefix = "wmglK_";
 std::string escapeVulkanKeywords(const std::string& source);
 std::string unescapeName(std::string name);
 
+// GLSL 1.30-3.30 keywords reserved for future use may not be used as
+// identifiers (they remain valid as layout qualifiers). Returns compile
+// errors in glslang's log format, or an empty string.
+std::string checkReservedWords(const std::string& source);
+
 }  // namespace wmgl::shader

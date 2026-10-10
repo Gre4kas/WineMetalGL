@@ -65,6 +65,20 @@ void configure(glslang::TShader& shader, EShLanguage lang) {
     shader.setAutoMapBindings(true);
 }
 
+// MSL has no rectangle textures: rectangle images become 2D images (the
+// driver samples them with unnormalized-coordinate samplers and texelFetch
+// maps to read()).
+std::vector<uint32_t> rectImagesAs2D(std::vector<uint32_t> spirv) {
+    constexpr uint32_t kOpTypeImage = 25, kDimRect = 4, kDim2D = 1;
+    for (size_t i = 5; i < spirv.size();) {
+        const uint32_t count = spirv[i] >> 16, opcode = spirv[i] & 0xffff;
+        if (count == 0) break;
+        if (opcode == kOpTypeImage && count > 3 && spirv[i + 3] == kDimRect) spirv[i + 3] = kDim2D;
+        i += count;
+    }
+    return spirv;
+}
+
 // Strips glslang's trailing "N compilation errors" noise but keeps messages.
 std::string cleanLog(const char* info, const char* debug) {
     std::string log = info ? info : "";
@@ -89,7 +103,10 @@ bool parseForCodegen(Stage stage, const std::string& original, ParsedShader& out
     const char* text = out.source.c_str();
     out.shader->setStrings(&text, 1);
     configure(*out.shader, lang);
-    if (!out.shader->parse(GetDefaultResources(), 140, ENoProfile, false, false, kMessages)) {
+    // Validity was decided by compile()'s GL-rules parse; codegen tolerates
+    // what desktop drivers accept (e.g. 'defined' produced by macro expansion).
+    if (!out.shader->parse(GetDefaultResources(), 140, ENoProfile, false, false,
+                           static_cast<EShMessages>(kMessages | EShMsgRelaxedErrors))) {
         log += unescapeName(cleanLog(out.shader->getInfoLog(), out.shader->getInfoDebugLog()));
         return false;
     }
@@ -348,6 +365,29 @@ CompileResult compile(Stage stage, const std::string& source) {
     shader.setEnvTarget(glslang::EShTargetNone, glslang::EShTargetLanguageVersion(0));
     result.ok = shader.parse(GetDefaultResources(), 110, ENoProfile, false, false, EShMsgDefault);
     result.log = cleanLog(shader.getInfoLog(), shader.getInfoDebugLog());
+    if (!result.ok && result.log.find("cannot use in preprocessor expression when expanded from macros") != std::string::npos) {
+        // 'defined' produced by macro expansion is undefined behaviour in GLSL;
+        // desktop drivers evaluate it. Accept the shader if that is the only problem.
+        glslang::TShader relaxed(lang);
+        relaxed.setStrings(&text, 1);
+        relaxed.setEnvInput(glslang::EShSourceGlsl, lang, glslang::EShClientNone, 0);
+        relaxed.setEnvClient(glslang::EShClientNone, glslang::EShTargetClientVersion(0));
+        relaxed.setEnvTarget(glslang::EShTargetNone, glslang::EShTargetLanguageVersion(0));
+        if (relaxed.parse(GetDefaultResources(), 110, ENoProfile, false, false, EShMsgRelaxedErrors)) {
+            const std::string relaxedLog = cleanLog(relaxed.getInfoLog(), relaxed.getInfoDebugLog());
+            if (relaxedLog.find("ERROR") == std::string::npos) {
+                result.ok = true;
+                result.log = relaxedLog;
+            }
+        }
+    }
+    if (result.ok) {
+        const std::string reserved = checkReservedWords(source);
+        if (!reserved.empty()) {
+            result.ok = false;
+            result.log += reserved;
+        }
+    }
     if (result.ok) {
         // Make sure the shader also translates; report problems here rather
         // than as a mysterious link failure.
@@ -702,7 +742,7 @@ LinkResult link(const LinkInput& input) {
         StageOutput& stage = result.stages[s];
         if (!stage.present) continue;
         try {
-            spirv_cross::CompilerMSL msl(stage.spirv);
+            spirv_cross::CompilerMSL msl(rectImagesAs2D(stage.spirv));
             spirv_cross::CompilerMSL::Options mslOptions;
             mslOptions.platform = spirv_cross::CompilerMSL::Options::macOS;
             mslOptions.set_msl_version(3, 0);

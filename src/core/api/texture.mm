@@ -403,6 +403,7 @@ void texImage(Context& ctx, int dims, GLenum target, GLint level, GLint internal
     if (!formatAllowedOnTarget(*info, t.target)) return ctx.setError(GL_INVALID_OPERATION);
     if (info->compressed && !compressedFormatSupported(ctx, info)) return ctx.setError(GL_INVALID_ENUM);
     if (!textureTransferCompatible(format, type, *info)) return ctx.setError(GL_INVALID_OPERATION);
+    if (!t.proxy && t.tex->immutable) return ctx.setError(GL_INVALID_OPERATION);
     if (t.proxy) {
         TextureImage& image = t.tex->image(t.face, level);
         if (tooLarge || mtlPixelFormat(info->storage) == MTLPixelFormatInvalid) return clearImage(image);
@@ -469,6 +470,7 @@ void compressedTexImage(Context& ctx, int dims, GLenum target, GLint level, GLen
     if (!formatAllowedOnTarget(*info, t.target)) return ctx.setError(GL_INVALID_OPERATION);
     bool tooLarge;
     if (!sizeAllowed(ctx, t, level, width, height, depth, border, tooLarge)) return;
+    if (!t.proxy && t.tex->immutable) return ctx.setError(GL_INVALID_OPERATION);
     if (t.proxy) {
         TextureImage& image = t.tex->image(t.face, level);
         if (tooLarge) return clearImage(image);
@@ -679,6 +681,7 @@ void copyTexImage(Context& ctx, int dims, GLenum target, GLint level, GLenum int
     if (!probe) return ctx.setError(GL_INVALID_VALUE);
     if (probe->compressed && !compressedFormatSupported(ctx, probe)) return ctx.setError(GL_INVALID_ENUM);
     if (!formatAllowedOnTarget(*probe, t.target)) return ctx.setError(GL_INVALID_OPERATION);
+    if (t.tex->immutable) return ctx.setError(GL_INVALID_OPERATION);
     CopySource src;
     if (!copySource(ctx, probe->isDepthOrStencil(), src)) return;
     // Unsized formats take their component sizes from the read buffer.
@@ -978,7 +981,7 @@ void getTexParameter(Context& ctx, GLenum target, GLenum pname, T* params, Param
         for (int i = 0; i < 4; ++i) v.i[i] = tex->swizzle[i];
         break;
     case GL_TEXTURE_IMMUTABLE_FORMAT:
-        if (ctx.version() < 42) return ctx.setError(GL_INVALID_ENUM);
+        if (ctx.version() < 42 && !ctx.hasExtension("GL_ARB_texture_storage")) return ctx.setError(GL_INVALID_ENUM);
         v.i[0] = tex->immutable;
         break;
     case GL_TEXTURE_IMMUTABLE_LEVELS:
@@ -1117,6 +1120,68 @@ void texImageMultisample(Context& ctx, GLenum target, bool proxy, GLsizei sample
         return;
     }
     defineImage(ctx, *tex, 0, 0, internalformat, info, width, height, depth, actual, fixedsamplelocations != GL_FALSE);
+    ensureTextureStorage(ctx, *tex);
+}
+
+// glTexStorage* (GL_ARB_texture_storage): defines every level at once and
+// makes the texture's format and size immutable.
+void texStorage(Context& ctx, int dims, GLenum target, GLsizei levels, GLenum internalformat, GLsizei width,
+                GLsizei height, GLsizei depth) {
+    GLenum base = proxyBase(target) ? proxyBase(target) : target;
+    const bool proxy = base != target;
+    bool ok = false;
+    switch (base) {
+    case GL_TEXTURE_1D: ok = dims == 1; break;
+    case GL_TEXTURE_2D: case GL_TEXTURE_1D_ARRAY: case GL_TEXTURE_RECTANGLE: case GL_TEXTURE_CUBE_MAP: ok = dims == 2; break;
+    case GL_TEXTURE_3D: case GL_TEXTURE_2D_ARRAY: ok = dims == 3; break;
+    case GL_TEXTURE_CUBE_MAP_ARRAY: ok = dims == 3 && ctx.version() >= 40; break;
+    default: break;
+    }
+    if (!ok) return ctx.setError(GL_INVALID_ENUM);
+    const FormatInfo* info = formatInfo(internalformat);
+    if (!info || info->internalFormat != internalformat) return ctx.setError(GL_INVALID_ENUM);
+    if (info->compressed && !compressedFormatSupported(ctx, info)) return ctx.setError(GL_INVALID_ENUM);
+    if (levels < 1 || width < 1 || height < 1 || depth < 1) return ctx.setError(GL_INVALID_VALUE);
+    Texture* tex = proxy ? ctx.proxyTextures[textureTargetIndex(base)].get() : boundTexture(ctx, base);
+    if (!tex || (!proxy && tex->name == 0)) return ctx.setError(GL_INVALID_OPERATION);
+    if (!proxy && tex->immutable) return ctx.setError(GL_INVALID_OPERATION);
+    if (!formatAllowedOnTarget(*info, base)) return ctx.setError(GL_INVALID_OPERATION);
+    const bool oneDArray = base == GL_TEXTURE_1D_ARRAY;
+    const bool arrays = base == GL_TEXTURE_2D_ARRAY || base == GL_TEXTURE_CUBE_MAP_ARRAY;
+    const GLsizei chain = fullMipCount(width, oneDArray || base == GL_TEXTURE_1D ? 1 : height, base == GL_TEXTURE_3D ? depth : 1);
+    if (levels > chain || (base == GL_TEXTURE_RECTANGLE && levels != 1)) return ctx.setError(GL_INVALID_OPERATION);
+    if ((base == GL_TEXTURE_CUBE_MAP || base == GL_TEXTURE_CUBE_MAP_ARRAY) && width != height)
+        return ctx.setError(GL_INVALID_VALUE);
+    const GLint maxSize = maxSizeFor(base);
+    const bool tooLarge = width > maxSize || (!oneDArray && height > maxSize) || (oneDArray && height > kMaxArrayLayers) ||
+                          (base == GL_TEXTURE_3D && depth > maxSize) || (arrays && depth > kMaxArrayLayers);
+    if (tooLarge && !proxy) return ctx.setError(GL_INVALID_VALUE);
+    GLsizei w = width, h = height, d = depth;
+    for (int level = 0; level < Texture::kMaxLevels; ++level) {
+        for (int face = 0; face < tex->faceCount(); ++face) {
+            TextureImage& image = tex->image(face, level);
+            if (level >= levels || (proxy && tooLarge)) {
+                clearImage(image);
+                continue;
+            }
+            if (proxy) {
+                image.internalFormat = image.requestedFormat = internalformat;
+                image.format = info;
+                image.width = w;
+                image.height = h;
+                image.depth = d;
+            } else {
+                defineImage(ctx, *tex, face, level, internalformat, info, w, h, d);
+            }
+        }
+        w = std::max(1, w / 2);
+        if (!oneDArray && base != GL_TEXTURE_1D) h = std::max(1, h / 2);
+        if (base == GL_TEXTURE_3D) d = std::max(1, d / 2);
+    }
+    if (proxy) return;
+    tex->immutable = true;
+    tex->immutableLevels = levels;
+    tex->storageDirty = true;
     ensureTextureStorage(ctx, *tex);
 }
 
@@ -1397,6 +1462,50 @@ void GenerateMipmap(Context& ctx, GLenum target) {
     imageChanged(ctx, *tex);
 }
 
+void TexStorage1D(Context& ctx, GLenum target, GLsizei levels, GLenum internalformat, GLsizei width) {
+    texStorage(ctx, 1, target, levels, internalformat, width, 1, 1);
+}
+
+void TexStorage2D(Context& ctx, GLenum target, GLsizei levels, GLenum internalformat, GLsizei width, GLsizei height) {
+    texStorage(ctx, 2, target, levels, internalformat, width, height, 1);
+}
+
+void TexStorage3D(Context& ctx, GLenum target, GLsizei levels, GLenum internalformat, GLsizei width, GLsizei height,
+                  GLsizei depth) {
+    texStorage(ctx, 3, target, levels, internalformat, width, height, depth);
+}
+
+void TexStorage2DMultisample(Context& ctx, GLenum target, GLsizei samples, GLenum internalformat, GLsizei width,
+                             GLsizei height, GLboolean fixedsamplelocations) {
+    if (target != GL_TEXTURE_2D_MULTISAMPLE && target != GL_PROXY_TEXTURE_2D_MULTISAMPLE)
+        return ctx.setError(GL_INVALID_ENUM);
+    const FormatInfo* info = formatInfo(internalformat);
+    if (!info || info->internalFormat != internalformat) return ctx.setError(GL_INVALID_ENUM);
+    if (width < 1 || height < 1) return ctx.setError(GL_INVALID_VALUE);
+    texImageMultisample(ctx, GL_TEXTURE_2D_MULTISAMPLE, target == GL_PROXY_TEXTURE_2D_MULTISAMPLE, samples,
+                        internalformat, width, height, 1, fixedsamplelocations);
+    if (Texture* tex = boundTexture(ctx, GL_TEXTURE_2D_MULTISAMPLE); tex && target == GL_TEXTURE_2D_MULTISAMPLE && tex->image(0, 0).defined()) {
+        tex->immutable = true;
+        tex->immutableLevels = 1;
+    }
+}
+
+void TexStorage3DMultisample(Context& ctx, GLenum target, GLsizei samples, GLenum internalformat, GLsizei width,
+                             GLsizei height, GLsizei depth, GLboolean fixedsamplelocations) {
+    if (target != GL_TEXTURE_2D_MULTISAMPLE_ARRAY && target != GL_PROXY_TEXTURE_2D_MULTISAMPLE_ARRAY)
+        return ctx.setError(GL_INVALID_ENUM);
+    const FormatInfo* info = formatInfo(internalformat);
+    if (!info || info->internalFormat != internalformat) return ctx.setError(GL_INVALID_ENUM);
+    if (width < 1 || height < 1 || depth < 1) return ctx.setError(GL_INVALID_VALUE);
+    texImageMultisample(ctx, GL_TEXTURE_2D_MULTISAMPLE_ARRAY, target == GL_PROXY_TEXTURE_2D_MULTISAMPLE_ARRAY, samples,
+                        internalformat, width, height, depth, fixedsamplelocations);
+    if (Texture* tex = boundTexture(ctx, GL_TEXTURE_2D_MULTISAMPLE_ARRAY);
+        tex && target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY && tex->image(0, 0).defined()) {
+        tex->immutable = true;
+        tex->immutableLevels = 1;
+    }
+}
+
 // ------------------------------------------------------------ read-back
 
 void GetTexImage(Context& ctx, GLenum target, GLint level, GLenum format, GLenum type, void* pixels) {
@@ -1448,15 +1557,12 @@ void GetTexImage(Context& ctx, GLenum target, GLint level, GLenum format, GLenum
         std::vector<float> rgba(static_cast<size_t>(image.width) * image.height * image.depth * 4);
         decodeRgtc(info.storage, static_cast<const uint8_t*>(staging.contents), image.width, image.height, image.depth,
                    rgba.data());
-        packPixels(rgba.data(), *formatInfo(GL_RGBA32F), image.width, image.height, image.depth, format, type, ps, true, dst);
+        packPixels(rgba.data(), *formatInfo(GL_RGBA32F), image.width, image.height, image.depth, format, type, ps, false, dst);
         return;
     }
     std::vector<uint8_t> texels =
         readImageTexels(ctx, t.tex->mtl, info.storage, static_cast<uint32_t>(level), slice, x, y, z, w, h, d);
-    const bool clampColor = ctx.state.clampReadColorMode == GL_TRUE ||
-                            (ctx.state.clampReadColorMode == GL_FIXED_ONLY &&
-                             (info.type == ComponentType::UnsignedNormalized || info.type == ComponentType::SignedNormalized));
-    packPixels(texels.data(), info, image.width, image.height, image.depth, format, type, ps, clampColor, dst);
+    packPixels(texels.data(), info, image.width, image.height, image.depth, format, type, ps, false, dst);
 }
 
 void GetCompressedTexImage(Context& ctx, GLenum target, GLint level, void* img) {

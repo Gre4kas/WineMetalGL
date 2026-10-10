@@ -198,6 +198,9 @@ bool textureComplete(Context& ctx, Texture& tex, const SamplerParams* params) {
     const bool mipmapped = p.minFilter != GL_NEAREST && p.minFilter != GL_LINEAR &&
                            tex.target != GL_TEXTURE_RECTANGLE && tex.target != GL_TEXTURE_2D_MULTISAMPLE &&
                            tex.target != GL_TEXTURE_2D_MULTISAMPLE_ARRAY;
+    // Multisample textures have no sampler state and are complete once defined.
+    const bool multisample = tex.target == GL_TEXTURE_2D_MULTISAMPLE || tex.target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY;
+    if (multisample) return ensureTextureStorage(ctx, tex);
     // Integer formats cannot be filtered; depth formats only with compare mode
     // or nearest filtering in some cases (GL 3.3: depth textures filter linearly).
     if (baseImage.format && baseImage.format->isInteger() &&

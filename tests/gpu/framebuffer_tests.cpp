@@ -1,4 +1,6 @@
 // Framebuffer objects, blits, buffer clears and copies.
+#include <cmath>
+
 #include "gpu.h"
 
 namespace {
@@ -201,5 +203,35 @@ GPU_TEST(gpu_copy_tex_image) {
     CHECK(gpu::near(&texels[20 * 4], green));
     GLuint texs[2] = {tex, tex2};
     glDeleteTextures(2, texs);
+    CHECK_GL();
+}
+
+GPU_TEST(gpu_depth_only_fbo_read) {
+    // Depth texture only; draw/read buffers keep their COLOR_ATTACHMENT0 defaults.
+    GLuint tex = 0, fb = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, 8, 8, 0, GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
+    glGenFramebuffers(1, &fb);
+    glBindFramebuffer(GL_FRAMEBUFFER, fb);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, tex, 0);
+    CHECK_EQ(glCheckFramebufferStatus(GL_FRAMEBUFFER), static_cast<GLenum>(GL_FRAMEBUFFER_COMPLETE));
+    glClearDepth(0.25);
+    glClear(GL_DEPTH_BUFFER_BIT);
+    GLfloat depth = 0;
+    glReadPixels(3, 3, 1, 1, GL_DEPTH_COMPONENT, GL_FLOAT, &depth);
+    CHECK_GL();
+    CHECK(std::abs(depth - 0.25f) < 1e-6f);
+    // Draw buffers may name any attachment in any slot.
+    const GLenum bufs[2] = {GL_NONE, GL_COLOR_ATTACHMENT0};
+    glDrawBuffers(2, bufs);
+    CHECK_GL();
+    const GLenum dup[2] = {GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT1};
+    glDrawBuffers(2, dup);
+    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_INVALID_OPERATION));
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &fb);
+    glDeleteTextures(1, &tex);
+    glClearDepth(1.0);
     CHECK_GL();
 }

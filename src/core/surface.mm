@@ -127,6 +127,13 @@ void Surface::setSwapInterval(int interval) {
     if (layer_) layer_.displaySyncEnabled = interval != 0;
 }
 
+id<MTLTexture> Surface::linearColor() {
+    if (color_.pixelFormat != MTLPixelFormatRGBA8Unorm_sRGB) return color_;
+    if (!linearColor_ || linearColor_.parentTexture != color_)
+        linearColor_ = [color_ newTextureViewWithPixelFormat:MTLPixelFormatRGBA8Unorm];
+    return linearColor_;
+}
+
 void Surface::describe(RenderTargetDesc& target) const {
     target = RenderTargetDesc();
     target.color[0].texture = color_;

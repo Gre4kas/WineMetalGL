@@ -74,10 +74,19 @@ GLint samples(Context& ctx) {
         Surface* s = ctx.drawSurface();
         return s && s->samples() > 1 ? static_cast<GLint>(s->samples()) : 0;
     }
-    for (const Attachment& a : fb->color) {
+    // A complete framebuffer's attachments all have the same sample count.
+    auto attachmentSamples = [](const Attachment& a) -> GLint {
         if (a.type == GL_RENDERBUFFER && a.renderbuffer) return a.renderbuffer->samples > 1 ? a.renderbuffer->samples : 0;
-        if (a.type == GL_TEXTURE && a.texture) return a.texture->image(0, a.level).samples > 1 ? a.texture->image(0, a.level).samples : 0;
-    }
+        if (a.type == GL_TEXTURE && a.texture) {
+            const GLsizei s = a.texture->image(0, a.level).samples;
+            return s > 1 ? s : 0;
+        }
+        return -1;
+    };
+    for (const Attachment& a : fb->color)
+        if (GLint s = attachmentSamples(a); s >= 0) return s;
+    for (const Attachment* a : {&fb->depth, &fb->stencil})
+        if (GLint s = attachmentSamples(*a); s >= 0) return s;
     return 0;
 }
 

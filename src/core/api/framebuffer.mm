@@ -11,6 +11,7 @@
 #include "core/metal/device.h"
 #include "core/metal/pixel_format.h"
 #include "core/texture_storage.h"
+#include "core/util/log.h"
 #include "gl_api.gen.h"
 
 namespace wmgl::api {
@@ -231,7 +232,16 @@ GLenum CheckFramebufferStatus(Context& ctx, GLenum target) {
         ctx.setError(GL_INVALID_ENUM);
         return 0;
     }
-    return completeness(ctx, binding->get());
+    const GLenum status = completeness(ctx, binding->get());
+    if (status != GL_FRAMEBUFFER_COMPLETE && logEnabled(LogLevel::Trace)) {
+        GLsizei w = 0, h = 0, s = 0;
+        bool fl;
+        const Framebuffer* fb = binding->get();
+        const FormatInfo* f = fb ? attachmentFormat(fb->color[0], w, h, s, fl) : nullptr;
+        WMGL_TRACE("framebuffer %u incomplete: 0x%04x (color 0: format 0x%04x %dx%d samples %d)", fb ? fb->name : 0,
+                   status, f ? f->internalFormat : 0, w, h, s);
+    }
+    return status;
 }
 
 void FramebufferTexture(Context& ctx, GLenum target, GLenum attachment, GLuint texture, GLint level) {
@@ -473,6 +483,7 @@ void RenderbufferStorageMultisample(Context& ctx, GLenum target, GLsizei samples
     rb->height = height;
     rb->samples = actual > 1 ? actual : (samples == 1 ? 1 : 0);
     rb->mtl = nil;
+    rb->linearView = nil;
     if (width > 0 && height > 0) {
         MTLTextureDescriptor* desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:mtlPixelFormat(f->storage)
                                                                                          width:static_cast<NSUInteger>(width)
@@ -533,23 +544,40 @@ void GetRenderbufferParameteriv(Context& ctx, GLenum target, GLenum pname, GLint
 void DrawBuffers(Context& ctx, GLsizei n, const GLenum* bufs) {
     if (n < 0 || n > ContextState::kMaxDrawBuffers) return ctx.setError(GL_INVALID_VALUE);
     Framebuffer* fb = ctx.state.drawFramebuffer.get();
+    const auto isColorAttachment = [](GLenum b) { return b >= GL_COLOR_ATTACHMENT0 && b < GL_COLOR_ATTACHMENT0 + 32; };
     if (!fb) {
-        if (n != 1) return ctx.setError(GL_INVALID_OPERATION);
-        const GLenum b = bufs[0];
-        if (b != GL_NONE && b != GL_BACK && b != GL_FRONT && b != GL_FRONT_AND_BACK && b != GL_LEFT &&
-            b != GL_BACK_LEFT && b != GL_FRONT_LEFT)
-            return ctx.setError(b >= GL_COLOR_ATTACHMENT0 && b < GL_COLOR_ATTACHMENT0 + 32 ? GL_INVALID_OPERATION : GL_INVALID_ENUM);
-        ctx.state.defaultDrawBuffer = b;
+        // Default framebuffer (GL 3.3 table 4.4): NONE, FRONT_LEFT, FRONT_RIGHT, BACK_LEFT, BACK_RIGHT.
+        // FRONT, BACK, LEFT, RIGHT and FRONT_AND_BACK name several buffers and are only valid for DrawBuffer.
+        for (GLsizei i = 0; i < n; ++i) {
+            const GLenum b = bufs[i];
+            if (b == GL_NONE || b == GL_FRONT_LEFT || b == GL_BACK_LEFT || b == GL_FRONT_RIGHT || b == GL_BACK_RIGHT)
+                continue;
+            if (n == 1 && (b == GL_BACK || b == GL_FRONT || b == GL_LEFT || b == GL_FRONT_AND_BACK)) continue;
+            return ctx.setError(isColorAttachment(b) || b == GL_BACK || b == GL_FRONT || b == GL_LEFT || b == GL_RIGHT ||
+                                        b == GL_FRONT_AND_BACK
+                                    ? GL_INVALID_OPERATION
+                                    : GL_INVALID_ENUM);
+        }
+        for (GLsizei i = 0; i < n; ++i)
+            for (GLsizei j = i + 1; j < n; ++j)
+                if (bufs[i] != GL_NONE && bufs[i] == bufs[j]) return ctx.setError(GL_INVALID_OPERATION);
+        if (n > 1) return ctx.setError(GL_INVALID_OPERATION);  // one colour buffer in the default framebuffer
+        ctx.state.defaultDrawBuffer = n ? bufs[0] : GL_NONE;
         ctx.markDirty(kDirtyFramebuffer);
         return;
     }
+    // Framebuffer objects: NONE or any COLOR_ATTACHMENTi in any slot, each at most once.
     for (GLsizei i = 0; i < n; ++i) {
         const GLenum b = bufs[i];
         if (b == GL_NONE) continue;
-        if (b < GL_COLOR_ATTACHMENT0 || b >= GL_COLOR_ATTACHMENT0 + 32)
-            return ctx.setError(b == GL_BACK || b == GL_FRONT || b == GL_FRONT_AND_BACK || b == GL_LEFT ? GL_INVALID_OPERATION : GL_INVALID_ENUM);
+        if (!isColorAttachment(b))
+            return ctx.setError(b == GL_BACK || b == GL_FRONT || b == GL_FRONT_AND_BACK || b == GL_LEFT || b == GL_RIGHT ||
+                                        b == GL_FRONT_LEFT || b == GL_BACK_LEFT || b == GL_FRONT_RIGHT || b == GL_BACK_RIGHT
+                                    ? GL_INVALID_OPERATION
+                                    : GL_INVALID_ENUM);
         if (b >= GL_COLOR_ATTACHMENT0 + Framebuffer::kMaxColor) return ctx.setError(GL_INVALID_OPERATION);
-        if (b != GL_COLOR_ATTACHMENT0 + static_cast<GLenum>(i)) return ctx.setError(GL_INVALID_OPERATION);
+        for (GLsizei j = 0; j < i; ++j)
+            if (bufs[j] == b) return ctx.setError(GL_INVALID_OPERATION);
     }
     for (int i = 0; i < Framebuffer::kMaxColor; ++i) fb->drawBuffers[i] = i < n ? bufs[i] : GL_NONE;
     framebufferChanged(ctx, *fb);

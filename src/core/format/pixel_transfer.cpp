@@ -713,8 +713,9 @@ void packPixels(const void* storage, const FormatInfo& info, int width, int heig
                 decodeStorage(info.storage, src, t);
                 src += texelBytes;
                 storedToRgba(info, t);
+                // Read colour clamping (GL 3.3 section 4.3.2) clamps to [0, 1] for every format.
                 if (clampColor && !integerSource)
-                    for (double& c : t.c) c = std::clamp(c, info.type == ComponentType::SignedNormalized ? -1.0 : 0.0, 1.0);
+                    for (double& c : t.c) c = std::clamp(c, 0.0, 1.0);
                 writeGroup(row + static_cast<size_t>(x) * l.groupBytes, format, type, integerSource, swap, t);
             }
         }
