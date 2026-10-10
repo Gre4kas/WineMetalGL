@@ -10,6 +10,7 @@
 
 #include "core/compat/fixed_function.h"
 #include "core/shader/glsl_upgrade.h"
+#include "core/stats.h"
 #include "core/context.h"
 #include "core/metal/device.h"
 #include "core/metal/enums.h"
@@ -989,6 +990,7 @@ bool DrawState::issue(GLenum mode, GLint first, GLsizei count, GLsizei instances
                       id<MTLBuffer> indexBuffer, NSUInteger indexOffset, MTLIndexType indexType, GLint baseVertex,
                       GLint minVertex, GLsizei vertexSpan) {
     queriesCountPrimitives(ctx_, mode, count, instances);
+    stats::count(&stats::Frame::draws);
     LinkedProgram* current = executable();
     if (!current) return false;
     waitForCpuVertexReads(*current, false);
@@ -1376,6 +1378,7 @@ void DrawState::drawWideLines(GLenum mode, const std::vector<uint32_t>& vertices
         linePartners_ = nullptr;
         lineSides_ = nullptr;
         if (id<MTLRenderPipelineState> pipeline = bound ? ctx_.share().pipelines().render(key, *current) : nil) {
+            stats::count(&stats::Frame::draws);
             [encoder setRenderPipelineState:pipeline];
             bindDrawState(encoder, *current);
             [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:list.size()

@@ -8,7 +8,7 @@
  * driven by the frame index only, so every run renders the same image.
  *
  *   legacy.exe [--frames N] [--size WxH] [--profile legacy|compat33]
- *              [--dump out.ppm] [--hidden]
+ *              [--dump out.ppm] [--hidden] [--benchmark]
  *
  * "legacy" uses wglCreateContext (Apple's OpenGL can run it, so it records
  * the reference); "compat33" asks for a 3.3 compatibility-profile context
@@ -195,15 +195,39 @@ static const GLubyte glyph_A[8] = {0x66, 0x66, 0x7e, 0x66, 0x66, 0x3c, 0x18, 0x0
 static const GLubyte glyph_C[8] = {0x3c, 0x66, 0x60, 0x60, 0x60, 0x66, 0x3c, 0x00};
 static const GLubyte glyph_Y[8] = {0x18, 0x18, 0x18, 0x3c, 0x66, 0x66, 0x66, 0x00};
 
+/* --benchmark: vsync off, per-frame wall times (start of a frame to the end
+ * of SwapBuffers) after a warm-up, without the final readback frame. */
+static int compare_double(const void* a, const void* b) {
+    const double x = *(const double*)a, y = *(const double*)b;
+    return x < y ? -1 : x > y;
+}
+
+static void report_frame_times(double* times, int count) {
+    const int warmup = count / 4 < 10 ? count / 4 : 10;
+    int n = count - warmup - 1, k;
+    double sum = 0.0, max = 0.0;
+    if (n < 1) return;
+    for (k = 0; k < n; ++k) {
+        sum += times[warmup + k];
+        if (times[warmup + k] > max) max = times[warmup + k];
+    }
+    qsort(times + warmup, (size_t)n, sizeof(double), compare_double);
+    printf("FRAMETIME avg=%.3f p95=%.3f max=%.3f frames=%d\n", sum / n, times[warmup + (n - 1) * 95 / 100], max, n);
+}
+
 int main(int argc, char** argv) {
     int frames = 60, width = 640, height = 360, compat33 = 0, hidden = 0, i, frame;
     const char* dump = NULL;
+    int benchmark = 0;
+    double* frame_ms = NULL;
+    LARGE_INTEGER frequency, frame_start, frame_end;
     for (i = 1; i < argc; ++i) {
         if (!strcmp(argv[i], "--frames") && i + 1 < argc) frames = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--size") && i + 1 < argc) sscanf(argv[++i], "%dx%d", &width, &height);
         else if (!strcmp(argv[i], "--profile") && i + 1 < argc) compat33 = !strcmp(argv[++i], "compat33");
         else if (!strcmp(argv[i], "--dump") && i + 1 < argc) dump = argv[++i];
         else if (!strcmp(argv[i], "--hidden")) hidden = 1;
+        else if (!strcmp(argv[i], "--benchmark")) benchmark = 1;
     }
 
     WNDCLASSA wc = {0};
@@ -297,7 +321,14 @@ int main(int argc, char** argv) {
             }
     }
 
+    frame_ms = calloc((size_t)frames, sizeof(double));
+    QueryPerformanceFrequency(&frequency);
+    if (benchmark) {
+        PFNWGLSWAPINTERVALEXTPROC swap_interval = (PFNWGLSWAPINTERVALEXTPROC)wglGetProcAddress("wglSwapIntervalEXT");
+        if (swap_interval) swap_interval(0);
+    }
     for (frame = 0; frame < frames; ++frame) {
+        QueryPerformanceCounter(&frame_start);
         const float t = (float)frame / 60.0f;
         glViewport(0, 0, width, height);
         glClearColor(0.55f, 0.65f, 0.8f, 1.0f);
@@ -535,7 +566,11 @@ int main(int argc, char** argv) {
             glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, readback);
         }
         SwapBuffers(dc);
+        QueryPerformanceCounter(&frame_end);
+        frame_ms[frame] = 1000.0 * (double)(frame_end.QuadPart - frame_start.QuadPart) / (double)frequency.QuadPart;
     }
+    if (benchmark) report_frame_times(frame_ms, frames);
+    free(frame_ms);
     GLenum error = glGetError();
     unsigned crc = crc32_bytes(readback, (size_t)width * height * 4);
     if (dump) {

@@ -8,9 +8,24 @@ Each entry renders frames that are compared with reference frames from Apple's O
 |---|---|---|---|---:|---:|---|
 | scene33-core | A | demo | PASS | 0.0000% | 101.8 dB | GL 3.3 core forward-compatible: UBO camera, instancing, mipmaps, RGBA16F + depth FBO, post pass, point sprites, orphaned stream VBO. |
 | scene33-core-30 | A | demo | PASS | 0.0000% | 99.5 dB | 30-frame variant; its last frame is the reference for scene33-trace. |
-| scene33-core-nofwd | A | demo | PASS | 0.0000% | 101.8 dB | Same scene from a core context that is not forward-compatible (stock winemac refuses this). |
+| scene33-core-nofwd | A | demo | PASS | 0.0000% | 101.8 dB | Same scene from a core context that is not forward-compatible (stock winemac refuses this). Apple's OpenGL has no such context, so it has no Apple timing. |
 | scene33-compat | B | demo | PASS | 0.0000% | 101.8 dB | Same scene from a 3.3 compatibility-profile context, which Apple's OpenGL cannot provide. |
 | scene33-trace | A | trace | PASS | 0.0000% | 99.5 dB | apitrace capture of scene33-core (30 frames) replayed with glretrace; checks the trace path end to end. |
 | legacy-gl21 | C | demo | PASS | 0.1771% | 41.2 dB | GL 1.x/2.x fixed-function frame from wglCreateContext: two lights with specular materials, display lists, immediate mode, client arrays with glDrawElements(GL_QUADS), multitexture, sphere-map texgen, linear fog, alpha test, clip plane, point sprites, glBitmap text, glDrawPixels, glPushAttrib. Apple's OpenGL runs it and records the reference. |
 | legacy-gl21-i386 | C | demo | PASS | 0.1771% | 41.2 dB | The same frame from a 32-bit (WoW64) process. |
 | legacy-compat33 | B | demo | PASS | 0.1771% | 41.2 dB | The same fixed-function frame from a 3.3 compatibility-profile context, which Apple's OpenGL cannot provide. |
+
+## Frame times
+
+Recorded by `scripts/traces/benchmark.py` in `tests/games/perf.json` (commit 23d5d10, 2026-10-10; median of 3 runs of 600 frames, vsync off, after a warm-up). Budgets: at most 1.2x Apple's OpenGL where it runs the entry, at least 60 fps for Tier B, no frame over 50 ms, no more than 10% slower than the previous baseline.
+
+| Entry | Tier | Budget | WineMetalGL avg / p95 / max (ms) | Apple's OpenGL avg (ms) | Ratio |
+|---|---|---|---|---:|---:|
+| scene33-core | A | PASS | 0.335 / 0.771 / 1.699 | 0.654 | 0.51x |
+| scene33-core-30 | A | PASS | 0.332 / 0.722 / 1.288 | 0.577 | 0.57x |
+| scene33-core-nofwd | A | PASS | 0.323 / 0.711 / 1.399 | - | - |
+| scene33-compat | B | PASS | 0.383 / 0.789 / 3.419 | - | - |
+| scene33-trace | A | PASS | 6.185 / 7.460 / 17.680 | - | - |
+| legacy-gl21 | C | PASS | 0.630 / 0.990 / 1.966 | 0.679 | 0.93x |
+| legacy-gl21-i386 | C | PASS | 0.662 / 1.077 / 2.446 | 0.823 | 0.80x |
+| legacy-compat33 | B | PASS | 0.520 / 0.853 / 2.281 | - | - |

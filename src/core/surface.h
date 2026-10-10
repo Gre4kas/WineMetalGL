@@ -4,12 +4,21 @@
 // is the bottom). Swapping draws it, flipped, into the CAMetalLayer's
 // drawable. Reads of GL_FRONT/GL_BACK and swap-copy semantics therefore
 // never depend on the drawable.
+//
+// With a swap interval of 1 or more, SwapBuffers waits for a drawable, which
+// paces the application at the display rate. With interval 0 it must not
+// wait for the window server: frames go through a mailbox. The swap copies
+// the back buffer into a free slot on the GPU and returns; a presenter
+// thread shows the newest finished slot and drops older ones.
 #pragma once
 
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
 
+#include <condition_variable>
+#include <memory>
 #include <mutex>
+#include <thread>
 #include <vector>
 
 #include "core/util/ref.h"
@@ -60,6 +69,12 @@ public:
 
 private:
     void allocate();
+    struct Mailbox;
+    bool swapMailbox(CommandStream& stream);
+    void stopMailbox();
+    void ensurePresentPipeline();
+    // Encodes the full-screen copy of `source` into `drawable`.
+    void encodePresent(id<MTLCommandBuffer> commandBuffer, id<MTLTexture> source, id<CAMetalDrawable> drawable);
 
     std::mutex mutex_;
     CAMetalLayer* layer_ = nil;
@@ -68,8 +83,10 @@ private:
     uint32_t samples_ = 1;
     int interval_ = 1;
     id<MTLTexture> color_ = nil, resolve_ = nil, depthStencil_ = nil, linearColor_ = nil;
+    std::mutex pipelineMutex_;
     id<MTLRenderPipelineState> presentPipeline_ = nil;
     id<MTLSamplerState> presentSampler_ = nil;
+    std::unique_ptr<Mailbox> mailbox_;
 };
 
 }  // namespace wmgl

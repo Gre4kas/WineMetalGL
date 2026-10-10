@@ -5,6 +5,7 @@
 #include <deque>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "core/gl/types.h"
@@ -137,6 +138,9 @@ public:
         float pointSize = -1, fade = -1, lineWidth = -1;
         GLint viewport[4] = {};
         std::vector<uint8_t> data;
+        // The matrices the block's matrix section was computed from.
+        bool matricesValid = false;
+        Mat4 modelview, projection, modelviewInverse, texture[FixedState::kTextureUnits];
     } fixedFunctionBlockCache;
     // glPushAttrib / glPushClientAttrib (api/fixed_attrib.mm): the mask and
     // a copy of the state it covers.
@@ -147,6 +151,9 @@ public:
         std::array<VertexAttrib, VertexArray::kAttribSlots> attribs;
     };
     std::vector<AttribFrame> attribStack, clientAttribStack;
+    // glBitmap / glDrawPixels textures by content (api/fixed_raster.mm):
+    // applications draw the same glyphs and images every frame.
+    std::unordered_map<uint64_t, RefPtr<Texture>> pixelRectangleCache;
     std::unique_ptr<ImmediateState> immediate;
     std::unique_ptr<ListCompiler> listCompiler;  // non-null between glNewList and glEndList
     int listCallDepth = 0;

@@ -1,5 +1,7 @@
 #include "core/surface.h"
 
+#include "core/stats.h"
+
 #include <cstdio>
 #include <cstdlib>
 
@@ -69,7 +71,41 @@ Surface::Surface(CAMetalLayer* layer, int format, int width, int height)
     allocate();
 }
 
-Surface::~Surface() = default;
+// Swap interval 0 (see surface.h).
+struct Surface::Mailbox {
+    static constexpr int kSlots = 3;
+    enum State { Free, Pending, Ready, Presenting };
+    std::mutex mutex;
+    std::condition_variable changed;
+    id<MTLTexture> slots[kSlots] = {};
+    State state[kSlots] = {Free, Free, Free};
+    uint64_t sequence[kSlots] = {};
+    uint64_t nextSequence = 1;
+    bool stop = false;
+    id<MTLCommandQueue> queue = nil;
+    std::thread thread;
+};
+
+Surface::~Surface() { stopMailbox(); }
+
+void Surface::stopMailbox() {
+    if (!mailbox_) return;
+    {
+        std::lock_guard<std::mutex> lock(mailbox_->mutex);
+        mailbox_->stop = true;
+    }
+    mailbox_->changed.notify_all();
+    if (mailbox_->thread.joinable()) mailbox_->thread.join();
+    // Wait for presents still running on the GPU (their handlers touch the mailbox).
+    std::unique_lock<std::mutex> lock(mailbox_->mutex);
+    mailbox_->changed.wait(lock, [&] {
+        for (Mailbox::State st : mailbox_->state)
+            if (st == Mailbox::Presenting || st == Mailbox::Pending) return false;
+        return true;
+    });
+    lock.unlock();
+    mailbox_.reset();
+}
 
 void Surface::allocate() {
     id<MTLDevice> device = Device::get().mtl();
@@ -208,43 +244,30 @@ void dumpFrame(CommandStream& stream, id<MTLTexture> color, int width, int heigh
 
 }  // namespace
 
-bool Surface::swap(CommandStream& stream) {
-    resolveForRead(stream);
-    dumpFrame(stream, resolvedColor(), width_, height_);
-    if (!layer_) {
-        stream.flush();
-        return true;
-    }
-    resolveForRead(stream);
-    stream.resolvePendingClear();
-    stream.endEncoder();
-    id<CAMetalDrawable> drawable = [layer_ nextDrawable];
-    if (!drawable) {
-        WMGL_WARN("no drawable available");
-        stream.flush();
-        return false;
-    }
-    if (!presentPipeline_) {
-        id<MTLLibrary> library = Device::get().utilityLibrary();
-        MTLRenderPipelineDescriptor* desc = [MTLRenderPipelineDescriptor new];
-        desc.vertexFunction = [library newFunctionWithName:@"wmgl_fullscreen_vs"];
-        desc.fragmentFunction = [library newFunctionWithName:@"wmgl_copy_fs"];
-        desc.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
-        NSError* error = nil;
-        presentPipeline_ = [Device::get().mtl() newRenderPipelineStateWithDescriptor:desc error:&error];
-        if (!presentPipeline_) WMGL_ERR("present pipeline: %s", error.localizedDescription.UTF8String);
-        MTLSamplerDescriptor* s = [MTLSamplerDescriptor new];
-        s.minFilter = s.magFilter = MTLSamplerMinMagFilterNearest;
-        presentSampler_ = [Device::get().mtl() newSamplerStateWithDescriptor:s];
-    }
+void Surface::ensurePresentPipeline() {
+    std::lock_guard<std::mutex> lock(pipelineMutex_);
+    if (presentPipeline_) return;
+    id<MTLLibrary> library = Device::get().utilityLibrary();
+    MTLRenderPipelineDescriptor* desc = [MTLRenderPipelineDescriptor new];
+    desc.vertexFunction = [library newFunctionWithName:@"wmgl_fullscreen_vs"];
+    desc.fragmentFunction = [library newFunctionWithName:@"wmgl_copy_fs"];
+    desc.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+    NSError* error = nil;
+    presentPipeline_ = [Device::get().mtl() newRenderPipelineStateWithDescriptor:desc error:&error];
+    if (!presentPipeline_) WMGL_ERR("present pipeline: %s", error.localizedDescription.UTF8String);
+    MTLSamplerDescriptor* s = [MTLSamplerDescriptor new];
+    s.minFilter = s.magFilter = MTLSamplerMinMagFilterNearest;
+    presentSampler_ = [Device::get().mtl() newSamplerStateWithDescriptor:s];
+}
+
+void Surface::encodePresent(id<MTLCommandBuffer> commandBuffer, id<MTLTexture> source, id<CAMetalDrawable> drawable) {
     MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
     pass.colorAttachments[0].texture = drawable.texture;
     pass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
     pass.colorAttachments[0].storeAction = MTLStoreActionStore;
-    id<MTLRenderCommandEncoder> encoder = [stream.commandBuffer() renderCommandEncoderWithDescriptor:pass];
+    id<MTLRenderCommandEncoder> encoder = [commandBuffer renderCommandEncoderWithDescriptor:pass];
     [encoder setRenderPipelineState:presentPipeline_];
     // The back buffer may be sRGB-encoded; present the stored bytes unchanged.
-    id<MTLTexture> source = resolvedColor();
     if (source.pixelFormat == MTLPixelFormatRGBA8Unorm_sRGB)
         source = [source newTextureViewWithPixelFormat:MTLPixelFormatRGBA8Unorm];
     // No flip in the shader: the drawable's top row samples the back buffer's
@@ -255,7 +278,125 @@ bool Surface::swap(CommandStream& stream) {
     [encoder setFragmentSamplerState:presentSampler_ atIndex:0];
     [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
     [encoder endEncoding];
+}
+
+bool Surface::swap(CommandStream& stream) {
+    stats::Timer presentTimer(&stats::Frame::presentNanos);
+    resolveForRead(stream);
+    dumpFrame(stream, resolvedColor(), width_, height_);
+    if (!layer_) {
+        stream.flush();
+        return true;
+    }
+    resolveForRead(stream);
+    stream.resolvePendingClear();
+    stream.endEncoder();
+    ensurePresentPipeline();
+    if (interval_ == 0) return swapMailbox(stream);
+    stopMailbox();
+    id<CAMetalDrawable> drawable = nil;
+    {
+        stats::Timer drawableTimer(&stats::Frame::drawableNanos);
+        drawable = [layer_ nextDrawable];
+    }
+    if (!drawable) {
+        WMGL_WARN("no drawable available");
+        stream.flush();
+        return false;
+    }
+    encodePresent(stream.commandBuffer(), resolvedColor(), drawable);
     stream.present(drawable);
+    stream.flush();
+    return true;
+}
+
+bool Surface::swapMailbox(CommandStream& stream) {
+    id<MTLTexture> source = resolvedColor();
+    if (mailbox_ && (mailbox_->slots[0].width != source.width || mailbox_->slots[0].height != source.height ||
+                     mailbox_->slots[0].pixelFormat != source.pixelFormat))
+        stopMailbox();
+    if (!mailbox_) {
+        mailbox_ = std::make_unique<Mailbox>();
+        Mailbox* box = mailbox_.get();
+        MTLTextureDescriptor* desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:source.pixelFormat
+                                                                                         width:source.width
+                                                                                        height:source.height
+                                                                                     mipmapped:NO];
+        desc.storageMode = MTLStorageModePrivate;
+        desc.usage = MTLTextureUsageShaderRead | MTLTextureUsagePixelFormatView;
+        for (int i = 0; i < Mailbox::kSlots; ++i) box->slots[i] = [Device::get().mtl() newTextureWithDescriptor:desc];
+        box->queue = [Device::get().mtl() newCommandQueue];
+        CAMetalLayer* layer = layer_;
+        box->thread = std::thread([this, box, layer] {
+            for (;;) {
+                int slot = -1;
+                {
+                    std::unique_lock<std::mutex> lock(box->mutex);
+                    box->changed.wait(lock, [&] {
+                        if (box->stop) return true;
+                        for (int i = 0; i < Mailbox::kSlots; ++i)
+                            if (box->state[i] == Mailbox::Ready) return true;
+                        return false;
+                    });
+                    if (box->stop) return;
+                    // The newest finished frame; older finished ones are dropped.
+                    for (int i = 0; i < Mailbox::kSlots; ++i)
+                        if (box->state[i] == Mailbox::Ready && (slot < 0 || box->sequence[i] > box->sequence[slot])) slot = i;
+                    for (int i = 0; i < Mailbox::kSlots; ++i)
+                        if (i != slot && box->state[i] == Mailbox::Ready) box->state[i] = Mailbox::Free;
+                    box->state[slot] = Mailbox::Presenting;
+                }
+                box->changed.notify_all();
+                @autoreleasepool {
+                    id<CAMetalDrawable> drawable = [layer nextDrawable];
+                    id<MTLCommandBuffer> commandBuffer = [box->queue commandBuffer];
+                    if (drawable) {
+                        encodePresent(commandBuffer, box->slots[slot], drawable);
+                        [commandBuffer presentDrawable:drawable];
+                    }
+                    [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer>) {
+                        {
+                            std::lock_guard<std::mutex> lock(box->mutex);
+                            box->state[slot] = Mailbox::Free;
+                        }
+                        box->changed.notify_all();
+                    }];
+                    [commandBuffer commit];
+                }
+            }
+        });
+    }
+    Mailbox* box = mailbox_.get();
+    int slot = -1;
+    {
+        // A free slot, else the finished frame the presenter has not taken
+        // yet (it is dropped). Only a GPU two frames behind makes this wait.
+        stats::Timer drawableTimer(&stats::Frame::drawableNanos);
+        std::unique_lock<std::mutex> lock(box->mutex);
+        box->changed.wait(lock, [&] {
+            for (int i = 0; i < Mailbox::kSlots; ++i)
+                if (box->state[i] == Mailbox::Free || box->state[i] == Mailbox::Ready) return true;
+            return false;
+        });
+        for (int i = 0; i < Mailbox::kSlots && slot < 0; ++i)
+            if (box->state[i] == Mailbox::Free) slot = i;
+        for (int i = 0; i < Mailbox::kSlots && slot < 0; ++i)
+            if (box->state[i] == Mailbox::Ready) slot = i;
+        box->state[slot] = Mailbox::Pending;
+        box->sequence[slot] = box->nextSequence++;
+    }
+    id<MTLBlitCommandEncoder> blit = stream.blit();
+    [blit copyFromTexture:source sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0)
+               sourceSize:MTLSizeMake(source.width, source.height, 1) toTexture:box->slots[slot] destinationSlice:0
+         destinationLevel:0 destinationOrigin:MTLOriginMake(0, 0, 0)];
+    stream.endEncoder();
+    [stream.commandBuffer() addCompletedHandler:^(id<MTLCommandBuffer>) {
+        {
+            std::lock_guard<std::mutex> lock(box->mutex);
+            box->state[slot] = Mailbox::Ready;
+        }
+        box->changed.notify_all();
+    }];
     stream.flush();
     return true;
 }

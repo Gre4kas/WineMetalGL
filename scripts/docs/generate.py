@@ -8,6 +8,7 @@ Inputs (all tracked):
   tests/cts/notsupported.json          reason for every NotSupported case
   tests/games/corpus.json              game corpus manifest
   tests/games/results.json             last corpus run (scripts/traces/replay.py --json)
+  tests/games/perf.json                frame times (scripts/traces/benchmark.py)
   third_party/khronos/gl.xml           the GL 3.3 core command list
   src/core                             advertised extensions, implemented commands
 
@@ -247,6 +248,27 @@ def render(baselines):
             e["name"], e.get("tier", ""), e["kind"], r["status"] if r else "not run",
             "%.4f%%" % (r["worst_fraction"] * 100) if r else "", "%.1f dB" % r["min_psnr_db"] if r else "",
             e.get("notes", "").replace("|", "/")))
+    # Frame times (W24), from scripts/traces/benchmark.py.
+    perf_path = rel("tests", "games", "perf.json")
+    perf = json.load(open(perf_path)) if os.path.exists(perf_path) else None
+    if perf:
+        budget = perf.get("budget", {})
+        g += ["", "## Frame times", "",
+              "Recorded by `scripts/traces/benchmark.py` in `tests/games/perf.json` (commit %s, %s; median of %s runs "
+              "of %s frames, vsync off, after a warm-up). Budgets: at most %.1fx Apple's OpenGL where it runs the "
+              "entry, at least 60 fps for Tier B, no frame over %.0f ms, no more than %.0f%% slower than the "
+              "previous baseline." % (perf.get("commit", "?"), perf.get("date", "?"), perf.get("runs", "?"),
+                                      perf.get("frames", "?"), budget.get("ratio", 1.2), budget.get("hitch_ms", 50),
+                                      100 * (budget.get("regression", 1.1) - 1)), "",
+              "| Entry | Tier | Budget | WineMetalGL avg / p95 / max (ms) | Apple's OpenGL avg (ms) | Ratio |",
+              "|---|---|---|---|---:|---:|"]
+        for p in perf.get("entries", []):
+            new = p.get("new") or {}
+            times = " / ".join("%.3f" % new[k] if new.get(k) is not None else "-" for k in ("avg_ms", "p95_ms", "max_ms"))
+            g.append("| %s | %s | %s | %s | %s | %s |" % (
+                p["name"], p["tier"], p["status"] + (" (" + "; ".join(p["problems"]) + ")" if p.get("problems") else ""),
+                times, "%.3f" % p["apple"]["avg_ms"] if p.get("apple") else "-",
+                "%.2fx" % p["ratio"] if p.get("ratio") else "-"))
     games_md = "\n".join(g) + "\n"
 
     # ---- README status
@@ -262,7 +284,11 @@ def render(baselines):
                      % (", ".join(str(c) for c in configs), worst_fail))
     passed = [e for e in game_entries if game_results.get(e["name"], {}).get("status") == "PASS"]
     lines += ["", "Game corpus: %d of %d entries match their reference frames ([`docs/games.md`](docs/games.md))."
-              % (len(passed), len(game_entries)), "",
+              % (len(passed), len(game_entries))]
+    if perf:
+        within = [p for p in perf.get("entries", []) if p["status"] == "PASS"]
+        lines.append("Frame-time budgets met by %d of %d entries." % (len(within), len(perf.get("entries", []))))
+    lines += ["",
               "GL 3.3 core commands implemented: %d of %d." % (len(core) - len(missing), len(core)), END]
     status = "\n".join(lines)
     return {"docs/conformance.md": conformance, "docs/api-coverage.json": coverage, "docs/games.md": games_md}, status

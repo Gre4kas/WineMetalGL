@@ -43,7 +43,8 @@
    ],
    "reference": "scene33-core",
    "tolerance": 0.005,
-   "notes": "Same scene from a core context that is not forward-compatible (stock winemac refuses this)."
+   "notes": "Same scene from a core context that is not forward-compatible (stock winemac refuses this). Apple's OpenGL has no such context, so it has no Apple timing.",
+   "apple": false
   },
   {
    "name": "scene33-compat",

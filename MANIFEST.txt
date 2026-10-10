@@ -29,6 +29,7 @@ scripts/docs/generate.py
 scripts/stage-host-libs.sh
 scripts/stage-release.sh
 scripts/stage-wine.sh
+scripts/traces/benchmark.py
 scripts/traces/replay.py
 scripts/update-checksums.sh
 scripts/verify-release.sh
@@ -106,6 +107,8 @@ src/core/shader/transform_feedback.h
 src/core/share_group.h
 src/core/share_group.mm
 src/core/state.h
+src/core/stats.h
+src/core/stats.mm
 src/core/surface.h
 src/core/surface.mm
 src/core/texture_storage.h
@@ -132,6 +135,7 @@ tests/games/build-demos.sh
 tests/games/corpus.json
 tests/games/demos/legacy.c
 tests/games/demos/scene33.c
+tests/games/perf.json
 tests/games/README.md
 tests/games/results.json
 tests/gpu/basic_tests.cpp

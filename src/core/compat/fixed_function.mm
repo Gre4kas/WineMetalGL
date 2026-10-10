@@ -61,39 +61,66 @@ void mul4(const float a[4], const float b[4], float out[4]) {
     for (int i = 0; i < 4; ++i) out[i] = a[i] * b[i];
 }
 
-std::vector<uint8_t> packBlock(const ContextState& st) {
-    const FixedState& f = st.fixed;
+// Byte offsets of the matrix section of wmgl_FixedFunction (std140: mat4 =
+// 64 bytes, mat3 = 48): modelview, projection, MVP, texture[8], normal,
+// their inverses, transposes and inverse transposes. The rest of the block
+// (from kTailOffset) is written by packTail.
+constexpr size_t kMat4 = 64, kTex = 8 * kMat4;
+constexpr size_t kMV = 0, kP = 64, kMVP = 128, kTexM = 192, kNormal = kTexM + kTex;
+constexpr size_t kMVInv = kNormal + 48, kPInv = kMVInv + 64, kMVPInv = kPInv + 64, kTexInv = kMVPInv + 64;
+constexpr size_t kMVT = kTexInv + kTex, kPT = kMVT + 64, kMVPT = kPT + 64, kTexT = kMVPT + 64;
+constexpr size_t kMVIT = kTexT + kTex, kPIT = kMVIT + 64, kMVPIT = kPIT + 64, kTexIT = kMVPIT + 64;
+constexpr size_t kTailOffset = kTexIT + kTex;
+
+void putMat4(std::vector<uint8_t>& data, size_t offset, const Mat4& m) { std::memcpy(data.data() + offset, m.m, kMat4); }
+
+// Recomputes the matrix section for the matrices that changed.
+void packMatrices(const FixedState& f, Context::FixedFunctionBlockCache& cache) {
     const Mat4& mv = f.modelview.back();
     const Mat4& proj = f.projection.back();
-    const Mat4 mvp = proj * mv;
-    const Mat4 mvInv = mv.inverse(), projInv = proj.inverse(), mvpInv = mvp.inverse();
-    Mat4 tex[FixedState::kTextureUnits], texInv[FixedState::kTextureUnits];
-    for (int u = 0; u < FixedState::kTextureUnits; ++u) {
-        tex[u] = f.texture[u].back();
-        texInv[u] = tex[u].inverse();
+    std::vector<uint8_t>& d = cache.data;
+    const bool same = cache.matricesValid;
+    if (!same || std::memcmp(mv.m, cache.modelview.m, kMat4) || std::memcmp(proj.m, cache.projection.m, kMat4)) {
+        const Mat4 mvp = proj * mv;
+        const Mat4 mvInv = mv.inverse(), projInv = proj.inverse(), mvpInv = mvp.inverse();
+        putMat4(d, kMV, mv);
+        putMat4(d, kP, proj);
+        putMat4(d, kMVP, mvp);
+        putMat4(d, kMVInv, mvInv);
+        putMat4(d, kPInv, projInv);
+        putMat4(d, kMVPInv, mvpInv);
+        putMat4(d, kMVT, mv.transpose());
+        putMat4(d, kPT, proj.transpose());
+        putMat4(d, kMVPT, mvp.transpose());
+        putMat4(d, kMVIT, mvInv.transpose());
+        putMat4(d, kPIT, projInv.transpose());
+        putMat4(d, kMVPIT, mvpInv.transpose());
+        // Normal matrix: transpose of the inverse of the upper 3x3 of the modelview.
+        float normal[12] = {};
+        for (int c = 0; c < 3; ++c)
+            for (int r = 0; r < 3; ++r) normal[c * 4 + r] = mvInv.m[r * 4 + c];
+        std::memcpy(d.data() + kNormal, normal, sizeof(normal));
+        cache.modelview = mv;
+        cache.projection = proj;
+        cache.modelviewInverse = mvInv;
     }
-    // Normal matrix: transpose of the inverse of the upper 3x3 of the modelview.
-    float normal[9];
-    for (int c = 0; c < 3; ++c)
-        for (int r = 0; r < 3; ++r) normal[c * 3 + r] = mvInv.m[r * 4 + c];
+    for (int u = 0; u < FixedState::kTextureUnits; ++u) {
+        const Mat4& tex = f.texture[static_cast<size_t>(u)].back();
+        if (same && !std::memcmp(tex.m, cache.texture[u].m, kMat4)) continue;
+        const Mat4 inv = tex.inverse();
+        putMat4(d, kTexM + u * kMat4, tex);
+        putMat4(d, kTexInv + u * kMat4, inv);
+        putMat4(d, kTexT + u * kMat4, tex.transpose());
+        putMat4(d, kTexIT + u * kMat4, inv.transpose());
+        cache.texture[u] = tex;
+    }
+    cache.matricesValid = true;
+}
+
+// The block from gl_NormalScale on.
+std::vector<uint8_t> packTail(const ContextState& st, const Mat4& mvInv) {
+    const FixedState& f = st.fixed;
     Std140 b;
-    b.mat4(mv);
-    b.mat4(proj);
-    b.mat4(mvp);
-    for (const Mat4& m : tex) b.mat4(m);
-    b.mat3(normal);
-    b.mat4(mvInv);
-    b.mat4(projInv);
-    b.mat4(mvpInv);
-    for (const Mat4& m : texInv) b.mat4(m);
-    b.mat4(mv.transpose());
-    b.mat4(proj.transpose());
-    b.mat4(mvp.transpose());
-    for (const Mat4& m : tex) b.mat4(m.transpose());
-    b.mat4(mvInv.transpose());
-    b.mat4(projInv.transpose());
-    b.mat4(mvpInv.transpose());
-    for (const Mat4& m : texInv) b.mat4(m.transpose());
     // gl_NormalScale: 1 / length of the third row of the inverse modelview (GL 2.1 section 2.11.3).
     const float row = std::sqrt(mvInv.m[2] * mvInv.m[2] + mvInv.m[6] * mvInv.m[6] + mvInv.m[10] * mvInv.m[10]);
     b.scalar(row > 0 ? 1.0f / row : 1.0f);
@@ -696,7 +723,11 @@ const std::vector<uint8_t>& fixedFunctionBlock(Context& ctx, uint64_t& generatio
     if (!cache.generation || cache.version != st.fixed.version || cache.pointSize != st.pointSize ||
         cache.fade != st.pointFadeThresholdSize || cache.lineWidth != st.lineWidth ||
         !std::equal(st.viewport, st.viewport + 4, cache.viewport)) {
-        cache.data = packBlock(st);
+        if (cache.data.size() < kTailOffset) cache.data.assign(kTailOffset, 0);
+        packMatrices(st.fixed, cache);
+        const std::vector<uint8_t> tail = packTail(st, cache.modelviewInverse);
+        cache.data.resize(kTailOffset + tail.size());
+        std::memcpy(cache.data.data() + kTailOffset, tail.data(), tail.size());
         cache.version = st.fixed.version;
         cache.pointSize = st.pointSize;
         cache.fade = st.pointFadeThresholdSize;

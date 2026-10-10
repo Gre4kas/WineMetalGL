@@ -4,6 +4,7 @@
 #include "core/program.h"
 #include "core/shader/compiler.h"
 #include "core/util/log.h"
+#include "core/stats.h"
 
 namespace wmgl {
 
@@ -25,6 +26,8 @@ id<MTLRenderPipelineState> PipelineCache::render(const PipelineKey& key, LinkedP
         auto it = render_.find(key);
         if (it != render_.end()) return it->second;
     }
+    stats::count(&stats::Frame::pipelineMisses);
+    stats::Timer timer(&stats::Frame::pipelineNanos);
     id<MTLFunction> vertex = key.geometryPass    ? program.geometryPassthrough()
                              : key.rasterization ? program.function(shader::Stage::Vertex)
                                                  : program.vertexNoRaster();

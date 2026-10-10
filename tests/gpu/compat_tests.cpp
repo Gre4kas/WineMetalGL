@@ -13,7 +13,7 @@
     X(glEnableClientState) X(glDisableClientState) X(glClientActiveTexture) X(glMultiTexCoord2f)                \
     X(glPushAttrib) X(glPopAttrib) X(glRasterPos2f) X(glWindowPos2i) X(glBitmap) X(glDrawPixels)                \
     X(glPixelZoom) X(glIsEnabled) X(glColorMaterial) X(glInterleavedArrays) X(glArrayElement)                  \
-    X(glFrustum) X(glMultMatrixf) X(glLoadMatrixf) X(glLineWidth) X(glPolygonStipple) X(glGetPolygonStipple) X(glRenderMode) X(glInitNames) X(glPushName)
+    X(glFrustum) X(glMultMatrixf) X(glLoadMatrixf) X(glLineWidth) X(glPolygonStipple) X(glGetPolygonStipple) X(glRenderMode) X(glInitNames) X(glPushName) X(glLightf) X(glMaterialf) X(glTexGenf)
 
 #define WMGL_COMPAT_DECLARE(name) static PFN_##name name;
 WMGL_COMPAT_FUNCS(WMGL_COMPAT_DECLARE)
@@ -741,5 +741,62 @@ COMPAT_TEST(compat_memory_info) {
     glGetIntegerv(GL_TEXTURE_FREE_MEMORY_ATI, ati);
     CHECK(dedicated > 0 && available > 0 && available <= dedicated);
     CHECK(ati[0] > 0);
+    CHECK_GL();
+}
+
+COMPAT_TEST(compat_builtin_uniform_layout) {
+    // Built-in uniforms across the wmgl_FixedFunction block read back exactly.
+    GLuint p = gpu::program("#version 120\nvoid main() { gl_Position = gl_Vertex; }\n",
+                            R"(#version 120
+uniform int which;
+void main() {
+    if (which == 0)
+        gl_FragColor = vec4(gl_TextureMatrix[1][0][0], gl_LightSource[2].spotCutoff / 180.0,
+                            gl_FrontMaterial.shininess / 128.0, gl_Fog.density);
+    else if (which == 1)
+        gl_FragColor = vec4(gl_ClipPlane[3].y, gl_Point.size / 16.0, gl_TextureEnvColor[2].b, gl_EyePlaneT[1].w);
+    else
+        gl_FragColor = vec4(gl_LightModel.ambient.g, gl_TextureMatrixInverse[1][0][0] / 4.0,
+                            gl_ModelViewMatrixInverse[3][0] / -8.0, gl_NormalMatrix[2][2]);
+})");
+    glUseProgram(p);
+    const GLint which = glGetUniformLocation(p, "which");
+    glActiveTexture(GL_TEXTURE1);
+    glMatrixMode(GL_TEXTURE);
+    glLoadIdentity();
+    glScalef(0.5f, 1, 1);
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
+    glLightf(GL_LIGHT2, GL_SPOT_CUTOFF, 90.0f);
+    glMaterialf(GL_FRONT, GL_SHININESS, 64.0f);
+    glFogf(GL_FOG_DENSITY, 0.25f);
+    const double plane[4] = {0, 0.75, 0, 0};
+    glClipPlane(GL_CLIP_PLANE3, plane);
+    glPointSize(8.0f);
+    glActiveTexture(GL_TEXTURE2);
+    const float env[4] = {0, 0, 0.5f, 1};
+    glTexEnvfv(GL_TEXTURE_ENV, GL_TEXTURE_ENV_COLOR, env);
+    glActiveTexture(GL_TEXTURE1);
+    const float eyeT[4] = {0, 0, 0, 0.25f};
+    glTexGenfv(GL_T, GL_EYE_PLANE, eyeT);
+    const float ambient[4] = {0, 0.75f, 0, 1};
+    glLightModelfv(GL_LIGHT_MODEL_AMBIENT, ambient);
+    glActiveTexture(GL_TEXTURE0);
+    auto readback = [&](int w) {
+        glUniform1i(which, w);
+        glRectf(-1, -1, 1, 1);
+        return gpu::readRGBA8(32, 32, 1, 1);
+    };
+    const uint8_t want0[4] = {128, 128, 128, 64};
+    CHECK(gpu::near(readback(0).data(), want0, 2));
+    const uint8_t want1[4] = {191, 128, 128, 64};
+    CHECK(gpu::near(readback(1).data(), want1, 2));
+    // The inverse of scale(0.5) is 2 (/4 = 0.5); a modelview translation shows in the inverse.
+    glTranslatef(4.0f, 0, 0);
+    const uint8_t want2[4] = {191, 128, 128, 255};
+    CHECK(gpu::near(readback(2).data(), want2, 2));
+    glLoadIdentity();
+    glUseProgram(0);
+    glDeleteProgram(p);
     CHECK_GL();
 }

@@ -1,0 +1,158 @@
+{
+ "commit": "23d5d10",
+ "date": "2026-10-10",
+ "runs": 3,
+ "frames": 600,
+ "budget": {
+  "ratio": 1.2,
+  "tier_b_frame_ms": 16.667,
+  "hitch_ms": 50.0,
+  "regression": 1.1
+ },
+ "entries": [
+  {
+   "name": "scene33-core",
+   "tier": "A",
+   "status": "PASS",
+   "new": {
+    "avg_ms": 0.335,
+    "runs": 3,
+    "p95_ms": 0.771,
+    "max_ms": 1.699,
+    "worst_max_ms": 1.873
+   },
+   "apple": {
+    "avg_ms": 0.654,
+    "runs": 3,
+    "p95_ms": 2.304,
+    "max_ms": 6.272,
+    "worst_max_ms": 44.913
+   },
+   "ratio": 0.512,
+   "problems": []
+  },
+  {
+   "name": "scene33-core-30",
+   "tier": "A",
+   "status": "PASS",
+   "new": {
+    "avg_ms": 0.332,
+    "runs": 3,
+    "p95_ms": 0.722,
+    "max_ms": 1.288,
+    "worst_max_ms": 4.01
+   },
+   "apple": {
+    "avg_ms": 0.577,
+    "runs": 3,
+    "p95_ms": 2.264,
+    "max_ms": 4.26,
+    "worst_max_ms": 4.571
+   },
+   "ratio": 0.575,
+   "problems": []
+  },
+  {
+   "name": "scene33-core-nofwd",
+   "tier": "A",
+   "status": "PASS",
+   "new": {
+    "avg_ms": 0.323,
+    "runs": 3,
+    "p95_ms": 0.711,
+    "max_ms": 1.399,
+    "worst_max_ms": 2.283
+   },
+   "apple": null,
+   "ratio": null,
+   "problems": []
+  },
+  {
+   "name": "scene33-compat",
+   "tier": "B",
+   "status": "PASS",
+   "new": {
+    "avg_ms": 0.383,
+    "runs": 3,
+    "p95_ms": 0.789,
+    "max_ms": 3.419,
+    "worst_max_ms": 3.862
+   },
+   "apple": null,
+   "ratio": null,
+   "problems": []
+  },
+  {
+   "name": "scene33-trace",
+   "tier": "A",
+   "status": "PASS",
+   "new": {
+    "avg_ms": 6.185,
+    "runs": 3,
+    "p95_ms": 7.46,
+    "max_ms": 17.68,
+    "worst_max_ms": 18.49
+   },
+   "apple": null,
+   "ratio": null,
+   "problems": []
+  },
+  {
+   "name": "legacy-gl21",
+   "tier": "C",
+   "status": "PASS",
+   "new": {
+    "avg_ms": 0.63,
+    "runs": 3,
+    "p95_ms": 0.99,
+    "max_ms": 1.966,
+    "worst_max_ms": 5.017
+   },
+   "apple": {
+    "avg_ms": 0.679,
+    "runs": 3,
+    "p95_ms": 2.381,
+    "max_ms": 4.736,
+    "worst_max_ms": 7.558
+   },
+   "ratio": 0.928,
+   "problems": []
+  },
+  {
+   "name": "legacy-gl21-i386",
+   "tier": "C",
+   "status": "PASS",
+   "new": {
+    "avg_ms": 0.662,
+    "runs": 3,
+    "p95_ms": 1.077,
+    "max_ms": 2.446,
+    "worst_max_ms": 3.834
+   },
+   "apple": {
+    "avg_ms": 0.823,
+    "runs": 3,
+    "p95_ms": 2.436,
+    "max_ms": 5.829,
+    "worst_max_ms": 8.493
+   },
+   "ratio": 0.804,
+   "problems": []
+  },
+  {
+   "name": "legacy-compat33",
+   "tier": "B",
+   "status": "PASS",
+   "new": {
+    "avg_ms": 0.52,
+    "runs": 3,
+    "p95_ms": 0.853,
+    "max_ms": 2.281,
+    "worst_max_ms": 3.595
+   },
+   "apple": null,
+   "ratio": null,
+   "problems": []
+  }
+ ]
+}

@@ -8,6 +8,7 @@
 #include "core/context.h"
 #include "core/metal/device.h"
 #include "core/proc_table.h"
+#include "core/stats.h"
 #include "core/surface.h"
 #include "core/util/log.h"
 
@@ -96,6 +97,7 @@ WMGL_EXPORT void wmgl_surface_flush(wmgl_surface* handle, unsigned int flags, in
     if (flags & WMGL_FLUSH_PRESENT) {
         Context* ctx = currentContext();
         if (ctx && ctx->drawSurface() == surface) surface->swap(ctx->stream());
+        stats::endFrame();
     }
 }
 
@@ -103,7 +105,11 @@ WMGL_EXPORT int wmgl_surface_swap(wmgl_surface* handle) {
     Surface* surface = asSurface(handle);
     if (!surface) return 0;
     Context* ctx = currentContext();
-    if (ctx && ctx->drawSurface() == surface) return surface->swap(ctx->stream()) ? 1 : 0;
+    if (ctx && ctx->drawSurface() == surface) {
+        const bool presented = surface->swap(ctx->stream());
+        stats::endFrame();
+        return presented ? 1 : 0;
+    }
     // SwapBuffers on a DC whose surface is not current here: present what it has.
     static Queue* queue = new Queue();
     CommandStream stream(*queue);

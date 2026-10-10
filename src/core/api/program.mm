@@ -7,6 +7,7 @@
 
 #include "core/context.h"
 #include "core/program.h"
+#include "core/stats.h"
 #include "core/util/log.h"
 #include "gl_api.gen.h"
 
@@ -445,6 +446,8 @@ void linkFrom(Context& ctx, Program* p, shader::LinkInput input, std::string log
     }
     shader::LinkResult result;
     if (ok) {
+        stats::count(&stats::Frame::programLinks);
+        stats::Timer timer(&stats::Frame::linkNanos);
         result = shader::link(input);
         ok = result.ok;
         log += result.log;

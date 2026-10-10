@@ -1,5 +1,7 @@
 #include "core/metal/command_stream.h"
 
+#include "core/stats.h"
+
 #import <QuartzCore/CAMetalLayer.h>
 
 #include <cstring>
@@ -108,6 +110,7 @@ void CommandStream::startRender(const RenderTargetDesc& target) {
     }
     if (clearsApply) pending_ = PendingClear();
     render_ = [commandBuffer() renderCommandEncoderWithDescriptor:pass];
+    stats::passStarted(target.width, target.height);
     target_ = target;
     drawsInPass_ = false;
     ++passGeneration_;
@@ -197,12 +200,18 @@ uint64_t CommandStream::flush() {
 
 void CommandStream::finish() {
     const uint64_t serial = flush();
-    if (serial) queue_.wait(serial);
+    if (!serial) return;
+    if (!queue_.isComplete(serial)) stats::count(&stats::Frame::waits);
+    stats::Timer timer(&stats::Frame::waitNanos);
+    queue_.wait(serial);
 }
 
 void CommandStream::waitFor(uint64_t serial) {
     if (!serial) return;
     if (buffer_ && serial == serial_) flush();
+    if (queue_.isComplete(serial)) return;
+    stats::count(&stats::Frame::waits);
+    stats::Timer timer(&stats::Frame::waitNanos);
     queue_.wait(serial);
 }
 

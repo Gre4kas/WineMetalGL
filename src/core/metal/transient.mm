@@ -3,6 +3,7 @@
 #include <algorithm>
 
 #include "core/metal/device.h"
+#include "core/stats.h"
 
 namespace wmgl {
 
@@ -12,6 +13,7 @@ constexpr size_t kChunkSize = 4u << 20;
 
 TransientAllocation TransientAllocator::allocate(size_t size, uint64_t serial, size_t alignment) {
     size = std::max<size_t>(size, 4);
+    stats::count(&stats::Frame::transientBytes, size);
     // Each context owns its allocator and only appends, so earlier regions of
     // a chunk stay valid while their command buffers run. A chunk is rewound
     // only once the last command buffer that used it has completed.

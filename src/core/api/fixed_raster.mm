@@ -14,6 +14,7 @@
 #include "core/compat/fixed_state.h"
 #include "core/context.h"
 #include "core/draw.h"
+#include "core/format/pixel_transfer.h"
 #include "core/program.h"
 #include "core/util/log.h"
 #include "gl_api.gen.h"
@@ -128,6 +129,16 @@ void setUniform(Program& p, const char* name, const float v[4]) {
             std::memcpy(p.uniformData.data() + u.offset, v, 16);
 }
 
+// FNV-1a over `bytes`, continuing from `hash`.
+uint64_t hashBytes(uint64_t hash, const void* bytes, size_t size) {
+    const auto* p = static_cast<const uint8_t*>(bytes);
+    for (size_t i = 0; i < size; ++i) hash = (hash ^ p[i]) * 1099511628211ull;
+    return hash;
+}
+
+template <class T>
+uint64_t hashValue(uint64_t hash, const T& value) { return hashBytes(hash, &value, sizeof(value)); }
+
 // A temporary nearest-filtered 2D texture; `define` specifies its image
 // through the regular texture commands on texture unit 0.
 template <class Define>
@@ -144,6 +155,20 @@ RefPtr<Texture> temporaryTexture(Context& ctx, Define define) {
     define();
     s.textureUnits[active].bound[kTex2D] = saved;
     ctx.markDirty(kDirtyTextures);
+    return tex;
+}
+
+// A nearest-filtered 2D texture for a pixel rectangle; `define` specifies its
+// image through the regular texture commands on texture unit 0. Textures are
+// reused by content (`key`), which also keeps uploads (and the render pass
+// breaks they cause) out of steady-state frames.
+template <class Define>
+RefPtr<Texture> cachedTexture(Context& ctx, uint64_t key, Define define) {
+    auto& cache = ctx.pixelRectangleCache;
+    if (auto it = cache.find(key); it != cache.end()) return it->second;
+    if (cache.size() >= 512) cache.clear();
+    RefPtr<Texture> tex = temporaryTexture(ctx, define);
+    cache.emplace(key, tex);
     return tex;
 }
 
@@ -312,7 +337,9 @@ void Bitmap(Context& ctx, GLsizei width, GLsizei height, GLfloat xorig, GLfloat 
             bits = pbo->contents() + reinterpret_cast<uintptr_t>(bitmap);
         }
         std::vector<uint8_t> mask = unpackBitmap(ctx.state.unpack, bits, width, height);
-        RefPtr<Texture> tex = temporaryTexture(ctx, [&] {
+        uint64_t key = hashValue(hashValue(hashValue(1469598103934665603ull, 'B'), width), height);
+        key = hashBytes(key, mask.data(), mask.size());
+        RefPtr<Texture> tex = cachedTexture(ctx, key, [&] {
             PixelStore tight;
             tight.alignment = 1;
             list::UnpackScope scope(ctx, tight);
@@ -345,15 +372,52 @@ void DrawPixels(Context& ctx, GLsizei width, GLsizei height, GLenum format, GLen
         return;
     default: break;
     }
-    const GLenum error = ctx.takeError();
-    RefPtr<Texture> tex = temporaryTexture(ctx, [&] {
-        TexImage2D(ctx, GL_TEXTURE_2D, 0, static_cast<GLint>(internal), width, height, 0, format, type, pixels);
-    });
-    if (const GLenum texError = ctx.takeError()) {
-        ctx.setError(error ? error : texError);  // the format/type errors of glTexImage2D apply
-        return;
+    // Key: the parameters, the unpack state and the bytes the image reads.
+    const PixelStore& unpack = ctx.state.unpack;
+    uint64_t key = hashValue(hashValue(hashValue(1469598103934665603ull, 'D'), width), height);
+    key = hashValue(hashValue(hashValue(key, internal), format), type);
+    key = hashValue(hashValue(hashValue(hashValue(key, unpack.alignment), unpack.rowLength), unpack.skipPixels), unpack.skipRows);
+    key = hashValue(hashValue(key, unpack.swapBytes), unpack.lsbFirst);
+    bool cacheable = false;
+    {
+        PixelStoreParams ps;
+        ps.alignment = unpack.alignment;
+        ps.rowLength = unpack.rowLength;
+        ps.skipPixels = unpack.skipPixels;
+        ps.skipRows = unpack.skipRows;
+        const size_t bytes = transferLayout(format, type, width, height, 1, ps).bytesNeeded;
+        const uint8_t* source = static_cast<const uint8_t*>(pixels);
+        if (Buffer* pbo = ctx.state.pixelUnpackBuffer.get()) {
+            const uintptr_t offset = reinterpret_cast<uintptr_t>(pixels);
+            source = nullptr;
+            if (pbo->mtl && offset + bytes <= static_cast<size_t>(pbo->size)) {
+                if (pbo->lastWriteSerial) ctx.stream().waitFor(pbo->lastWriteSerial);
+                source = pbo->contents() + offset;
+            }
+        }
+        if (source && bytes) {
+            key = hashBytes(key, source, bytes);
+            cacheable = true;
+        }
     }
-    if (error) ctx.setError(error);
+    RefPtr<Texture> tex;
+    if (cacheable)
+        if (auto it = ctx.pixelRectangleCache.find(key); it != ctx.pixelRectangleCache.end()) tex = it->second;
+    if (!tex) {
+        const GLenum error = ctx.takeError();
+        tex = temporaryTexture(ctx, [&] {
+            TexImage2D(ctx, GL_TEXTURE_2D, 0, static_cast<GLint>(internal), width, height, 0, format, type, pixels);
+        });
+        if (const GLenum texError = ctx.takeError()) {
+            ctx.setError(error ? error : texError);  // the format/type errors of glTexImage2D apply
+            return;
+        }
+        if (error) ctx.setError(error);
+        if (cacheable) {
+            if (ctx.pixelRectangleCache.size() >= 512) ctx.pixelRectangleCache.clear();
+            ctx.pixelRectangleCache.emplace(key, tex);
+        }
+    }
     const float* zoom = ctx.state.fixed.pixelZoom;
     drawRectangle(ctx, kind, tex, r.window[0], r.window[1], r.window[0] + width * zoom[0], r.window[1] + height * zoom[1],
                   r.window[2], r.color);

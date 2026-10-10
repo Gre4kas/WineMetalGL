@@ -21,6 +21,7 @@ it through the small driver ABI in `include/winemetalgl/driver.h`.
 `KHR-GL33` (9,886 cases) under mustpass configurations 1, 2, 3, 4, 5, 6: 0 Fail, InternalError, Crash or Timeout in the worst run; NotSupported only for unadvertised extensions, newer GL versions and cases the test marks invalid. Per-run numbers: [`docs/conformance.md`](docs/conformance.md).
 
 Game corpus: 8 of 8 entries match their reference frames ([`docs/games.md`](docs/games.md)).
+Frame-time budgets met by 8 of 8 entries.
 
 GL 3.3 core commands implemented: 344 of 344.
 <!-- END GENERATED: status -->
