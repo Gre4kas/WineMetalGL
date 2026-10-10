@@ -132,6 +132,11 @@ tests/wine/opengl_ubo.c
 tests/wine/opengl_uniform_matrix.c
 tests/wine/opengl_wgl_modern.c
 tests/wine/probe-opengl-wow64.sh
+third_party/khronos/gl.xml
+third_party/khronos/REVISION
+third_party/khronos/wgl.xml
+tools/gen/extensions.txt
+tools/gen/gl_gen.py
 vendor/glslang/_config.yml
 vendor/glslang/.clang-format
 vendor/glslang/.gitattributes
