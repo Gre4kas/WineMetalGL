@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
 
 project(WineMetalGL VERSION 1.9.17 LANGUAGES C CXX OBJC OBJCXX)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 if(NOT APPLE)
     message(FATAL_ERROR "WineMetalGL builds only on macOS.")
@@ -90,3 +91,76 @@ set_target_properties(winemetalgl PROPERTIES
 )
 
 install(TARGETS winemetalgl LIBRARY DESTINATION lib)
+
+# ---------------------------------------------------------------------------
+# WineMetalGL core (feat/gl33-core): the GL 3.3 implementation on Metal.
+# Built as winemetalgl.dylib; winemac.drv loads it when WINEMETALGL_CORE=2.
+
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+set(WMGL_GEN_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
+set(WMGL_GEN_OUTPUTS
+    "${WMGL_GEN_DIR}/gl_enums.gen.h"
+    "${WMGL_GEN_DIR}/gl_api.gen.h"
+    "${WMGL_GEN_DIR}/gl_entry.gen.cpp"
+    "${WMGL_GEN_DIR}/gl_stubs.gen.cpp"
+    "${WMGL_GEN_DIR}/gl_commands.gen.json")
+add_custom_command(
+    OUTPUT ${WMGL_GEN_OUTPUTS}
+    COMMAND "${Python3_EXECUTABLE}" -I "${CMAKE_CURRENT_SOURCE_DIR}/tools/gen/gl_gen.py"
+            --registry "${CMAKE_CURRENT_SOURCE_DIR}/third_party/khronos/gl.xml"
+            --extensions "${CMAKE_CURRENT_SOURCE_DIR}/tools/gen/extensions.txt"
+            --out "${WMGL_GEN_DIR}"
+    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tools/gen/gl_gen.py"
+            "${CMAKE_CURRENT_SOURCE_DIR}/third_party/khronos/gl.xml"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tools/gen/extensions.txt"
+    COMMENT "Generating OpenGL front end from the Khronos registry")
+add_custom_target(wmgl_generated DEPENDS ${WMGL_GEN_OUTPUTS})
+
+# Platform-independent pieces (host-testable): formats, pixel transfer, shader compiler.
+add_library(wmgl_portable STATIC
+    src/core/format/formats.cpp
+    src/core/format/pixel_transfer.cpp
+    src/core/shader/compiler.cpp
+    src/core/shader/glsl_upgrade.cpp
+    src/core/util/log.cpp
+)
+add_dependencies(wmgl_portable wmgl_generated)
+target_include_directories(wmgl_portable PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    "${CMAKE_CURRENT_SOURCE_DIR}/include"
+    "${WMGL_GEN_DIR}")
+target_link_libraries(wmgl_portable PUBLIC
+    glslang glslang-default-resource-limits SPIRV spirv-cross-core spirv-cross-glsl spirv-cross-msl)
+set_target_properties(wmgl_portable PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+file(GLOB WMGL_CORE_SOURCES CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/core/*.mm"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/core/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/core/api/*.mm"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/core/metal/*.mm")
+add_library(winemetalgl_core SHARED
+    ${WMGL_CORE_SOURCES}
+    "${WMGL_GEN_DIR}/gl_entry.gen.cpp"
+    "${WMGL_GEN_DIR}/gl_stubs.gen.cpp")
+add_dependencies(winemetalgl_core wmgl_generated)
+# Generated and other .cpp sources include Metal-using headers: build them as Objective-C++.
+set_source_files_properties(
+    "${WMGL_GEN_DIR}/gl_entry.gen.cpp" "${WMGL_GEN_DIR}/gl_stubs.gen.cpp" "${CMAKE_CURRENT_SOURCE_DIR}/src/core/proc_table.cpp"
+    TARGET_DIRECTORY winemetalgl_core PROPERTIES LANGUAGE OBJCXX)
+target_link_libraries(winemetalgl_core PRIVATE
+    wmgl_portable
+    "${FOUNDATION_FRAMEWORK}" "${METAL_FRAMEWORK}" "${QUARTZCORE_FRAMEWORK}")
+target_compile_options(winemetalgl_core PRIVATE
+    $<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>
+    -fvisibility=hidden -Wall -Wno-unused-parameter -Werror=missing-prototypes)
+set_target_properties(winemetalgl_core PROPERTIES
+    OUTPUT_NAME "winemetalgl"
+    PREFIX "lib"
+    INSTALL_NAME_DIR "@rpath"
+    OSX_ARCHITECTURES "x86_64")
+
+# Host tests (no GPU, no Wine).
+add_executable(wmgl_host_tests tests/host/main.cpp tests/host/shader_tests.cpp tests/host/format_tests.cpp)
+target_link_libraries(wmgl_host_tests PRIVATE wmgl_portable)
+# Only the driver ABI is exported; GL entry points are reached via wmgl_get_proc_address.
+target_link_options(winemetalgl_core PRIVATE "LINKER:-exported_symbol,_wmgl_*")

@@ -1,0 +1,392 @@
+#include "core/texture_storage.h"
+
+#include <algorithm>
+#include <cstring>
+#include <mutex>
+#include <unordered_map>
+
+#include "core/context.h"
+#include "core/draw.h"
+#include "core/metal/device.h"
+#include "core/metal/enums.h"
+#include "core/metal/pipeline_cache.h"
+#include "core/metal/pixel_format.h"
+#include "core/util/log.h"
+
+namespace wmgl {
+
+GLsizei fullMipCount(GLsizei width, GLsizei height, GLsizei depth) {
+    GLsizei size = std::max({width, height, depth, 1});
+    GLsizei levels = 1;
+    while (size > 1) {
+        size >>= 1;
+        ++levels;
+    }
+    return levels;
+}
+
+MTLTextureType mtlTextureType(GLenum target, GLsizei samples) {
+    switch (target) {
+    case GL_TEXTURE_1D: return MTLTextureType2D;  // Metal 1D textures cannot be mipmapped or rendered to
+    case GL_TEXTURE_1D_ARRAY: return MTLTextureType2DArray;
+    case GL_TEXTURE_2D: case GL_TEXTURE_RECTANGLE: return MTLTextureType2D;
+    case GL_TEXTURE_3D: return MTLTextureType3D;
+    case GL_TEXTURE_2D_ARRAY: return MTLTextureType2DArray;
+    case GL_TEXTURE_CUBE_MAP: return MTLTextureTypeCube;
+    case GL_TEXTURE_CUBE_MAP_ARRAY: return MTLTextureTypeCubeArray;
+    case GL_TEXTURE_2D_MULTISAMPLE: return samples > 1 ? MTLTextureType2DMultisample : MTLTextureType2D;
+    case GL_TEXTURE_2D_MULTISAMPLE_ARRAY: return samples > 1 ? MTLTextureType2DMultisampleArray : MTLTextureType2DArray;
+    case GL_TEXTURE_BUFFER: return MTLTextureTypeTextureBuffer;
+    default: return MTLTextureType2D;
+    }
+}
+
+namespace {
+
+// Size of `level` given level 0 dimensions; arrays keep their layer count.
+void levelSize(GLenum target, GLsizei w0, GLsizei h0, GLsizei d0, int level, GLsizei& w, GLsizei& h, GLsizei& d) {
+    w = std::max(1, w0 >> level);
+    const bool oneDArray = target == GL_TEXTURE_1D_ARRAY;
+    const bool arrays = target == GL_TEXTURE_2D_ARRAY || target == GL_TEXTURE_CUBE_MAP_ARRAY ||
+                        target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY;
+    h = oneDArray ? h0 : std::max(1, h0 >> level);
+    d = (arrays || oneDArray || target != GL_TEXTURE_3D) ? d0 : std::max(1, d0 >> level);
+}
+
+// Level-0-equivalent dimensions of a texture from its lowest defined level.
+bool baseDimensions(const Texture& tex, GLsizei& w0, GLsizei& h0, GLsizei& d0, const FormatInfo*& format,
+                    GLsizei& samples) {
+    for (int level = 0; level < Texture::kMaxLevels; ++level) {
+        const TextureImage& image = tex.image(0, level);
+        if (!image.defined()) continue;
+        format = image.format;
+        samples = image.samples;
+        w0 = image.width << level;
+        const bool oneDArray = tex.target == GL_TEXTURE_1D_ARRAY;
+        h0 = oneDArray || tex.target == GL_TEXTURE_1D ? image.height : image.height << level;
+        d0 = tex.target == GL_TEXTURE_3D ? image.depth << level : image.depth;
+        return true;
+    }
+    return false;
+}
+
+}  // namespace
+
+bool ensureTextureStorage(Context& ctx, Texture& tex) {
+    if (tex.mtl && !tex.storageDirty) return true;
+    GLsizei w0 = 0, h0 = 0, d0 = 0, samples = 0;
+    const FormatInfo* format = nullptr;
+    if (!baseDimensions(tex, w0, h0, d0, format, samples) || !format) return false;
+    const MTLPixelFormat pixelFormat = mtlPixelFormat(format->storage);
+    if (pixelFormat == MTLPixelFormatInvalid) return false;
+    GLsizei levels = tex.immutable ? tex.immutableLevels
+                     : (tex.target == GL_TEXTURE_RECTANGLE || samples > 1) ? 1
+                                                                           : fullMipCount(w0, tex.target == GL_TEXTURE_1D || tex.target == GL_TEXTURE_1D_ARRAY ? 1 : h0,
+                                                                                          tex.target == GL_TEXTURE_3D ? d0 : 1);
+    levels = std::min<GLsizei>(levels, Texture::kMaxLevels);
+    // Reuse the existing storage if it already has this shape.
+    if (tex.mtl && tex.storage == format->storage && tex.mtlWidth == w0 && tex.mtlHeight == h0 && tex.mtlDepth == d0 &&
+        tex.mtlSamples == samples && tex.mtlLevels >= levels) {
+        tex.storageDirty = false;
+        return true;
+    }
+    MTLTextureDescriptor* desc = [MTLTextureDescriptor new];
+    desc.textureType = mtlTextureType(tex.target, samples);
+    desc.pixelFormat = pixelFormat;
+    desc.width = static_cast<NSUInteger>(w0);
+    const bool cube = tex.target == GL_TEXTURE_CUBE_MAP || tex.target == GL_TEXTURE_CUBE_MAP_ARRAY;
+    desc.height = static_cast<NSUInteger>(tex.target == GL_TEXTURE_1D || tex.target == GL_TEXTURE_1D_ARRAY ? 1 : h0);
+    desc.depth = static_cast<NSUInteger>(tex.target == GL_TEXTURE_3D ? d0 : 1);
+    if (tex.target == GL_TEXTURE_1D_ARRAY) desc.arrayLength = static_cast<NSUInteger>(h0);
+    else if (tex.target == GL_TEXTURE_2D_ARRAY || tex.target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY)
+        desc.arrayLength = static_cast<NSUInteger>(d0);
+    else if (tex.target == GL_TEXTURE_CUBE_MAP_ARRAY) desc.arrayLength = static_cast<NSUInteger>(d0 / 6);
+    desc.mipmapLevelCount = static_cast<NSUInteger>(levels);
+    desc.sampleCount = static_cast<NSUInteger>(std::max(1, samples));
+    desc.storageMode = MTLStorageModePrivate;
+    desc.usage = MTLTextureUsageShaderRead | MTLTextureUsagePixelFormatView;
+    if ((format->colorRenderable || format->isDepthOrStencil()) && !format->compressed)
+        desc.usage |= MTLTextureUsageRenderTarget;
+    (void)cube;
+    id<MTLTexture> texture = [Device::get().mtl() newTextureWithDescriptor:desc];
+    if (!texture) {
+        WMGL_ERR("texture allocation failed (%dx%dx%d %s)", w0, h0, d0, storageName(format->storage));
+        return false;
+    }
+    // Keep existing contents of levels that still match.
+    if (tex.mtl && tex.storage == format->storage && tex.mtl.textureType == texture.textureType &&
+        tex.mtl.sampleCount == texture.sampleCount) {
+        id<MTLBlitCommandEncoder> blit = ctx.stream().blit();
+        const NSUInteger slices = tex.mtl.textureType == MTLTextureTypeCube ? 6 : tex.mtl.arrayLength;
+        for (NSUInteger level = 0; level < std::min<NSUInteger>(tex.mtl.mipmapLevelCount, texture.mipmapLevelCount); ++level) {
+            const NSUInteger ow = std::max<NSUInteger>(1, tex.mtl.width >> level), oh = std::max<NSUInteger>(1, tex.mtl.height >> level);
+            const NSUInteger nw = std::max<NSUInteger>(1, texture.width >> level), nh = std::max<NSUInteger>(1, texture.height >> level);
+            const NSUInteger od = tex.mtl.textureType == MTLTextureType3D ? std::max<NSUInteger>(1, tex.mtl.depth >> level) : 1;
+            const NSUInteger nd = texture.textureType == MTLTextureType3D ? std::max<NSUInteger>(1, texture.depth >> level) : 1;
+            if (ow != nw || oh != nh || od != nd) continue;
+            const NSUInteger newSlices = texture.textureType == MTLTextureTypeCube ? 6 : texture.arrayLength;
+            for (NSUInteger slice = 0; slice < std::min(slices, newSlices); ++slice)
+                [blit copyFromTexture:tex.mtl sourceSlice:slice sourceLevel:level sourceOrigin:MTLOriginMake(0, 0, 0)
+                           sourceSize:MTLSizeMake(ow, oh, od) toTexture:texture destinationSlice:slice
+                     destinationLevel:level destinationOrigin:MTLOriginMake(0, 0, 0)];
+        }
+    }
+    tex.mtl = texture;
+    tex.storage = format->storage;
+    tex.mtlLevels = levels;
+    tex.mtlWidth = w0;
+    tex.mtlHeight = h0;
+    tex.mtlDepth = d0;
+    tex.mtlSamples = samples;
+    tex.storageDirty = false;
+    tex.views.clear();
+    if (!tex.label.empty()) texture.label = [NSString stringWithUTF8String:tex.label.c_str()];
+    return true;
+}
+
+bool textureComplete(Context& ctx, Texture& tex, const SamplerParams* params) {
+    if (tex.target == GL_TEXTURE_BUFFER) return tex.buffer && tex.buffer->mtl;
+    const SamplerParams& p = params ? *params : tex.sampler;
+    const int base = tex.baseLevel;
+    if (base < 0 || base >= Texture::kMaxLevels) return false;
+    const TextureImage& baseImage = tex.image(0, base);
+    if (!baseImage.defined() || baseImage.width == 0 || baseImage.height == 0 || baseImage.depth == 0) return false;
+    // Cube maps: every face square, same size and format.
+    if (tex.target == GL_TEXTURE_CUBE_MAP) {
+        for (int face = 0; face < 6; ++face) {
+            const TextureImage& image = tex.image(face, base);
+            if (!image.defined() || image.width != baseImage.width || image.height != baseImage.height ||
+                image.internalFormat != baseImage.internalFormat || image.width != image.height)
+                return false;
+        }
+    }
+    const bool mipmapped = p.minFilter != GL_NEAREST && p.minFilter != GL_LINEAR &&
+                           tex.target != GL_TEXTURE_RECTANGLE && tex.target != GL_TEXTURE_2D_MULTISAMPLE &&
+                           tex.target != GL_TEXTURE_2D_MULTISAMPLE_ARRAY;
+    // Integer formats cannot be filtered; depth formats only with compare mode
+    // or nearest filtering in some cases (GL 3.3: depth textures filter linearly).
+    if (baseImage.format && baseImage.format->isInteger() &&
+        (p.magFilter != GL_NEAREST || (p.minFilter != GL_NEAREST && p.minFilter != GL_NEAREST_MIPMAP_NEAREST)))
+        return false;
+    if (mipmapped) {
+        const int faces = tex.faceCount();
+        const int maxLevel = std::min({tex.maxLevel, Texture::kMaxLevels - 1,
+                                       base + fullMipCount(baseImage.width, baseImage.height,
+                                                           tex.target == GL_TEXTURE_3D ? baseImage.depth : 1) - 1});
+        for (int level = base; level <= maxLevel; ++level) {
+            GLsizei w, h, d;
+            levelSize(tex.target, baseImage.width, baseImage.height, baseImage.depth, level - base, w, h, d);
+            for (int face = 0; face < faces; ++face) {
+                const TextureImage& image = tex.image(face, level);
+                if (!image.defined() || image.width != w || image.height != h || image.depth != d ||
+                    image.internalFormat != baseImage.internalFormat)
+                    return false;
+            }
+        }
+    }
+    return ensureTextureStorage(ctx, tex);
+}
+
+id<MTLTexture> samplingView(Context& ctx, Texture& tex) {
+    (void)ctx;
+    if (tex.target == GL_TEXTURE_BUFFER) {
+        // Texture buffer views are created by the texture-buffer code (W09).
+        return tex.mtl;
+    }
+    const TextureImage& baseImage = tex.baseImage();
+    const FormatInfo* format = baseImage.format;
+    if (!format || !tex.mtl) return tex.mtl;
+    const int base = std::clamp(tex.baseLevel, 0, std::max(0, tex.mtlLevels - 1));
+    int top = std::min(tex.maxLevel, tex.mtlLevels - 1);
+    // Levels past the last defined one are never sampled when complete.
+    while (top > base && !tex.image(0, top).defined()) --top;
+    const NSUInteger levelCount = static_cast<NSUInteger>(std::max(1, top - base + 1));
+    GLenum swizzle[4] = {tex.swizzle[0], tex.swizzle[1], tex.swizzle[2], tex.swizzle[3]};
+    MTLPixelFormat viewFormat = tex.mtl.pixelFormat;
+    // Depth/stencil textures sample depth by default; stencil sampling (GL 4.3) uses the stencil view.
+    if (viewFormat == MTLPixelFormatDepth32Float_Stencil8 && tex.depthStencilMode == GL_STENCIL_INDEX)
+        viewFormat = MTLPixelFormatX32_Stencil8;
+    const uint64_t key = (static_cast<uint64_t>(base) << 56) | (static_cast<uint64_t>(levelCount) << 48) |
+                         (static_cast<uint64_t>(viewFormat) << 32) | (static_cast<uint64_t>(swizzle[0] & 0xff) << 24) |
+                         (static_cast<uint64_t>(swizzle[1] & 0xff) << 16) | (static_cast<uint64_t>(swizzle[2] & 0xff) << 8) |
+                         static_cast<uint64_t>(swizzle[3] & 0xff);
+    for (const Texture::View& v : tex.views)
+        if (v.key == key) return v.view;
+    const NSUInteger slices = tex.mtl.textureType == MTLTextureTypeCube ? 6
+                              : tex.mtl.textureType == MTLTextureTypeCubeArray ? tex.mtl.arrayLength * 6
+                                                                              : tex.mtl.arrayLength;
+    const bool depthFormat = format->isDepthOrStencil();
+    MTLTextureSwizzleChannels channels =
+        depthFormat ? MTLTextureSwizzleChannelsMake(MTLTextureSwizzleRed, MTLTextureSwizzleZero, MTLTextureSwizzleZero,
+                                                    MTLTextureSwizzleOne)
+                    : composeSwizzle(*format, swizzle);
+    if (depthFormat) {
+        // Depth reads as (d, 0, 0, 1) and the GL swizzle applies on top.
+        FormatInfo depthAsRed = *format;
+        depthAsRed.swizzle[0] = SwzR;
+        depthAsRed.swizzle[1] = SwzZero;
+        depthAsRed.swizzle[2] = SwzZero;
+        depthAsRed.swizzle[3] = SwzOne;
+        channels = composeSwizzle(depthAsRed, swizzle);
+    }
+    id<MTLTexture> view = [tex.mtl newTextureViewWithPixelFormat:viewFormat
+                                                    textureType:tex.mtl.textureType
+                                                         levels:NSMakeRange(static_cast<NSUInteger>(base), levelCount)
+                                                         slices:NSMakeRange(0, std::max<NSUInteger>(1, slices))
+                                                        swizzle:channels];
+    if (!view) view = tex.mtl;
+    tex.views.push_back({key, view});
+    return view;
+}
+
+id<MTLSamplerState> samplerState(Context& ctx, const SamplerParams& p, bool shadow) {
+    SamplerKey key;
+    std::memset(&key, 0, sizeof(key));
+    auto minMag = [](GLenum f) {
+        return static_cast<uint8_t>(f == GL_NEAREST || f == GL_NEAREST_MIPMAP_NEAREST || f == GL_NEAREST_MIPMAP_LINEAR
+                                        ? MTLSamplerMinMagFilterNearest
+                                        : MTLSamplerMinMagFilterLinear);
+    };
+    key.minFilter = minMag(p.minFilter);
+    key.magFilter = minMag(p.magFilter);
+    switch (p.minFilter) {
+    case GL_NEAREST_MIPMAP_NEAREST: case GL_LINEAR_MIPMAP_NEAREST: key.mipFilter = MTLSamplerMipFilterNearest; break;
+    case GL_NEAREST_MIPMAP_LINEAR: case GL_LINEAR_MIPMAP_LINEAR: key.mipFilter = MTLSamplerMipFilterLinear; break;
+    default: key.mipFilter = MTLSamplerMipFilterNotMipmapped; break;
+    }
+    key.sAddress = static_cast<uint8_t>(mtlAddressMode(p.wrapS));
+    key.tAddress = static_cast<uint8_t>(mtlAddressMode(p.wrapT));
+    key.rAddress = static_cast<uint8_t>(mtlAddressMode(p.wrapR));
+    key.compare = static_cast<uint8_t>(shadow ? (p.compareMode == GL_COMPARE_REF_TO_TEXTURE ? mtlCompare(p.compareFunc)
+                                                                                           : MTLCompareFunctionAlways)
+                                              : MTLCompareFunctionNever);
+    // Metal border colours are limited to these three; others are approximated (W12).
+    const float* c = p.borderColor.f;
+    key.border = static_cast<uint8_t>(c[3] == 0.0f ? MTLSamplerBorderColorTransparentBlack
+                                      : (c[0] + c[1] + c[2]) > 1.5f ? MTLSamplerBorderColorOpaqueWhite
+                                                                    : MTLSamplerBorderColorOpaqueBlack);
+    key.maxAnisotropy = static_cast<uint8_t>(std::clamp(p.maxAnisotropy, 1.0f, 16.0f));
+    key.normalized = 1;
+    key.lodMin = std::max(0.0f, p.minLod);
+    key.lodMax = std::max(key.lodMin, p.maxLod);
+    return ctx.share().pipelines().sampler(key);
+}
+
+id<MTLSamplerState> samplerState(Context& ctx, Texture& tex, const SamplerParams& params, bool shadow) {
+    SamplerParams p = params;
+    if (tex.target == GL_TEXTURE_RECTANGLE) {
+        // Rectangle textures use unnormalized coordinates and no mipmaps.
+        SamplerKey key;
+        std::memset(&key, 0, sizeof(key));
+        key.minFilter = p.minFilter == GL_NEAREST ? MTLSamplerMinMagFilterNearest : MTLSamplerMinMagFilterLinear;
+        key.magFilter = p.magFilter == GL_NEAREST ? MTLSamplerMinMagFilterNearest : MTLSamplerMinMagFilterLinear;
+        key.mipFilter = MTLSamplerMipFilterNotMipmapped;
+        key.sAddress = key.tAddress = key.rAddress = MTLSamplerAddressModeClampToEdge;
+        key.compare = static_cast<uint8_t>(shadow && p.compareMode == GL_COMPARE_REF_TO_TEXTURE ? mtlCompare(p.compareFunc)
+                                                                                               : MTLCompareFunctionNever);
+        key.maxAnisotropy = 1;
+        key.normalized = 0;
+        key.lodMax = 0;
+        return ctx.share().pipelines().sampler(key);
+    }
+    return samplerState(ctx, p, shadow);
+}
+
+id<MTLTexture> dummyTexture(GLenum samplerType) {
+    static std::mutex mutex;
+    static std::unordered_map<GLenum, id<MTLTexture>> cache;
+    std::lock_guard<std::mutex> lock(mutex);
+    auto it = cache.find(samplerType);
+    if (it != cache.end()) return it->second;
+    MTLPixelFormat format = MTLPixelFormatRGBA8Unorm;
+    switch (samplerType) {
+    case GL_INT_SAMPLER_1D: case GL_INT_SAMPLER_2D: case GL_INT_SAMPLER_3D: case GL_INT_SAMPLER_CUBE:
+    case GL_INT_SAMPLER_1D_ARRAY: case GL_INT_SAMPLER_2D_ARRAY: case GL_INT_SAMPLER_2D_RECT: case GL_INT_SAMPLER_BUFFER:
+    case GL_INT_SAMPLER_2D_MULTISAMPLE: case GL_INT_SAMPLER_2D_MULTISAMPLE_ARRAY:
+        format = MTLPixelFormatRGBA32Sint;
+        break;
+    case GL_UNSIGNED_INT_SAMPLER_1D: case GL_UNSIGNED_INT_SAMPLER_2D: case GL_UNSIGNED_INT_SAMPLER_3D:
+    case GL_UNSIGNED_INT_SAMPLER_CUBE: case GL_UNSIGNED_INT_SAMPLER_1D_ARRAY: case GL_UNSIGNED_INT_SAMPLER_2D_ARRAY:
+    case GL_UNSIGNED_INT_SAMPLER_2D_RECT: case GL_UNSIGNED_INT_SAMPLER_BUFFER:
+    case GL_UNSIGNED_INT_SAMPLER_2D_MULTISAMPLE: case GL_UNSIGNED_INT_SAMPLER_2D_MULTISAMPLE_ARRAY:
+        format = MTLPixelFormatRGBA32Uint;
+        break;
+    case GL_SAMPLER_1D_SHADOW: case GL_SAMPLER_2D_SHADOW: case GL_SAMPLER_1D_ARRAY_SHADOW: case GL_SAMPLER_2D_ARRAY_SHADOW:
+    case GL_SAMPLER_CUBE_SHADOW: case GL_SAMPLER_2D_RECT_SHADOW:
+        format = MTLPixelFormatDepth32Float;
+        break;
+    default: break;
+    }
+    MTLTextureType type = MTLTextureType2D;
+    switch (samplerType) {
+    case GL_SAMPLER_3D: case GL_INT_SAMPLER_3D: case GL_UNSIGNED_INT_SAMPLER_3D: type = MTLTextureType3D; break;
+    case GL_SAMPLER_CUBE: case GL_INT_SAMPLER_CUBE: case GL_UNSIGNED_INT_SAMPLER_CUBE: case GL_SAMPLER_CUBE_SHADOW:
+        type = MTLTextureTypeCube;
+        break;
+    case GL_SAMPLER_1D_ARRAY: case GL_SAMPLER_2D_ARRAY: case GL_INT_SAMPLER_1D_ARRAY: case GL_INT_SAMPLER_2D_ARRAY:
+    case GL_UNSIGNED_INT_SAMPLER_1D_ARRAY: case GL_UNSIGNED_INT_SAMPLER_2D_ARRAY: case GL_SAMPLER_1D_ARRAY_SHADOW:
+    case GL_SAMPLER_2D_ARRAY_SHADOW:
+        type = MTLTextureType2DArray;
+        break;
+    case GL_SAMPLER_2D_MULTISAMPLE: case GL_INT_SAMPLER_2D_MULTISAMPLE: case GL_UNSIGNED_INT_SAMPLER_2D_MULTISAMPLE:
+        type = MTLTextureType2DMultisample;
+        break;
+    case GL_SAMPLER_2D_MULTISAMPLE_ARRAY: case GL_INT_SAMPLER_2D_MULTISAMPLE_ARRAY:
+    case GL_UNSIGNED_INT_SAMPLER_2D_MULTISAMPLE_ARRAY:
+        type = MTLTextureType2DMultisampleArray;
+        break;
+    default: break;
+    }
+    MTLTextureDescriptor* desc = [MTLTextureDescriptor new];
+    desc.textureType = type;
+    desc.pixelFormat = format;
+    desc.width = desc.height = 1;
+    desc.storageMode = MTLStorageModeShared;
+    if (type == MTLTextureType2DMultisample || type == MTLTextureType2DMultisampleArray) {
+        desc.sampleCount = 4;
+        desc.storageMode = MTLStorageModePrivate;
+        desc.usage = MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget;
+    }
+    if (format == MTLPixelFormatDepth32Float) desc.storageMode = MTLStorageModePrivate;
+    id<MTLTexture> texture = [Device::get().mtl() newTextureWithDescriptor:desc];
+    if (desc.storageMode == MTLStorageModeShared) {
+        const NSUInteger slices = type == MTLTextureTypeCube ? 6 : 1;
+        uint8_t texel[16] = {};
+        if (format == MTLPixelFormatRGBA8Unorm) texel[3] = 255;
+        else if (format == MTLPixelFormatRGBA32Sint || format == MTLPixelFormatRGBA32Uint) texel[12] = 1;
+        const NSUInteger bpp = format == MTLPixelFormatRGBA8Unorm ? 4 : 16;
+        for (NSUInteger slice = 0; slice < slices; ++slice)
+            [texture replaceRegion:MTLRegionMake3D(0, 0, 0, 1, 1, 1) mipmapLevel:0 slice:slice withBytes:texel
+                       bytesPerRow:bpp bytesPerImage:bpp];
+    }
+    cache[samplerType] = texture;
+    return texture;
+}
+
+void uploadTexels(Context& ctx, Texture& tex, int face, int level, int x, int y, int z, int width, int height, int depth,
+                  const void* data, size_t bytesPerRow, size_t bytesPerImage) {
+    if (!tex.mtl || width <= 0 || height <= 0 || depth <= 0) return;
+    const bool array = tex.mtl.textureType == MTLTextureType2DArray || tex.mtl.textureType == MTLTextureTypeCubeArray;
+    const bool is3D = tex.mtl.textureType == MTLTextureType3D;
+    const size_t total = bytesPerImage * static_cast<size_t>(depth);
+    TransientAllocation staging = ctx.draw().transient().allocate(total, ctx.stream().serial(), 16);
+    std::memcpy(staging.data, data, total);
+    id<MTLBlitCommandEncoder> blit = ctx.stream().blit();
+    if (is3D) {
+        [blit copyFromBuffer:staging.buffer sourceOffset:staging.offset sourceBytesPerRow:bytesPerRow
+            sourceBytesPerImage:bytesPerImage sourceSize:MTLSizeMake(width, height, depth) toTexture:tex.mtl
+               destinationSlice:0 destinationLevel:static_cast<NSUInteger>(level) destinationOrigin:MTLOriginMake(x, y, z)];
+        return;
+    }
+    // Arrays (and 1D arrays, whose layers are rows of the GL image) upload one slice at a time.
+    for (int layer = 0; layer < depth; ++layer) {
+        const NSUInteger slice = static_cast<NSUInteger>(tex.target == GL_TEXTURE_CUBE_MAP ? face : array ? z + layer : 0);
+        [blit copyFromBuffer:staging.buffer sourceOffset:staging.offset + bytesPerImage * static_cast<size_t>(layer)
+               sourceBytesPerRow:bytesPerRow sourceBytesPerImage:bytesPerImage sourceSize:MTLSizeMake(width, height, 1)
+                       toTexture:tex.mtl destinationSlice:slice destinationLevel:static_cast<NSUInteger>(level)
+               destinationOrigin:MTLOriginMake(x, y, 0)];
+    }
+    ++tex.version;
+}
+
+}  // namespace wmgl
