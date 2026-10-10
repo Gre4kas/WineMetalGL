@@ -1,5 +1,5 @@
 diff --git a/dlls/opengl32/wgl.c b/dlls/opengl32/wgl.c
-index 9ff082d..e4d4775 100644
+index 9ff082d..6b27871 100644
 --- a/dlls/opengl32/wgl.c
 +++ b/dlls/opengl32/wgl.c
 @@ -2000,6 +2000,7 @@ BOOL WINAPI wglChoosePixelFormatARB( HDC hdc, const int *attribs_int, const FLOA
@@ -35,6 +35,14 @@ index 9ff082d..e4d4775 100644
 +            (is_memdc && format->pfd.cColorBits == 16 && format->pfd.cAlphaBits != 1)) format_array[i] = NULL;
          else format_array[i] = &wgl_formats[i];
      }
+ 
+@@ -2935,6 +2946,7 @@ void WINAPI glDeleteSync( GLsync sync )
+     TRACE( "sync %p\n", sync );
+ 
+     if (!(ctx = context_from_handle( teb->glCurrentRC ))) return;
++    if (!sync) return; /* DeleteSync silently ignores a sync value of zero. */
+     if (!(ptr = get_handle_ptr( &ctx->lists->syncs, sync ))) return set_gl_error( GL_INVALID_VALUE );
+     args.sync = ptr->user_data;
  
 diff --git a/dlls/win32u/opengl.c b/dlls/win32u/opengl.c
 index 6ab3a03..5679212 100644

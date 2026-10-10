@@ -6,10 +6,11 @@ against WineForge (https://github.com/Alien4042x/WineForge), Wine 11.17,
 commit `a05564c`, and apply with `git apply` from the top of that tree. Other Wine revisions may need a small rebase when
 Wine's OpenGL driver interface changes.
 
-- `0001-opengl-wgl-fixes.patch`: two Wine OpenGL fixes the core relies on.
+- `0001-opengl-wgl-fixes.patch`: three Wine OpenGL fixes the core relies on.
   `win32u` indexes the parsed extension list correctly for drivers without
-  `GL_NUM_EXTENSIONS`, and `wglChoosePixelFormatARB` keeps window requests
-  within the on-screen pixel formats.
+  `GL_NUM_EXTENSIONS`, `wglChoosePixelFormatARB` keeps window requests
+  within the on-screen pixel formats, and `glDeleteSync(0)` is ignored
+  instead of raising `GL_INVALID_VALUE`.
 - `0002-winemac-winemetalgl-core.patch`: `winemac.drv` loads
   `libwinemetalgl.dylib` from its own directory and hands it a `CAMetalLayer`
   per window; contexts, surfaces, pbuffers and swaps go through the driver ABI
