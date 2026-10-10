@@ -34,7 +34,7 @@ id<MTLRenderPipelineState> PipelineCache::render(const PipelineKey& key, LinkedP
     desc.vertexFunction = vertex;
     desc.fragmentFunction = key.rasterization ? fragment : nil;
     MTLVertexDescriptor* vd = [MTLVertexDescriptor vertexDescriptor];
-    for (uint32_t i = 0; i < 16; ++i) {
+    for (uint32_t i = 0; i < std::size(key.attributes); ++i) {
         if (!key.attributes[i].format) continue;
         vd.attributes[i].format = static_cast<MTLVertexFormat>(key.attributes[i].format);
         vd.attributes[i].offset = key.attributes[i].offset;

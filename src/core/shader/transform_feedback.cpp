@@ -143,11 +143,11 @@ CaptureCode vertexCaptureCode(const LinkResult& layout, int glslVersion) {
          "    return gl_VertexID;\n"
          "}\n"
          "#define gl_VertexID wmgl_xfb_vertex_id_of()\n"
-         "#define main wmgl_user_main\n";
+         "#define main wmgl_capture_main\n";  // (legacy GLSL already wraps its main as wmgl_user_main)
     std::string& e = code.epilogue;
     e += "\n#undef main\n#undef gl_VertexID\n"
          "void main() {\n"
-         "    wmgl_user_main();\n"
+         "    wmgl_capture_main();\n"
          "    if (wmgl_xfb_active != 0u) {\n"
          "        uint v = uint(gl_VertexID) + uint(gl_InstanceID) * wmgl_xfb_vertex_count;\n"
          "        if (v < wmgl_xfb_limit) {\n";

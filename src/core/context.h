@@ -5,6 +5,7 @@
 #include <deque>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "core/gl/types.h"
 #include "core/metal/command_stream.h"
@@ -27,6 +28,8 @@ struct ContextConfig {
 };
 
 class DrawState;
+struct ImmediateState;
+struct ListCompiler;
 
 class Context {
 public:
@@ -125,6 +128,27 @@ public:
     bool debugMessageEnabled(GLenum source, GLenum type, GLuint id, GLenum severity) const;
     // Name of the GL command being executed (set by the generated entry points).
     const char* currentCommand = "";
+
+    // Compatibility profile (W22): the packed wmgl_FixedFunction block
+    // (compat/fixed_function.h), immediate mode (compat/immediate.h) and
+    // display list compilation (compat/display_list.h).
+    struct FixedFunctionBlockCache {
+        uint64_t version = 0, generation = 0;
+        float pointSize = -1, fade = -1;
+        std::vector<uint8_t> data;
+    } fixedFunctionBlockCache;
+    // glPushAttrib / glPushClientAttrib (api/fixed_attrib.mm): the mask and
+    // a copy of the state it covers.
+    struct AttribFrame {
+        GLbitfield mask = 0;
+        ContextState state;
+        RefPtr<VertexArray> vertexArray;
+        std::array<VertexAttrib, VertexArray::kAttribSlots> attribs;
+    };
+    std::vector<AttribFrame> attribStack, clientAttribStack;
+    std::unique_ptr<ImmediateState> immediate;
+    std::unique_ptr<ListCompiler> listCompiler;  // non-null between glNewList and glEndList
+    int listCallDepth = 0;
 
 private:
     void initStrings();

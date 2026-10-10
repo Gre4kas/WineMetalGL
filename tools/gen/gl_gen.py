@@ -12,6 +12,7 @@ Reads third_party/khronos/gl.xml and writes, into OUTDIR:
   gl_commands.gen.json  the command list with versions/extensions (for reports)
   gl_pfn.gen.h      PFN_<command> function pointer types (for tests that load
                     entry points through wmgl_get_proc_address)
+  gl_list.gen.cpp/h display list recorders for the list-compilable commands
 
 Commands come from every GL feature up to 4.6 (core and compatibility) plus
 the extensions listed in tools/gen/extensions.txt. Extension commands that
@@ -66,7 +67,9 @@ def load(registry, extension_names):
             "name": name,
             "ret": proto_return(proto),
             "params": params,
+            "lens": [p.get("len") for p in node.findall("param")],
             "alias": alias.get("name") if alias is not None else None,
+            "version": None,
         }
 
     selected = {}
@@ -79,6 +82,9 @@ def load(registry, extension_names):
         for require in feature.findall("require"):
             for cmd in require.findall("command"):
                 selected.setdefault(cmd.get("name"), "GL %d.%d" % number)
+                entry = commands.get(cmd.get("name"))
+                if entry is not None and entry["version"] is None:
+                    entry["version"] = number
 
     wanted = set(extension_names)
     found = set()
@@ -132,6 +138,108 @@ def enums(registry):
                 value += "u"
             values.setdefault(name, value)
     return values
+
+
+# Display lists (GL 3.3 compatibility section 5.5.1): commands of GL 1.0-2.1
+# are compiled into the list being built, except these, which always run
+# immediately. Later commands are never compiled.
+NOT_COMPILED = set("""
+glIsList glGenLists glDeleteLists glFeedbackBuffer glSelectBuffer glRenderMode glVertexPointer glNormalPointer
+glColorPointer glSecondaryColorPointer glIndexPointer glEdgeFlagPointer glFogCoordPointer glTexCoordPointer
+glVertexAttribPointer glInterleavedArrays glEnableClientState glDisableClientState glEnableVertexAttribArray
+glDisableVertexAttribArray glClientActiveTexture glPushClientAttrib glPopClientAttrib glReadPixels glPixelStoref
+glPixelStorei glGenTextures glDeleteTextures glAreTexturesResident glGenQueries glDeleteQueries glBindBuffer
+glDeleteBuffers glGenBuffers glBufferData glBufferSubData glMapBuffer glUnmapBuffer glCreateProgram glCreateShader
+glDeleteProgram glDeleteShader glAttachShader glBindAttribLocation glCompileShader glDetachShader glLinkProgram
+glShaderSource glValidateProgram glFlush glFinish glNewList glEndList glMap1d glMap1f glMap2d glMap2f
+""".split())
+
+# Commands whose implementation records itself: current attributes and
+# Begin/End build batches, vertex array draws dereference the arrays
+# (core/compat/immediate.h).
+SELF_RECORDED = re.compile(
+    r"^gl(Begin|End|EdgeFlagv?|ArrayElement|DrawArrays|DrawElements|DrawRangeElements|MultiDrawArrays|"
+    r"MultiDrawElements|Rect[dfis]v?|Color[34]|SecondaryColor3|Normal3|TexCoord[1-4]|MultiTexCoord[1-4]|"
+    r"FogCoord[df]|Vertex[234]|VertexAttrib(I|L|P|4N)?[1-4]|Index[dfisu])")
+
+# Commands allowed between glBegin and glEnd (GL 3.3 compatibility section 2.6.3).
+ALLOWED_IN_BEGIN = re.compile(
+    r"^gl(Begin$|End$|Vertex[234]|VertexP[234]|Color[34]|ColorP[34]|SecondaryColor3|SecondaryColorP3|Normal3|NormalP3|"
+    r"TexCoord[1-4]|TexCoordP[1-4]|MultiTexCoord[1-4]|MultiTexCoordP[1-4]|FogCoord[df]|Index[dfisu]|EdgeFlagv?$|"
+    r"VertexAttrib(I|L|P|4N)?[1-4]|EvalCoord|EvalPoint|Material|ArrayElement|CallList)")
+
+PROXY_TEXIMAGE = {"glTexImage1D", "glTexImage2D", "glTexImage3D", "glCompressedTexImage1D", "glCompressedTexImage2D",
+                  "glCompressedTexImage3D"}
+
+
+def base_type(ptype):
+    """'const GLfloat *' -> 'GLfloat' (void -> uint8_t)."""
+    t = ptype.replace("const", "").replace("*", "").strip()
+    return "uint8_t" if t == "void" else t
+
+
+def list_recorder(cmd, info, api_name):
+    """C++ recorder for a compiled command, or None if its pointer sizes are unknown."""
+    params, lens = info["params"], info["lens"]
+    names = [n for _, n in params]
+    pre, captures, args, scope = [], [], [], None
+    for (ptype, pname), length in zip(params, lens):
+        if "*" not in ptype:
+            captures.append(pname)
+            args.append(pname)
+            continue
+        if ptype.count("*") > 1:
+            return None
+        m = re.match(r"COMPSIZE\((.*)\)$", length or "")
+        comp = [x for x in m.group(1).split(",") if x] if m else None
+        if comp is not None and len(comp) >= 3 and comp[0] == "format" and comp[1] == "type":
+            dims = comp[2:] + ["1"] * (3 - len(comp[2:]))
+            pre.append("wmgl::list::Pixels px_%s = wmgl::list::capturePixels(ctx, %s, format, type, %s);" % (
+                pname, pname, ", ".join(dims)))
+            captures.append("px_%s = std::move(px_%s)" % (pname, pname))
+            args.append("static_cast<%s>(px_%s.data())" % (ptype, pname))
+            scope = "px_" + pname
+            continue
+        if comp is not None and comp in (["width", "height"], []):
+            dims = "width, height" if comp else "32, 32"
+            pre.append("wmgl::list::Pixels px_%s = wmgl::list::captureBitmap(ctx, %s, %s);" % (pname, pname, dims))
+            captures.append("px_%s = std::move(px_%s)" % (pname, pname))
+            args.append("static_cast<%s>(px_%s.data())" % (ptype, pname))
+            scope = "px_" + pname
+            continue
+        if length == "imageSize":  # compressed images: client memory or the unpack buffer
+            pre.append("wmgl::list::Pixels px_%s = wmgl::list::captureBytes(ctx, %s, imageSize);" % (pname, pname))
+            captures.append("px_%s = std::move(px_%s)" % (pname, pname))
+            args.append("static_cast<%s>(px_%s.data())" % (ptype, pname))
+            scope = "px_" + pname
+            continue
+        if comp == ["pname"]:
+            count = "wmgl::list::pnameCount(pname)"
+        elif comp == ["n", "type"]:
+            count = "wmgl::list::callListsBytes(n, type)"
+        elif comp is None and length and re.match(r"^[A-Za-z0-9_*]+$", length) and \
+                all(tok.isdigit() or tok in names for tok in length.split("*")):
+            count = "static_cast<size_t>(%s)" % length
+        else:
+            return None
+        t = base_type(ptype)
+        pre.append("std::vector<%s> v_%s; if (%s) v_%s.assign(reinterpret_cast<const %s*>(%s), reinterpret_cast<const %s*>(%s) + %s);"
+                   % (t, pname, pname, pname, t, pname, t, pname, count))
+        pre.append("const bool null_%s = %s == nullptr;" % (pname, pname))
+        captures.append("v_%s = std::move(v_%s)" % (pname, pname))
+        captures.append("null_%s" % pname)
+        args.append("null_%s ? nullptr : reinterpret_cast<%s>(v_%s.data())" % (pname, ptype, pname))
+    sig = ", ".join(["wmgl::Context& ctx"] + ["%s %s" % p for p in params])
+    body = []
+    if cmd in PROXY_TEXIMAGE:
+        body.append("    if (wmgl::list::isProxyTarget(target)) return true;  // proxy queries run immediately")
+    body += ["    " + line for line in pre]
+    # (GL parameter names include "c": the closure's context is "wmgl_ctx".)
+    call = "wmgl::api::%s(wmgl_ctx%s)" % (api_name, "".join(", " + a for a in args))
+    inner = ("wmgl::list::UnpackScope scope(wmgl_ctx, %s.unpack); %s;" % (scope, call)) if scope else call + ";"
+    body.append("    return wmgl::list::record(ctx, [%s](wmgl::Context& wmgl_ctx) mutable { %s });" % (
+        ", ".join(captures), inner))
+    return "bool record_%s(%s) {\n%s\n}\n" % (api_name, sig, "\n".join(body))
 
 
 def main():
@@ -196,9 +304,43 @@ def main():
             out.write("}\n")
         out.write("\n}  // namespace wmgl::api\n")
 
+    # Display list recorders for the compiled commands.
+    recorders = {}
+    uncompiled = []
+    for impl in impls:
+        info = commands[impl]
+        version = info["version"]
+        if version is None or version > (2, 1) or impl in NOT_COMPILED or SELF_RECORDED.match(impl):
+            continue
+        if impl.startswith("glGet") or impl.startswith("glIs") or info["ret"] != "void":
+            continue
+        code = list_recorder(impl, info, api_name(impl))
+        if code is None:
+            uncompiled.append(impl)
+            continue
+        recorders[impl] = code
+    with open(os.path.join(args.out, "gl_list.gen.cpp"), "w") as out:
+        out.write("// Generated by tools/gen/gl_gen.py. Do not edit.\n")
+        out.write("// Display list recorders: each copies its arguments into a closure that\n")
+        out.write("// calls the implementation when the list executes (core/compat/display_list.h).\n\n")
+        out.write('#include <utility>\n#include <vector>\n\n#include "gl_api.gen.h"\n#include "gl_list.gen.h"\n')
+        out.write('#include "core/compat/display_list.h"\n#include "core/context.h"\n\nnamespace wmgl::list {\n\n')
+        for impl in sorted(recorders):
+            out.write(recorders[impl] + "\n")
+        out.write("}  // namespace wmgl::list\n")
+    with open(os.path.join(args.out, "gl_list.gen.h"), "w") as out:
+        out.write("// Generated by tools/gen/gl_gen.py. Do not edit.\n#pragma once\n\n")
+        out.write('#include "core/gl/types.h"\n\nnamespace wmgl {\nclass Context;\nnamespace list {\n\n')
+        out.write("bool isProxyTarget(GLenum target);\n")
+        for impl in sorted(recorders):
+            out.write("bool record_%s(%s);\n" % (api_name(impl), ", ".join(
+                ["wmgl::Context& ctx"] + ["%s %s" % p for p in commands[impl]["params"]])))
+        out.write("\n}  // namespace list\n}  // namespace wmgl\n")
+
     with open(os.path.join(args.out, "gl_entry.gen.cpp"), "w") as out:
         out.write("// Generated by tools/gen/gl_gen.py. Do not edit.\n\n")
-        out.write('#include "gl_api.gen.h"\n#include "core/context.h"\n#include "core/proc_table.h"\n\nnamespace {\n\n')
+        out.write('#include "gl_api.gen.h"\n#include "gl_list.gen.h"\n#include "core/compat/immediate.h"\n')
+        out.write('#include "core/context.h"\n#include "core/proc_table.h"\n\nnamespace {\n\n')
         for cmd in names:
             impl = impl_of(cmd)
             ret = commands[cmd]["ret"]
@@ -215,6 +357,14 @@ def main():
             # different threads may use the same shared objects.
             out.write("    wmgl::ShareLock shareLock(*ctx);\n")
             out.write('    ctx->currentCommand = "%s";\n' % cmd)
+            if not ALLOWED_IN_BEGIN.match(impl) and not ALLOWED_IN_BEGIN.match(cmd):
+                # Most commands are invalid between glBegin and glEnd.
+                out.write("    if (__builtin_expect(ctx->immediate != nullptr, 0) && ctx->immediate->active) {\n")
+                out.write("        ctx->setError(GL_INVALID_OPERATION);\n        return%s;\n    }\n" % (
+                    (" " + dflt) if dflt else ""))
+            if impl in recorders:
+                out.write("    if (__builtin_expect(ctx->listCompiler != nullptr, 0) && !wmgl::list::record_%s(%s)) return;\n" % (
+                    api_name(impl), call))
             out.write("    %swmgl::api::%s(%s);\n}\n" % ("return " if dflt else "", api_name(impl), call))
         out.write("\n}  // namespace\n\nnamespace wmgl {\n\nconst ProcEntry kProcTable[] = {\n")
         for cmd in names:
@@ -230,7 +380,10 @@ def main():
 
     with open(os.path.join(args.out, "gl_commands.gen.json"), "w") as out:
         json.dump({cmd: {"source": selected[cmd], "impl": impl_of(cmd)} for cmd in names}, out, indent=1, sort_keys=True)
-    print("gl_gen: %d entry points, %d implementations" % (len(names), len(impls)))
+    print("gl_gen: %d entry points, %d implementations, %d display list recorders" % (
+        len(names), len(impls), len(recorders)))
+    if uncompiled:
+        print("gl_gen: not compiled into display lists (unknown argument sizes): " + " ".join(sorted(uncompiled)))
 
 
 if __name__ == "__main__":

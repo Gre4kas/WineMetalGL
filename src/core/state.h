@@ -5,6 +5,7 @@
 #include <array>
 #include <cstdint>
 
+#include "core/compat/fixed_state.h"
 #include "core/gl/types.h"
 #include "core/objects.h"
 
@@ -180,13 +181,24 @@ struct ContextState {
         } value = {{0, 0, 0, 1}};
         GLenum type = GL_FLOAT;  // GL_FLOAT, GL_INT, GL_UNSIGNED_INT
     };
-    std::array<GenericAttrib, VertexArray::kMaxAttribs> genericAttribs;
+    // Generic attributes, then the conventional current values (current
+    // colour, normal, texture coordinates, ...; compat/fixed_state.h).
+    std::array<GenericAttrib, VertexArray::kAttribSlots> genericAttribs;
+
+    // Compatibility profile fixed-function state.
+    FixedState fixed;
 
     // Debug output (KHR_debug).
     bool debugOutput = false, debugOutputSynchronous = false;
 
     ContextState() {
+        static_assert(kAttribSlotCount == VertexArray::kAttribSlots, "conventional attribute slots");
         for (auto& mask : colorMask) mask = {true, true, true, true};
+        // Initial current values (GL 3.3 compatibility table 6.5).
+        genericAttribs[kConvColor].value = {{1, 1, 1, 1}};
+        genericAttribs[kConvNormal].value = {{0, 0, 1, 1}};
+        genericAttribs[kConvSecondaryColor].value = {{0, 0, 0, 1}};
+        genericAttribs[kConvFogCoord].value = {{0, 0, 0, 1}};
     }
 };
 

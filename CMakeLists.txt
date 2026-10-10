@@ -63,7 +63,9 @@ set(WMGL_GEN_OUTPUTS
     "${WMGL_GEN_DIR}/gl_entry.gen.cpp"
     "${WMGL_GEN_DIR}/gl_stubs.gen.cpp"
     "${WMGL_GEN_DIR}/gl_commands.gen.json"
-    "${WMGL_GEN_DIR}/gl_pfn.gen.h")
+    "${WMGL_GEN_DIR}/gl_pfn.gen.h"
+    "${WMGL_GEN_DIR}/gl_list.gen.cpp"
+    "${WMGL_GEN_DIR}/gl_list.gen.h")
 add_custom_command(
     OUTPUT ${WMGL_GEN_OUTPUTS}
     COMMAND "${Python3_EXECUTABLE}" -I "${CMAKE_CURRENT_SOURCE_DIR}/tools/gen/gl_gen.py"
@@ -99,15 +101,18 @@ file(GLOB WMGL_CORE_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/core/*.mm"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/core/*.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/core/api/*.mm"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/core/compat/*.mm"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/core/metal/*.mm")
 add_library(winemetalgl_core SHARED
     ${WMGL_CORE_SOURCES}
     "${WMGL_GEN_DIR}/gl_entry.gen.cpp"
-    "${WMGL_GEN_DIR}/gl_stubs.gen.cpp")
+    "${WMGL_GEN_DIR}/gl_stubs.gen.cpp"
+    "${WMGL_GEN_DIR}/gl_list.gen.cpp")
 add_dependencies(winemetalgl_core wmgl_generated)
 # Generated and other .cpp sources include Metal-using headers: build them as Objective-C++.
 set_source_files_properties(
-    "${WMGL_GEN_DIR}/gl_entry.gen.cpp" "${WMGL_GEN_DIR}/gl_stubs.gen.cpp" "${CMAKE_CURRENT_SOURCE_DIR}/src/core/proc_table.cpp"
+    "${WMGL_GEN_DIR}/gl_entry.gen.cpp" "${WMGL_GEN_DIR}/gl_stubs.gen.cpp" "${WMGL_GEN_DIR}/gl_list.gen.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/core/proc_table.cpp"
     TARGET_DIRECTORY winemetalgl_core PROPERTIES LANGUAGE OBJCXX)
 target_link_libraries(winemetalgl_core PRIVATE
     wmgl_portable

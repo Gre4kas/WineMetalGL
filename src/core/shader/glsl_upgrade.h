@@ -8,6 +8,7 @@
 // and uniforms (fed by the compatibility profile, W22).
 #pragma once
 
+#include <set>
 #include <string>
 
 #include "core/shader/compiler.h"
@@ -27,9 +28,30 @@ struct UpgradeResult {
     std::string source;
     std::string log;
     bool usesFixedFunctionState = false;  // reads gl_ModelViewMatrix etc.
+    // Fragment stage: the built-in varyings it reads ("FrontColor",
+    // "FrontSecondaryColor", "TexCoord", "FogFragCoord"; gl_Color reads the
+    // vertex stage's gl_FrontColor).
+    std::set<std::string> builtinVaryingsRead;
 };
 
-UpgradeResult upgradeLegacyGlsl(Stage stage, const std::string& source);
+struct UpgradeOptions {
+    // Vertex stage: built-in varyings the next stage reads. The ones the
+    // shader does not write are declared (zero) so the interfaces match.
+    std::set<std::string> provideVaryings;
+};
+
+// The legacy shader runs as wmgl_user_main inside a generated main, which
+// adds the compatibility profile's per-stage work:
+//  - vertex: zero-initialised built-in varyings (UpgradeOptions), and the
+//    user clip planes applied to gl_ClipVertex (gl_ClipDistance[0..7]);
+//  - fragment: the alpha test (GL_ALPHA_TEST) on gl_FragColor/gl_FragData[0].
+// Both read the wmgl_FixedFunction block (core/compat/fixed_function.h).
+UpgradeResult upgradeLegacyGlsl(Stage stage, const std::string& source, const UpgradeOptions& options = {});
+
+// Members of wmgl_FixedFunction beyond the GLSL built-ins, read by the
+// generated code: wmgl_AlphaTest = (function code, reference, 0, 0), function
+// code 0 = test disabled (see compat/fixed_function.h).
+inline constexpr const char* kFixedFunctionBlockName = "wmgl_FixedFunction";
 
 // Codegen parses with Vulkan GLSL rules, which reserve type names that are
 // ordinary identifiers in desktop GLSL (sampler, texture2D, subpassInput...).

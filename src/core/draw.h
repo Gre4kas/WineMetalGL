@@ -17,6 +17,9 @@ namespace wmgl {
 class Context;
 class Buffer;
 class Framebuffer;
+class Program;
+class VertexArray;
+struct VertexAttrib;
 struct LinkedProgram;
 
 struct TargetFormats {
@@ -54,8 +57,12 @@ public:
     void clearBuffer(GLenum buffer, GLint drawbuffer, const double color[4], double depth, GLint stencil);
 
     // The executable that draws use: the current program's, else the bound
-    // program pipeline's (GL_ARB_separate_shader_objects). Null if neither.
+    // program pipeline's (GL_ARB_separate_shader_objects), else (in the
+    // compatibility profile) the generated fixed-function program for the
+    // draw begun with beginDraw. Null if none.
     LinkedProgram* executable();
+    // Starts a draw of `mode`: the fixed-function program is chosen for it.
+    void beginDraw(GLenum mode);
 
     // glDispatchCompute / glDispatchComputeIndirect (validated by the caller);
     // `indirect` is the DISPATCH_INDIRECT_BUFFER, or null.
@@ -116,6 +123,7 @@ private:
     void samplerBinding(LinkedProgram& program, size_t index, __strong id<MTLTexture>& view,
                         __strong id<MTLSamplerState>& sampler);
     void waitForCpuVertexReads(LinkedProgram& program, bool gather);
+    const VertexAttrib& attribFor(const VertexArray& vao, int location) const;
     void bindUniforms(id<MTLRenderCommandEncoder> encoder, LinkedProgram& program);
     void bindTextures(id<MTLRenderCommandEncoder> encoder, LinkedProgram& program);
     // Builds pending storage of every sampled texture before a draw opens its encoder.
@@ -127,6 +135,16 @@ private:
     uint64_t lastPassGeneration_ = 0;
     GLuint baseInstance_ = 0;
     std::shared_ptr<LinkedProgram> current_;  // keeps a pipeline executable alive during a draw
+    // Fixed-function program of the current draw (owned by the share group's cache).
+    Program* ownerProgram();
+    GLenum drawMode_ = GL_TRIANGLES;
+    bool ffChosen_ = false, ffPointSize_ = false;
+    Program* ffProgram_ = nullptr;
+    struct {
+        id<MTLBuffer> buffer = nil;
+        NSUInteger offset = 0;
+        uint64_t generation = 0, serial = 0;
+    } ffBlock_;
     PipelineKey lastKey_{};
     TargetFormats lastFormats_{};
     MTLScissorRect lastScissor_{};

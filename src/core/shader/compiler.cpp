@@ -102,14 +102,14 @@ void ensureVertexOutput(std::string& msl) {
 // Every vertex function writes [[point_size]] (Metal leaves it undefined
 // otherwise). GL 3.3: the size is the shader's gl_PointSize when
 // PROGRAM_POINT_SIZE is enabled, else glPointSize; both come from the driver
-// uniforms in buffer kSlotDriverUniforms (float pointSize, uint programPointSize).
+// uniforms in buffer kSlotDriverUniforms (float pointSize, uint programPointSize, uint clipFlags, uint clipEnables).
 void addPointSize(std::string& msl) {
     const size_t fn = msl.find("vertex main0_out main0(");
     const size_t structAt = msl.find("struct main0_out\n{\n");
     if (fn == std::string::npos || structAt == std::string::npos || structAt > fn) return;
     const bool writes = msl.find("[[point_size]]") != std::string::npos;
     const std::string driver =
-        "struct wmgl_DriverUniforms\n{\n    float pointSize;\n    uint programPointSize;\n    uint clipFlags;\n};\n\n";
+        "struct wmgl_DriverUniforms\n{\n    float pointSize;\n    uint programPointSize;\n    uint clipFlags;\n    uint clipEnables;\n};\n\n";
     std::string patched = msl.substr(0, structAt) + driver + msl.substr(structAt, fn - structAt);
     if (!writes) {
         const size_t body = patched.find("struct main0_out\n{\n") + std::string("struct main0_out\n{\n").size();
@@ -120,8 +120,15 @@ void addPointSize(std::string& msl) {
     const bool noParameters = main[open + 1] == ')';
     main.insert(open + 1, "constant wmgl_DriverUniforms& wmgl_driver [[buffer(" + std::to_string(kSlotDriverUniforms) + ")]]" +
                               (noParameters ? "" : ", "));
-    const std::string assign = writes ? "out.gl_PointSize = wmgl_driver.programPointSize != 0u ? out.gl_PointSize : wmgl_driver.pointSize; "
-                                      : "out.gl_PointSize = wmgl_driver.pointSize; ";
+    std::string assign = writes ? "out.gl_PointSize = wmgl_driver.programPointSize != 0u ? out.gl_PointSize : wmgl_driver.pointSize; "
+                                : "out.gl_PointSize = wmgl_driver.pointSize; ";
+    // Clip distances of disabled planes (GL_CLIP_DISTANCEi) do not clip.
+    const std::string clipDecl = "float gl_ClipDistance [[clip_distance]] [";
+    if (const size_t clipAt = patched.find(clipDecl); clipAt != std::string::npos) {
+        const int planes = std::atoi(patched.c_str() + clipAt + clipDecl.size());
+        assign += "for (uint wmgl_i = 0u; wmgl_i < " + std::to_string(planes) +
+                  "u; ++wmgl_i) if ((wmgl_driver.clipEnables & (1u << wmgl_i)) == 0u) out.gl_ClipDistance[wmgl_i] = 0.0; ";
+    }
     for (size_t at = main.find("return out;"); at != std::string::npos; at = main.find("return out;", at + assign.size() + 11))
         main.insert(at, assign);
     // GL_ARB_clip_control: clipFlags bit 0 is ZERO_TO_ONE depth (no depth
@@ -284,9 +291,9 @@ std::string insertAfterDirectives(const std::string& source, const std::string& 
 std::string raiseComputeVersion(Stage stage, const std::string& source);
 
 bool parseForCodegen(Stage stage, const std::string& original, ParsedShader& out, std::string& log,
-                     const CaptureCode* capture = nullptr) {
+                     const CaptureCode* capture = nullptr, const UpgradeOptions& upgrade = {}) {
     const EShLanguage lang = language(stage);
-    UpgradeResult upgraded = upgradeLegacyGlsl(stage, raiseComputeVersion(stage, original));
+    UpgradeResult upgraded = upgradeLegacyGlsl(stage, raiseComputeVersion(stage, original), upgrade);
     if (!upgraded.ok) {
         log += upgraded.log;
         return false;
@@ -531,6 +538,17 @@ int glTypeComponents(GLenum type) {
     }
 }
 
+int conventionalAttribLocation(const std::string& name) {
+    static const char* const kNames[kConventionalAttribCount] = {
+        "wmgl_Vertex", "wmgl_Normal", "wmgl_Color", "wmgl_SecondaryColor", "wmgl_FogCoord",
+        "wmgl_MultiTexCoord0", "wmgl_MultiTexCoord1", "wmgl_MultiTexCoord2", "wmgl_MultiTexCoord3",
+        "wmgl_MultiTexCoord4", "wmgl_MultiTexCoord5", "wmgl_MultiTexCoord6", "wmgl_MultiTexCoord7"};
+    if (name.rfind("wmgl_", 0) != 0) return -1;
+    for (int i = 0; i < kConventionalAttribCount; ++i)
+        if (name == kNames[i]) return kConventionalAttribFirst + i;
+    return -1;
+}
+
 int glTypeLocations(GLenum type) {
     switch (type) {
     case GL_FLOAT_MAT2: case GL_FLOAT_MAT2x3: case GL_FLOAT_MAT2x4: return 2;
@@ -682,7 +700,12 @@ std::vector<StageOutputVar> captureableOutputs(glslang::TIntermediate* intermedi
                 }
                 const std::string name = unescapeName(symbol->getName().c_str());
                 if (name.rfind("gl_", 0) == 0) continue;
-                outputs.push_back({name, glTypeOfAst(type), type.isSizedArray() ? type.getOuterArraySize() : 0});
+                // Lowered legacy varyings are captured by their built-in names (gl_FrontColor, gl_TexCoord, ...).
+                static const char* const kLegacy[] = {"wmgl_FrontColor", "wmgl_BackColor", "wmgl_FrontSecondaryColor",
+                                                      "wmgl_BackSecondaryColor", "wmgl_TexCoord", "wmgl_FogFragCoord"};
+                const bool legacy = std::find(std::begin(kLegacy), std::end(kLegacy), name) != std::end(kLegacy);
+                outputs.push_back({legacy ? "gl_" + name.substr(5) : name, glTypeOfAst(type),
+                                   type.isSizedArray() ? type.getOuterArraySize() : 0, legacy ? name : std::string()});
             }
         }
     }
@@ -694,6 +717,39 @@ std::vector<StageOutputVar> captureableOutputs(glslang::TIntermediate* intermedi
 
 }  // namespace
 
+// Moves the wmgl_FixedFunction block and its members after the
+// application's blocks and uniforms (LinkResult::fixedFunctionBlock).
+static void hideFixedFunctionBlock(LinkResult& r) {
+    int ff = -1;
+    for (size_t b = 0; b < r.blocks.size(); ++b)
+        if (r.blocks[b].name == kFixedFunctionBlockName) ff = static_cast<int>(b);
+    if (ff < 0) return;
+    std::vector<int> blockMap(r.blocks.size()), uniformMap(r.uniforms.size());
+    std::vector<UniformBlockInfo> blocks;
+    for (size_t b = 0; b < r.blocks.size(); ++b) {
+        if (static_cast<int>(b) == ff) continue;
+        blockMap[b] = static_cast<int>(blocks.size());
+        blocks.push_back(std::move(r.blocks[b]));
+    }
+    blockMap[static_cast<size_t>(ff)] = static_cast<int>(blocks.size());
+    blocks.push_back(std::move(r.blocks[static_cast<size_t>(ff)]));
+    std::vector<UniformInfo> uniforms;
+    for (int pass = 0; pass < 2; ++pass)
+        for (size_t u = 0; u < r.uniforms.size(); ++u) {
+            if ((r.uniforms[u].blockIndex == ff) != (pass == 1)) continue;
+            uniformMap[u] = static_cast<int>(uniforms.size());
+            uniforms.push_back(r.uniforms[u]);
+        }
+    for (UniformInfo& u : uniforms)
+        if (u.blockIndex >= 0) u.blockIndex = blockMap[static_cast<size_t>(u.blockIndex)];
+    for (UniformBlockInfo& b : blocks)
+        for (int& u : b.activeUniforms) u = uniformMap[static_cast<size_t>(u)];
+    for (auto& location : r.locations) location.first = uniformMap[static_cast<size_t>(location.first)];
+    r.blocks = std::move(blocks);
+    r.uniforms = std::move(uniforms);
+    r.fixedFunctionBlock = static_cast<int>(r.blocks.size() - 1);
+}
+
 // `geometry`/`geometryCapture` (optional) receive the parsed geometry stage
 // and the layout of the vertex outputs it reads (see geometry.h).
 static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, GeometryShaderInfo* geometry = nullptr,
@@ -702,10 +758,20 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
     LinkResult result;
     std::vector<ParsedShader> parsed(input.shaders.size());
     bool stagePresent[kStageCount] = {};
+    // Legacy built-in varyings the fragment stage reads from the vertex stage.
+    UpgradeOptions vertexUpgrade;
+    bool hasGeometry = false;
+    for (const ShaderSource& shader : input.shaders) hasGeometry |= shader.stage == Stage::Geometry;
+    if (!hasGeometry)
+        for (const ShaderSource& shader : input.shaders)
+            if (shader.stage == Stage::Fragment)
+                for (const std::string& v : upgradeLegacyGlsl(Stage::Fragment, shader.source).builtinVaryingsRead)
+                    vertexUpgrade.provideVaryings.insert(v);
     for (size_t i = 0; i < input.shaders.size(); ++i) {
         const bool captureHere = capture && input.shaders[i].stage == Stage::Vertex;
         if (!parseForCodegen(input.shaders[i].stage, input.shaders[i].source, parsed[i], result.log,
-                             captureHere ? capture : nullptr))
+                             captureHere ? capture : nullptr,
+                             input.shaders[i].stage == Stage::Vertex ? vertexUpgrade : UpgradeOptions()))
             return result;
         stagePresent[static_cast<int>(input.shaders[i].stage)] = true;
     }
@@ -1031,6 +1097,12 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
         a.size = std::max(1, in.size);
         a.locationCount = glTypeLocations(a.type) * a.size;
         a.location = in.location != kNoLocation ? static_cast<GLint>(in.location) : -1;
+        // Lowered legacy attributes (gl_Vertex, ...) read the conventional arrays.
+        const int conventional = conventionalAttribLocation(a.name);
+        if (conventional >= 0) {
+            a.location = conventional;
+            a.conventional = true;
+        }
         result.attribs.push_back(a);
     }
     // Explicit locations from source were already applied; mark them used.
@@ -1038,6 +1110,7 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
     std::vector<int> needsLocation;
     for (size_t i = 0; i < result.attribs.size(); ++i) {
         AttribInfo& a = result.attribs[i];
+        if (a.conventional) continue;
         if (a.location >= 0 && a.location < 64 && input.attribBindings.find(a.name) == input.attribBindings.end()) {
             for (int l = 0; l < a.locationCount && a.location + l < 64; ++l) usedLocations[a.location + l] = true;
             continue;
@@ -1064,7 +1137,7 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
         for (int l = 0; l < a.locationCount && location + l < 64; ++l) usedLocations[location + l] = true;
     }
     for (const AttribInfo& a : result.attribs) {
-        if (a.location + a.locationCount > 16) {
+        if (!a.conventional && a.location + a.locationCount > 16) {
             result.log += "error: vertex attribute '" + a.name + "' uses a location beyond GL_MAX_VERTEX_ATTRIBS\n";
             return result;
         }
@@ -1275,6 +1348,7 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
         }
     }
 
+    hideFixedFunctionBlock(result);
     result.ok = true;
     return result;
 }

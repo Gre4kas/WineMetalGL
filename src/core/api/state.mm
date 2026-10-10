@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include "core/compat/compat_api.h"
 #include "core/context.h"
 #include "core/draw.h"
 #include "core/metal/device.h"
@@ -77,7 +78,7 @@ bool setCapability(Context& ctx, GLenum cap, bool on) {
     }
     if (cap == GL_DEBUG_OUTPUT) { s.debugOutput = on; return true; }
     if (cap == GL_DEBUG_OUTPUT_SYNCHRONOUS) { s.debugOutputSynchronous = on; return true; }
-    return false;
+    return setFixedCapability(ctx, cap, on);
 }
 
 bool getCapability(Context& ctx, GLenum cap, bool& value) {
@@ -118,7 +119,7 @@ bool getCapability(Context& ctx, GLenum cap, bool& value) {
         value = s.primitiveRestartFixedIndex;
         return true;
     }
-    return false;
+    return getFixedCapability(ctx, cap, value) || getClientCapability(ctx, cap, value);
 }
 
 }  // namespace
@@ -272,12 +273,24 @@ void PointParameterf(Context& ctx, GLenum pname, GLfloat param) {
         ctx.state.pointSpriteCoordOrigin = static_cast<GLenum>(param);
         ctx.markDirty(kDirtyDriverUniforms);
         return;
-    default: return ctx.setError(GL_INVALID_ENUM);
+    case GL_POINT_SIZE_MIN: case GL_POINT_SIZE_MAX:  // compatibility profile
+        if (!ctx.isCompat()) break;
+        if (param < 0.0f) return ctx.setError(GL_INVALID_VALUE);
+        (pname == GL_POINT_SIZE_MIN ? ctx.state.fixed.pointSizeMin : ctx.state.fixed.pointSizeMax) = param;
+        ++ctx.state.fixed.version;
+        return;
+    default: break;
     }
+    ctx.setError(GL_INVALID_ENUM);
 }
 
 void PointParameterfv(Context& ctx, GLenum pname, const GLfloat* params) {
     if (!params) return;
+    if (pname == GL_POINT_DISTANCE_ATTENUATION && ctx.isCompat()) {
+        std::copy(params, params + 3, ctx.state.fixed.pointDistanceAttenuation);
+        ++ctx.state.fixed.version;
+        return;
+    }
     PointParameterf(ctx, pname, params[0]);
 }
 
@@ -285,6 +298,10 @@ void PointParameteri(Context& ctx, GLenum pname, GLint param) { PointParameterf(
 
 void PointParameteriv(Context& ctx, GLenum pname, const GLint* params) {
     if (!params) return;
+    if (pname == GL_POINT_DISTANCE_ATTENUATION) {
+        const GLfloat v[3] = {static_cast<GLfloat>(params[0]), static_cast<GLfloat>(params[1]), static_cast<GLfloat>(params[2])};
+        return PointParameterfv(ctx, pname, v);
+    }
     PointParameteri(ctx, pname, params[0]);
 }
 
@@ -464,6 +481,12 @@ void Hint(Context& ctx, GLenum target, GLenum mode) {
     case GL_GENERATE_MIPMAP_HINT:
         if (ctx.isCompat()) { ctx.state.hintGenerateMipmap = mode; return; }
         break;
+    case GL_PERSPECTIVE_CORRECTION_HINT: case GL_POINT_SMOOTH_HINT: case GL_FOG_HINT:  // compatibility profile
+        if (!ctx.isCompat()) break;
+        (target == GL_PERSPECTIVE_CORRECTION_HINT ? ctx.state.fixed.hintPerspective
+         : target == GL_POINT_SMOOTH_HINT         ? ctx.state.fixed.hintPointSmooth
+                                                  : ctx.state.fixed.hintFog) = mode;
+        return;
     default: break;
     }
     ctx.setError(GL_INVALID_ENUM);

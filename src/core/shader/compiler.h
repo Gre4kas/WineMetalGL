@@ -85,7 +85,17 @@ struct AttribInfo {
     GLint size = 1;
     GLint location = -1;
     int locationCount = 1;     // matrices use one location per column
+    // A lowered legacy attribute (wmgl_Vertex for gl_Vertex, ...) at its
+    // conventional-array location; the API reports it as gl_* at location -1.
+    bool conventional = false;
 };
+
+// Conventional vertex arrays (compatibility profile) follow the 16 generic
+// attributes: vertex, normal, colour, secondary colour, fog coordinate and
+// 8 texture coordinates (core/compat/fixed_state.h).
+constexpr int kConventionalAttribFirst = 16, kConventionalAttribCount = 13;
+// The location of a lowered legacy attribute ("wmgl_Vertex", ...), or -1.
+int conventionalAttribLocation(const std::string& name);
 
 struct FragOutputInfo {
     std::string name;
@@ -180,6 +190,14 @@ struct LinkResult {
     GLint geometryVerticesOut = 0, geometryInvocations = 1;
     GeometryEmulation geometry;
     uint32_t computeLocalSize[3] = {1, 1, 1};  // compute programs: COMPUTE_WORK_GROUP_SIZE
+    // The wmgl_FixedFunction block (lowered legacy built-in uniforms), or -1.
+    // It and its members come last and are hidden from the GL interface.
+    int fixedFunctionBlock = -1;
+    size_t visibleBlockCount() const { return fixedFunctionBlock >= 0 ? blocks.size() - 1 : blocks.size(); }
+    size_t visibleUniformCount() const {
+        return fixedFunctionBlock >= 0 ? uniforms.size() - blocks[static_cast<size_t>(fixedFunctionBlock)].activeUniforms.size()
+                                       : uniforms.size();
+    }
 };
 
 LinkResult link(const LinkInput& input);

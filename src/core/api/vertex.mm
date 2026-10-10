@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstring>
 
+#include "core/compat/immediate.h"
 #include "core/context.h"
 #include "gl_api.gen.h"
 
@@ -171,37 +172,31 @@ void VertexAttribDivisor(Context& ctx, GLuint index, GLuint divisor) {
 
 namespace {
 
+// Current values go through compat::setAttribute: inside glBegin/glEnd
+// they join the batch (generic attribute 0 specifies a vertex) and during
+// display list compilation they are recorded (compat/immediate.h).
 void setGenericF(Context& ctx, GLuint index, GLfloat x, GLfloat y, GLfloat z, GLfloat w) {
     if (!checkIndex(ctx, index)) return;
-    auto& g = ctx.state.genericAttribs[index];
-    g.value.f[0] = x;
-    g.value.f[1] = y;
-    g.value.f[2] = z;
-    g.value.f[3] = w;
-    g.type = GL_FLOAT;
+    compat::setAttribute(ctx, static_cast<int>(index), x, y, z, w);
+    ctx.markDirty(kDirtyVertexInput);
+}
+
+template <class T>
+void setGenericInteger(Context& ctx, GLuint index, T x, T y, T z, T w, GLenum type) {
+    if (!checkIndex(ctx, index)) return;
+    ImmediateBatch::Value value;
+    const T v[4] = {x, y, z, w};
+    std::memcpy(value.data(), v, 16);
+    compat::setAttribute(ctx, static_cast<int>(index), value, type);
     ctx.markDirty(kDirtyVertexInput);
 }
 
 void setGenericI(Context& ctx, GLuint index, GLint x, GLint y, GLint z, GLint w) {
-    if (!checkIndex(ctx, index)) return;
-    auto& g = ctx.state.genericAttribs[index];
-    g.value.i[0] = x;
-    g.value.i[1] = y;
-    g.value.i[2] = z;
-    g.value.i[3] = w;
-    g.type = GL_INT;
-    ctx.markDirty(kDirtyVertexInput);
+    setGenericInteger<GLint>(ctx, index, x, y, z, w, GL_INT);
 }
 
 void setGenericU(Context& ctx, GLuint index, GLuint x, GLuint y, GLuint z, GLuint w) {
-    if (!checkIndex(ctx, index)) return;
-    auto& g = ctx.state.genericAttribs[index];
-    g.value.u[0] = x;
-    g.value.u[1] = y;
-    g.value.u[2] = z;
-    g.value.u[3] = w;
-    g.type = GL_UNSIGNED_INT;
-    ctx.markDirty(kDirtyVertexInput);
+    setGenericInteger<GLuint>(ctx, index, x, y, z, w, GL_UNSIGNED_INT);
 }
 
 float norm(GLbyte v) { return std::max(-1.0f, v / 127.0f); }

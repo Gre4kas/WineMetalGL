@@ -100,7 +100,7 @@ GlslVersion parseGlslVersion(const std::string& source) {
     return v;
 }
 
-UpgradeResult upgradeLegacyGlsl(Stage stage, const std::string& source) {
+UpgradeResult upgradeLegacyGlsl(Stage stage, const std::string& source, const UpgradeOptions& options) {
     UpgradeResult result;
     const GlslVersion version = parseGlslVersion(source);
     if (!version.compatibility && version.number >= 140) {
@@ -139,6 +139,7 @@ UpgradeResult upgradeLegacyGlsl(Stage stage, const std::string& source) {
     for (const auto& [from, to] : kTextureFunctions) rename[from] = to;
 
     std::set<std::string> used;
+    bool hasMain = false;
     std::string out;
     out.reserve(source.size() + 512);
     const size_t n = source.size();
@@ -213,8 +214,13 @@ UpgradeResult upgradeLegacyGlsl(Stage stage, const std::string& source) {
                 }
                 if (fragment && (word == "gl_Color" || word == "gl_SecondaryColor" || word == "gl_TexCoord" ||
                                  word == "gl_FogFragCoord")) {
-                    used.insert("fs:" + word);
-                    out += "wmgl_" + word.substr(3);
+                    // gl_Color and gl_SecondaryColor read the front-facing vertex colours.
+                    const std::string varying = word == "gl_Color"            ? "FrontColor"
+                                                : word == "gl_SecondaryColor" ? "FrontSecondaryColor"
+                                                                              : word.substr(3);
+                    result.builtinVaryingsRead.insert(varying);
+                    used.insert("fs:" + varying);
+                    out += "wmgl_" + varying;
                     continue;
                 }
                 bool handled = false;
@@ -233,6 +239,11 @@ UpgradeResult upgradeLegacyGlsl(Stage stage, const std::string& source) {
                     out += "wmgl_" + word.substr(3);
                     continue;
                 }
+            }
+            if ((vertex || fragment) && word == "main") {
+                hasMain = true;
+                out += "wmgl_user_main";
+                continue;
             }
             if (vertex && word == "ftransform") {
                 used.insert("ftransform");
@@ -263,10 +274,38 @@ UpgradeResult upgradeLegacyGlsl(Stage stage, const std::string& source) {
         if ((b.stages & stageBit) && used.count(b.name)) decls += std::string(b.decl) + "\n";
     if (vertex && used.count("gl_TexCoord")) decls += "out vec4 wmgl_TexCoord[8];\n";
     if (fragment) {
-        if (used.count("fs:gl_Color")) decls += "in vec4 wmgl_Color;\n";
-        if (used.count("fs:gl_SecondaryColor")) decls += "in vec4 wmgl_SecondaryColor;\n";
-        if (used.count("fs:gl_TexCoord")) decls += "in vec4 wmgl_TexCoord[8];\n";
-        if (used.count("fs:gl_FogFragCoord")) decls += "in float wmgl_FogFragCoord;\n";
+        if (used.count("fs:FrontColor")) decls += "in vec4 wmgl_FrontColor;\n";
+        if (used.count("fs:FrontSecondaryColor")) decls += "in vec4 wmgl_FrontSecondaryColor;\n";
+        if (used.count("fs:TexCoord")) decls += "in vec4 wmgl_TexCoord[8];\n";
+        if (used.count("fs:FogFragCoord")) decls += "in float wmgl_FogFragCoord;\n";
+    }
+    // The generated main (see glsl_upgrade.h).
+    std::string prologue, epilogue;
+    if (vertex) {
+        for (const std::string& varying : options.provideVaryings) {
+            if (used.count("gl_" + varying)) continue;
+            if (varying == "TexCoord") {
+                decls += "out vec4 wmgl_TexCoord[8];\n";
+                prologue += "    for (int i = 0; i < 8; ++i) wmgl_TexCoord[i] = vec4(0.0);\n";
+            } else if (varying == "FogFragCoord") {
+                decls += "out float wmgl_FogFragCoord;\n";
+                prologue += "    wmgl_FogFragCoord = 0.0;\n";
+            } else if (varying == "FrontColor" || varying == "FrontSecondaryColor") {
+                decls += "out vec4 wmgl_" + varying + ";\n";
+                prologue += "    wmgl_" + varying + " = vec4(0.0);\n";
+            }
+        }
+        if (used.count("gl_ClipVertex")) {
+            result.usesFixedFunctionState = true;
+            for (int i = 0; i < 8; ++i)
+                epilogue += "    gl_ClipDistance[" + std::to_string(i) + "] = dot(wmgl_ClipVertex, wmgl_ClipPlane[" +
+                            std::to_string(i) + "]);\n";
+        }
+    }
+    if (fragment && (used.count("gl_FragColor") || used.count("gl_FragData"))) {
+        result.usesFixedFunctionState = true;
+        epilogue += std::string("    wmgl_alphaTest(") + (used.count("gl_FragColor") ? "wmgl_FragColor" : "wmgl_FragData[0]") +
+                    ".a);\n";
     }
     // shadow*() returned vec4 in GLSL 1.x; texture() on shadow samplers returns float.
     if (used.count("wmgl_shadow"))
@@ -317,7 +356,15 @@ UpgradeResult upgradeLegacyGlsl(Stage stage, const std::string& source) {
             "  vec4 wmgl_TextureEnvColor[8]; vec4 wmgl_EyePlaneS[8]; vec4 wmgl_EyePlaneT[8]; vec4 wmgl_EyePlaneR[8];\n"
             "  vec4 wmgl_EyePlaneQ[8]; vec4 wmgl_ObjectPlaneS[8]; vec4 wmgl_ObjectPlaneT[8]; vec4 wmgl_ObjectPlaneR[8];\n"
             "  vec4 wmgl_ObjectPlaneQ[8]; wmgl_FogParameters wmgl_Fog;\n"
+            "  vec4 wmgl_AlphaTest;\n"
             "};\n";
+        if (fragment)
+            decls +=
+                "void wmgl_alphaTest(float a) {\n"
+                "  int f = int(wmgl_AlphaTest.x); float r = wmgl_AlphaTest.y;\n"
+                "  if (f != 0 && !(f == 8 || (f == 2 && a < r) || (f == 3 && a == r) || (f == 4 && a <= r) ||\n"
+                "      (f == 5 && a > r) || (f == 6 && a != r) || (f == 7 && a >= r))) discard;\n"
+                "}\n";
         if (vertex && used.count("ftransform"))
             decls += "vec4 wmgl_ftransform() { return wmgl_ModelViewProjectionMatrix * wmgl_Vertex; }\n";
         if (vertex && used.count("ftransform") && !used.count("gl_Vertex")) decls += "in vec4 wmgl_Vertex;\n";
@@ -329,6 +376,10 @@ UpgradeResult upgradeLegacyGlsl(Stage stage, const std::string& source) {
         out.insert(insertAt + decls.size(), "#line " + std::to_string(1 + std::count(out.begin(), out.begin() + static_cast<long>(insertAt), '\n')) + "\n");
     }
     if (!versionReplaced) out = "#version " + std::to_string(newVersion) + "\n#line 1\n" + out;
+    if (hasMain) {
+        // A shader object without main (one of several per stage) gets no wrapper.
+        out += "\nvoid main() {\n" + prologue + "    wmgl_user_main();\n" + epilogue + "}\n";
+    }
     result.source = out;
     return result;
 }

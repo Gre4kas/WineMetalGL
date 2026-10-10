@@ -1,10 +1,13 @@
 // Objects shared between contexts (wglShareLists / share context).
 #pragma once
 
+#include <map>
 #include <mutex>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 
+#include "core/compat/display_list.h"
 #include "core/metal/queue.h"
 #include "core/objects.h"
 #include "core/util/name_table.h"
@@ -37,6 +40,11 @@ public:
 
     Queue queue;
     PipelineCache& pipelines() { return *pipelines_; }
+
+    // Compatibility profile: generated fixed-function programs by state key
+    // (core/compat/fixed_function.h), and display lists (compat/display_list.h).
+    std::unordered_map<std::string, RefPtr<Program>> fixedFunctionPrograms;
+    std::map<GLuint, RefPtr<DisplayList>> displayLists;
 
 private:
     GLuint nextShaderProgram_ = 1;

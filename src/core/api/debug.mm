@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cstring>
 
+#include "core/compat/compat_api.h"
 #include "core/context.h"
 #include "gl_api.gen.h"
 
@@ -227,7 +228,8 @@ void GetPointerv(Context& ctx, GLenum pname, void** params) {
     switch (pname) {
     case GL_DEBUG_CALLBACK_FUNCTION: *params = reinterpret_cast<void*>(ctx.debugCallback); return;
     case GL_DEBUG_CALLBACK_USER_PARAM: *params = const_cast<void*>(ctx.debugUserParam); return;
-    default: ctx.setError(GL_INVALID_ENUM);
+    default:
+        if (!getConventionalPointer(ctx, pname, params)) ctx.setError(GL_INVALID_ENUM);
     }
 }
 

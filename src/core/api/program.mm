@@ -452,6 +452,30 @@ void LinkProgram(Context& ctx, GLuint program) {
     input.transformFeedbackVaryings = p->transformFeedbackVaryings;
     input.transformFeedbackMode = p->transformFeedbackMode;
     input.separable = p->separable;
+    // Compatibility profile: a program without a vertex shader uses
+    // fixed-function vertex processing (transform, colours, texture
+    // coordinates and fog coordinate; lighting and texgen need the
+    // fixed-function program itself).
+    if (ctx.isCompat() && !input.separable) {
+        bool vertex = false, fragment = false;
+        for (const shader::ShaderSource& s : input.shaders) {
+            vertex |= s.stage == shader::Stage::Vertex;
+            fragment |= s.stage == shader::Stage::Fragment;
+        }
+        if (fragment && !vertex)
+            input.shaders.push_back({shader::Stage::Vertex, R"(#version 120
+void main() {
+    gl_Position = ftransform();
+    gl_FrontColor = gl_Color;
+    gl_FrontSecondaryColor = gl_SecondaryColor;
+    gl_TexCoord[0] = gl_TextureMatrix[0] * gl_MultiTexCoord0;
+    gl_TexCoord[1] = gl_TextureMatrix[1] * gl_MultiTexCoord1;
+    gl_TexCoord[2] = gl_TextureMatrix[2] * gl_MultiTexCoord2;
+    gl_TexCoord[3] = gl_TextureMatrix[3] * gl_MultiTexCoord3;
+    gl_FogFragCoord = abs((gl_ModelViewMatrix * gl_Vertex).z);
+}
+)"});
+    }
     p->linkAttempted = true;
     if (ok && input.shaders.empty()) {
         log += "error: no shaders attached\n";
@@ -571,9 +595,10 @@ void GetProgramiv(Context& ctx, GLuint program, GLenum pname, GLint* params) {
     Program* p = programOrError(ctx, program);
     if (!p || !params) return;
     const shader::LinkResult* link = p->linked && p->linkStatus ? &p->linked->link : nullptr;
-    auto maxLength = [](const auto& list) {
+    auto maxLength = [](const auto& list, size_t count = SIZE_MAX) {
         GLint n = 0;
-        for (const auto& item : list) n = std::max<GLint>(n, static_cast<GLint>(item.name.size() + 1));
+        for (size_t i = 0; i < std::min(count, list.size()); ++i)
+            n = std::max<GLint>(n, static_cast<GLint>(list[i].name.size() + 1));
         return n;
     };
     switch (pname) {
@@ -583,11 +608,11 @@ void GetProgramiv(Context& ctx, GLuint program, GLenum pname, GLint* params) {
     case GL_INFO_LOG_LENGTH: *params = p->infoLog.empty() ? 0 : static_cast<GLint>(p->infoLog.size() + 1); return;
     case GL_ATTACHED_SHADERS: *params = static_cast<GLint>(p->attached.size()); return;
     case GL_ACTIVE_ATTRIBUTES: *params = link ? static_cast<GLint>(link->attribs.size()) : 0; return;
-    case GL_ACTIVE_ATTRIBUTE_MAX_LENGTH: *params = link ? maxLength(link->attribs) : 0; return;
-    case GL_ACTIVE_UNIFORMS: *params = link ? static_cast<GLint>(link->uniforms.size()) : 0; return;
-    case GL_ACTIVE_UNIFORM_MAX_LENGTH: *params = link ? maxLength(link->uniforms) : 0; return;
-    case GL_ACTIVE_UNIFORM_BLOCKS: *params = link ? static_cast<GLint>(link->blocks.size()) : 0; return;
-    case GL_ACTIVE_UNIFORM_BLOCK_MAX_NAME_LENGTH: *params = link ? maxLength(link->blocks) : 0; return;
+    case GL_ACTIVE_ATTRIBUTE_MAX_LENGTH: *params = link ? maxLength(link->attribs) : 0; return;  // wmgl_X is as long as gl_X + 2
+    case GL_ACTIVE_UNIFORMS: *params = link ? static_cast<GLint>(link->visibleUniformCount()) : 0; return;
+    case GL_ACTIVE_UNIFORM_MAX_LENGTH: *params = link ? maxLength(link->uniforms, link->visibleUniformCount()) : 0; return;
+    case GL_ACTIVE_UNIFORM_BLOCKS: *params = link ? static_cast<GLint>(link->visibleBlockCount()) : 0; return;
+    case GL_ACTIVE_UNIFORM_BLOCK_MAX_NAME_LENGTH: *params = link ? maxLength(link->blocks, link->visibleBlockCount()) : 0; return;
     case GL_TRANSFORM_FEEDBACK_BUFFER_MODE: *params = static_cast<GLint>(p->transformFeedbackMode); return;
     case GL_TRANSFORM_FEEDBACK_VARYINGS: *params = link ? static_cast<GLint>(link->transformFeedback.size()) : 0; return;
     case GL_TRANSFORM_FEEDBACK_VARYING_MAX_LENGTH: *params = link ? maxLength(link->transformFeedback) : 0; return;
@@ -626,7 +651,7 @@ GLint GetAttribLocation(Context& ctx, GLuint program, const GLchar* name) {
     Program* p = linkedProgramOrError(ctx, program);
     if (!p || !name || std::strncmp(name, "gl_", 3) == 0) return -1;
     for (const shader::AttribInfo& a : p->linked->link.attribs)
-        if (a.name == name) return a.location;
+        if (a.name == name && !a.conventional) return a.location;
     return -1;
 }
 
@@ -637,7 +662,8 @@ void GetActiveAttrib(Context& ctx, GLuint program, GLuint index, GLsizei bufSize
     if (!p) return;
     if (!p->linked || !p->linkStatus || index >= p->linked->link.attribs.size()) return ctx.setError(GL_INVALID_VALUE);
     const shader::AttribInfo& a = p->linked->link.attribs[index];
-    copyString(a.name, bufSize, length, name);
+    // Lowered legacy attributes report their built-in name (wmgl_Vertex -> gl_Vertex).
+    copyString(a.conventional ? "gl_" + a.name.substr(5) : a.name, bufSize, length, name);
     if (size) *size = a.size;
     if (type) *type = a.type;
 }
@@ -669,7 +695,7 @@ void GetActiveUniform(Context& ctx, GLuint program, GLuint index, GLsizei bufSiz
     if (bufSize < 0) return ctx.setError(GL_INVALID_VALUE);
     Program* p = programOrError(ctx, program);
     if (!p) return;
-    if (!p->linked || !p->linkStatus || index >= p->linked->link.uniforms.size()) return ctx.setError(GL_INVALID_VALUE);
+    if (!p->linked || !p->linkStatus || index >= p->linked->link.visibleUniformCount()) return ctx.setError(GL_INVALID_VALUE);
     const shader::UniformInfo& u = p->linked->link.uniforms[index];
     copyString(u.name, bufSize, length, name);
     if (size) *size = u.size;
@@ -685,8 +711,9 @@ void GetActiveUniformsiv(Context& ctx, GLuint program, GLsizei count, const GLui
     Program* p = programOrError(ctx, program);
     if (!p || !indices || !params) return;
     const auto& uniforms = p->linked && p->linkStatus ? p->linked->link.uniforms : std::vector<shader::UniformInfo>();
+    const size_t visible = p->linked && p->linkStatus ? p->linked->link.visibleUniformCount() : 0;
     for (GLsizei i = 0; i < count; ++i)
-        if (indices[i] >= uniforms.size()) return ctx.setError(GL_INVALID_VALUE);
+        if (indices[i] >= visible) return ctx.setError(GL_INVALID_VALUE);
     for (GLsizei i = 0; i < count; ++i) {
         const shader::UniformInfo& u = uniforms[indices[i]];
         switch (pname) {
@@ -717,7 +744,7 @@ void GetUniformIndices(Context& ctx, GLuint program, GLsizei count, const GLchar
         indices[i] = GL_INVALID_INDEX;
         if (!uniforms || !names[i]) continue;
         const std::string name = names[i];
-        for (size_t u = 0; u < uniforms->size(); ++u) {
+        for (size_t u = 0; u < p->linked->link.visibleUniformCount(); ++u) {
             const std::string& n = (*uniforms)[u].name;
             if (n == name || (n.size() > 3 && n.compare(n.size() - 3, 3, "[0]") == 0 && n.substr(0, n.size() - 3) == name)) {
                 indices[i] = static_cast<GLuint>(u);
@@ -731,7 +758,7 @@ GLuint GetUniformBlockIndex(Context& ctx, GLuint program, const GLchar* name) {
     Program* p = programOrError(ctx, program);
     if (!p || !name || !p->linked || !p->linkStatus) return GL_INVALID_INDEX;
     const auto& blocks = p->linked->link.blocks;
-    for (size_t i = 0; i < blocks.size(); ++i)
+    for (size_t i = 0; i < p->linked->link.visibleBlockCount(); ++i)
         if (blocks[i].name == name) return static_cast<GLuint>(i);
     return GL_INVALID_INDEX;
 }
@@ -739,7 +766,7 @@ GLuint GetUniformBlockIndex(Context& ctx, GLuint program, const GLchar* name) {
 void GetActiveUniformBlockiv(Context& ctx, GLuint program, GLuint blockIndex, GLenum pname, GLint* params) {
     Program* p = programOrError(ctx, program);
     if (!p || !params) return;
-    if (!p->linked || !p->linkStatus || blockIndex >= p->linked->link.blocks.size()) return ctx.setError(GL_INVALID_VALUE);
+    if (!p->linked || !p->linkStatus || blockIndex >= p->linked->link.visibleBlockCount()) return ctx.setError(GL_INVALID_VALUE);
     const shader::UniformBlockInfo& b = p->linked->link.blocks[blockIndex];
     const auto stageBit = [](shader::Stage s) { return 1u << static_cast<int>(s); };
     switch (pname) {
@@ -767,14 +794,14 @@ void GetActiveUniformBlockName(Context& ctx, GLuint program, GLuint blockIndex, 
     if (bufSize < 0) return ctx.setError(GL_INVALID_VALUE);
     Program* p = programOrError(ctx, program);
     if (!p) return;
-    if (!p->linked || !p->linkStatus || blockIndex >= p->linked->link.blocks.size()) return ctx.setError(GL_INVALID_VALUE);
+    if (!p->linked || !p->linkStatus || blockIndex >= p->linked->link.visibleBlockCount()) return ctx.setError(GL_INVALID_VALUE);
     copyString(p->linked->link.blocks[blockIndex].name, bufSize, length, name);
 }
 
 void UniformBlockBinding(Context& ctx, GLuint program, GLuint blockIndex, GLuint binding) {
     Program* p = programOrError(ctx, program);
     if (!p) return;
-    if (!p->linked || !p->linkStatus || blockIndex >= p->linked->link.blocks.size()) return ctx.setError(GL_INVALID_VALUE);
+    if (!p->linked || !p->linkStatus || blockIndex >= p->linked->link.visibleBlockCount()) return ctx.setError(GL_INVALID_VALUE);
     if (binding >= static_cast<GLuint>(ContextState::kMaxUniformBufferBindings)) return ctx.setError(GL_INVALID_VALUE);
     p->uniformBlockBindings[blockIndex] = binding;
     ctx.markDirty(kDirtyUniformBuffers);
@@ -941,6 +968,58 @@ void GetTransformFeedbackVarying(Context& ctx, GLuint program, GLuint index, GLs
     copyString(v.name, bufSize, length, name);
     if (size) *size = v.size;
     if (type) *type = v.type;
+}
+
+// ------------------------------------------------------------ GL_ARB_shader_objects
+
+// Handles are the shader and program names (one name space, GL 2.0 rules);
+// the commands without a core alias map onto the core queries.
+void DeleteObjectARB(Context& ctx, GLhandleARB obj) {
+    if (!obj) return;
+    if (ctx.share().program(obj)) return DeleteProgram(ctx, obj);
+    if (ctx.share().shader(obj)) return DeleteShader(ctx, obj);
+    ctx.setError(GL_INVALID_VALUE);
+}
+
+GLhandleARB GetHandleARB(Context& ctx, GLenum pname) {
+    if (pname != GL_PROGRAM_OBJECT_ARB) {
+        ctx.setError(GL_INVALID_ENUM);
+        return 0;
+    }
+    return ctx.state.program ? ctx.state.program->name : 0;
+}
+
+void GetObjectParameterivARB(Context& ctx, GLhandleARB obj, GLenum pname, GLint* params) {
+    const bool program = ctx.share().program(obj) != nullptr;
+    Shader* shader = program ? nullptr : ctx.share().shader(obj);
+    if (!program && !shader) return ctx.setError(GL_INVALID_VALUE);
+    if (pname == GL_OBJECT_TYPE_ARB) {
+        *params = program ? GL_PROGRAM_OBJECT_ARB : GL_SHADER_OBJECT_ARB;
+        return;
+    }
+    if (pname == GL_OBJECT_SUBTYPE_ARB) {
+        if (program) return ctx.setError(GL_INVALID_OPERATION);
+        GetShaderiv(ctx, obj, GL_SHADER_TYPE, params);
+        return;
+    }
+    if (program) GetProgramiv(ctx, obj, pname, params);
+    else GetShaderiv(ctx, obj, pname, params);
+}
+
+void GetObjectParameterfvARB(Context& ctx, GLhandleARB obj, GLenum pname, GLfloat* params) {
+    GLint value[3] = {};
+    GetObjectParameterivARB(ctx, obj, pname, value);
+    params[0] = static_cast<GLfloat>(value[0]);
+}
+
+void GetInfoLogARB(Context& ctx, GLhandleARB obj, GLsizei maxLength, GLsizei* length, GLcharARB* infoLog) {
+    if (ctx.share().program(obj)) return GetProgramInfoLog(ctx, obj, maxLength, length, infoLog);
+    if (ctx.share().shader(obj)) return GetShaderInfoLog(ctx, obj, maxLength, length, infoLog);
+    ctx.setError(GL_INVALID_VALUE);
+}
+
+void GetAttachedObjectsARB(Context& ctx, GLhandleARB containerObj, GLsizei maxCount, GLsizei* count, GLhandleARB* obj) {
+    GetAttachedShaders(ctx, containerObj, maxCount, count, obj);
 }
 
 }  // namespace api

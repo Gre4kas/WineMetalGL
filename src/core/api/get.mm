@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstring>
 
+#include "core/compat/compat_api.h"
 #include "core/context.h"
 #include "core/draw.h"
 #include "core/limits.h"
@@ -378,6 +379,17 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
         const int i = static_cast<int>(pname - GL_DRAW_BUFFER0);
         out = ints({s.drawFramebuffer ? s.drawFramebuffer->drawBuffers[i] : GL_NONE});
         return true;
+    }
+    // Compatibility profile state (api/fixed_get.mm).
+    {
+        double values[16];
+        char kind = 'f';
+        if (const int n = getFixedState(ctx, pname, values, kind)) {
+            out.kind = kind == 'c' ? Value::NormFloat : kind == 'i' ? Value::Int : kind == 'b' ? Value::Bool : Value::Float;
+            out.count = n;
+            std::copy(values, values + n, out.v);
+            return true;
+        }
     }
     const int target = textureBindingTarget(pname);
     if (target >= 0) {

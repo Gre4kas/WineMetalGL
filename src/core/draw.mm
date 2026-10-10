@@ -8,6 +8,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "core/compat/fixed_function.h"
+#include "core/shader/glsl_upgrade.h"
 #include "core/context.h"
 #include "core/metal/device.h"
 #include "core/metal/enums.h"
@@ -275,13 +277,14 @@ bool DrawState::validateDraw(GLenum mode) {
         }
         LinkedProgram* lp = executable();
         if (!lp || !lp->link.stages[static_cast<int>(Stage::Vertex)].present) return false;
-    } else if (!program || !program->linked) {
-        if (ctx_.isCore() || !program) {
-            // Without a program, core profile draws are undefined but not an error;
-            // the compatibility profile needs fixed-function emulation (W22).
-            if (program && !program->linked) ctx_.setError(GL_INVALID_OPERATION);
-            return false;
-        }
+    } else if (!program) {
+        // Without a program, core profile draws are undefined but not an
+        // error; the compatibility profile draws with fixed-function
+        // processing (compat/fixed_function.h).
+        if (ctx_.isCore() || !executable()) return false;
+    } else if (!program->linked) {
+        ctx_.setError(GL_INVALID_OPERATION);
+        return false;
     }
     if (ctx_.isCore() && ctx_.state.vertexArray == ctx_.defaultVertexArray) {
         ctx_.setError(GL_INVALID_OPERATION);
@@ -301,6 +304,7 @@ bool DrawState::validateDraw(GLenum mode) {
         case GL_POINTS: family = GL_POINTS; break;
         case GL_LINES: case GL_LINE_LOOP: case GL_LINE_STRIP: family = GL_LINES; break;
         case GL_TRIANGLES: case GL_TRIANGLE_STRIP: case GL_TRIANGLE_FAN: family = GL_TRIANGLES; break;
+        case GL_QUADS: case GL_QUAD_STRIP: case GL_POLYGON: family = GL_TRIANGLES; break;  // compatibility profile
         default: break;
         }
         // With a geometry shader, its output type must match instead.
@@ -417,13 +421,20 @@ bool readPacked(const uint8_t* p, GLenum type, bool normalized, float out[4]) {
 
 }  // namespace
 
+// The array feeding attribute `location`. In the compatibility profile
+// generic attribute 0 aliases the conventional vertex array (gl_Vertex).
+const VertexAttrib& DrawState::attribFor(const VertexArray& vao, int location) const {
+    if (location == kConvVertex && !vao.attribs[kConvVertex].enabled && vao.attribs[0].enabled) return vao.attribs[0];
+    return vao.attribs[static_cast<size_t>(location)];
+}
+
 void DrawState::waitForCpuVertexReads(LinkedProgram& program, bool gather) {
     // Waiting flushes the command buffer, so it must happen before a draw opens its encoder.
     Queue& queue = ctx_.stream().queue();
     const VertexArray& vao = *ctx_.state.vertexArray;
     for (const shader::StageOutput::VertexInput& input : program.stage(Stage::Vertex).vertexInputs) {
-        if (input.location < 0 || input.location >= VertexArray::kMaxAttribs) continue;
-        const VertexAttrib& a = vao.attribs[input.location];
+        if (input.location < 0 || input.location >= VertexArray::kAttribSlots) continue;
+        const VertexAttrib& a = attribFor(vao, input.location);
         if (!a.enabled || !a.buffer || !a.buffer->lastWriteSerial || queue.isComplete(a.buffer->lastWriteSerial)) continue;
         const MTLVertexFormat direct = a.isDouble ? MTLVertexFormatInvalid : mtlVertexFormat(a.type, a.size, a.normalized, a.integer);
         const uint32_t stride = static_cast<uint32_t>(a.effectiveStride());
@@ -450,22 +461,19 @@ bool DrawState::bindVertexInputs(id<MTLRenderCommandEncoder> encoder, PipelineKe
         layouts.push_back({buffer, offset, stride, divisor, constant});
         return static_cast<int>(layouts.size() - 1);
     };
+    // Current (generic and conventional) attribute values: one constant
+    // element each, packed into one buffer.
+    std::vector<int> constants;
     for (const shader::StageOutput::VertexInput& input : program.stage(Stage::Vertex).vertexInputs) {
-        if (input.location < 0 || input.location >= VertexArray::kMaxAttribs) continue;
-        const VertexAttrib& a = vao.attribs[input.location];
+        if (input.location < 0 || input.location >= VertexArray::kAttribSlots) continue;
+        const VertexAttrib& a = attribFor(vao, input.location);
         VertexAttributeKey& out = key.attributes[input.location];
         if (!a.enabled) {
-            // Current (generic) attribute value, one element for every vertex.
-            const ContextState::GenericAttrib& generic = ctx_.state.genericAttribs[input.location];
-            TransientAllocation alloc = transient_.allocate(16, serial, 16);
-            std::memcpy(alloc.data, &generic.value, 16);
-            const int layout = addLayout(alloc.buffer, alloc.offset, 16, 0, true);
-            if (layout < 0) return false;
             out.format = static_cast<uint8_t>(input.kind == 'i' ? MTLVertexFormatInt4
                                               : input.kind == 'u' ? MTLVertexFormatUInt4
                                                                   : MTLVertexFormatFloat4);
-            out.layout = static_cast<uint8_t>(layout);
-            out.offset = 0;
+            out.offset = static_cast<uint16_t>(constants.size() * 16);
+            constants.push_back(input.location);
             continue;
         }
         const uint32_t elementBytes = a.elementBytes();
@@ -554,10 +562,18 @@ bool DrawState::bindVertexInputs(id<MTLRenderCommandEncoder> encoder, PipelineKe
         out.layout = static_cast<uint8_t>(layout);
         out.offset = 0;
     }
+    if (!constants.empty()) {
+        TransientAllocation alloc = transient_.allocate(constants.size() * 16, serial, 16);
+        for (size_t c = 0; c < constants.size(); ++c)
+            std::memcpy(static_cast<uint8_t*>(alloc.data) + c * 16, &ctx_.state.genericAttribs[static_cast<size_t>(constants[c])].value, 16);
+        const int layout = addLayout(alloc.buffer, alloc.offset, static_cast<uint32_t>(constants.size() * 16), 0, true);
+        if (layout < 0) return false;
+        for (int location : constants) key.attributes[location].layout = static_cast<uint8_t>(layout);
+    }
     key.layoutCount = static_cast<uint8_t>(layouts.size());
     for (size_t l = 0; l < layouts.size(); ++l) {
         const Layout& layout = layouts[l];
-        key.layouts[l].stride = layout.constant ? 16 : layout.stride;
+        key.layouts[l].stride = layout.stride;
         key.layouts[l].stepFunction = static_cast<uint8_t>(layout.constant ? MTLVertexStepFunctionConstant
                                                            : layout.divisor ? MTLVertexStepFunctionPerInstance
                                                                             : MTLVertexStepFunctionPerVertex);
@@ -567,17 +583,21 @@ bool DrawState::bindVertexInputs(id<MTLRenderCommandEncoder> encoder, PipelineKe
     return true;
 }
 
+Program* DrawState::ownerProgram() {
+    return ctx_.state.program ? ctx_.state.program.get() : ffProgram_;
+}
+
 Program* DrawState::stageProgram(LinkedProgram& program, int stage) {
-    return program.pipeline ? program.stageOwner[stage] : ctx_.state.program.get();
+    return program.pipeline ? program.stageOwner[stage] : ownerProgram();
 }
 
 std::pair<Program*, size_t> DrawState::blockSource(LinkedProgram& program, size_t block) {
-    if (!program.pipeline) return {ctx_.state.program.get(), block};
+    if (!program.pipeline) return {ownerProgram(), block};
     return {program.blockOwner[block].first, static_cast<size_t>(program.blockOwner[block].second)};
 }
 
 std::pair<Program*, size_t> DrawState::samplerSource(LinkedProgram& program, size_t index) {
-    if (!program.pipeline) return {ctx_.state.program.get(), index};
+    if (!program.pipeline) return {ownerProgram(), index};
     return {program.samplerOwner[index].first, static_cast<size_t>(program.samplerOwner[index].second)};
 }
 
@@ -587,7 +607,22 @@ LinkedProgram* DrawState::executable() {
         current_ = pipelineExecutable(*pp);
         return current_.get();
     }
-    return nullptr;
+    if (ctx_.isCore()) return nullptr;
+    // Fixed-function processing: the generated program for the state at
+    // this draw (chosen once per draw, see beginDraw).
+    if (!ffChosen_) {
+        ffProgram_ = compat::fixedFunctionProgram(ctx_, drawMode_);
+        ffPointSize_ = drawMode_ == GL_POINTS && compat::fixedFunctionWritesPointSize(ctx_);
+        ffChosen_ = true;
+    }
+    return ffProgram_ && ffProgram_->linked ? ffProgram_->linked.get() : nullptr;
+}
+
+void DrawState::beginDraw(GLenum mode) {
+    drawMode_ = mode;
+    ffChosen_ = false;
+    ffProgram_ = nullptr;
+    ffPointSize_ = false;
 }
 
 void DrawState::bindUniforms(id<MTLRenderCommandEncoder> encoder, LinkedProgram& program) {
@@ -596,8 +631,10 @@ void DrawState::bindUniforms(id<MTLRenderCommandEncoder> encoder, LinkedProgram&
         float pointSize;
         uint32_t programPointSize;
         uint32_t clipFlags;  // see compiler.cpp addPointSize
-    } driver = {std::clamp(ctx_.state.pointSize, 1.0f, 511.0f), ctx_.state.programPointSize ? 1u : 0u,
-                (ctx_.state.clipDepthMode == GL_ZERO_TO_ONE ? 1u : 0u) | (ctx_.state.clipOrigin == GL_UPPER_LEFT ? 2u : 0u)};
+        uint32_t clipEnables;
+    } driver = {std::clamp(ctx_.state.pointSize, 1.0f, 511.0f), ctx_.state.programPointSize || ffPointSize_ ? 1u : 0u,
+                (ctx_.state.clipDepthMode == GL_ZERO_TO_ONE ? 1u : 0u) | (ctx_.state.clipOrigin == GL_UPPER_LEFT ? 2u : 0u),
+                ctx_.state.clipDistanceEnables};
     [encoder setVertexBytes:&driver length:sizeof(driver) atIndex:shader::kSlotDriverUniforms];
     const uint64_t serial = ctx_.stream().serial();
     static id<MTLBuffer> zero = [Device::get().mtl() newBufferWithLength:65536 options:MTLResourceStorageModePrivate];
@@ -639,6 +676,21 @@ void DrawState::bindUniforms(id<MTLRenderCommandEncoder> encoder, LinkedProgram&
 
 void DrawState::uniformBlockBuffer(LinkedProgram& program, size_t index, __strong id<MTLBuffer>& buffer,
                                    NSUInteger& offset) {
+    if (static_cast<int>(index) == program.link.fixedFunctionBlock ||
+        (program.pipeline && program.link.blocks[index].name == shader::kFixedFunctionBlockName)) {
+        // Lowered legacy built-in uniforms (compat/fixed_function.h).
+        uint64_t generation = 0;
+        const std::vector<uint8_t>& data = compat::fixedFunctionBlock(ctx_, generation);
+        const uint64_t serial = ctx_.stream().serial();
+        if (!ffBlock_.buffer || ffBlock_.generation != generation || ffBlock_.serial != serial) {
+            TransientAllocation alloc = transient_.allocate(data.size(), serial, 256);
+            std::memcpy(alloc.data, data.data(), data.size());
+            ffBlock_ = {alloc.buffer, alloc.offset, generation, serial};
+        }
+        buffer = ffBlock_.buffer;
+        offset = ffBlock_.offset;
+        return;
+    }
     const auto [owner, block] = blockSource(program, index);
     if (!owner) return;
     const Program& p = *owner;
@@ -848,6 +900,16 @@ void expandProvokingLast(GLenum mode, const std::vector<uint32_t>& v, std::vecto
     case GL_TRIANGLE_FAN:
         for (size_t i = 1; i + 1 < n; ++i) out.insert(out.end(), {v[i + 1], v[0], v[i]});
         return;
+    case GL_QUADS:
+        // Split along the 1-3 diagonal so both triangles end with the quad's last vertex.
+        for (size_t i = 0; i + 3 < n; i += 4)
+            out.insert(out.end(), {v[i + 3], v[i], v[i + 1], v[i + 3], v[i + 1], v[i + 2]});
+        return;
+    case GL_QUAD_STRIP:
+        // Quad k is (2k, 2k+1, 2k+3, 2k+2) in order; its provoking vertex is 2k+3.
+        for (size_t i = 0; i + 3 < n; i += 2)
+            out.insert(out.end(), {v[i + 3], v[i], v[i + 1], v[i + 3], v[i + 2], v[i]});
+        return;
     default:
         return;
     }
@@ -960,6 +1022,7 @@ bool DrawState::rotateProvoking(GLenum mode, LinkedProgram& program) const {
     if (ctx_.state.provokingVertex != GL_LAST_VERTEX_CONVENTION || !program.stage(Stage::Fragment).flatInputs) return false;
     switch (mode) {
     case GL_LINES: case GL_LINE_STRIP: case GL_LINE_LOOP: case GL_TRIANGLES: case GL_TRIANGLE_STRIP: case GL_TRIANGLE_FAN:
+    case GL_QUADS: case GL_QUAD_STRIP:  // a polygon's provoking vertex is its first in both conventions
         return true;
     default:
         return false;
@@ -1022,8 +1085,14 @@ std::vector<uint32_t> assembleForCapture(GLenum mode, const std::vector<uint32_t
             out.push_back(v[i + 2]);
         }
         break;
-    case GL_TRIANGLE_FAN:
+    case GL_TRIANGLE_FAN: case GL_POLYGON:
         for (size_t i = 1; i + 1 < n; ++i) { out.push_back(v[0]); out.push_back(v[i]); out.push_back(v[i + 1]); }
+        break;
+    case GL_QUADS:  // compatibility profile: each quad as two triangles
+        for (size_t i = 0; i + 3 < n; i += 4) out.insert(out.end(), {v[i], v[i + 1], v[i + 2], v[i], v[i + 2], v[i + 3]});
+        break;
+    case GL_QUAD_STRIP:
+        for (size_t i = 0; i + 3 < n; i += 2) out.insert(out.end(), {v[i], v[i + 1], v[i + 3], v[i], v[i + 3], v[i + 2]});
         break;
     default: break;
     }
@@ -1371,6 +1440,7 @@ void DrawState::drawGeometry(GLenum mode, const std::vector<uint32_t>& vertices,
 }
 
 void DrawState::drawArrays(GLenum mode, GLint first, GLsizei count, GLsizei instances) {
+    beginDraw(mode);
     if (first < 0 || count < 0 || instances < 0) {
         ctx_.setError(GL_INVALID_VALUE);
         return;
@@ -1394,6 +1464,7 @@ void DrawState::drawArrays(GLenum mode, GLint first, GLsizei count, GLsizei inst
 
 void DrawState::drawElements(GLenum mode, GLsizei count, GLenum type, const void* indices, GLsizei instances,
                              GLint baseVertex) {
+    beginDraw(mode);
     if (count < 0 || instances < 0) {
         ctx_.setError(GL_INVALID_VALUE);
         return;

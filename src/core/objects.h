@@ -194,8 +194,12 @@ class VertexArray : public RefCounted, public Labeled {
 public:
     explicit VertexArray(GLuint name) : name(name) {}
     GLuint name;
-    static constexpr int kMaxAttribs = 16;
-    std::array<VertexAttrib, kMaxAttribs> attribs;
+    static constexpr int kMaxAttribs = 16;   // generic attributes (GL_MAX_VERTEX_ATTRIBS)
+    // Generic attributes, then the compatibility profile's conventional arrays
+    // (vertex, normal, colours, fog coordinate, texture coordinates; see
+    // compat/fixed_state.h), which the lowered legacy built-ins read.
+    static constexpr int kAttribSlots = 29;
+    std::array<VertexAttrib, kAttribSlots> attribs;
     RefPtr<Buffer> elementBuffer;
     uint64_t version = 0;
 };
