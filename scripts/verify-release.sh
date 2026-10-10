@@ -19,6 +19,11 @@ for path in \
     "$stage/artifacts/wine-driver/opengl32.so" \
     "$stage/docs/api-coverage.json" \
     "$stage/docs/conformance.md" \
+    "$stage/docs/games.md" \
+    "$stage/docs/release.md" \
+    "$stage/evidence/cts/gl33-cfg1-native.txt" \
+    "$stage/evidence/cts/gl33-cfg1-wine.txt" \
+    "$stage/evidence/games/results.json" \
     "$stage/SHA256SUMS"; do
     test -f "$path" || { printf 'missing staged artifact: %s\n' "$path" >&2; exit 1; }
 done
@@ -47,6 +52,7 @@ file "$stage/artifacts/guest/i386/opengl32.dll" | grep -q 'Intel 80386'
 file "$stage/artifacts/guest/x86_64/opengl32.dll" | grep -q 'x86-64'
 
 python3 -m json.tool "$stage/docs/api-coverage.json" >/dev/null
+python3 -m json.tool "$stage/evidence/games/results.json" >/dev/null
 (
     cd "$stage"
     shasum -a 256 -c SHA256SUMS >/dev/null

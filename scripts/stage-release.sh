@@ -1,6 +1,6 @@
 #!/bin/sh
 # Stages a release: the core next to the patched Wine modules that load it,
-# plus the generated documentation.
+# the generated documentation and the evidence behind it (docs/release.md).
 #
 # artifacts/
 #   wine-driver/   libwinemetalgl.dylib, winemac.so, win32u.so, opengl32.so
@@ -38,7 +38,8 @@ if test -e "$output"; then
     printf 'output already exists; refusing to replace it: %s\n' "$output" >&2
     exit 1
 fi
-mkdir -p "$output/artifacts/guest/i386" "$output/artifacts/guest/x86_64" "$output/artifacts/wine-driver" "$output/docs"
+mkdir -p "$output/artifacts/guest/i386" "$output/artifacts/guest/x86_64" "$output/artifacts/wine-driver" "$output/docs" \
+    "$output/evidence/cts" "$output/evidence/games"
 
 cp "$core" "$output/artifacts/wine-driver/libwinemetalgl.dylib"
 cp "$wine_build/dlls/winemac.drv/winemac.so" "$output/artifacts/wine-driver/winemac.so"
@@ -49,6 +50,13 @@ cp "$wine_build/dlls/opengl32/x86_64-windows/opengl32.dll" "$output/artifacts/gu
 cp "$project_root/README.md" "$output/README.md"
 cp "$project_root/docs/conformance.md" "$output/docs/conformance.md"
 cp "$project_root/docs/api-coverage.json" "$output/docs/api-coverage.json"
+cp "$project_root/docs/games.md" "$output/docs/games.md"
+cp "$project_root/docs/release.md" "$output/docs/release.md"
+# The evidence the generated documents were built from.
+cp "$project_root"/tests/cts/baseline/*.txt "$output/evidence/cts/"
+cp "$project_root/tests/cts/notsupported.json" "$output/evidence/cts/notsupported.json"
+cp "$project_root/tests/games/corpus.json" "$project_root/tests/games/results.json" "$output/evidence/games/"
+if test -f "$project_root/tests/games/perf.json"; then cp "$project_root/tests/games/perf.json" "$output/evidence/games/"; fi
 
 printf 'WineMetalGL staged from %s\nWine build: %s\nCommit: %s\n' \
     "$project_root" "$wine_build" "$(git -C "$project_root" rev-parse HEAD)" > "$output/STAGED-FROM.txt"

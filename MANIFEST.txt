@@ -8,6 +8,7 @@ docs/api-coverage.json
 docs/conformance.md
 docs/decisions/0001-gl-implementation-strategy.md
 docs/games.md
+docs/release.md
 include/winemetalgl/driver.h
 LICENSE
 LICENSES/glslang.txt
