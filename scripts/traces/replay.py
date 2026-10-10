@@ -14,7 +14,7 @@ whose largest channel difference exceeds --threshold, and PSNR. An entry
 passes when the fraction is at most its "tolerance" (default 0.005).
 
     scripts/traces/replay.py --wine W --corpus-root DIR [--update-references]
-                             [--path new|old|apple] [--only NAME] [--html OUT]
+                             [--path new|apple] [--only NAME] [--html OUT]
 
 Binaries, traces and reference images live outside git under
 --corpus-root (see tests/games/README.md); only the manifest is tracked.
@@ -95,11 +95,8 @@ def compare(reference, actual, threshold):
 
 
 def path_env(path):
-    if path == "apple":
-        return {"WINEMETALGL": "0", "WINEMETALGL_EXPERIMENTAL": "0"}
-    if path == "old":
-        return {"WINEMETALGL": "1", "WINEMETALGL_EXPERIMENTAL": "1", "WINEMETALGL_CORE": "1"}
-    return {"WINEMETALGL": "1", "WINEMETALGL_EXPERIMENTAL": "1", "WINEMETALGL_CORE": "2"}
+    # The core is Wine's default OpenGL; WINEMETALGL=0 selects Apple's.
+    return {"WINEMETALGL": "0"} if path == "apple" else {}
 
 
 def run_entry(entry, args, env, workdir):
@@ -142,12 +139,13 @@ def main():
     parser.add_argument("--corpus-root", required=True)
     parser.add_argument("--manifest", default=os.path.join(ROOT, "tests", "games", "corpus.json"))
     parser.add_argument("--template", help="template WoW64 prefix to clone")
-    parser.add_argument("--path", choices=["new", "old", "apple"], default="new")
+    parser.add_argument("--path", choices=["new", "apple"], default="new")
     parser.add_argument("--only", action="append")
     parser.add_argument("--threshold", type=int, default=8)
     parser.add_argument("--update-references", action="store_true",
                         help="store this run's frames as the references")
     parser.add_argument("--html", help="write an HTML report with side-by-side images")
+    parser.add_argument("--json", help="record the results (tests/games/results.json is the committed evidence)")
     args = parser.parse_args()
 
     manifest = json.load(open(args.manifest))
@@ -159,6 +157,7 @@ def main():
     env = dict(os.environ)
     env.update({"WINEPREFIX": prefix, "WINEARCH": "wow64", "WINEDEBUG": env.get("WINEDEBUG", "-all")})
     env.setdefault("DYLD_LIBRARY_PATH", os.path.join(args.wine, "lib"))
+    env.pop("WINEMETALGL", None)
     env.update(path_env(args.path))
     if not args.template:
         subprocess.run([os.path.join(args.wine, "bin", "wine"), "wineboot", "-u"], env=env,
@@ -205,6 +204,21 @@ def main():
 
     if args.html and not args.update_references:
         write_html(args.html, rows, args.corpus_root)
+    if args.json and not args.update_references:
+        record = {
+            "path": args.path,
+            "commit": subprocess.run(["git", "-C", ROOT, "rev-parse", "--short", "HEAD"], capture_output=True,
+                                     text=True).stdout.strip(),
+            "date": time.strftime("%Y-%m-%d"),
+            "threshold": args.threshold,
+            "entries": [{"name": entry["name"], "tier": entry.get("tier", ""), "status": status,
+                         "worst_fraction": round(max((r[1] for r in results), default=1.0), 6),
+                         "min_psnr_db": round(min((r[2] for r in results), default=0.0), 1)}
+                        for entry, status, results, _ in rows],
+        }
+        with open(args.json, "w") as handle:
+            json.dump(record, handle, indent=1)
+            handle.write("\n")
     shutil.rmtree(workdir, ignore_errors=True)
     sys.exit(1 if failures else 0)
 

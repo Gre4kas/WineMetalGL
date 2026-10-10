@@ -1,19 +1,23 @@
-# Wine OpenGL integration
+# Wine integration
 
-This patch is the reference integration for x86_64 Unix Wine with x86_64 and
-i386 guests in one WoW64 prefix. It is not a dependency on WineForge, CrossOver,
-or MetalSharp. ARM host drivers, ARM guest images, ARM64EC, and universal
-output are intentionally outside this adapter's x86_64 scope.
+The patches in `wine-11.17/` integrate WineMetalGL with Wine 11.17 (the
+reference build is WineForge 11.17) for x86_64 Unix Wine with x86_64 and i386
+guests in one WoW64 prefix. Other Wine revisions may need a small rebase when
+Wine's OpenGL driver interface changes.
 
-`wine-11.17/0001-winemetalgl-metal-surface-and-extension-parser.patch` records
-the main OpenGL-specific delta used by the reference validation build. Apply
-`0002-winemetalgl-default-config-and-feature-cap.patch` after it; the second
-patch adds the bundled configuration loader and max-feature-level gate.
-Wine 11.17 is the provided and tested baseline; other Wine revisions may
-require a small rebase when Wine's OpenGL or macOS driver interfaces change.
+- `0001-opengl-wgl-fixes.patch`: two Wine OpenGL fixes the core relies on.
+  `win32u` indexes the parsed extension list correctly for drivers without
+  `GL_NUM_EXTENSIONS`, creates client contexts without inheriting its internal
+  core-profile context, and `wglChoosePixelFormatARB` keeps window requests
+  within the on-screen pixel formats.
+- `0002-winemac-winemetalgl-core.patch`: `winemac.drv` loads
+  `libwinemetalgl.dylib` from its own directory and hands it a `CAMetalLayer`
+  per window; contexts, surfaces, pbuffers and swaps go through the driver ABI
+  in `include/winemetalgl/driver.h`. No CGL context is created.
 
-The bundled `config/winemetalgl.conf` enables `WINEMETALGL=1` and
-`WINEMETALGL_EXPERIMENTAL=1` by default and caps experimental OpenGL at 3.3.
-`WINEMETALGL_CONFIG_FILE` overrides the file, while explicit environment
-variables take precedence. `WINEMETALGL_GL40_COVERAGE=1` remains an opt-in
-loader gate for the bounded GL 4.0 API-coverage run.
+The core is Wine's OpenGL once the patches are applied. `WINEMETALGL=0`
+selects Apple's OpenGL (reference frames), and `winemac.drv` falls back to
+Apple's OpenGL when the core is missing or refuses to initialise.
+
+`scripts/verify-source.sh` checks that the patches apply when
+`WINEMETALGL_WINE_SOURCE` names a Wine checkout.

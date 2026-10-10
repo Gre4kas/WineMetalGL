@@ -31,8 +31,9 @@ scripts/traces/replay.py --wine /path/to/wine --corpus-root /path/to/corpus \
     --template /path/to/prefix-template --path new --html /tmp/corpus.html
 ```
 
-`--path` selects the implementation: `new` (`WINEMETALGL_CORE=2`), `old`
-(the legacy sidecar path) or `apple` (`WINEMETALGL=0`).
+`--path` selects the implementation: `new` (WineMetalGL, Wine's default) or
+`apple` (`WINEMETALGL=0`, Apple's OpenGL, which records the references).
+`--json tests/games/results.json` records the run that `docs/games.md` reports.
 
 ## Capturing a trace
 

@@ -1,0 +1,67 @@
+diff --git a/dlls/opengl32/wgl.c b/dlls/opengl32/wgl.c
+index 9ff082d..e4d4775 100644
+--- a/dlls/opengl32/wgl.c
++++ b/dlls/opengl32/wgl.c
+@@ -2000,6 +2000,7 @@ BOOL WINAPI wglChoosePixelFormatARB( HDC hdc, const int *attribs_int, const FLOA
+     UINT i, num_wgl_formats, num_wgl_onscreen_formats;
+     const struct wgl_pixel_format **format_array;
+     struct compare_formats_ctx ctx = { 0 };
++    BOOL wants_window = FALSE, wants_pbuffer = FALSE;
+     DWORD is_memdc;
+ 
+     TRACE( "hdc %p, attribs_int %p, attribs_float %p, max_formats %u, formats %p, num_formats %p\n",
+@@ -2021,13 +2022,23 @@ BOOL WINAPI wglChoosePixelFormatARB( HDC hdc, const int *attribs_int, const FLOA
+         compare_formats_ctx_set_attrib( &ctx, attribs_float[i], attribs_float[i + 1] );
+     }
+ 
+-    /* Initialize the format_array with (pointers to) all wgl formats */
++    for (i = 0; i < ctx.num_attribs; ++i)
++    {
++        if (ctx.attribs[2 * i] == WGL_DRAW_TO_WINDOW_ARB && ctx.attribs[2 * i + 1]) wants_window = TRUE;
++        if (ctx.attribs[2 * i] == WGL_DRAW_TO_PBUFFER_ARB && ctx.attribs[2 * i + 1]) wants_pbuffer = TRUE;
++    }
++
++    /* Initialize the format_array with (pointers to) all wgl formats. A
++     * window DC cannot later accept a pbuffer-only format in SetPixelFormat;
++     * keep the WGL chooser's result within the on-screen portion when the
++     * caller explicitly asks for a window drawable. */
+     format_array = malloc( num_wgl_formats * sizeof(*format_array) );
+     if (!format_array) return FALSE;
+     for (i = 0; i < num_wgl_formats; ++i)
+     {
+         struct wgl_pixel_format *format = wgl_formats + i;
+-        if (is_memdc && format->pfd.cColorBits == 16 && format->pfd.cAlphaBits != 1) format_array[i] = NULL;
++        if ((wants_window && !wants_pbuffer && i >= num_wgl_onscreen_formats) ||
++            (is_memdc && format->pfd.cColorBits == 16 && format->pfd.cAlphaBits != 1)) format_array[i] = NULL;
+         else format_array[i] = &wgl_formats[i];
+     }
+ 
+diff --git a/dlls/win32u/opengl.c b/dlls/win32u/opengl.c
+index 6ab3a03..aa18799 100644
+--- a/dlls/win32u/opengl.c
++++ b/dlls/win32u/opengl.c
+@@ -275,9 +275,9 @@ static void parse_current_extensions( BOOLEAN extensions[GL_EXTENSION_COUNT] )
+     }
+     else
+     {
+-        enum opengl_extension extensions[GL_EXTENSION_COUNT];
+-        size_t extension_count = parse_extensions( (const char *)funcs->p_glGetString( GL_EXTENSIONS ), extensions );
+-        for (size_t i = 0; i < extension_count; i++) extensions[i] = TRUE;
++        enum opengl_extension parsed_extensions[GL_EXTENSION_COUNT];
++        size_t extension_count = parse_extensions( (const char *)funcs->p_glGetString( GL_EXTENSIONS ), parsed_extensions );
++        for (size_t i = 0; i < extension_count; i++) extensions[parsed_extensions[i]] = TRUE;
+     }
+ }
+ 
+@@ -408,7 +408,10 @@ static BOOL opengl_drawable_swap( struct opengl_drawable *drawable )
+ static struct opengl_context *internal_context_create(void)
+ {
+     static const int attribs[] = { WGL_CONTEXT_PROFILE_MASK_ARB, WGL_CONTEXT_CORE_PROFILE_BIT_ARB, 0 };
+-    struct opengl_context *context, *share = global_context ? global_context->driver_private : NULL;
++    /* Client contexts must not inherit the internal core-profile context. The
++     * compatibility/core mismatch marks every ordinary context as broken for
++     * wglShareLists before applications can request sharing themselves. */
++    struct opengl_context *context, *share = NULL;
+     BOOL shared = TRUE, doublebuffer;
+     int format;
+ 

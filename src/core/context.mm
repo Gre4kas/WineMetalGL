@@ -70,7 +70,7 @@ void Context::initStrings() {
                                                                                           : "1.20";
     // Only extensions this core implements completely are advertised.
     extensions_.clear();
-    if (!config_.coreProfile) extensions_.push_back("GL_ARB_compatibility");
+    // GL_ARB_compatibility needs the fixed-function API, which is not implemented yet.
     extensions_.push_back("GL_ARB_ES2_compatibility");
     extensions_.push_back("GL_ARB_texture_storage");
     extensions_.push_back("GL_EXT_texture_storage");  // the same entry points (EXT aliases)

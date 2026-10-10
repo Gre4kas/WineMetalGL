@@ -275,10 +275,8 @@ def main():
         env.setdefault("DYLD_LIBRARY_PATH", os.path.join(args.wine, "lib"))
     if args.reference:
         env["WINEMETALGL"] = "0"
-        env["WINEMETALGL_EXPERIMENTAL"] = "0"
     else:
-        env.setdefault("WINEMETALGL", "1")
-        env.setdefault("WINEMETALGL_EXPERIMENTAL", "1")
+        env.pop("WINEMETALGL", None)  # the core is Wine's default OpenGL
     for item in args.env:
         key, _, value = item.partition("=")
         env[key] = value

@@ -1,0 +1,43 @@
+{
+ "path": "new",
+ "commit": "e1c0681",
+ "date": "2026-10-10",
+ "threshold": 8,
+ "entries": [
+  {
+   "name": "scene33-core",
+   "tier": "A",
+   "status": "PASS",
+   "worst_fraction": 0.0,
+   "min_psnr_db": 101.8
+  },
+  {
+   "name": "scene33-core-30",
+   "tier": "A",
+   "status": "PASS",
+   "worst_fraction": 0.0,
+   "min_psnr_db": 99.5
+  },
+  {
+   "name": "scene33-core-nofwd",
+   "tier": "A",
+   "status": "PASS",
+   "worst_fraction": 0.0,
+   "min_psnr_db": 101.8
+  },
+  {
+   "name": "scene33-compat",
+   "tier": "B",
+   "status": "PASS",
+   "worst_fraction": 0.0,
+   "min_psnr_db": 101.8
+  },
+  {
+   "name": "scene33-trace",
+   "tier": "A",
+   "status": "PASS",
+   "worst_fraction": 0.0,
+   "min_psnr_db": 99.5
+  }
+ ]
+}

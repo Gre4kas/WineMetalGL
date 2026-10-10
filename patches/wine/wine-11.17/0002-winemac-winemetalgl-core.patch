@@ -1,16 +1,18 @@
 diff --git a/dlls/winemac.drv/opengl.c b/dlls/winemac.drv/opengl.c
-index eafe13a..9e803b9 100644
+index 696734f..2a8de1f 100644
 --- a/dlls/winemac.drv/opengl.c
 +++ b/dlls/winemac.drv/opengl.c
-@@ -2702,6 +2702,325 @@ static void macdrv_init_extensions(struct opengl_funcs *funcs, BOOLEAN extension
+@@ -2518,6 +2518,329 @@ static void macdrv_init_extensions(struct opengl_funcs *funcs, BOOLEAN extension
      funcs->p_wglQueryRendererStringWINE = macdrv_wglQueryRendererStringWINE;
  }
  
 +
 +/**********************************************************************
-+ *              WineMetalGL core (WINEMETALGL_CORE=2)
++ *              WineMetalGL core
 + *
 + * The whole OpenGL implementation lives in libwinemetalgl.dylib on Metal.
++ * It is the default; WINEMETALGL=0 selects Apple's OpenGL instead, and so
++ * does a missing or incompatible libwinemetalgl.dylib.
 + * No CGL context is created: winemac only hands the core a CAMetalLayer per
 + * window and forwards context, surface and swap operations. The interface
 + * is include/winemetalgl/driver.h in the WineMetalGL repository.
@@ -60,8 +62,8 @@ index eafe13a..9e803b9 100644
 +
 +static BOOL wmgl_core_requested(void)
 +{
-+    const char *value = getenv("WINEMETALGL_CORE");
-+    return value && !strcmp(value, "2");
++    const char *value = getenv("WINEMETALGL");
++    return !value || strcmp(value, "0");
 +}
 +
 +static UINT wmgl_init_pixel_formats(UINT *onscreen)
@@ -139,7 +141,9 @@ index eafe13a..9e803b9 100644
 +    struct wmgl_drawable *gl = wmgl_impl(base);
 +    TRACE("drawable %s\n", debugstr_opengl_drawable(base));
 +    if (!gl->surface) return FALSE;
-+    p_wmgl_surface_swap(gl->surface);
++    /* A frame the core could not present (no drawable available) is
++     * dropped, as a compositor would; SwapBuffers itself succeeds. */
++    if (!p_wmgl_surface_swap(gl->surface)) TRACE("frame not presented\n");
 +    client_surface_present(base->client);
 +    return TRUE;
 +}
@@ -287,7 +291,7 @@ index eafe13a..9e803b9 100644
 +{
 +    if (!(wmgl_handle = dlopen("@loader_path/libwinemetalgl.dylib", RTLD_NOW | RTLD_LOCAL)))
 +    {
-+        ERR("WINEMETALGL_CORE=2 but libwinemetalgl.dylib failed to load: %s\n", dlerror());
++        WARN("libwinemetalgl.dylib failed to load, using Apple's OpenGL: %s\n", dlerror());
 +        return STATUS_NOT_SUPPORTED;
 +    }
 +#define LOAD(name) if (!(p_##name = dlsym(wmgl_handle, #name))) { ERR("%s missing\n", #name); goto failed; }
@@ -328,11 +332,11 @@ index eafe13a..9e803b9 100644
  /**********************************************************************
   *              macdrv_OpenGLInit
   */
-@@ -2719,6 +3038,8 @@ UINT macdrv_OpenGLInit(UINT version, const struct opengl_funcs *opengl_funcs, co
+@@ -2532,6 +2855,8 @@ UINT macdrv_OpenGLInit(UINT version, const struct opengl_funcs *opengl_funcs, co
      }
      funcs = opengl_funcs;
  
-+    if (wmgl_core_requested()) return wmgl_core_init(driver_funcs);
++    if (wmgl_core_requested() && wmgl_core_init(driver_funcs) == STATUS_SUCCESS) return STATUS_SUCCESS;
 +
      opengl_handle = dlopen("/System/Library/Frameworks/OpenGL.framework/OpenGL", RTLD_LAZY|RTLD_LOCAL|RTLD_NOLOAD);
      if (!opengl_handle)

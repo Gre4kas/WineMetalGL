@@ -1,28 +1,28 @@
 #!/bin/sh
+# Installs the core next to a Wine build's winemac.so, which loads it from
+# its own directory.
 set -eu
 
 if test "$#" -ne 1; then
-    printf '%s\n' "usage: $0 /absolute/path/to/wine-build" >&2
+    printf '%s\n' "usage: $0 /absolute/path/to/wine-build-or-install-unix-dir" >&2
     exit 2
 fi
 
 project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-wine_build=$1
-source_library="$project_root/build/release/metalsharp-opengl.dylib"
-config_file="$project_root/config/winemetalgl.conf"
-destination_dir="$wine_build/dlls/winemac.drv"
-destination="$destination_dir/metalsharp-opengl.dylib"
-config_destination="$destination_dir/winemetalgl.conf"
+target=$1
+source_library="$project_root/build/release/libwinemetalgl.dylib"
+if test -d "$target/dlls/winemac.drv"; then
+    destination_dir="$target/dlls/winemac.drv"
+else
+    destination_dir="$target"
+fi
 
-test -d "$destination_dir"
+test -f "$destination_dir/winemac.so"
 test -f "$source_library"
-test -f "$config_file"
 test "$(lipo -archs "$source_library")" = "x86_64"
 test "$(otool -l "$source_library" | awk '/LC_BUILD_VERSION/{found=1} found && /minos/{print $2; exit}')" = "15.0"
 
-install -m 755 "$source_library" "$destination"
-install -m 644 "$config_file" "$config_destination"
-codesign --force --sign - "$destination"
+install -m 755 "$source_library" "$destination_dir/libwinemetalgl.dylib"
+codesign --force --sign - "$destination_dir/libwinemetalgl.dylib"
 
-printf '%s\n' "Staged: $destination"
-printf '%s\n' "Staged: $config_destination"
+printf '%s\n' "Staged: $destination_dir/libwinemetalgl.dylib"
