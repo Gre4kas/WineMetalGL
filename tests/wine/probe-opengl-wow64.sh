@@ -1,6 +1,14 @@
 #!/bin/bash
-# Validate the x86_64 Unix Wine + x86_64/i386 guest OpenGL lane in one WoW64 prefix.
-set -euo pipefail
+# Runs the Wine fixtures (tests/wine/fixtures.txt) on WineMetalGL in one fresh
+# WoW64 prefix, as x86_64 and i386 guests.
+#
+#   WINEMETALGL_WINE_RUNTIME=/path/to/wine-install tests/wine/probe-opengl-wow64.sh [--all] [fixture...]
+#
+# The Wine installation must carry the patches in patches/wine and
+# libwinemetalgl.dylib next to winemac.so (scripts/stage-wine.sh). --all also
+# runs the GL 4.x fixtures. Exit status is non-zero if any fixture misses a
+# marker; a summary lists every fixture.
+set -uo pipefail
 
 PROJECT_ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 WINE_RUNTIME=${WINEMETALGL_WINE_RUNTIME:-}
@@ -13,14 +21,11 @@ if test -d "$WINE_HOST_LIB_DIR"; then
     export DYLD_LIBRARY_PATH="$WINE_HOST_LIB_DIR${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
 fi
 WINE="$WINE_RUNTIME/bin/wine"
-WINEBOOT="$WINE_RUNTIME/bin/wineboot"
 WINESERVER="$WINE_RUNTIME/bin/wineserver"
 CC64=${CC64:-x86_64-w64-mingw32-gcc}
 CC32=${CC32:-i686-w64-mingw32-gcc}
 RUN_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/winemetalgl-wow64.XXXXXX")
 PREFIX="$RUN_ROOT/prefix"
-# Prefix initialization can take over a minute on this merged Wine build. Keep
-# diagnostics quiet by default; callers can opt into +wgl/+loaddll explicitly.
 TIMEOUT_SECONDS=${WINEMETALGL_TIMEOUT_SECONDS:-300}
 if command -v gtimeout >/dev/null 2>&1; then
     TIMEOUT=(gtimeout --signal=TERM --kill-after=10s "${TIMEOUT_SECONDS}s")
@@ -43,721 +48,73 @@ cleanup() {
 }
 trap cleanup EXIT HUP INT TERM
 
-for required in "$WINE" "$WINEBOOT" "$WINESERVER" "$PROJECT_ROOT/build/release/metalsharp-opengl.dylib"; do
+run_all=0
+only=()
+for arg in "$@"; do
+    case "$arg" in
+    --all) run_all=1 ;;
+    *) only+=("$arg") ;;
+    esac
+done
+
+core_dir="$WINE_RUNTIME/lib/wine/x86_64-unix"
+for required in "$WINE" "$WINESERVER" "$core_dir/winemac.so" "$core_dir/libwinemetalgl.dylib"; do
     test -e "$required" || { echo "Missing WineMetalGL input: $required" >&2; exit 1; }
 done
 
-test "$(/usr/bin/lipo -archs "$PROJECT_ROOT/build/release/metalsharp-opengl.dylib")" = x86_64
-"$CC64" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_load_probe.c" -o "$RUN_ROOT/load64.exe" -luser32 -lgdi32
-"$CC32" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_load_probe.c" -o "$RUN_ROOT/load32.exe" -luser32 -lgdi32
-"$CC64" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_runtime.c" -o "$RUN_ROOT/runtime64.exe" -lopengl32 -luser32 -lgdi32
-"$CC32" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_runtime.c" -o "$RUN_ROOT/runtime32.exe" -lopengl32 -luser32 -lgdi32
-"$CC64" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_contexts.c" -o "$RUN_ROOT/contexts64.exe" -lopengl32 -luser32 -lgdi32
-"$CC64" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_wgl_modern.c" -o "$RUN_ROOT/modern64.exe" -lopengl32 -luser32 -lgdi32
-"$CC64" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_share.c" -o "$RUN_ROOT/share64.exe" -lopengl32 -luser32 -lgdi32
-"$CC32" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_contexts.c" -o "$RUN_ROOT/contexts32.exe" -lopengl32 -luser32 -lgdi32
-"$CC32" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_wgl_modern.c" -o "$RUN_ROOT/modern32.exe" -lopengl32 -luser32 -lgdi32
-"$CC32" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_share.c" -o "$RUN_ROOT/share32.exe" -lopengl32 -luser32 -lgdi32
-"$CC64" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_pipeline.c" -o "$RUN_ROOT/pipeline64.exe" -lopengl32 -luser32 -lgdi32
-"$CC32" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_pipeline.c" -o "$RUN_ROOT/pipeline32.exe" -lopengl32 -luser32 -lgdi32
-"$CC64" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_interface.c" -o "$RUN_ROOT/interface64.exe" -lopengl32 -luser32 -lgdi32
-"$CC32" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_interface.c" -o "$RUN_ROOT/interface32.exe" -lopengl32 -luser32 -lgdi32
-"$CC64" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_multi_draw.c" -o "$RUN_ROOT/multi-draw64.exe" -lopengl32 -luser32 -lgdi32
-"$CC32" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_multi_draw.c" -o "$RUN_ROOT/multi-draw32.exe" -lopengl32 -luser32 -lgdi32
-"$CC64" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_gl33_metal.c" -o "$RUN_ROOT/gl33-64.exe" -lopengl32 -luser32 -lgdi32
-"$CC32" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_gl33_metal.c" -o "$RUN_ROOT/gl33-32.exe" -lopengl32 -luser32 -lgdi32
-"$CC64" -O2 -DWINEMETALGL_GLSL450 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_gl33_metal.c" -o "$RUN_ROOT/gl45-64.exe" -lopengl32 -luser32 -lgdi32
-"$CC64" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_glsl120.c" -o "$RUN_ROOT/glsl120-64.exe" -lopengl32 -luser32 -lgdi32
-"$CC64" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_glsl110.c" -o "$RUN_ROOT/glsl110-64.exe" -lopengl32 -luser32 -lgdi32
-"$CC32" -O2 -DWINEMETALGL_GLSL450 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_gl33_metal.c" -o "$RUN_ROOT/gl45-32.exe" -lopengl32 -luser32 -lgdi32
-"$CC32" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_glsl120.c" -o "$RUN_ROOT/glsl120-32.exe" -lopengl32 -luser32 -lgdi32
-"$CC32" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_glsl110.c" -o "$RUN_ROOT/glsl110-32.exe" -lopengl32 -luser32 -lgdi32
-"$CC64" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_gl33_resources.c" -o "$RUN_ROOT/resources64.exe" -lopengl32 -luser32 -lgdi32
-"$CC32" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_gl33_resources.c" -o "$RUN_ROOT/resources32.exe" -lopengl32 -luser32 -lgdi32
-"$CC64" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_gl33_texture.c" -o "$RUN_ROOT/texture64.exe" -lopengl32 -luser32 -lgdi32
-"$CC32" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_gl33_texture.c" -o "$RUN_ROOT/texture32.exe" -lopengl32 -luser32 -lgdi32
-"$CC64" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_texture_integer.c" -o "$RUN_ROOT/texture-integer64.exe" -lopengl32 -luser32 -lgdi32
-"$CC64" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_texture_half_sample.c" -o "$RUN_ROOT/texture-half64.exe" -lopengl32 -luser32 -lgdi32
-"$CC64" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_texture_float_sample.c" -o "$RUN_ROOT/texture-float64.exe" -lopengl32 -luser32 -lgdi32
-"$CC64" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_texture_depth_sample.c" -o "$RUN_ROOT/texture-depth64.exe" -lopengl32 -luser32 -lgdi32
-"$CC32" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_texture_integer.c" -o "$RUN_ROOT/texture-integer32.exe" -lopengl32 -luser32 -lgdi32
-"$CC32" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_texture_half_sample.c" -o "$RUN_ROOT/texture-half32.exe" -lopengl32 -luser32 -lgdi32
-"$CC32" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_texture_float_sample.c" -o "$RUN_ROOT/texture-float32.exe" -lopengl32 -luser32 -lgdi32
-"$CC32" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_texture_depth_sample.c" -o "$RUN_ROOT/texture-depth32.exe" -lopengl32 -luser32 -lgdi32
-"$CC64" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_texture_r32ui.c" -o "$RUN_ROOT/texture-r32ui64.exe" -lopengl32 -luser32 -lgdi32
-"$CC32" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_texture_r32ui.c" -o "$RUN_ROOT/texture-r32ui32.exe" -lopengl32 -luser32 -lgdi32
-"$CC64" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_gl33_fbo.c" -o "$RUN_ROOT/fbo64.exe" -lopengl32 -luser32 -lgdi32
-"$CC32" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_gl33_fbo.c" -o "$RUN_ROOT/fbo32.exe" -lopengl32 -luser32 -lgdi32
-"$CC64" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_renderbuffer.c" -o "$RUN_ROOT/renderbuffer64.exe" -lopengl32 -luser32 -lgdi32
-"$CC32" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_renderbuffer.c" -o "$RUN_ROOT/renderbuffer32.exe" -lopengl32 -luser32 -lgdi32
-"$CC64" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_multisample.c" -o "$RUN_ROOT/multisample64.exe" -lopengl32 -luser32 -lgdi32
-"$CC32" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_multisample.c" -o "$RUN_ROOT/multisample32.exe" -lopengl32 -luser32 -lgdi32
-"$CC64" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_sync.c" -o "$RUN_ROOT/sync64.exe" -lopengl32 -luser32 -lgdi32
-"$CC32" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_sync.c" -o "$RUN_ROOT/sync32.exe" -lopengl32 -luser32 -lgdi32
-"$CC64" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_ubo.c" -o "$RUN_ROOT/ubo64.exe" -lopengl32 -luser32 -lgdi32
-"$CC64" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_uniform_matrix.c" -o "$RUN_ROOT/uniform-matrix64.exe" -lopengl32 -luser32 -lgdi32
-"$CC32" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_ubo.c" -o "$RUN_ROOT/ubo32.exe" -lopengl32 -luser32 -lgdi32
-"$CC32" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_uniform_matrix.c" -o "$RUN_ROOT/uniform-matrix32.exe" -lopengl32 -luser32 -lgdi32
-"$CC64" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_query.c" -o "$RUN_ROOT/query64.exe" -lopengl32 -luser32 -lgdi32
-"$CC32" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_query.c" -o "$RUN_ROOT/query32.exe" -lopengl32 -luser32 -lgdi32
-"$CC64" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_transform.c" -o "$RUN_ROOT/transform64.exe" -lopengl32 -luser32 -lgdi32
-"$CC32" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_transform.c" -o "$RUN_ROOT/transform32.exe" -lopengl32 -luser32 -lgdi32
-"$CC64" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_transform_shader.c" -o "$RUN_ROOT/transform-shader64.exe" -lopengl32 -luser32 -lgdi32
-"$CC64" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_transform_varying.c" -o "$RUN_ROOT/transform-varying64.exe" -lopengl32 -luser32 -lgdi32
-"$CC64" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_transform_separate.c" -o "$RUN_ROOT/transform-separate64.exe" -lopengl32 -luser32 -lgdi32
-"$CC64" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_shader_binary.c" -o "$RUN_ROOT/shader-binary64.exe" -lopengl32 -luser32 -lgdi32
-"$CC64" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_debug.c" -o "$RUN_ROOT/debug64.exe" -lopengl32 -luser32 -lgdi32
-"$CC32" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_transform_shader.c" -o "$RUN_ROOT/transform-shader32.exe" -lopengl32 -luser32 -lgdi32
-"$CC32" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_transform_varying.c" -o "$RUN_ROOT/transform-varying32.exe" -lopengl32 -luser32 -lgdi32
-"$CC32" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_transform_separate.c" -o "$RUN_ROOT/transform-separate32.exe" -lopengl32 -luser32 -lgdi32
-"$CC32" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_shader_binary.c" -o "$RUN_ROOT/shader-binary32.exe" -lopengl32 -luser32 -lgdi32
-"$CC32" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_debug.c" -o "$RUN_ROOT/debug32.exe" -lopengl32 -luser32 -lgdi32
-"$CC64" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_transform_shader.c" -o "$RUN_ROOT/transform-shader-elements64.exe" -lopengl32 -luser32 -lgdi32
-"$CC32" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_transform_shader.c" -o "$RUN_ROOT/transform-shader-elements32.exe" -lopengl32 -luser32 -lgdi32
-"$CC64" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_tess_compile.c" -o "$RUN_ROOT/tess64.exe" -lopengl32 -luser32 -lgdi32
-"$CC32" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_tess_compile.c" -o "$RUN_ROOT/tess32.exe" -lopengl32 -luser32 -lgdi32
-"$CC64" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_tess_draw.c" -o "$RUN_ROOT/tess-draw64.exe" -lopengl32 -luser32 -lgdi32
-"$CC32" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_tess_draw.c" -o "$RUN_ROOT/tess-draw32.exe" -lopengl32 -luser32 -lgdi32
-"$CC64" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_tess_quad.c" -o "$RUN_ROOT/tess-quad64.exe" -lopengl32 -luser32 -lgdi32
-"$CC32" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_tess_quad.c" -o "$RUN_ROOT/tess-quad32.exe" -lopengl32 -luser32 -lgdi32
-"$CC64" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_geometry.c" -o "$RUN_ROOT/geometry64.exe" -lopengl32 -luser32 -lgdi32
-"$CC64" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_geometry_points.c" -o "$RUN_ROOT/geometry-points64.exe" -lopengl32 -luser32 -lgdi32
-"$CC64" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_geometry_varying.c" -o "$RUN_ROOT/geometry-varying64.exe" -lopengl32 -luser32 -lgdi32
-"$CC32" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_geometry.c" -o "$RUN_ROOT/geometry32.exe" -lopengl32 -luser32 -lgdi32
-"$CC32" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_geometry_points.c" -o "$RUN_ROOT/geometry-points32.exe" -lopengl32 -luser32 -lgdi32
-"$CC32" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_geometry_varying.c" -o "$RUN_ROOT/geometry-varying32.exe" -lopengl32 -luser32 -lgdi32
-"$CC64" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_texture3d.c" -o "$RUN_ROOT/texture3d64.exe" -lopengl32 -luser32 -lgdi32
-"$CC32" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_texture3d.c" -o "$RUN_ROOT/texture3d32.exe" -lopengl32 -luser32 -lgdi32
-"$CC64" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_texture_array.c" -o "$RUN_ROOT/texture-array64.exe" -lopengl32 -luser32 -lgdi32
-"$CC32" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_texture_array.c" -o "$RUN_ROOT/texture-array32.exe" -lopengl32 -luser32 -lgdi32
-"$CC64" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_fixed_texture.c" -o "$RUN_ROOT/fixed-texture64.exe" -lopengl32 -luser32 -lgdi32
-"$CC32" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_fixed_texture.c" -o "$RUN_ROOT/fixed-texture32.exe" -lopengl32 -luser32 -lgdi32
-"$CC64" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_clear_metal.c" -o "$RUN_ROOT/clear64.exe" -lopengl32 -luser32 -lgdi32
-"$CC32" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_clear_metal.c" -o "$RUN_ROOT/clear32.exe" -lopengl32 -luser32 -lgdi32
-"$CC64" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_gl33_instanced.c" -o "$RUN_ROOT/instanced64.exe" -lopengl32 -luser32 -lgdi32
-"$CC32" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_gl33_instanced.c" -o "$RUN_ROOT/instanced32.exe" -lopengl32 -luser32 -lgdi32
-"$CC64" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_compute.c" -o "$RUN_ROOT/compute64.exe" -lopengl32 -luser32 -lgdi32
-"$CC32" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_compute.c" -o "$RUN_ROOT/compute32.exe" -lopengl32 -luser32 -lgdi32
-"$CC64" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_image.c" -o "$RUN_ROOT/image64.exe" -lopengl32 -luser32 -lgdi32
-"$CC64" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_image_formats.c" -o "$RUN_ROOT/image-formats64.exe" -lopengl32 -luser32 -lgdi32
-"$CC64" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_image_r32f.c" -o "$RUN_ROOT/image-r32f64.exe" -lopengl32 -luser32 -lgdi32
-"$CC64" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_image_rgba8ui.c" -o "$RUN_ROOT/image-rgba8ui64.exe" -lopengl32 -luser32 -lgdi32
-"$CC64" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_image_rgba16f.c" -o "$RUN_ROOT/image-rgba16f64.exe" -lopengl32 -luser32 -lgdi32
-"$CC64" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_cube.c" -o "$RUN_ROOT/cube64.exe" -lopengl32 -luser32 -lgdi32
-"$CC64" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_rectangle.c" -o "$RUN_ROOT/rectangle64.exe" -lopengl32 -luser32 -lgdi32
-"$CC64" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_1d.c" -o "$RUN_ROOT/1d64.exe" -lopengl32 -luser32 -lgdi32
-"$CC32" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_image.c" -o "$RUN_ROOT/image32.exe" -lopengl32 -luser32 -lgdi32
-"$CC32" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_image_formats.c" -o "$RUN_ROOT/image-formats32.exe" -lopengl32 -luser32 -lgdi32
-"$CC32" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_image_r32f.c" -o "$RUN_ROOT/image-r32f32.exe" -lopengl32 -luser32 -lgdi32
-"$CC32" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_image_rgba8ui.c" -o "$RUN_ROOT/image-rgba8ui32.exe" -lopengl32 -luser32 -lgdi32
-"$CC32" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_image_rgba16f.c" -o "$RUN_ROOT/image-rgba16f32.exe" -lopengl32 -luser32 -lgdi32
-"$CC32" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_cube.c" -o "$RUN_ROOT/cube32.exe" -lopengl32 -luser32 -lgdi32
-"$CC32" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_rectangle.c" -o "$RUN_ROOT/rectangle32.exe" -lopengl32 -luser32 -lgdi32
-"$CC32" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_1d.c" -o "$RUN_ROOT/1d32.exe" -lopengl32 -luser32 -lgdi32
-"$CC64" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_indirect.c" -o "$RUN_ROOT/indirect64.exe" -lopengl32 -luser32 -lgdi32
-"$CC32" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_indirect.c" -o "$RUN_ROOT/indirect32.exe" -lopengl32 -luser32 -lgdi32
-"$CC64" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_indirect_elements.c" -o "$RUN_ROOT/indirect-elements64.exe" -lopengl32 -luser32 -lgdi32
-"$CC32" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_indirect_elements.c" -o "$RUN_ROOT/indirect-elements32.exe" -lopengl32 -luser32 -lgdi32
-"$CC64" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_fixed.c" -o "$RUN_ROOT/fixed64.exe" -lopengl32 -luser32 -lgdi32
-"$CC64" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_fixed_point.c" -o "$RUN_ROOT/fixed-point64.exe" -lopengl32 -luser32 -lgdi32
-"$CC64" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_fixed_line.c" -o "$RUN_ROOT/fixed-line64.exe" -lopengl32 -luser32 -lgdi32
-"$CC32" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_fixed.c" -o "$RUN_ROOT/fixed32.exe" -lopengl32 -luser32 -lgdi32
-"$CC32" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_fixed_point.c" -o "$RUN_ROOT/fixed-point32.exe" -lopengl32 -luser32 -lgdi32
-"$CC32" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_fixed_line.c" -o "$RUN_ROOT/fixed-line32.exe" -lopengl32 -luser32 -lgdi32
-"$CC64" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_blend.c" -o "$RUN_ROOT/blend64.exe" -lopengl32 -luser32 -lgdi32
-"$CC32" -O2 -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/opengl_blend.c" -o "$RUN_ROOT/blend32.exe" -lopengl32 -luser32 -lgdi32
+export WINEPREFIX="$PREFIX" WINEARCH=wow64 WINEDEBUG=${WINEDEBUG:--all}
+unset WINEMETALGL
+${TIMEOUT[@]+"${TIMEOUT[@]}"} "$WINE" wineboot -u >"$RUN_ROOT/wineboot.log" 2>&1
 
-export WINEPREFIX="$PREFIX" WINEARCH=wow64 WINEMETALGL=1 WINEDEBUG=${WINEDEBUG:--all}
-"${TIMEOUT[@]}" "$WINE" wineboot -u >"$RUN_ROOT/wineboot.log" 2>&1
+failed=0
+summary=()
+while read -r source defines scope markers; do
+    case "$source" in ''|'#'*) continue ;; esac
+    if test "${#only[@]}" -gt 0 2>/dev/null; then
+        printf '%s\n' "${only[@]}" | grep -qx "$source" || continue
+    elif test "$scope" != gate && test "$run_all" = 0; then
+        continue
+    fi
+    flags=()
+    test "$defines" != - && flags=($defines)
+    name="$source${defines#-}"
+    name=${name//[^A-Za-z0-9_]/_}
+    for bits in 64 32; do
+        cc=$CC64
+        test "$bits" = 32 && cc=$CC32
+        exe="$RUN_ROOT/$name-$bits.exe"
+        out="$exe.stdout"
+        if ! "$cc" -O2 ${flags[@]+"${flags[@]}"} -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/$source.c" -o "$exe" \
+            -lopengl32 -luser32 -lgdi32 >"$exe.build.log" 2>&1; then
+            summary+=("BUILD-FAIL $name ($bits-bit)")
+            failed=1
+            continue
+        fi
+        marker_file="$exe.marker"
+        ${TIMEOUT[@]+"${TIMEOUT[@]}"} "$WINE" "$exe" "Z:$marker_file" >"$out" 2>&1
+        rc=$?
+        test -f "$marker_file" && cat "$marker_file" >>"$out"
+        missing=()
+        for marker in $markers; do
+            grep -q "$marker" "$out" || missing+=("$marker")
+        done
+        if test "$source" = opengl_load_probe && test ! -f "$marker_file"; then missing+=("marker file"); fi
+        if test "${#missing[@]}" -eq 0; then
+            summary+=("PASS $name ($bits-bit)")
+        else
+            summary+=("FAIL $name ($bits-bit) rc=$rc missing: ${missing[*]}")
+            failed=1
+            tail -5 "$out" | sed 's/^/    /' >&2
+        fi
+    done
+done <"$PROJECT_ROOT/tests/wine/fixtures.txt"
 
-run_marker() {
-    local exe=$1 marker=$2
-    "${TIMEOUT[@]}" "$WINE" "$exe" "Z:$marker" >"$marker.stdout" 2>&1
-}
-run_shader() {
-    local exe=$1
-    WINEMETALGL_EXPERIMENTAL=1 "${TIMEOUT[@]}" "$WINE" "$exe" >"$exe.stdout" 2>&1
-}
-
-run_marker "$RUN_ROOT/load64.exe" "$RUN_ROOT/load64.marker"
-run_marker "$RUN_ROOT/load32.exe" "$RUN_ROOT/load32.marker"
-run_marker "$RUN_ROOT/runtime64.exe" "$RUN_ROOT/runtime64.marker"
-run_marker "$RUN_ROOT/runtime32.exe" "$RUN_ROOT/runtime32.marker"
-grep -q OPENGL_RUNTIME_ALL_OK "$RUN_ROOT/runtime64.marker"
-grep -q OPENGL_RUNTIME_ALL_OK "$RUN_ROOT/runtime32.marker"
-run_shader "$RUN_ROOT/contexts64.exe"
-run_shader "$RUN_ROOT/contexts32.exe"
-run_shader "$RUN_ROOT/modern64.exe"
-run_shader "$RUN_ROOT/modern32.exe"
-run_shader "$RUN_ROOT/share64.exe"
-run_shader "$RUN_ROOT/share32.exe"
-run_shader "$RUN_ROOT/pipeline64.exe"
-run_shader "$RUN_ROOT/pipeline32.exe"
-run_shader "$RUN_ROOT/interface64.exe"
-run_shader "$RUN_ROOT/interface32.exe"
-grep -q WINEMETALGL_WGL_MULTI_CONTEXT_OK "$RUN_ROOT/contexts64.exe.stdout"
-grep -q WINEMETALGL_WGL_MULTI_CONTEXT_OK "$RUN_ROOT/contexts32.exe.stdout"
-grep -q WINEMETALGL_WGL_MODERN_CONTEXT_OK "$RUN_ROOT/modern64.exe.stdout"
-grep -q WINEMETALGL_WGL_MODERN_CONTEXT_OK "$RUN_ROOT/modern32.exe.stdout"
-grep -q WINEMETALGL_WGL_SWAP_INTERVAL_OK "$RUN_ROOT/contexts64.exe.stdout"
-grep -q WINEMETALGL_WGL_SWAP_INTERVAL_OK "$RUN_ROOT/contexts32.exe.stdout"
-grep -q WINEMETALGL_WGL_CONTEXT_STATE_OK "$RUN_ROOT/contexts64.exe.stdout"
-grep -q WINEMETALGL_WGL_CONTEXT_STATE_OK "$RUN_ROOT/contexts32.exe.stdout"
-grep -q WINEMETALGL_WGL_CONTEXT_THREADS_OK "$RUN_ROOT/contexts64.exe.stdout"
-grep -q WINEMETALGL_WGL_CONTEXT_THREADS_OK "$RUN_ROOT/contexts32.exe.stdout"
-grep -q WINEMETALGL_WGL_SHARE_LISTS_OK "$RUN_ROOT/share64.exe.stdout"
-grep -q WINEMETALGL_WGL_SHARE_LISTS_OK "$RUN_ROOT/share32.exe.stdout"
-grep -q WINEMETALGL_WGL_SHARED_OBJECTS_OK "$RUN_ROOT/share64.exe.stdout"
-grep -q WINEMETALGL_WGL_SHARED_OBJECTS_OK "$RUN_ROOT/share32.exe.stdout"
-grep -q WINEMETALGL_PROGRAM_PIPELINE_OK "$RUN_ROOT/pipeline64.exe.stdout"
-grep -q WINEMETALGL_PROGRAM_PIPELINE_OK "$RUN_ROOT/pipeline32.exe.stdout"
-grep -q WINEMETALGL_PROGRAM_PIPELINE_DRAW_OK "$RUN_ROOT/pipeline64.exe.stdout"
-grep -q WINEMETALGL_PROGRAM_PIPELINE_DRAW_OK "$RUN_ROOT/pipeline32.exe.stdout"
-grep -q WINEMETALGL_INTERFACE_REJECT_OK "$RUN_ROOT/interface64.exe.stdout"
-grep -q WINEMETALGL_INTERFACE_REJECT_OK "$RUN_ROOT/interface32.exe.stdout"
-run_shader "$RUN_ROOT/multi-draw64.exe"
-run_shader "$RUN_ROOT/multi-draw32.exe"
-grep -q WINEMETALGL_MULTI_DRAW_OK "$RUN_ROOT/multi-draw64.exe.stdout"
-grep -q WINEMETALGL_MULTI_DRAW_OK "$RUN_ROOT/multi-draw32.exe.stdout"
-run_shader "$RUN_ROOT/gl33-64.exe"
-run_shader "$RUN_ROOT/gl33-32.exe"
-run_shader "$RUN_ROOT/gl45-64.exe"
-run_shader "$RUN_ROOT/gl45-32.exe"
-run_shader "$RUN_ROOT/glsl120-64.exe"
-run_shader "$RUN_ROOT/glsl120-32.exe"
-run_shader "$RUN_ROOT/glsl110-64.exe"
-run_shader "$RUN_ROOT/glsl110-32.exe"
-run_shader "$RUN_ROOT/resources64.exe"
-run_shader "$RUN_ROOT/resources32.exe"
-run_shader "$RUN_ROOT/texture64.exe"
-run_shader "$RUN_ROOT/texture32.exe"
-run_shader "$RUN_ROOT/texture-integer64.exe"
-run_shader "$RUN_ROOT/texture-integer32.exe"
-run_shader "$RUN_ROOT/texture-half64.exe"
-run_shader "$RUN_ROOT/texture-half32.exe"
-run_shader "$RUN_ROOT/texture-float64.exe"
-run_shader "$RUN_ROOT/texture-float32.exe"
-run_shader "$RUN_ROOT/texture-depth64.exe"
-run_shader "$RUN_ROOT/texture-depth32.exe"
-run_shader "$RUN_ROOT/texture-r32ui64.exe"
-run_shader "$RUN_ROOT/texture-r32ui32.exe"
-run_shader "$RUN_ROOT/fbo64.exe"
-run_shader "$RUN_ROOT/fbo32.exe"
-run_shader "$RUN_ROOT/renderbuffer64.exe"
-run_shader "$RUN_ROOT/renderbuffer32.exe"
-run_shader "$RUN_ROOT/multisample64.exe"
-run_shader "$RUN_ROOT/multisample32.exe"
-run_shader "$RUN_ROOT/sync64.exe"
-run_shader "$RUN_ROOT/sync32.exe"
-run_shader "$RUN_ROOT/ubo64.exe"
-run_shader "$RUN_ROOT/ubo32.exe"
-run_shader "$RUN_ROOT/uniform-matrix64.exe"
-run_shader "$RUN_ROOT/uniform-matrix32.exe"
-run_shader "$RUN_ROOT/query64.exe"
-run_shader "$RUN_ROOT/query32.exe"
-run_shader "$RUN_ROOT/transform64.exe"
-run_shader "$RUN_ROOT/transform32.exe"
-run_shader "$RUN_ROOT/transform-shader64.exe"
-run_shader "$RUN_ROOT/transform-shader32.exe"
-run_shader "$RUN_ROOT/transform-shader-elements64.exe"
-run_shader "$RUN_ROOT/transform-shader-elements32.exe"
-run_shader "$RUN_ROOT/transform-varying64.exe"
-run_shader "$RUN_ROOT/transform-varying32.exe"
-run_shader "$RUN_ROOT/transform-separate64.exe"
-run_shader "$RUN_ROOT/transform-separate32.exe"
-run_shader "$RUN_ROOT/shader-binary64.exe"
-run_shader "$RUN_ROOT/shader-binary32.exe"
-run_shader "$RUN_ROOT/debug64.exe"
-run_shader "$RUN_ROOT/debug32.exe"
-run_shader "$RUN_ROOT/tess64.exe"
-run_shader "$RUN_ROOT/tess32.exe"
-run_shader "$RUN_ROOT/tess-draw64.exe"
-run_shader "$RUN_ROOT/tess-draw32.exe"
-run_shader "$RUN_ROOT/tess-quad64.exe"
-run_shader "$RUN_ROOT/tess-quad32.exe"
-run_shader "$RUN_ROOT/geometry64.exe"
-run_shader "$RUN_ROOT/geometry32.exe"
-run_shader "$RUN_ROOT/geometry-points64.exe"
-run_shader "$RUN_ROOT/geometry-points32.exe"
-run_shader "$RUN_ROOT/geometry-varying64.exe"
-run_shader "$RUN_ROOT/geometry-varying32.exe"
-run_shader "$RUN_ROOT/texture3d64.exe"
-run_shader "$RUN_ROOT/texture3d32.exe"
-run_shader "$RUN_ROOT/texture-array64.exe"
-run_shader "$RUN_ROOT/texture-array32.exe"
-run_shader "$RUN_ROOT/fixed-texture64.exe"
-run_shader "$RUN_ROOT/fixed-texture32.exe"
-run_shader "$RUN_ROOT/clear64.exe"
-run_shader "$RUN_ROOT/clear32.exe"
-run_shader "$RUN_ROOT/instanced64.exe"
-run_shader "$RUN_ROOT/instanced32.exe"
-run_shader "$RUN_ROOT/compute64.exe"
-run_shader "$RUN_ROOT/compute32.exe"
-run_shader "$RUN_ROOT/image64.exe"
-run_shader "$RUN_ROOT/image32.exe"
-run_shader "$RUN_ROOT/image-formats64.exe"
-run_shader "$RUN_ROOT/image-formats32.exe"
-run_shader "$RUN_ROOT/image-r32f64.exe"
-run_shader "$RUN_ROOT/image-r32f32.exe"
-run_shader "$RUN_ROOT/image-rgba8ui64.exe"
-run_shader "$RUN_ROOT/image-rgba8ui32.exe"
-run_shader "$RUN_ROOT/image-rgba16f64.exe"
-run_shader "$RUN_ROOT/image-rgba16f32.exe"
-run_shader "$RUN_ROOT/cube64.exe"
-run_shader "$RUN_ROOT/cube32.exe"
-run_shader "$RUN_ROOT/rectangle64.exe"
-run_shader "$RUN_ROOT/rectangle32.exe"
-run_shader "$RUN_ROOT/1d64.exe"
-run_shader "$RUN_ROOT/1d32.exe"
-run_shader "$RUN_ROOT/indirect64.exe"
-run_shader "$RUN_ROOT/indirect32.exe"
-run_shader "$RUN_ROOT/indirect-elements64.exe"
-run_shader "$RUN_ROOT/indirect-elements32.exe"
-run_shader "$RUN_ROOT/fixed64.exe"
-run_shader "$RUN_ROOT/fixed32.exe"
-run_shader "$RUN_ROOT/fixed-point64.exe"
-run_shader "$RUN_ROOT/fixed-point32.exe"
-run_shader "$RUN_ROOT/fixed-line64.exe"
-run_shader "$RUN_ROOT/fixed-line32.exe"
-run_shader "$RUN_ROOT/blend64.exe"
-run_shader "$RUN_ROOT/blend32.exe"
-grep -q OPENGL_GL330_METAL_DRAW_READBACK_OK "$RUN_ROOT/gl33-64.exe.stdout"
-grep -q OPENGL_GL330_METAL_DRAW_READBACK_OK "$RUN_ROOT/gl33-32.exe.stdout"
-grep -q WINEMETALGL_RESIZE_PRESENT_OK "$RUN_ROOT/gl33-64.exe.stdout"
-grep -q WINEMETALGL_RESIZE_PRESENT_OK "$RUN_ROOT/gl33-32.exe.stdout"
-grep -q 'OPENGL_EXPERIMENTAL_VERSION_3.3 WineMetalGL' "$RUN_ROOT/gl33-64.exe.stdout"
-grep -q 'OPENGL_EXPERIMENTAL_VERSION_3.3 WineMetalGL' "$RUN_ROOT/gl33-32.exe.stdout"
-grep -q WINEMETALGL_SHADING_LANGUAGE_VERSION_OK "$RUN_ROOT/gl33-64.exe.stdout"
-grep -q WINEMETALGL_SHADING_LANGUAGE_VERSION_OK "$RUN_ROOT/gl33-32.exe.stdout"
-grep -q WINEMETALGL_STATE_QUERY_OK "$RUN_ROOT/gl33-64.exe.stdout"
-grep -q WINEMETALGL_STATE_QUERY_OK "$RUN_ROOT/gl33-32.exe.stdout"
-grep -q WINEMETALGL_ROBUSTNESS_OK "$RUN_ROOT/gl33-64.exe.stdout"
-grep -q WINEMETALGL_ROBUSTNESS_OK "$RUN_ROOT/gl33-32.exe.stdout"
-grep -q WINEMETALGL_FRAG_DATA_LOCATION_OK "$RUN_ROOT/gl33-64.exe.stdout"
-grep -q WINEMETALGL_FRAG_DATA_LOCATION_OK "$RUN_ROOT/gl33-32.exe.stdout"
-grep -q WINEMETALGL_RASTER_STATE_OK "$RUN_ROOT/gl33-64.exe.stdout"
-grep -q WINEMETALGL_RASTER_STATE_OK "$RUN_ROOT/gl33-32.exe.stdout"
-grep -q WINEMETALGL_CLIP_CONTROL_OK "$RUN_ROOT/gl33-64.exe.stdout"
-grep -q WINEMETALGL_CLIP_CONTROL_OK "$RUN_ROOT/gl33-32.exe.stdout"
-grep -q OPENGL_GL450_METAL_DRAW_READBACK_OK "$RUN_ROOT/gl45-64.exe.stdout"
-grep -q OPENGL_GL450_METAL_DRAW_READBACK_OK "$RUN_ROOT/gl45-32.exe.stdout"
-grep -q WINEMETALGL_GLSL120_OK "$RUN_ROOT/glsl120-64.exe.stdout"
-grep -q WINEMETALGL_GLSL120_OK "$RUN_ROOT/glsl120-32.exe.stdout"
-grep -q WINEMETALGL_GLSL110_OK "$RUN_ROOT/glsl110-64.exe.stdout"
-grep -q WINEMETALGL_GLSL110_OK "$RUN_ROOT/glsl110-32.exe.stdout"
-grep -q WINEMETALGL_GL33_RESOURCES_OK "$RUN_ROOT/resources64.exe.stdout"
-grep -q WINEMETALGL_GL33_RESOURCES_OK "$RUN_ROOT/resources32.exe.stdout"
-grep -q WINEMETALGL_BUFFER_MAP_RANGE_OK "$RUN_ROOT/resources64.exe.stdout"
-grep -q WINEMETALGL_BUFFER_MAP_RANGE_OK "$RUN_ROOT/resources32.exe.stdout"
-grep -q WINEMETALGL_BUFFER_STORAGE_OK "$RUN_ROOT/resources64.exe.stdout"
-grep -q WINEMETALGL_BUFFER_STORAGE_OK "$RUN_ROOT/resources32.exe.stdout"
-grep -q WINEMETALGL_BUFFER_POINTER_QUERY_OK "$RUN_ROOT/resources64.exe.stdout"
-grep -q WINEMETALGL_BUFFER_POINTER_QUERY_OK "$RUN_ROOT/resources32.exe.stdout"
-grep -q WINEMETALGL_UNIFORM_ARRAY_REFLECTION_OK "$RUN_ROOT/resources64.exe.stdout"
-grep -q WINEMETALGL_UNIFORM_ARRAY_REFLECTION_OK "$RUN_ROOT/resources32.exe.stdout"
-grep -q WINEMETALGL_VERTEX_ATTRIB_QUERY_OK "$RUN_ROOT/resources64.exe.stdout"
-grep -q WINEMETALGL_VERTEX_ATTRIB_QUERY_OK "$RUN_ROOT/resources32.exe.stdout"
-grep -q WINEMETALGL_MULTI_BIND_VERTEX_BUFFERS_OK "$RUN_ROOT/resources64.exe.stdout"
-grep -q WINEMETALGL_MULTI_BIND_VERTEX_BUFFERS_OK "$RUN_ROOT/resources32.exe.stdout"
-grep -q WINEMETALGL_PBO_READBACK_OK "$RUN_ROOT/resources64.exe.stdout"
-grep -q WINEMETALGL_PBO_READBACK_OK "$RUN_ROOT/resources32.exe.stdout"
-grep -q WINEMETALGL_UNPACK_ALIGNMENT_OK "$RUN_ROOT/texture64.exe.stdout"
-grep -q WINEMETALGL_UNPACK_ALIGNMENT_OK "$RUN_ROOT/texture32.exe.stdout"
-grep -q WINEMETALGL_INTERNAL_FORMAT_QUERY_OK "$RUN_ROOT/texture64.exe.stdout"
-grep -q WINEMETALGL_INTERNAL_FORMAT_QUERY_OK "$RUN_ROOT/texture32.exe.stdout"
-grep -q WINEMETALGL_MIPMAP_OK "$RUN_ROOT/texture64.exe.stdout"
-grep -q WINEMETALGL_MIPMAP_OK "$RUN_ROOT/texture32.exe.stdout"
-grep -q WINEMETALGL_GL33_TEXTURE_OK "$RUN_ROOT/texture64.exe.stdout"
-grep -q WINEMETALGL_GL33_TEXTURE_OK "$RUN_ROOT/texture32.exe.stdout"
-grep -q WINEMETALGL_INTEGER_TEXTURE_SAMPLE_OK "$RUN_ROOT/texture-integer64.exe.stdout"
-grep -q WINEMETALGL_INTEGER_TEXTURE_SAMPLE_OK "$RUN_ROOT/texture-integer32.exe.stdout"
-grep -q WINEMETALGL_HALF_FLOAT_TEXTURE_SAMPLE_OK "$RUN_ROOT/texture-half64.exe.stdout"
-grep -q WINEMETALGL_HALF_FLOAT_TEXTURE_SAMPLE_OK "$RUN_ROOT/texture-half32.exe.stdout"
-grep -q WINEMETALGL_FLOAT_TEXTURE_SAMPLE_OK "$RUN_ROOT/texture-float64.exe.stdout"
-grep -q WINEMETALGL_FLOAT_TEXTURE_SAMPLE_OK "$RUN_ROOT/texture-float32.exe.stdout"
-grep -q WINEMETALGL_DEPTH_TEXTURE_SAMPLE_OK "$RUN_ROOT/texture-depth64.exe.stdout"
-grep -q WINEMETALGL_DEPTH_TEXTURE_SAMPLE_OK "$RUN_ROOT/texture-depth32.exe.stdout"
-grep -q WINEMETALGL_R32UI_TEXTURE_SAMPLE_OK "$RUN_ROOT/texture-r32ui64.exe.stdout"
-grep -q WINEMETALGL_R32UI_TEXTURE_SAMPLE_OK "$RUN_ROOT/texture-r32ui32.exe.stdout"
-grep -q WINEMETALGL_TEXTURE_PACKED_OK "$RUN_ROOT/texture64.exe.stdout"
-grep -q WINEMETALGL_TEXTURE_PACKED_OK "$RUN_ROOT/texture32.exe.stdout"
-grep -q WINEMETALGL_TEXTURE_USHORT_OK "$RUN_ROOT/texture64.exe.stdout"
-grep -q WINEMETALGL_TEXTURE_USHORT_OK "$RUN_ROOT/texture32.exe.stdout"
-grep -q WINEMETALGL_TEXTURE_HALF_FLOAT_OK "$RUN_ROOT/texture64.exe.stdout"
-grep -q WINEMETALGL_TEXTURE_HALF_FLOAT_OK "$RUN_ROOT/texture32.exe.stdout"
-grep -q WINEMETALGL_TEXTURE_RGBA16F_OK "$RUN_ROOT/texture64.exe.stdout"
-grep -q WINEMETALGL_TEXTURE_RGBA16F_OK "$RUN_ROOT/texture32.exe.stdout"
-grep -q WINEMETALGL_TEXTURE_RGBA32F_OK "$RUN_ROOT/texture64.exe.stdout"
-grep -q WINEMETALGL_TEXTURE_RGBA32F_OK "$RUN_ROOT/texture32.exe.stdout"
-grep -q WINEMETALGL_TEXTURE_RGBA8UI_OK "$RUN_ROOT/texture64.exe.stdout"
-grep -q WINEMETALGL_TEXTURE_RGBA8UI_OK "$RUN_ROOT/texture32.exe.stdout"
-grep -q WINEMETALGL_TEXTURE_SRGB_OK "$RUN_ROOT/texture64.exe.stdout"
-grep -q WINEMETALGL_TEXTURE_SRGB_OK "$RUN_ROOT/texture32.exe.stdout"
-grep -q WINEMETALGL_TEXTURE_RED_OK "$RUN_ROOT/texture64.exe.stdout"
-grep -q WINEMETALGL_TEXTURE_RED_OK "$RUN_ROOT/texture32.exe.stdout"
-grep -q WINEMETALGL_TEXTURE_RG_OK "$RUN_ROOT/texture64.exe.stdout"
-grep -q WINEMETALGL_TEXTURE_RG_OK "$RUN_ROOT/texture32.exe.stdout"
-grep -q WINEMETALGL_TEXTURE_LUMINANCE_OK "$RUN_ROOT/texture64.exe.stdout"
-grep -q WINEMETALGL_TEXTURE_LUMINANCE_OK "$RUN_ROOT/texture32.exe.stdout"
-grep -q WINEMETALGL_READBACK_PACKED_OK "$RUN_ROOT/texture64.exe.stdout"
-grep -q WINEMETALGL_READBACK_PACKED_OK "$RUN_ROOT/texture32.exe.stdout"
-grep -q WINEMETALGL_READBACK_HALF_FLOAT_OK "$RUN_ROOT/texture64.exe.stdout"
-grep -q WINEMETALGL_READBACK_HALF_FLOAT_OK "$RUN_ROOT/texture32.exe.stdout"
-grep -q WINEMETALGL_PACK_ALIGNMENT_OK "$RUN_ROOT/texture64.exe.stdout"
-grep -q WINEMETALGL_PACK_ALIGNMENT_OK "$RUN_ROOT/texture32.exe.stdout"
-grep -q WINEMETALGL_TEXTURE_BGRA_OK "$RUN_ROOT/texture64.exe.stdout"
-grep -q WINEMETALGL_TEXTURE_BGRA_OK "$RUN_ROOT/texture32.exe.stdout"
-grep -q WINEMETALGL_TEXTURE_SAMPLER_PARAMS_OK "$RUN_ROOT/texture64.exe.stdout"
-grep -q WINEMETALGL_TEXTURE_SAMPLER_PARAMS_OK "$RUN_ROOT/texture32.exe.stdout"
-grep -q WINEMETALGL_MULTI_BIND_TEXTURES_OK "$RUN_ROOT/texture64.exe.stdout"
-grep -q WINEMETALGL_MULTI_BIND_TEXTURES_OK "$RUN_ROOT/texture32.exe.stdout"
-grep -q WINEMETALGL_TEXTURE_SAMPLER_QUERY_OK "$RUN_ROOT/texture64.exe.stdout"
-grep -q WINEMETALGL_TEXTURE_SAMPLER_QUERY_OK "$RUN_ROOT/texture32.exe.stdout"
-grep -q WINEMETALGL_TEXTURE_SWIZZLE_OK "$RUN_ROOT/texture64.exe.stdout"
-grep -q WINEMETALGL_TEXTURE_SWIZZLE_OK "$RUN_ROOT/texture32.exe.stdout"
-grep -q WINEMETALGL_COPY_IMAGE_OK "$RUN_ROOT/texture64.exe.stdout"
-grep -q WINEMETALGL_COPY_IMAGE_OK "$RUN_ROOT/texture32.exe.stdout"
-grep -q WINEMETALGL_COPY_TEX_OK "$RUN_ROOT/texture64.exe.stdout"
-grep -q WINEMETALGL_COPY_TEX_OK "$RUN_ROOT/texture32.exe.stdout"
-grep -q WINEMETALGL_TEX_STORAGE_OK "$RUN_ROOT/texture64.exe.stdout"
-grep -q WINEMETALGL_TEX_STORAGE_OK "$RUN_ROOT/texture32.exe.stdout"
-grep -q WINEMETALGL_DSA_TEXTURE_OK "$RUN_ROOT/texture64.exe.stdout"
-grep -q WINEMETALGL_DSA_TEXTURE_OK "$RUN_ROOT/texture32.exe.stdout"
-grep -q WINEMETALGL_TEXTURE_VIEW_OK "$RUN_ROOT/texture64.exe.stdout"
-grep -q WINEMETALGL_TEXTURE_VIEW_OK "$RUN_ROOT/texture32.exe.stdout"
-grep -q WINEMETALGL_SAMPLER_ADVANCED_OK "$RUN_ROOT/texture64.exe.stdout"
-grep -q WINEMETALGL_SAMPLER_ADVANCED_OK "$RUN_ROOT/texture32.exe.stdout"
-grep -q WINEMETALGL_FBO_OK "$RUN_ROOT/fbo64.exe.stdout"
-grep -q WINEMETALGL_FBO_OK "$RUN_ROOT/fbo32.exe.stdout"
-grep -q WINEMETALGL_FBO_ATTACHMENT_QUERY_OK "$RUN_ROOT/fbo64.exe.stdout"
-grep -q WINEMETALGL_FBO_ATTACHMENT_QUERY_OK "$RUN_ROOT/fbo32.exe.stdout"
-grep -q WINEMETALGL_FBO_DEPTH_TEXTURE_OK "$RUN_ROOT/fbo64.exe.stdout"
-grep -q WINEMETALGL_FBO_DEPTH_TEXTURE_OK "$RUN_ROOT/fbo32.exe.stdout"
-grep -q WINEMETALGL_FBO_DIMENSION_REJECT_OK "$RUN_ROOT/fbo64.exe.stdout"
-grep -q WINEMETALGL_FBO_DIMENSION_REJECT_OK "$RUN_ROOT/fbo32.exe.stdout"
-grep -q WINEMETALGL_FBO_DEPTH_READBACK_OK "$RUN_ROOT/fbo64.exe.stdout"
-grep -q WINEMETALGL_FBO_DEPTH_READBACK_OK "$RUN_ROOT/fbo32.exe.stdout"
-grep -q WINEMETALGL_FBO_DEPTH_TEXTURE_READBACK_OK "$RUN_ROOT/fbo64.exe.stdout"
-grep -q WINEMETALGL_FBO_DEPTH_TEXTURE_READBACK_OK "$RUN_ROOT/fbo32.exe.stdout"
-grep -q WINEMETALGL_FBO_STENCIL_READBACK_OK "$RUN_ROOT/fbo64.exe.stdout"
-grep -q WINEMETALGL_FBO_STENCIL_READBACK_OK "$RUN_ROOT/fbo32.exe.stdout"
-grep -q WINEMETALGL_FBO_STENCIL_TEXTURE_READBACK_OK "$RUN_ROOT/fbo64.exe.stdout"
-grep -q WINEMETALGL_FBO_STENCIL_TEXTURE_READBACK_OK "$RUN_ROOT/fbo32.exe.stdout"
-grep -q WINEMETALGL_FBO_ARRAY_LAYER_OK "$RUN_ROOT/fbo64.exe.stdout"
-grep -q WINEMETALGL_FBO_ARRAY_LAYER_OK "$RUN_ROOT/fbo32.exe.stdout"
-grep -q WINEMETALGL_BLIT_OK "$RUN_ROOT/fbo64.exe.stdout"
-grep -q WINEMETALGL_BLIT_OK "$RUN_ROOT/fbo32.exe.stdout"
-grep -q WINEMETALGL_INVALIDATE_FBO_OK "$RUN_ROOT/fbo64.exe.stdout"
-grep -q WINEMETALGL_INVALIDATE_FBO_OK "$RUN_ROOT/fbo32.exe.stdout"
-grep -q WINEMETALGL_RENDERBUFFER_OK "$RUN_ROOT/renderbuffer64.exe.stdout"
-grep -q WINEMETALGL_RENDERBUFFER_OK "$RUN_ROOT/renderbuffer32.exe.stdout"
-grep -q WINEMETALGL_MULTISAMPLE_OK "$RUN_ROOT/multisample64.exe.stdout"
-grep -q WINEMETALGL_MULTISAMPLE_OK "$RUN_ROOT/multisample32.exe.stdout"
-grep -q WINEMETALGL_MULTISAMPLE_STORAGE_OK "$RUN_ROOT/multisample64.exe.stdout"
-grep -q WINEMETALGL_MULTISAMPLE_STORAGE_OK "$RUN_ROOT/multisample32.exe.stdout"
-grep -q WINEMETALGL_SYNC_OK "$RUN_ROOT/sync64.exe.stdout"
-grep -q WINEMETALGL_SYNC_OK "$RUN_ROOT/sync32.exe.stdout"
-grep -q WINEMETALGL_UBO_OK "$RUN_ROOT/ubo64.exe.stdout"
-grep -q WINEMETALGL_UBO_OK "$RUN_ROOT/ubo32.exe.stdout"
-grep -q WINEMETALGL_UNIFORM_MATRIX_ARRAY_OK "$RUN_ROOT/uniform-matrix64.exe.stdout"
-grep -q WINEMETALGL_UNIFORM_MATRIX_ARRAY_OK "$RUN_ROOT/uniform-matrix32.exe.stdout"
-grep -q WINEMETALGL_UNIFORM_MATRIX_DRAW_OK "$RUN_ROOT/uniform-matrix64.exe.stdout"
-grep -q WINEMETALGL_UNIFORM_MATRIX_DRAW_OK "$RUN_ROOT/uniform-matrix32.exe.stdout"
-grep -q WINEMETALGL_BUFFER_SIZE_OK "$RUN_ROOT/ubo64.exe.stdout"
-grep -q WINEMETALGL_BUFFER_SIZE_OK "$RUN_ROOT/ubo32.exe.stdout"
-grep -q WINEMETALGL_UBO_RANGE_OK "$RUN_ROOT/ubo64.exe.stdout"
-grep -q WINEMETALGL_UBO_RANGE_OK "$RUN_ROOT/ubo32.exe.stdout"
-grep -q WINEMETALGL_MULTI_BIND_BUFFERS_OK "$RUN_ROOT/ubo64.exe.stdout"
-grep -q WINEMETALGL_MULTI_BIND_BUFFERS_OK "$RUN_ROOT/ubo32.exe.stdout"
-grep -q WINEMETALGL_UBO_REFLECTION_OK "$RUN_ROOT/ubo64.exe.stdout"
-grep -q WINEMETALGL_UBO_REFLECTION_OK "$RUN_ROOT/ubo32.exe.stdout"
-grep -q WINEMETALGL_QUERY_OK "$RUN_ROOT/query64.exe.stdout"
-grep -q WINEMETALGL_QUERY_OK "$RUN_ROOT/query32.exe.stdout"
-grep -q WINEMETALGL_QUERY_BUFFER_OK "$RUN_ROOT/query64.exe.stdout"
-grep -q WINEMETALGL_QUERY_BUFFER_OK "$RUN_ROOT/query32.exe.stdout"
-grep -q WINEMETALGL_TRANSFORM_FIXED_OK "$RUN_ROOT/transform64.exe.stdout"
-grep -q WINEMETALGL_TRANSFORM_FIXED_OK "$RUN_ROOT/transform32.exe.stdout"
-grep -q WINEMETALGL_TRANSFORM_SHADER_OK "$RUN_ROOT/transform-shader64.exe.stdout"
-grep -q WINEMETALGL_TRANSFORM_SHADER_OK "$RUN_ROOT/transform-shader32.exe.stdout"
-grep -q WINEMETALGL_TRANSFORM_SHADER_ELEMENTS_OK "$RUN_ROOT/transform-shader-elements64.exe.stdout"
-grep -q WINEMETALGL_TRANSFORM_SHADER_ELEMENTS_OK "$RUN_ROOT/transform-shader-elements32.exe.stdout"
-grep -q WINEMETALGL_TRANSFORM_SHADER_RANGE_OK "$RUN_ROOT/transform-shader-elements64.exe.stdout"
-grep -q WINEMETALGL_TRANSFORM_SHADER_RANGE_OK "$RUN_ROOT/transform-shader-elements32.exe.stdout"
-grep -q WINEMETALGL_TRANSFORM_SHADER_VARYING_OK "$RUN_ROOT/transform-varying64.exe.stdout"
-grep -q WINEMETALGL_TRANSFORM_SHADER_VARYING_OK "$RUN_ROOT/transform-varying32.exe.stdout"
-grep -q WINEMETALGL_TRANSFORM_SHADER_SEPARATE_OK "$RUN_ROOT/transform-separate64.exe.stdout"
-grep -q WINEMETALGL_TRANSFORM_SHADER_SEPARATE_OK "$RUN_ROOT/transform-separate32.exe.stdout"
-grep -q WINEMETALGL_TRANSFORM_SHADER_SEPARATE_ELEMENTS_OK "$RUN_ROOT/transform-separate64.exe.stdout"
-grep -q WINEMETALGL_TRANSFORM_SHADER_SEPARATE_ELEMENTS_OK "$RUN_ROOT/transform-separate32.exe.stdout"
-grep -q WINEMETALGL_SHADER_BINARY_OK "$RUN_ROOT/shader-binary64.exe.stdout"
-grep -q WINEMETALGL_SHADER_BINARY_OK "$RUN_ROOT/shader-binary32.exe.stdout"
-grep -q WINEMETALGL_SHADER_SPECIALIZE_OK "$RUN_ROOT/shader-binary64.exe.stdout"
-grep -q WINEMETALGL_SHADER_SPECIALIZE_OK "$RUN_ROOT/shader-binary32.exe.stdout"
-grep -q WINEMETALGL_PROGRAM_BINARY_OK "$RUN_ROOT/shader-binary64.exe.stdout"
-grep -q WINEMETALGL_PROGRAM_BINARY_OK "$RUN_ROOT/shader-binary32.exe.stdout"
-grep -q WINEMETALGL_DEBUG_OUTPUT_OK "$RUN_ROOT/debug64.exe.stdout"
-grep -q WINEMETALGL_DEBUG_OUTPUT_OK "$RUN_ROOT/debug32.exe.stdout"
-grep -q WINEMETALGL_TESSELLATION_COMPILE_OK "$RUN_ROOT/tess64.exe.stdout"
-grep -q WINEMETALGL_TESSELLATION_COMPILE_OK "$RUN_ROOT/tess32.exe.stdout"
-grep -q WINEMETALGL_TESSELLATION_DRAW_OK "$RUN_ROOT/tess-draw64.exe.stdout"
-grep -q WINEMETALGL_TESSELLATION_DRAW_OK "$RUN_ROOT/tess-draw32.exe.stdout"
-grep -q WINEMETALGL_TESSELLATION_FACTORS_OK "$RUN_ROOT/tess-draw64.exe.stdout"
-grep -q WINEMETALGL_TESSELLATION_FACTORS_OK "$RUN_ROOT/tess-draw32.exe.stdout"
-grep -q WINEMETALGL_TESSELLATION_DEFAULT_FACTORS_OK "$RUN_ROOT/tess-draw64.exe.stdout"
-grep -q WINEMETALGL_TESSELLATION_DEFAULT_FACTORS_OK "$RUN_ROOT/tess-draw32.exe.stdout"
-grep -q WINEMETALGL_TESSELLATION_QUAD_OK "$RUN_ROOT/tess-quad64.exe.stdout"
-grep -q WINEMETALGL_TESSELLATION_QUAD_OK "$RUN_ROOT/tess-quad32.exe.stdout"
-grep -q WINEMETALGL_GEOMETRY_PASSTHROUGH_OK "$RUN_ROOT/geometry64.exe.stdout"
-grep -q WINEMETALGL_GEOMETRY_PASSTHROUGH_OK "$RUN_ROOT/geometry32.exe.stdout"
-grep -q WINEMETALGL_GEOMETRY_POINT_PASSTHROUGH_OK "$RUN_ROOT/geometry-points64.exe.stdout"
-grep -q WINEMETALGL_GEOMETRY_POINT_PASSTHROUGH_OK "$RUN_ROOT/geometry-points32.exe.stdout"
-grep -q WINEMETALGL_GEOMETRY_VARYING_PASSTHROUGH_OK "$RUN_ROOT/geometry-varying64.exe.stdout"
-grep -q WINEMETALGL_GEOMETRY_VARYING_PASSTHROUGH_OK "$RUN_ROOT/geometry-varying32.exe.stdout"
-grep -q WINEMETALGL_TEXTURE3D_OK "$RUN_ROOT/texture3d64.exe.stdout"
-grep -q WINEMETALGL_TEXTURE3D_OK "$RUN_ROOT/texture3d32.exe.stdout"
-grep -q WINEMETALGL_TEXTURE_ARRAY_OK "$RUN_ROOT/texture-array64.exe.stdout"
-grep -q WINEMETALGL_TEXTURE_ARRAY_OK "$RUN_ROOT/texture-array32.exe.stdout"
-grep -q WINEMETALGL_FIXED_TEXTURE_OK "$RUN_ROOT/fixed-texture64.exe.stdout"
-grep -q WINEMETALGL_FIXED_TEXTURE_OK "$RUN_ROOT/fixed-texture32.exe.stdout"
-grep -q WINEMETALGL_FIXED_TEXTURE_REPLACE_OK "$RUN_ROOT/fixed-texture64.exe.stdout"
-grep -q WINEMETALGL_FIXED_TEXTURE_REPLACE_OK "$RUN_ROOT/fixed-texture32.exe.stdout"
-grep -q WINEMETALGL_FIXED_TEXTURE_ADD_OK "$RUN_ROOT/fixed-texture64.exe.stdout"
-grep -q WINEMETALGL_FIXED_TEXTURE_ADD_OK "$RUN_ROOT/fixed-texture32.exe.stdout"
-grep -q WINEMETALGL_FIXED_TEXTURE_DECAL_OK "$RUN_ROOT/fixed-texture64.exe.stdout"
-grep -q WINEMETALGL_FIXED_TEXTURE_DECAL_OK "$RUN_ROOT/fixed-texture32.exe.stdout"
-grep -q WINEMETALGL_FIXED_TEXTURE_COMBINE_OK "$RUN_ROOT/fixed-texture64.exe.stdout"
-grep -q WINEMETALGL_FIXED_TEXTURE_COMBINE_OK "$RUN_ROOT/fixed-texture32.exe.stdout"
-grep -q WINEMETALGL_FIXED_TEXTURE_SUBTRACT_OK "$RUN_ROOT/fixed-texture64.exe.stdout"
-grep -q WINEMETALGL_FIXED_TEXTURE_SUBTRACT_OK "$RUN_ROOT/fixed-texture32.exe.stdout"
-grep -q WINEMETALGL_FIXED_MULTITEXTURE_OK "$RUN_ROOT/fixed-texture64.exe.stdout"
-grep -q WINEMETALGL_FIXED_MULTITEXTURE_OK "$RUN_ROOT/fixed-texture32.exe.stdout"
-grep -q WINEMETALGL_FIXED_TEXGEN_OK "$RUN_ROOT/fixed-texture64.exe.stdout"
-grep -q WINEMETALGL_FIXED_TEXGEN_OK "$RUN_ROOT/fixed-texture32.exe.stdout"
-grep -q WINEMETALGL_CLEAR_OK "$RUN_ROOT/clear64.exe.stdout"
-grep -q WINEMETALGL_CLEAR_OK "$RUN_ROOT/clear32.exe.stdout"
-grep -q WINEMETALGL_CLEAR_BUFFER_OK "$RUN_ROOT/clear64.exe.stdout"
-grep -q WINEMETALGL_CLEAR_BUFFER_OK "$RUN_ROOT/clear32.exe.stdout"
-grep -q WINEMETALGL_INSTANCED_OK "$RUN_ROOT/instanced64.exe.stdout"
-grep -q WINEMETALGL_INSTANCED_OK "$RUN_ROOT/instanced32.exe.stdout"
-grep -q WINEMETALGL_COMPUTE_OK "$RUN_ROOT/compute64.exe.stdout"
-grep -q WINEMETALGL_COMPUTE_OK "$RUN_ROOT/compute32.exe.stdout"
-grep -q WINEMETALGL_SSBO_REFLECTION_OK "$RUN_ROOT/compute64.exe.stdout"
-grep -q WINEMETALGL_SSBO_REFLECTION_OK "$RUN_ROOT/compute32.exe.stdout"
-grep -q WINEMETALGL_RESOURCE_REFLECTION_OK "$RUN_ROOT/compute64.exe.stdout"
-grep -q WINEMETALGL_RESOURCE_REFLECTION_OK "$RUN_ROOT/compute32.exe.stdout"
-grep -q WINEMETALGL_COMPUTE_RANGE_OK "$RUN_ROOT/compute64.exe.stdout"
-grep -q WINEMETALGL_COMPUTE_RANGE_OK "$RUN_ROOT/compute32.exe.stdout"
-grep -q WINEMETALGL_COMPUTE_INDIRECT_OK "$RUN_ROOT/compute64.exe.stdout"
-grep -q WINEMETALGL_COMPUTE_INDIRECT_OK "$RUN_ROOT/compute32.exe.stdout"
-grep -q WINEMETALGL_IMAGE_OK "$RUN_ROOT/image64.exe.stdout"
-grep -q WINEMETALGL_IMAGE_OK "$RUN_ROOT/image32.exe.stdout"
-grep -q WINEMETALGL_MULTI_BIND_IMAGES_OK "$RUN_ROOT/image-formats64.exe.stdout"
-grep -q WINEMETALGL_MULTI_BIND_IMAGES_OK "$RUN_ROOT/image-formats32.exe.stdout"
-grep -q WINEMETALGL_IMAGE_R32UI_OK "$RUN_ROOT/image-formats64.exe.stdout"
-grep -q WINEMETALGL_IMAGE_R32UI_OK "$RUN_ROOT/image-formats32.exe.stdout"
-grep -q WINEMETALGL_IMAGE_R32F_OK "$RUN_ROOT/image-r32f64.exe.stdout"
-grep -q WINEMETALGL_IMAGE_R32F_OK "$RUN_ROOT/image-r32f32.exe.stdout"
-grep -q WINEMETALGL_IMAGE_RGBA8UI_OK "$RUN_ROOT/image-rgba8ui64.exe.stdout"
-grep -q WINEMETALGL_IMAGE_RGBA8UI_OK "$RUN_ROOT/image-rgba8ui32.exe.stdout"
-grep -q WINEMETALGL_IMAGE_RGBA16F_OK "$RUN_ROOT/image-rgba16f64.exe.stdout"
-grep -q WINEMETALGL_IMAGE_RGBA16F_OK "$RUN_ROOT/image-rgba16f32.exe.stdout"
-grep -q WINEMETALGL_TEXTURE_CUBE_OK "$RUN_ROOT/cube64.exe.stdout"
-grep -q WINEMETALGL_TEXTURE_CUBE_OK "$RUN_ROOT/cube32.exe.stdout"
-grep -q WINEMETALGL_TEXTURE_CUBE_QUERY_OK "$RUN_ROOT/cube64.exe.stdout"
-grep -q WINEMETALGL_TEXTURE_CUBE_QUERY_OK "$RUN_ROOT/cube32.exe.stdout"
-grep -q WINEMETALGL_TEXTURE_RECTANGLE_OK "$RUN_ROOT/rectangle64.exe.stdout"
-grep -q WINEMETALGL_TEXTURE_RECTANGLE_OK "$RUN_ROOT/rectangle32.exe.stdout"
-grep -q WINEMETALGL_TEXTURE_1D_OK "$RUN_ROOT/1d64.exe.stdout"
-grep -q WINEMETALGL_TEXTURE_1D_OK "$RUN_ROOT/1d32.exe.stdout"
-grep -q WINEMETALGL_INDIRECT_OK "$RUN_ROOT/indirect64.exe.stdout"
-grep -q WINEMETALGL_INDIRECT_OK "$RUN_ROOT/indirect32.exe.stdout"
-grep -q WINEMETALGL_INDIRECT_COUNT_OK "$RUN_ROOT/indirect64.exe.stdout"
-grep -q WINEMETALGL_INDIRECT_COUNT_OK "$RUN_ROOT/indirect32.exe.stdout"
-grep -q WINEMETALGL_MULTI_INDIRECT_OK "$RUN_ROOT/indirect64.exe.stdout"
-grep -q WINEMETALGL_MULTI_INDIRECT_OK "$RUN_ROOT/indirect32.exe.stdout"
-grep -q WINEMETALGL_MULTI_ELEMENTS_INDIRECT_OK "$RUN_ROOT/indirect-elements64.exe.stdout"
-grep -q WINEMETALGL_MULTI_ELEMENTS_INDIRECT_OK "$RUN_ROOT/indirect-elements32.exe.stdout"
-grep -q WINEMETALGL_FIXED_OK "$RUN_ROOT/fixed64.exe.stdout"
-grep -q WINEMETALGL_FIXED_OK "$RUN_ROOT/fixed32.exe.stdout"
-grep -q WINEMETALGL_FIXED_LIST_MATRIX_OK "$RUN_ROOT/fixed64.exe.stdout"
-grep -q WINEMETALGL_FIXED_LIST_MATRIX_OK "$RUN_ROOT/fixed32.exe.stdout"
-grep -q WINEMETALGL_FIXED_LIGHTING_OK "$RUN_ROOT/fixed64.exe.stdout"
-grep -q WINEMETALGL_FIXED_LIGHTING_OK "$RUN_ROOT/fixed32.exe.stdout"
-grep -q WINEMETALGL_FIXED_SPECULAR_OK "$RUN_ROOT/fixed64.exe.stdout"
-grep -q WINEMETALGL_FIXED_SPECULAR_OK "$RUN_ROOT/fixed32.exe.stdout"
-grep -q WINEMETALGL_FIXED_FOG_OK "$RUN_ROOT/fixed64.exe.stdout"
-grep -q WINEMETALGL_FIXED_FOG_OK "$RUN_ROOT/fixed32.exe.stdout"
-grep -q WINEMETALGL_CLIP_PLANE_OK "$RUN_ROOT/fixed64.exe.stdout"
-grep -q WINEMETALGL_CLIP_PLANE_OK "$RUN_ROOT/fixed32.exe.stdout"
-grep -q WINEMETALGL_FIXED_POINT_SIZE_OK "$RUN_ROOT/fixed-point64.exe.stdout"
-grep -q WINEMETALGL_FIXED_POINT_SIZE_OK "$RUN_ROOT/fixed-point32.exe.stdout"
-grep -q WINEMETALGL_FIXED_LINE_WIDTH_OK "$RUN_ROOT/fixed-line64.exe.stdout"
-grep -q WINEMETALGL_FIXED_LINE_WIDTH_OK "$RUN_ROOT/fixed-line32.exe.stdout"
-grep -q WINEMETALGL_BLEND_OK "$RUN_ROOT/blend64.exe.stdout"
-grep -q WINEMETALGL_BLEND_OK "$RUN_ROOT/blend32.exe.stdout"
-grep -q WINEMETALGL_PER_TARGET_BLEND_OK "$RUN_ROOT/blend64.exe.stdout"
-grep -q WINEMETALGL_PER_TARGET_BLEND_OK "$RUN_ROOT/blend32.exe.stdout"
-grep -q WINEMETALGL_BLEND_CONSTANT_OK "$RUN_ROOT/blend64.exe.stdout"
-grep -q WINEMETALGL_BLEND_CONSTANT_OK "$RUN_ROOT/blend32.exe.stdout"
-grep -q WINEMETALGL_SCISSOR_OK "$RUN_ROOT/blend64.exe.stdout"
-grep -q WINEMETALGL_SCISSOR_OK "$RUN_ROOT/blend32.exe.stdout"
-grep -q WINEMETALGL_CULL_OK "$RUN_ROOT/blend64.exe.stdout"
-grep -q WINEMETALGL_CULL_OK "$RUN_ROOT/blend32.exe.stdout"
-
-echo WINEMETALGL_WOW64_X86_64_OK
-echo WINEMETALGL_WOW64_I386_OK
-echo WINEMETALGL_OPENGL32_LOAD_OK
-echo WINEMETALGL_WGL_CONTEXT_OK
-echo WINEMETALGL_WGL_MODERN_CONTEXT_OK
-echo WINEMETALGL_WGL_SWAP_INTERVAL_OK
-echo WINEMETALGL_WGL_MULTI_CONTEXT_OK
-echo WINEMETALGL_WGL_CONTEXT_STATE_OK
-echo WINEMETALGL_WGL_CONTEXT_THREADS_OK
-echo WINEMETALGL_WGL_SHARE_LISTS_OK
-echo WINEMETALGL_WGL_SHARED_OBJECTS_OK
-echo WINEMETALGL_PROGRAM_PIPELINE_OK
-echo WINEMETALGL_PROGRAM_PIPELINE_DRAW_OK
-echo WINEMETALGL_INTERFACE_REJECT_OK
-echo WINEMETALGL_MULTI_DRAW_OK
-echo WINEMETALGL_METAL_SURFACE_OK
-echo WINEMETALGL_DEFAULT_FBO_PRESENT_OK
-echo WINEMETALGL_RESIZE_PRESENT_OK
-echo WINEMETALGL_READBACK_OK
-echo WINEMETALGL_GLSL330_OK
-echo WINEMETALGL_SHADING_LANGUAGE_VERSION_OK
-echo WINEMETALGL_STATE_QUERY_OK
-echo WINEMETALGL_ROBUSTNESS_OK
-echo WINEMETALGL_FRAG_DATA_LOCATION_OK
-echo WINEMETALGL_RASTER_STATE_OK
-echo WINEMETALGL_CLIP_CONTROL_OK
-echo WINEMETALGL_GLSL450_OK
-echo WINEMETALGL_GLSL120_OK
-echo WINEMETALGL_GLSL110_OK
-echo WINEMETALGL_GL33_RESOURCES_OK
-echo WINEMETALGL_BUFFER_MAP_RANGE_OK
-echo WINEMETALGL_BUFFER_STORAGE_OK
-echo WINEMETALGL_BUFFER_POINTER_QUERY_OK
-echo WINEMETALGL_UNIFORM_ARRAY_REFLECTION_OK
-echo WINEMETALGL_VERTEX_ATTRIB_QUERY_OK
-echo WINEMETALGL_MULTI_BIND_VERTEX_BUFFERS_OK
-echo WINEMETALGL_PBO_READBACK_OK
-echo WINEMETALGL_UNPACK_ALIGNMENT_OK
-echo WINEMETALGL_INTERNAL_FORMAT_QUERY_OK
-echo WINEMETALGL_MIPMAP_OK
-echo WINEMETALGL_GL33_TEXTURE_OK
-echo WINEMETALGL_INTEGER_TEXTURE_SAMPLE_OK
-echo WINEMETALGL_HALF_FLOAT_TEXTURE_SAMPLE_OK
-echo WINEMETALGL_FLOAT_TEXTURE_SAMPLE_OK
-echo WINEMETALGL_DEPTH_TEXTURE_SAMPLE_OK
-echo WINEMETALGL_R32UI_TEXTURE_SAMPLE_OK
-echo WINEMETALGL_TEXTURE_PACKED_OK
-echo WINEMETALGL_TEXTURE_USHORT_OK
-echo WINEMETALGL_TEXTURE_HALF_FLOAT_OK
-echo WINEMETALGL_TEXTURE_RGBA16F_OK
-echo WINEMETALGL_TEXTURE_RGBA32F_OK
-echo WINEMETALGL_TEXTURE_RGBA8UI_OK
-echo WINEMETALGL_TEXTURE_SRGB_OK
-echo WINEMETALGL_TEXTURE_RED_OK
-echo WINEMETALGL_TEXTURE_RG_OK
-echo WINEMETALGL_TEXTURE_LUMINANCE_OK
-echo WINEMETALGL_READBACK_PACKED_OK
-echo WINEMETALGL_READBACK_HALF_FLOAT_OK
-echo WINEMETALGL_PACK_ALIGNMENT_OK
-echo WINEMETALGL_TEXTURE_BGRA_OK
-echo WINEMETALGL_TEXTURE_SAMPLER_PARAMS_OK
-echo WINEMETALGL_MULTI_BIND_TEXTURES_OK
-echo WINEMETALGL_TEXTURE_SAMPLER_QUERY_OK
-echo WINEMETALGL_TEXTURE_SWIZZLE_OK
-echo WINEMETALGL_COPY_IMAGE_OK
-echo WINEMETALGL_COPY_TEX_OK
-echo WINEMETALGL_TEX_STORAGE_OK
-echo WINEMETALGL_DSA_TEXTURE_OK
-echo WINEMETALGL_TEXTURE_VIEW_OK
-echo WINEMETALGL_SAMPLER_ADVANCED_OK
-echo WINEMETALGL_FBO_OK
-echo WINEMETALGL_FBO_ATTACHMENT_QUERY_OK
-echo WINEMETALGL_FBO_DEPTH_TEXTURE_OK
-echo WINEMETALGL_FBO_DIMENSION_REJECT_OK
-echo WINEMETALGL_FBO_DEPTH_READBACK_OK
-echo WINEMETALGL_FBO_DEPTH_TEXTURE_READBACK_OK
-echo WINEMETALGL_FBO_STENCIL_READBACK_OK
-echo WINEMETALGL_FBO_STENCIL_TEXTURE_READBACK_OK
-echo WINEMETALGL_FBO_ARRAY_LAYER_OK
-echo WINEMETALGL_BLIT_OK
-echo WINEMETALGL_INVALIDATE_FBO_OK
-echo WINEMETALGL_RENDERBUFFER_OK
-echo WINEMETALGL_MULTISAMPLE_OK
-echo WINEMETALGL_MULTISAMPLE_STORAGE_OK
-echo WINEMETALGL_SYNC_OK
-echo WINEMETALGL_UBO_OK
-echo WINEMETALGL_UNIFORM_MATRIX_ARRAY_OK
-echo WINEMETALGL_UNIFORM_MATRIX_DRAW_OK
-echo WINEMETALGL_BUFFER_SIZE_OK
-echo WINEMETALGL_UBO_RANGE_OK
-echo WINEMETALGL_MULTI_BIND_BUFFERS_OK
-echo WINEMETALGL_UBO_REFLECTION_OK
-echo WINEMETALGL_QUERY_OK
-echo WINEMETALGL_QUERY_BUFFER_OK
-echo WINEMETALGL_TRANSFORM_FIXED_OK
-echo WINEMETALGL_TRANSFORM_SHADER_OK
-echo WINEMETALGL_TRANSFORM_SHADER_ELEMENTS_OK
-echo WINEMETALGL_TRANSFORM_SHADER_RANGE_OK
-echo WINEMETALGL_TRANSFORM_SHADER_VARYING_OK
-echo WINEMETALGL_TRANSFORM_SHADER_SEPARATE_OK
-echo WINEMETALGL_SHADER_BINARY_OK
-echo WINEMETALGL_SHADER_SPECIALIZE_OK
-echo WINEMETALGL_PROGRAM_BINARY_OK
-echo WINEMETALGL_DEBUG_OUTPUT_OK
-echo WINEMETALGL_TESSELLATION_COMPILE_OK
-echo WINEMETALGL_TESSELLATION_DRAW_OK
-echo WINEMETALGL_TESSELLATION_FACTORS_OK
-echo WINEMETALGL_TESSELLATION_DEFAULT_FACTORS_OK
-echo WINEMETALGL_TESSELLATION_QUAD_OK
-echo WINEMETALGL_GEOMETRY_PASSTHROUGH_OK
-echo WINEMETALGL_GEOMETRY_POINT_PASSTHROUGH_OK
-echo WINEMETALGL_GEOMETRY_VARYING_PASSTHROUGH_OK
-echo WINEMETALGL_TEXTURE3D_OK
-echo WINEMETALGL_TEXTURE_ARRAY_OK
-echo WINEMETALGL_FIXED_TEXTURE_OK
-echo WINEMETALGL_FIXED_TEXTURE_REPLACE_OK
-echo WINEMETALGL_FIXED_TEXTURE_ADD_OK
-echo WINEMETALGL_FIXED_TEXTURE_DECAL_OK
-echo WINEMETALGL_FIXED_TEXTURE_COMBINE_OK
-echo WINEMETALGL_FIXED_TEXTURE_SUBTRACT_OK
-echo WINEMETALGL_FIXED_MULTITEXTURE_OK
-echo WINEMETALGL_FIXED_TEXGEN_OK
-echo WINEMETALGL_CLEAR_OK
-echo WINEMETALGL_CLEAR_BUFFER_OK
-echo WINEMETALGL_INSTANCED_OK
-echo WINEMETALGL_COMPUTE_OK
-echo WINEMETALGL_SSBO_REFLECTION_OK
-echo WINEMETALGL_RESOURCE_REFLECTION_OK
-echo WINEMETALGL_COMPUTE_RANGE_OK
-echo WINEMETALGL_COMPUTE_INDIRECT_OK
-echo WINEMETALGL_IMAGE_OK
-echo WINEMETALGL_MULTI_BIND_IMAGES_OK
-echo WINEMETALGL_IMAGE_R32UI_OK
-echo WINEMETALGL_IMAGE_R32F_OK
-echo WINEMETALGL_IMAGE_RGBA8UI_OK
-echo WINEMETALGL_IMAGE_RGBA16F_OK
-echo WINEMETALGL_TEXTURE_CUBE_OK
-echo WINEMETALGL_TEXTURE_CUBE_QUERY_OK
-echo WINEMETALGL_TEXTURE_RECTANGLE_OK
-echo WINEMETALGL_TEXTURE_1D_OK
-echo WINEMETALGL_INDIRECT_OK
-echo WINEMETALGL_INDIRECT_COUNT_OK
-echo WINEMETALGL_MULTI_INDIRECT_OK
-echo WINEMETALGL_MULTI_ELEMENTS_INDIRECT_OK
-echo WINEMETALGL_FIXED_OK
-echo WINEMETALGL_FIXED_LIST_MATRIX_OK
-echo WINEMETALGL_FIXED_LIGHTING_OK
-echo WINEMETALGL_FIXED_SPECULAR_OK
-echo WINEMETALGL_FIXED_FOG_OK
-echo WINEMETALGL_CLIP_PLANE_OK
-echo WINEMETALGL_FIXED_POINT_SIZE_OK
-echo WINEMETALGL_FIXED_LINE_WIDTH_OK
-echo WINEMETALGL_BLEND_OK
-echo WINEMETALGL_PER_TARGET_BLEND_OK
-echo WINEMETALGL_BLEND_CONSTANT_OK
-echo WINEMETALGL_SCISSOR_OK
-echo WINEMETALGL_CULL_OK
+if test "${#summary[@]}" -eq 0; then
+    echo 'no fixtures matched' >&2
+    exit 1
+fi
+printf '%s\n' "${summary[@]}"
+if test "$failed" = 0; then
+    echo WINEMETALGL_WOW64_FIXTURES_OK
+fi
+exit "$failed"

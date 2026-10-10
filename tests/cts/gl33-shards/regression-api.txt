@@ -1,3 +1,0 @@
-KHR-GL33.CommonBugs.CommonBug_GetProgramivActiveUniformBlockMaxNameLength
-KHR-GL33.glsl_noperspective.functionaltest
-KHR-GL33.primitive_restart.restart_mode

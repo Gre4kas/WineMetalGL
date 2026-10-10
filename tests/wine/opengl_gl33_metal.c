@@ -58,6 +58,12 @@ static int compile_one(GLuint shader, const char *source,
 
 int main(void)
 {
+/* GL_SHADING_LANGUAGE_VERSION of the context the fixture targets. */
+#ifdef WINEMETALGL_GLSL450
+#define EXPECTED_GLSL_VERSION "4.50"
+#else
+#define EXPECTED_GLSL_VERSION "3.30"
+#endif
 #ifdef WINEMETALGL_GLSL450
     static const char version_name[] = "GLSL450";
     static const char success_marker[] = "OPENGL_GL450_METAL_DRAW_READBACK_OK";
@@ -115,7 +121,7 @@ int main(void)
         printf("FAIL opengl32 load error=%lu\n", GetLastError());
         return 10;
     }
-    window = CreateWindowA("STATIC", "WineMetalGL GL330 Metal", WS_OVERLAPPEDWINDOW,
+    window = CreateWindowA("STATIC", "WineMetalGL GL330 Metal", WS_POPUP,
                            0, 0, 64, 64, NULL, NULL, NULL, NULL);
     if (!window) return 11;
     dc = GetDC(window);
@@ -128,7 +134,7 @@ int main(void)
     if (!format || !SetPixelFormat(dc, format, &pfd)) return 12;
     context = wglCreateContext(dc);
     if (!context || !wglMakeCurrent(dc, context)) return 13;
-    printf("OPENGL_EXPERIMENTAL_VERSION_%s\\n", (const char *)glGetString(GL_VERSION)); if(!glGetString(0x8B8C)||strstr((const char*)glGetString(0x8B8C),"4.50")==NULL)return 14;printf("WINEMETALGL_SHADING_LANGUAGE_VERSION_OK\\n");
+    printf("OPENGL_EXPERIMENTAL_VERSION_%s\\n", (const char *)glGetString(GL_VERSION)); if(!glGetString(0x8B8C)||strstr((const char*)glGetString(0x8B8C),EXPECTED_GLSL_VERSION)==NULL)return 14;printf("WINEMETALGL_SHADING_LANGUAGE_VERSION_OK\\n");
 
 #define LOAD(type, variable, symbol) do { \
     variable = (type)get_gl_proc(symbol); \

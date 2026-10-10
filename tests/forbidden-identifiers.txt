@@ -1,0 +1,32 @@
+# Identifiers that only occur in Khronos CTS/dEQP test shaders or harness code.
+# Driver sources must never search for or special-case them: an implementation
+# that recognises a test and changes its behaviour is not conformant.
+# scripts/check-forbidden-identifiers.sh fails if any of these appear in src/
+# or include/. One extended regular expression per line; '#' starts a comment.
+dEQP
+glcts
+v_vtxResult
+dEQP_FragColor
+a_coords
+v_coords
+a_coord\b
+uf_(zero|one|two|three|four|half|fourth|sixth|minus)
+ui_(zero|one|two|three|four|five|eight|ten)
+compare_(float|vec|mat|int|ivec|uint|uvec|bool|bvec)
+result_[0-9]
+max_value
+lodbase
+biasshader
+\brrra\b
+texWidth
+texOffset
+ecPosition
+lightPosition
+structData
+uTexture0
+v_color\b
+u_color\b
+a_position
+"struct S \{
+uniform S\b
+fiveVertexGeometry

@@ -1,0 +1,18 @@
+{
+  "comment": "Every NotSupported case in a committed KHR-GL33 baseline must match exactly one entry (fnmatch pattern). scripts/docs/generate.py fails otherwise. 'kind' is 'extension' (a group for an extension WineMetalGL does not advertise), 'version' (the case needs a newer GL version than the context) or 'test-design' (the CTS reports NotSupported for this combination on every implementation; the reason cites the test code).",
+  "entries": [
+    {"pattern": "KHR-GL33.cull_distance.*", "kind": "extension", "reason": "GL_ARB_cull_distance is not advertised."},
+    {"pattern": "KHR-GL33.ext_texture_shadow_lod.*", "kind": "extension", "reason": "GL_EXT_texture_shadow_lod is not advertised."},
+    {"pattern": "KHR-GL33.transform_feedback_overflow_query_ARB.*", "kind": "extension", "reason": "GL_ARB_transform_feedback_overflow_query is not advertised."},
+    {"pattern": "KHR-GL33.pipeline_statistics_query_tests_ARB.*", "kind": "extension", "reason": "GL_ARB_pipeline_statistics_query is not advertised."},
+    {"pattern": "KHR-GL33.texture_filter_minmax_tests.*", "kind": "extension", "reason": "GL_ARB_texture_filter_minmax is not advertised."},
+    {"pattern": "KHR-GL33.transform_feedback2.*", "kind": "extension", "reason": "GL_ARB_transform_feedback2 is not advertised."},
+    {"pattern": "KHR-GL33.transform_feedback3.*", "kind": "extension", "reason": "GL_ARB_transform_feedback3 is not advertised."},
+    {"pattern": "KHR-GL33.gpu_shader5_gl.*", "kind": "extension", "reason": "GL_ARB_gpu_shader5 is not advertised."},
+    {"pattern": "KHR-GL33.shaders.shader_integer_mix.*", "kind": "extension", "reason": "GL_EXT_shader_integer_mix is not advertised."},
+    {"pattern": "KHR-GL33.pixelstoragemodes.compressedteximage*.rgba_astc_*", "kind": "extension", "reason": "ASTC formats need GL_KHR_texture_compression_astc_ldr, which is not advertised."},
+    {"pattern": "KHR-GL33.packed_depth_stencil.stencil_texturing.*", "kind": "version", "reason": "Stencil texturing needs GL 4.3 (GL_ARB_stencil_texturing is not advertised)."},
+    {"pattern": "KHR-GL33.CommonBugs.CommonBug_PerVertexValidation", "kind": "version", "reason": "The case runs only on OpenGL 4.1 or newer contexts."},
+    {"pattern": "KHR-GL33.texture_swizzle.*", "kind": "test-design", "reason": "The case pairs a texture target with an access routine or format that the test marks invalid (gl3cTextureSwizzleTests.cpp isTargetSuppByAccess/isTargetSuppByFormat, or a format whose m_minimum_gl_context is above 3.3), so it reports NotSupported on every implementation."}
+  ]
+}

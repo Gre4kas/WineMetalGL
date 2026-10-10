@@ -1,0 +1,123 @@
+{
+ "comment": "WineMetalGL game corpus. Binaries, traces and reference frames live under --corpus-root (see README.md); only this manifest is tracked. 'reference' reuses another entry's reference frames when that entry must render the same image.",
+ "entries": [
+  {
+   "name": "scene33-core",
+   "tier": "A",
+   "kind": "demo",
+   "binary": "demos/scene33.exe",
+   "args": [
+    "--frames",
+    "60",
+    "--profile",
+    "core"
+   ],
+   "tolerance": 0.005,
+   "notes": "GL 3.3 core forward-compatible: UBO camera, instancing, mipmaps, RGBA16F + depth FBO, post pass, point sprites, orphaned stream VBO."
+  },
+  {
+   "name": "scene33-core-30",
+   "tier": "A",
+   "kind": "demo",
+   "binary": "demos/scene33.exe",
+   "args": [
+    "--frames",
+    "30",
+    "--profile",
+    "core"
+   ],
+   "tolerance": 0.005,
+   "notes": "30-frame variant; its last frame is the reference for scene33-trace."
+  },
+  {
+   "name": "scene33-core-nofwd",
+   "tier": "A",
+   "kind": "demo",
+   "binary": "demos/scene33.exe",
+   "args": [
+    "--frames",
+    "60",
+    "--profile",
+    "core",
+    "--no-forward"
+   ],
+   "reference": "scene33-core",
+   "tolerance": 0.005,
+   "notes": "Same scene from a core context that is not forward-compatible (stock winemac refuses this). Apple's OpenGL has no such context, so it has no Apple timing.",
+   "apple": false
+  },
+  {
+   "name": "scene33-compat",
+   "tier": "B",
+   "kind": "demo",
+   "binary": "demos/scene33.exe",
+   "args": [
+    "--frames",
+    "60",
+    "--profile",
+    "compat"
+   ],
+   "reference": "scene33-core",
+   "tolerance": 0.005,
+   "notes": "Same scene from a 3.3 compatibility-profile context, which Apple's OpenGL cannot provide."
+  },
+  {
+   "name": "scene33-trace",
+   "tier": "A",
+   "kind": "trace",
+   "trace": "traces/scene33.trace",
+   "retrace": "tools/apitrace/bin/glretrace.exe",
+   "snapshot": "frame",
+   "frames": [
+    29
+   ],
+   "tolerance": 0.005,
+   "notes": "apitrace capture of scene33-core (30 frames) replayed with glretrace; checks the trace path end to end.",
+   "reference": "scene33-core-30"
+  },
+  {
+   "name": "legacy-gl21",
+   "tier": "C",
+   "kind": "demo",
+   "binary": "demos/legacy.exe",
+   "args": [
+    "--frames",
+    "30",
+    "--profile",
+    "legacy"
+   ],
+   "tolerance": 0.005,
+   "notes": "GL 1.x/2.x fixed-function frame from wglCreateContext: two lights with specular materials, display lists, immediate mode, client arrays with glDrawElements(GL_QUADS), multitexture, sphere-map texgen, linear fog, alpha test, clip plane, point sprites, glBitmap text, glDrawPixels, glPushAttrib. Apple's OpenGL runs it and records the reference."
+  },
+  {
+   "name": "legacy-gl21-i386",
+   "tier": "C",
+   "kind": "demo",
+   "binary": "demos/legacy32.exe",
+   "args": [
+    "--frames",
+    "30",
+    "--profile",
+    "legacy"
+   ],
+   "reference": "legacy-gl21",
+   "tolerance": 0.005,
+   "notes": "The same frame from a 32-bit (WoW64) process."
+  },
+  {
+   "name": "legacy-compat33",
+   "tier": "B",
+   "kind": "demo",
+   "binary": "demos/legacy.exe",
+   "args": [
+    "--frames",
+    "30",
+    "--profile",
+    "compat33"
+   ],
+   "reference": "legacy-gl21",
+   "tolerance": 0.005,
+   "notes": "The same fixed-function frame from a 3.3 compatibility-profile context, which Apple's OpenGL cannot provide."
+  }
+ ]
+}

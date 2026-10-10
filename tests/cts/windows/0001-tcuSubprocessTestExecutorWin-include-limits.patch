@@ -1,0 +1,12 @@
+diff --git a/framework/common/tcuSubprocessTestExecutorWin.cpp b/framework/common/tcuSubprocessTestExecutorWin.cpp
+index 26099f0..f02f225 100644
+--- a/framework/common/tcuSubprocessTestExecutorWin.cpp
++++ b/framework/common/tcuSubprocessTestExecutorWin.cpp
+@@ -23,6 +23,7 @@
+ 
+ #include "tcuSubprocessTestExecutor.hpp"
+ #include <windows.h>
++#include <limits>
+ 
+ namespace tcu
+ {

@@ -35,46 +35,50 @@ jobs:
       - name: Build the complete project
         run: cmake --build --preset release --parallel 4
 
-      - name: Run native translation probe
-        run: ./tests/native/probe-metalsharp-opengl.sh
+      - name: Run core host tests
+        run: ./build/release/wmgl_host_tests
+
+      - name: Verify the core exports only the driver ABI and does not use OpenGL.framework
+        run: |
+          if otool -L build/release/libwinemetalgl.dylib | grep -q OpenGL.framework; then exit 1; fi
+          test -z "$(nm -gU build/release/libwinemetalgl.dylib | awk '{print $3}' | grep -v '^_wmgl_')"
 
       - name: Verify source and artifact gates
         run: ./scripts/verify-source.sh
 
+      - name: Forbid conformance-test identifiers in driver sources
+        run: ./scripts/check-forbidden-identifiers.sh
+
       - name: Verify x86_64 macOS artifact
         run: |
-          test "$(/usr/bin/lipo -archs build/release/metalsharp-opengl.dylib)" = x86_64
-          minos="$(otool -l build/release/metalsharp-opengl.dylib | awk '/LC_BUILD_VERSION/{found=1} found && /minos/{print $2; exit}')"
+          test "$(/usr/bin/lipo -archs build/release/libwinemetalgl.dylib)" = x86_64
+          minos="$(otool -l build/release/libwinemetalgl.dylib | awk '/LC_BUILD_VERSION/{found=1} found && /minos/{print $2; exit}')"
           test "$minos" = 15.0
 
-      - name: Upload x86_64 sidecar
+      - name: Upload x86_64 core
         uses: actions/upload-artifact@v4
         with:
           name: winemetalgl-x86_64-macos15
-          path: build/release/metalsharp-opengl.dylib
+          path: build/release/libwinemetalgl.dylib
           if-no-files-found: error
 
-  language-syntax:
-    name: Clang C/C++/Objective-C syntax checks
+  arm64-host:
+    name: arm64 host build (build only)
     runs-on: macos-15
+    env:
+      CMAKE_BUILD_PARALLEL_LEVEL: 4
     steps:
       - name: Check out source
         uses: actions/checkout@v4
 
-      - name: Check C source
-        run: clang -arch x86_64 -fsyntax-only tests/native/glsl_translation_probe.c
+      - name: Configure for the build machine
+        run: cmake -S . -B build/host -G Ninja -DCMAKE_BUILD_TYPE=Release -DWMGL_HOST_ONLY=ON
 
-      - name: Check C++ source
-        run: clang++ -std=c++20 -arch x86_64 -Iinclude -fsyntax-only src/opengl/GLShaderTracker.cpp
+      - name: Build the core and tests
+        run: cmake --build build/host --parallel 4
 
-      - name: Check Objective-C source
-        run: |
-          cat > "$RUNNER_TEMP/objc-syntax-probe.m" <<'EOF'
-          #import <Foundation/Foundation.h>
-          @interface WineMetalGLCIProbe : NSObject
-          @end
-          EOF
-          clang -arch x86_64 -x objective-c -fsyntax-only "$RUNNER_TEMP/objc-syntax-probe.m"
+      - name: Run core host tests
+        run: ./build/host/wmgl_host_tests
 
-      - name: Check Objective-C++ source
-        run: clang++ -std=c++20 -arch x86_64 -fobjc-arc -Iinclude -fsyntax-only src/opengl/OpenGLBridge.mm
+      - name: Check the architecture
+        run: test "$(/usr/bin/lipo -archs build/host/libwinemetalgl.dylib)" = arm64

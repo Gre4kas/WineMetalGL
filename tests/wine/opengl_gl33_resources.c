@@ -54,6 +54,11 @@ static void *get_proc(const char *name)
     variable = (type)get_proc(symbol); \
     if (!variable) { printf("FAIL missing %s\n", symbol); return 14; } \
 } while (0)
+#ifdef WINEMETALGL_GL4
+#define LOAD4(type, variable, symbol) LOAD(type, variable, symbol)
+#else
+#define LOAD4(type, variable, symbol) variable = (type)get_proc(symbol) /* GL 4.x: optional on a 3.3 context */
+#endif
 
 int main(void)
 {
@@ -98,7 +103,7 @@ int main(void)
     PFNGLDRAWELEMENTSPROC draw_elements; PFNGLDRAWELEMENTSBASEVERTEXPROC draw_elements_base; PFNGLBINDVERTEXBUFFERPROC bind_vertex_buffer; PFNGLBINDVERTEXBUFFERSPROC bind_vertex_buffers; PFNGLVERTEXATTRIBBINDINGPROC attrib_binding; PFNGLVERTEXATTRIBFORMATPROC attrib_format;
 
     setvbuf(stdout, NULL, _IONBF, 0);
-    window = CreateWindowA("STATIC", "WineMetalGL GL33 resources", WS_OVERLAPPEDWINDOW,
+    window = CreateWindowA("STATIC", "WineMetalGL GL33 resources", WS_POPUP,
                            0, 0, 64, 64, NULL, NULL, NULL, NULL);
     if (!window) return 11;
     dc = GetDC(window);
@@ -125,11 +130,11 @@ int main(void)
     LOAD(PFNGLUNIFORM4FPROC, uniform4f, "glUniform4f"); LOAD(PFNGLGETACTIVEUNIFORMPROC,get_active_uniform,"glGetActiveUniform");
     LOAD(PFNGLGENBUFFERSPROC, gen_buffers, "glGenBuffers");
     LOAD(PFNGLBINDBUFFERPROC, bind_buffer, "glBindBuffer");
-    LOAD(PFNGLBUFFERDATAPROC, buffer_data, "glBufferData"); LOAD(PFNGLBUFFERSTORAGEPROC, buffer_storage, "glBufferStorage"); LOAD(PFNGLGETBUFFERPARAMETERIVPROC, get_buffer_parameter, "glGetBufferParameteriv"); LOAD(PFNGLMAPBUFFERRANGEPROC,map_buffer_range,"glMapBufferRange"); LOAD(PFNGLFLUSHMAPPEDBUFFERRANGEPROC,flush_mapped_buffer_range,"glFlushMappedBufferRange"); LOAD(PFNGLGETBUFFERPOINTERVPROC,get_buffer_pointer,"glGetBufferPointerv"); LOAD(PFNGLUNMAPBUFFERPROC,unmap_buffer,"glUnmapBuffer"); LOAD(PFNGLGETBUFFERSUBDATAPROC, get_buffer_sub_data, "glGetBufferSubData");
+    LOAD(PFNGLBUFFERDATAPROC, buffer_data, "glBufferData"); LOAD4(PFNGLBUFFERSTORAGEPROC, buffer_storage, "glBufferStorage"); LOAD(PFNGLGETBUFFERPARAMETERIVPROC, get_buffer_parameter, "glGetBufferParameteriv"); LOAD(PFNGLMAPBUFFERRANGEPROC,map_buffer_range,"glMapBufferRange"); LOAD(PFNGLFLUSHMAPPEDBUFFERRANGEPROC,flush_mapped_buffer_range,"glFlushMappedBufferRange"); LOAD(PFNGLGETBUFFERPOINTERVPROC,get_buffer_pointer,"glGetBufferPointerv"); LOAD(PFNGLUNMAPBUFFERPROC,unmap_buffer,"glUnmapBuffer"); LOAD(PFNGLGETBUFFERSUBDATAPROC, get_buffer_sub_data, "glGetBufferSubData");
     LOAD(PFNGLDELETEBUFFERSPROC, delete_buffers, "glDeleteBuffers");
     LOAD(PFNGLENABLEVERTEXATTRIBARRAYPROC, enable_attrib, "glEnableVertexAttribArray");
     LOAD(PFNGLVERTEXATTRIBPOINTERPROC, attrib_pointer, "glVertexAttribPointer"); LOAD(PFNGLGETVERTEXATTRIBIVPROC,get_attrib_iv,"glGetVertexAttribiv"); LOAD(PFNGLGETVERTEXATTRIBPOINTERVPROC,get_attrib_pointer,"glGetVertexAttribPointerv");
-    LOAD(PFNGLDRAWELEMENTSPROC, draw_elements, "glDrawElements"); LOAD(PFNGLDRAWELEMENTSBASEVERTEXPROC, draw_elements_base, "glDrawElementsBaseVertex"); LOAD(PFNGLBINDVERTEXBUFFERPROC, bind_vertex_buffer, "glBindVertexBuffer"); LOAD(PFNGLBINDVERTEXBUFFERSPROC, bind_vertex_buffers, "glBindVertexBuffers"); LOAD(PFNGLVERTEXATTRIBBINDINGPROC, attrib_binding, "glVertexAttribBinding"); LOAD(PFNGLVERTEXATTRIBFORMATPROC, attrib_format, "glVertexAttribFormat");
+    LOAD(PFNGLDRAWELEMENTSPROC, draw_elements, "glDrawElements"); LOAD(PFNGLDRAWELEMENTSBASEVERTEXPROC, draw_elements_base, "glDrawElementsBaseVertex"); LOAD4(PFNGLBINDVERTEXBUFFERPROC, bind_vertex_buffer, "glBindVertexBuffer"); LOAD4(PFNGLBINDVERTEXBUFFERSPROC, bind_vertex_buffers, "glBindVertexBuffers"); LOAD4(PFNGLVERTEXATTRIBBINDINGPROC, attrib_binding, "glVertexAttribBinding"); LOAD4(PFNGLVERTEXATTRIBFORMATPROC, attrib_format, "glVertexAttribFormat");
 
     vertex_shader = create_shader(GL_VERTEX_SHADER); fragment_shader = create_shader(GL_FRAGMENT_SHADER);
     { const char *source = vertex_source; shader_source(vertex_shader, 1, &source, NULL); compile_shader(vertex_shader); }
@@ -143,13 +148,13 @@ int main(void)
     if (!linked) return 17;
     use_program(program);
     location = get_uniform_location(program, "tint");
-    GLint array_size=0;GLenum array_type=0;GLsizei array_length=0;char array_name[32]={0};get_active_uniform(program,0,sizeof(array_name),&array_length,&array_size,&array_type,array_name);if(array_size!=2||strcmp(array_name,"tint")!=0)return 21;printf("WINEMETALGL_UNIFORM_ARRAY_REFLECTION_OK\n");
+    GLint array_size=0;GLenum array_type=0;GLsizei array_length=0;char array_name[32]={0};get_active_uniform(program,0,sizeof(array_name),&array_length,&array_size,&array_type,array_name);if(array_size!=2||strcmp(array_name,"tint[0]")!=0)return 21;/* arrays report name[0] (GL 3.3 section 2.11.4) */printf("WINEMETALGL_UNIFORM_ARRAY_REFLECTION_OK\n");
     if (location < 0) return 18;
     uniform4f(location, 0.2f, 0.4f, 0.6f, 1.0f);
 
-    gen_buffers(1, &vbo); bind_buffer(GL_ARRAY_BUFFER, vbo); buffer_data(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW); if(!map_buffer_range(GL_ARRAY_BUFFER,0,sizeof(vertices),0x0002)||!unmap_buffer(GL_ARRAY_BUFFER))return 23;printf("WINEMETALGL_BUFFER_MAP_RANGE_OK\n"); buffer_storage(GL_ARRAY_BUFFER,sizeof(vertices),vertices,0x0040); GLint immutable=0,storage_flags=0; get_buffer_parameter(GL_ARRAY_BUFFER,0x821F,&immutable); get_buffer_parameter(GL_ARRAY_BUFFER,0x8220,&storage_flags); if(immutable!=1||storage_flags!=0x0040)return 24; float *persistent=(float*)map_buffer_range(GL_ARRAY_BUFFER,0,sizeof(vertices),0x00c2); if(!persistent)return 24; void *queried_pointer=NULL; get_buffer_pointer(GL_ARRAY_BUFFER,0x88BD,&queried_pointer); if(queried_pointer!=persistent)return 25; printf("WINEMETALGL_BUFFER_POINTER_QUERY_OK\\n"); persistent[0]=0.0f; flush_mapped_buffer_range(GL_ARRAY_BUFFER,0,sizeof(float)); if(!unmap_buffer(GL_ARRAY_BUFFER))return 25; float storage_value=0.0f; get_buffer_sub_data(GL_ARRAY_BUFFER,0,sizeof(storage_value),&storage_value); if(storage_value!=0.0f)return 26; printf("WINEMETALGL_BUFFER_STORAGE_OK\n");
+    gen_buffers(1, &vbo); bind_buffer(GL_ARRAY_BUFFER, vbo); buffer_data(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW); if(!map_buffer_range(GL_ARRAY_BUFFER,0,sizeof(vertices),0x0002)||!unmap_buffer(GL_ARRAY_BUFFER))return 23;printf("WINEMETALGL_BUFFER_MAP_RANGE_OK\n"); if(!buffer_storage){ /* Wine removes GL_ARB_buffer_storage for 32-bit applications on wow64 (no persistent mappings there) */ const char*ext=(const char*)glGetString(GL_EXTENSIONS); if(sizeof(void*)==8||(ext&&strstr(ext,"GL_ARB_buffer_storage")))return 27; void*mapped=map_buffer_range(GL_ARRAY_BUFFER,0,sizeof(vertices),0x0002); void*queried=NULL; get_buffer_pointer(GL_ARRAY_BUFFER,0x88BD,&queried); if(!mapped||queried!=mapped||!unmap_buffer(GL_ARRAY_BUFFER))return 25; printf("WINEMETALGL_BUFFER_POINTER_QUERY_OK\n"); printf("WINEMETALGL_BUFFER_STORAGE_OK (not advertised to 32-bit applications by Wine)\n"); } else { buffer_storage(GL_ARRAY_BUFFER,sizeof(vertices),vertices,0x00c2/* MAP_WRITE|MAP_PERSISTENT|MAP_COHERENT: persistent maps need read or write */); GLint immutable=0,storage_flags=0; get_buffer_parameter(GL_ARRAY_BUFFER,0x821F,&immutable); get_buffer_parameter(GL_ARRAY_BUFFER,0x8220,&storage_flags); if(immutable!=1||storage_flags!=0x00c2)return 24; float *persistent=(float*)map_buffer_range(GL_ARRAY_BUFFER,0,sizeof(vertices),0x00c2); if(!persistent)return 24; void *queried_pointer=NULL; get_buffer_pointer(GL_ARRAY_BUFFER,0x88BD,&queried_pointer); if(queried_pointer!=persistent)return 25; printf("WINEMETALGL_BUFFER_POINTER_QUERY_OK\\n"); persistent[0]=0.0f; flush_mapped_buffer_range(GL_ARRAY_BUFFER,0,sizeof(float)); if(!unmap_buffer(GL_ARRAY_BUFFER))return 25; float storage_value=0.0f; get_buffer_sub_data(GL_ARRAY_BUFFER,0,sizeof(storage_value),&storage_value); if(storage_value!=0.0f)return 26; printf("WINEMETALGL_BUFFER_STORAGE_OK\n"); }
     gen_buffers(1, &ibo); bind_buffer(GL_ELEMENT_ARRAY_BUFFER, ibo); buffer_data(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
-    enable_attrib(0); attrib_pointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), (const void *)0); bind_vertex_buffer(0,vbo,0,2*sizeof(float)); GLuint multi_vbos[1]={vbo}; intptr_t multi_offsets[1]={0}; GLsizei multi_strides[1]={2*sizeof(float)}; bind_vertex_buffers(0,1,multi_vbos,multi_offsets,multi_strides); printf("WINEMETALGL_MULTI_BIND_VERTEX_BUFFERS_OK\\n"); attrib_binding(0,0); attrib_format(0,2,GL_FLOAT,GL_FALSE,0); GLint attrib_enabled=0,attrib_stride=0;void* attrib_offset=(void*)-1;get_attrib_iv(0,0x8622,&attrib_enabled);get_attrib_iv(0,0x8624,&attrib_stride);get_attrib_pointer(0,0x8645,&attrib_offset);if(!attrib_enabled||attrib_stride!=2*(int)sizeof(float)||attrib_offset!=(void*)0)return 22;printf("WINEMETALGL_VERTEX_ATTRIB_QUERY_OK\\n");
+    enable_attrib(0); attrib_pointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), (const void *)0); if(bind_vertex_buffer&&bind_vertex_buffers&&attrib_binding&&attrib_format){ bind_vertex_buffer(0,vbo,0,2*sizeof(float)); GLuint multi_vbos[1]={vbo}; intptr_t multi_offsets[1]={0}; GLsizei multi_strides[1]={2*sizeof(float)}; bind_vertex_buffers(0,1,multi_vbos,multi_offsets,multi_strides); printf("WINEMETALGL_MULTI_BIND_VERTEX_BUFFERS_OK\n"); attrib_binding(0,0); attrib_format(0,2,GL_FLOAT,GL_FALSE,0); } else printf("SKIP vertex buffer bindings (GL_ARB_vertex_attrib_binding, GL_ARB_multi_bind)\n"); GLint attrib_enabled=0,attrib_stride=0;void* attrib_offset=(void*)-1;get_attrib_iv(0,0x8622,&attrib_enabled);get_attrib_iv(0,0x8624,&attrib_stride);get_attrib_pointer(0,0x8645,&attrib_offset);if(!attrib_enabled||attrib_stride!=2*(int)sizeof(float)||attrib_offset!=(void*)0)return 22;printf("WINEMETALGL_VERTEX_ATTRIB_QUERY_OK\\n");
     glViewport(0, 0, 64, 64); draw_elements_base(GL_TRIANGLES, 3, GL_UNSIGNED_SHORT, (const void *)0, 1);
     glReadPixels(32, 32, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, pixel);
     printf("GL33 resources readback rgba=%u,%u,%u,%u error=0x%x\n", pixel[0], pixel[1], pixel[2], pixel[3], (unsigned)glGetError());

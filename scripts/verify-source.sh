@@ -10,20 +10,31 @@ from pathlib import Path
 import subprocess
 manifest = set(Path('MANIFEST.txt').read_text().splitlines())
 tracked = subprocess.check_output(['git', 'ls-files'], text=True).splitlines()
-missing = [p for p in tracked if p not in manifest and p not in ('.gitignore', 'MANIFEST.txt') and not (p.startswith('tests/cts/gl33-shards/failures-') or p == 'tests/cts/gl33-shards/unrun-full-tail.txt')]
+missing = [p for p in tracked if p not in manifest and p not in ('.gitignore', 'MANIFEST.txt')]
 if missing:
     raise SystemExit('manifest missing: ' + ', '.join(missing))
 PY
 python3 -m json.tool docs/api-coverage.json >/dev/null
+python3 -I scripts/docs/generate.py --check --check-provenance
 shasum -a 256 -c SHA256SUMS >/dev/null
-if grep -i -n 'VKMT' scripts/build.sh scripts/probe-native.sh scripts/stage-host-libs.sh scripts/stage-release.sh scripts/stage-wine.sh README.md CMakeLists.txt || grep -R -i -n 'VKMT' tests; then
+if grep -i -n 'VKMT' scripts/build.sh scripts/stage-host-libs.sh scripts/stage-release.sh scripts/stage-wine.sh README.md CMakeLists.txt || grep -R -i -n 'VKMT' tests; then
     printf '%s\n' 'standalone source contains VKMT-specific naming' >&2
     exit 1
 fi
 
-if test -f build/release/metalsharp-opengl.dylib; then
-    test "$(lipo -archs build/release/metalsharp-opengl.dylib)" = x86_64
-    test "$(otool -l build/release/metalsharp-opengl.dylib | awk '/LC_BUILD_VERSION/{found=1} found && /minos/{print $2; exit}')" = 15.0
+# No source may use Apple's OpenGL (the patches only carry Wine's own context lines).
+if git grep -n -I -e 'OpenGL.framework' -e 'OpenGL/OpenGL.h' -e 'OpenGL/gl.h' -e 'CGLContextObj' -- src include tools tests CMakeLists.txt; then
+    printf '%s\n' 'source uses Apple OpenGL' >&2
+    exit 1
+fi
+
+if test -f build/release/libwinemetalgl.dylib; then
+    test "$(lipo -archs build/release/libwinemetalgl.dylib)" = x86_64
+    test "$(otool -l build/release/libwinemetalgl.dylib | awk '/LC_BUILD_VERSION/{found=1} found && /minos/{print $2; exit}')" = 15.0
+    if otool -L build/release/libwinemetalgl.dylib | grep -q OpenGL.framework; then
+        printf '%s\n' 'libwinemetalgl.dylib links OpenGL.framework' >&2
+        exit 1
+    fi
 fi
 
 wine_source=${WINEMETALGL_WINE_SOURCE:-}
@@ -37,8 +48,9 @@ if test -n "$wine_source"; then
     if test -n "$patch_file"; then
         git -C "$check_dir" apply --check "$patch_file"
     else
-        git -C "$check_dir" apply "$patch_dir/0001-winemetalgl-metal-surface-and-extension-parser.patch"
-        git -C "$check_dir" apply --check "$patch_dir/0002-winemetalgl-default-config-and-feature-cap.patch"
+        for patch in "$patch_dir"/*.patch; do
+            git -C "$check_dir" apply "$patch"
+        done
     fi
 fi
 

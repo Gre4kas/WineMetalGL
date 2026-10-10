@@ -1,0 +1,97 @@
+#include "core/metal/pixel_format.h"
+
+namespace wmgl {
+
+MTLPixelFormat mtlPixelFormat(Storage storage) {
+    switch (storage) {
+    case Storage::R8Unorm: return MTLPixelFormatR8Unorm;
+    case Storage::R8Snorm: return MTLPixelFormatR8Snorm;
+    case Storage::R8Uint: return MTLPixelFormatR8Uint;
+    case Storage::R8Sint: return MTLPixelFormatR8Sint;
+    case Storage::R16Unorm: return MTLPixelFormatR16Unorm;
+    case Storage::R16Snorm: return MTLPixelFormatR16Snorm;
+    case Storage::R16Uint: return MTLPixelFormatR16Uint;
+    case Storage::R16Sint: return MTLPixelFormatR16Sint;
+    case Storage::R16Float: return MTLPixelFormatR16Float;
+    case Storage::RG8Unorm: return MTLPixelFormatRG8Unorm;
+    case Storage::RG8Snorm: return MTLPixelFormatRG8Snorm;
+    case Storage::RG8Uint: return MTLPixelFormatRG8Uint;
+    case Storage::RG8Sint: return MTLPixelFormatRG8Sint;
+    case Storage::R32Uint: return MTLPixelFormatR32Uint;
+    case Storage::R32Sint: return MTLPixelFormatR32Sint;
+    case Storage::R32Float: return MTLPixelFormatR32Float;
+    case Storage::RG16Unorm: return MTLPixelFormatRG16Unorm;
+    case Storage::RG16Snorm: return MTLPixelFormatRG16Snorm;
+    case Storage::RG16Uint: return MTLPixelFormatRG16Uint;
+    case Storage::RG16Sint: return MTLPixelFormatRG16Sint;
+    case Storage::RG16Float: return MTLPixelFormatRG16Float;
+    case Storage::RGBA8Unorm: return MTLPixelFormatRGBA8Unorm;
+    case Storage::RGBA8Unorm_sRGB: return MTLPixelFormatRGBA8Unorm_sRGB;
+    case Storage::RGBA8Snorm: return MTLPixelFormatRGBA8Snorm;
+    case Storage::RGBA8Uint: return MTLPixelFormatRGBA8Uint;
+    case Storage::RGBA8Sint: return MTLPixelFormatRGBA8Sint;
+    case Storage::BGRA8Unorm: return MTLPixelFormatBGRA8Unorm;
+    case Storage::RGB10A2Unorm: return MTLPixelFormatRGB10A2Unorm;
+    case Storage::RGB10A2Uint: return MTLPixelFormatRGB10A2Uint;
+    case Storage::RG11B10Float: return MTLPixelFormatRG11B10Float;
+    case Storage::RGB9E5Float: return MTLPixelFormatRGB9E5Float;
+    case Storage::RG32Uint: return MTLPixelFormatRG32Uint;
+    case Storage::RG32Sint: return MTLPixelFormatRG32Sint;
+    case Storage::RG32Float: return MTLPixelFormatRG32Float;
+    case Storage::RGBA16Unorm: return MTLPixelFormatRGBA16Unorm;
+    case Storage::RGBA16Snorm: return MTLPixelFormatRGBA16Snorm;
+    case Storage::RGBA16Uint: return MTLPixelFormatRGBA16Uint;
+    case Storage::RGBA16Sint: return MTLPixelFormatRGBA16Sint;
+    case Storage::RGBA16Float: return MTLPixelFormatRGBA16Float;
+    case Storage::RGBA32Uint: return MTLPixelFormatRGBA32Uint;
+    case Storage::RGBA32Sint: return MTLPixelFormatRGBA32Sint;
+    case Storage::RGBA32Float: return MTLPixelFormatRGBA32Float;
+    case Storage::BC1_RGBA: return MTLPixelFormatBC1_RGBA;
+    case Storage::BC1_RGBA_sRGB: return MTLPixelFormatBC1_RGBA_sRGB;
+    case Storage::BC2_RGBA: return MTLPixelFormatBC2_RGBA;
+    case Storage::BC2_RGBA_sRGB: return MTLPixelFormatBC2_RGBA_sRGB;
+    case Storage::BC3_RGBA: return MTLPixelFormatBC3_RGBA;
+    case Storage::BC3_RGBA_sRGB: return MTLPixelFormatBC3_RGBA_sRGB;
+    case Storage::BC4_RUnorm: return MTLPixelFormatBC4_RUnorm;
+    case Storage::BC4_RSnorm: return MTLPixelFormatBC4_RSnorm;
+    case Storage::BC5_RGUnorm: return MTLPixelFormatBC5_RGUnorm;
+    case Storage::BC5_RGSnorm: return MTLPixelFormatBC5_RGSnorm;
+    case Storage::BC6H_RGBFloat: return MTLPixelFormatBC6H_RGBFloat;
+    case Storage::BC6H_RGBUfloat: return MTLPixelFormatBC6H_RGBUfloat;
+    case Storage::BC7_RGBAUnorm: return MTLPixelFormatBC7_RGBAUnorm;
+    case Storage::BC7_RGBAUnorm_sRGB: return MTLPixelFormatBC7_RGBAUnorm_sRGB;
+    case Storage::Depth16Unorm: return MTLPixelFormatDepth16Unorm;
+    case Storage::Depth32Float: return MTLPixelFormatDepth32Float;
+    case Storage::Stencil8: return MTLPixelFormatStencil8;
+    case Storage::Depth32Float_Stencil8: return MTLPixelFormatDepth32Float_Stencil8;
+    default: return MTLPixelFormatInvalid;
+    }
+}
+
+static MTLTextureSwizzle swizzleFor(Swizzle s) {
+    switch (s) {
+    case SwzR: return MTLTextureSwizzleRed;
+    case SwzG: return MTLTextureSwizzleGreen;
+    case SwzB: return MTLTextureSwizzleBlue;
+    case SwzA: return MTLTextureSwizzleAlpha;
+    case SwzZero: return MTLTextureSwizzleZero;
+    default: return MTLTextureSwizzleOne;
+    }
+}
+
+MTLTextureSwizzleChannels composeSwizzle(const FormatInfo& format, const GLenum gl[4]) {
+    Swizzle out[4];
+    for (int i = 0; i < 4; ++i) {
+        switch (gl[i]) {
+        case GL_RED: out[i] = format.swizzle[0]; break;
+        case GL_GREEN: out[i] = format.swizzle[1]; break;
+        case GL_BLUE: out[i] = format.swizzle[2]; break;
+        case GL_ALPHA: out[i] = format.swizzle[3]; break;
+        case GL_ZERO: out[i] = SwzZero; break;
+        default: out[i] = SwzOne; break;
+        }
+    }
+    return MTLTextureSwizzleChannelsMake(swizzleFor(out[0]), swizzleFor(out[1]), swizzleFor(out[2]), swizzleFor(out[3]));
+}
+
+}  // namespace wmgl

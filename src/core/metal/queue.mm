@@ -1,0 +1,82 @@
+#include "core/metal/queue.h"
+
+#include <chrono>
+
+#include "core/metal/device.h"
+#include "core/util/log.h"
+
+namespace wmgl {
+
+Queue::Queue() {
+    queue_ = [Device::get().mtl() newCommandQueueWithMaxCommandBufferCount:64];
+    queue_.label = @"WineMetalGL";
+}
+
+id<MTLCommandBuffer> Queue::create(uint64_t* serial) {
+    id<MTLCommandBuffer> buffer = [queue_ commandBuffer];
+    std::lock_guard<std::mutex> lock(mutex_);
+    *serial = next_++;
+    reserved_.insert(*serial);
+    return buffer;
+}
+
+void Queue::commit(id<MTLCommandBuffer> buffer, uint64_t serial) {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        reserved_.erase(serial);
+        inflight_.insert(serial);
+    }
+    [buffer addCompletedHandler:^(id<MTLCommandBuffer> done) {
+        if (done.status == MTLCommandBufferStatusError)
+            WMGL_ERR("command buffer %llu failed: %s", static_cast<unsigned long long>(serial),
+                     done.error.localizedDescription.UTF8String);
+        // Notify under the lock: once a waiter sees the queue idle it may
+        // destroy the queue, so nothing may touch it after the unlock.
+        std::lock_guard<std::mutex> lock(mutex_);
+        inflight_.erase(serial);
+        completed_.notify_all();
+    }];
+    [buffer commit];
+}
+
+void Queue::abandon(uint64_t serial) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    reserved_.erase(serial);
+}
+
+bool Queue::isComplete(uint64_t serial) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return !inflight_.count(serial) && !reserved_.count(serial);
+}
+
+bool Queue::isCommitted(uint64_t serial) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return !reserved_.count(serial);
+}
+
+void Queue::wait(uint64_t serial) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    completed_.wait(lock, [&] { return !inflight_.count(serial); });
+}
+
+bool Queue::wait(uint64_t serial, uint64_t timeoutNs) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    auto done = [&] { return !inflight_.count(serial); };
+    if (timeoutNs == UINT64_MAX) {
+        completed_.wait(lock, done);
+        return true;
+    }
+    return completed_.wait_for(lock, std::chrono::nanoseconds(timeoutNs), done);
+}
+
+void Queue::waitIdle() {
+    std::unique_lock<std::mutex> lock(mutex_);
+    completed_.wait(lock, [&] { return inflight_.empty(); });
+}
+
+uint64_t Queue::lastSerial() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return next_ - 1;
+}
+
+}  // namespace wmgl
