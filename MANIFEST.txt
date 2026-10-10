@@ -38,6 +38,7 @@ MANIFEST.txt
 patches/wine/README.md
 patches/wine/wine-11.17/0001-winemetalgl-metal-surface-and-extension-parser.patch
 patches/wine/wine-11.17/0002-winemetalgl-default-config-and-feature-cap.patch
+patches/wine/wine-11.17/0003-winemetalgl-core-driver.patch
 README.md
 scripts/build.sh
 scripts/check-forbidden-identifiers.sh
@@ -130,6 +131,7 @@ tests/host/shader_tests.cpp
 tests/host/test.h
 tests/native/glsl_translation_probe.c
 tests/native/probe-metalsharp-opengl.sh
+tests/wine/core_triangle.c
 tests/wine/opengl_1d.c
 tests/wine/opengl_blend.c
 tests/wine/opengl_clear_metal.c

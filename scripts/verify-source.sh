@@ -37,8 +37,9 @@ if test -n "$wine_source"; then
     if test -n "$patch_file"; then
         git -C "$check_dir" apply --check "$patch_file"
     else
-        git -C "$check_dir" apply "$patch_dir/0001-winemetalgl-metal-surface-and-extension-parser.patch"
-        git -C "$check_dir" apply --check "$patch_dir/0002-winemetalgl-default-config-and-feature-cap.patch"
+        for patch in "$patch_dir"/*.patch; do
+            git -C "$check_dir" apply "$patch"
+        done
     fi
 fi
 
