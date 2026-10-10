@@ -30,13 +30,21 @@ Apple's OpenGL, and Wine falls back to it when the core cannot be loaded.
 code signatures, that the core links no OpenGL.framework and exports only the
 driver ABI, and the SHA256 manifest.
 
-## Preview builds and the release
+## The release
 
-The C5 checkpoint (`gl33-cp5`) of the development branch is published as the
-GitHub pre-release `winemetalgl-2.0.0-preview.1`, staged with
-`scripts/stage-release.sh` from that tag (the earlier checkpoints were not
-published). After the branch merges, `main` is tagged `winemetalgl-2.0.0` and
-released with the staged artifacts and the evidence directory.
+After the development branch merges, `main` is tagged `winemetalgl-2.0.0` and
+released with two archives:
+
+- `winemetalgl-2.0.0-x86_64.tar.gz`: the staged release above, a drop-in for
+  x86_64 Wine (Wine 11.17 under Rosetta), with the evidence directory.
+- `winemetalgl-2.0.0-arm64-core.tar.gz`: `scripts/stage-arm64-core.sh OUTPUT`,
+  the arm64 core with the driver ABI header and `patches/wine`, for a native
+  arm64 Wine built with the patches. Its evidence is the native KHR-GL33 runs
+  (the core built for the build machine); it has not yet run inside an arm64
+  Wine.
+
+The two cores are not interchangeable: `winemac.so` loads the core of its own
+architecture, and Wine falls back to Apple's OpenGL when it cannot.
 
 ## MetalSharp
 

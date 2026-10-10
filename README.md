@@ -65,7 +65,8 @@ loaded.
 ```sh
 ./scripts/stage-wine.sh /path/to/wine-build      # libwinemetalgl.dylib next to winemac.so
 WINEMETALGL_HOST_LIB_DIR=/path/to/x86_64/libs ./scripts/stage-host-libs.sh /path/to/wine-runtime
-./scripts/stage-release.sh /path/to/wine-build /path/to/output
+./scripts/stage-release.sh /path/to/wine-build /path/to/output   # x86_64 Wine (Rosetta)
+./scripts/stage-arm64-core.sh /path/to/output                      # arm64 core for a native arm64 Wine
 ```
 
 `WINEMETALGL_LOG=1..3` raises the core's log level; `WINEMETALGL_TRACE=1` logs

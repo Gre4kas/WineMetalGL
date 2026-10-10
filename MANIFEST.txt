@@ -27,6 +27,7 @@ scripts/cts/results.py
 scripts/cts/run.py
 scripts/cts/summary.py
 scripts/docs/generate.py
+scripts/stage-arm64-core.sh
 scripts/stage-host-libs.sh
 scripts/stage-release.sh
 scripts/stage-wine.sh
