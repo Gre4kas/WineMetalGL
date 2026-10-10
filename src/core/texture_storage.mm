@@ -77,6 +77,7 @@ bool ensureTextureStorage(Context& ctx, Texture& tex) {
     GLsizei w0 = 0, h0 = 0, d0 = 0, samples = 0;
     const FormatInfo* format = nullptr;
     if (!baseDimensions(tex, w0, h0, d0, format, samples) || !format) return false;
+    if (w0 <= 0 || h0 <= 0 || d0 <= 0) return false;  // zero-sized images have no storage
     const MTLPixelFormat pixelFormat = mtlPixelFormat(format->storage);
     if (pixelFormat == MTLPixelFormatInvalid) return false;
     GLsizei levels = tex.immutable ? tex.immutableLevels

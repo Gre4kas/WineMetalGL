@@ -125,6 +125,10 @@ src/opengl/WGLContextManager.mm
 src/opengl/WGLShim.cpp
 src/runtime/Logger.cpp
 tests/cts/baseline/gl33-cfg1-oldcore.txt
+tests/cts/native/build.sh
+tests/cts/native/README.md
+tests/cts/native/tcuWmglPlatform.cpp
+tests/cts/native/wmgl.cmake
 tests/forbidden-identifiers.txt
 tests/games/build-demos.sh
 tests/games/corpus.json

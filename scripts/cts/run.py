@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Run Khronos OpenGL CTS cases under Wine in parallel shards.
+"""Run Khronos OpenGL CTS cases in parallel shards, under Wine or natively.
 
-Each shard gets its own WoW64 prefix (an APFS clone of one template prefix)
-and its own glcts.exe process. When a process crashes or a case stops making
+Under Wine, each shard gets its own WoW64 prefix (an APFS clone of one
+template prefix) and its own glcts.exe process. With --native, glcts is the
+macOS build from tests/cts/native/build.sh, which runs the WineMetalGL core
+directly on pbuffers without Wine. When a process crashes or a case stops making
 progress, that case is recorded as Crash or Timeout and the shard resumes
 after it, so one bad case never hides the rest of the run.
 
@@ -14,6 +16,9 @@ Example (full GL 3.3 mustpass, first configuration, 6 shards):
 
     scripts/cts/run.py --wine /path/to/wine --cts /path/to/glcts.exe \
         --config 1 --shards 6 --out /path/to/results/gl33-cfg1.txt
+
+    scripts/cts/run.py --native --cts /path/to/build-wmgl-native/.../glcts \
+        --config 1 --shards 8 --out /path/to/results/gl33-cfg1-native.txt
 """
 
 import argparse
@@ -119,7 +124,8 @@ class Shard:
         self.attempt = 0
 
     def run(self):
-        clone_prefix(self.args.template, self.prefix)
+        if not self.args.native:
+            clone_prefix(self.args.template, self.prefix)
         remaining = list(self.cases)
         while remaining:
             self.attempt += 1
@@ -144,14 +150,15 @@ class Shard:
                     if os.path.exists(path):
                         os.remove(path)
         self._kill_wineserver()
-        if not self.args.keep_prefix:
+        if not self.args.keep_prefix and not self.args.native:
             shutil.rmtree(self.prefix, ignore_errors=True)
 
     def _run_process(self, caselist, qpa):
         env = dict(self.env)
         env["WINEPREFIX"] = self.prefix
-        command = [
-            os.path.join(self.args.wine, "bin", "wine"), self.args.cts,
+        launcher = [] if self.args.native else [os.path.join(self.args.wine, "bin", "wine")]
+        command = launcher + [
+            self.args.cts,
             "--deqp-caselist-file=%s" % caselist,
             "--deqp-log-filename=%s" % qpa,
             "--deqp-log-images=%s" % ("enable" if self.args.log_images else "disable"),
@@ -181,6 +188,8 @@ class Shard:
         return killed
 
     def _kill_wineserver(self):
+        if self.args.native:
+            return
         env = dict(self.env)
         env["WINEPREFIX"] = self.prefix
         subprocess.run([os.path.join(self.args.wine, "bin", "wineserver"), "-k"], env=env,
@@ -218,8 +227,10 @@ def git_head():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--wine", required=True, help="Wine installation (contains bin/wine)")
-    parser.add_argument("--cts", required=True, help="glcts.exe from a VK-GL-CTS build")
+    parser.add_argument("--wine", help="Wine installation (contains bin/wine)")
+    parser.add_argument("--native", action="store_true",
+                        help="run a native macOS glcts (tests/cts/native) without Wine")
+    parser.add_argument("--cts", required=True, help="glcts.exe from a VK-GL-CTS build (or native glcts)")
     parser.add_argument("--mustpass", default="gl33-main.txt", help="mustpass case list name")
     parser.add_argument("--caselist", help="explicit case list file instead of the mustpass list")
     parser.add_argument("--filter", action="append", help="only cases matching this glob (repeatable)")
@@ -237,8 +248,10 @@ def main():
     parser.add_argument("--log-images", action="store_true")
     parser.add_argument("--log-shaders", action="store_true")
     args = parser.parse_args()
+    if not args.native and not args.wine:
+        parser.error("--wine is required unless --native is given")
 
-    args.wine = os.path.abspath(args.wine)
+    args.wine = os.path.abspath(args.wine) if args.wine else None
     args.cts = os.path.abspath(args.cts)
     cts_root = find_cts_root(args.cts)
     if not cts_root:
@@ -258,7 +271,8 @@ def main():
 
     env = dict(os.environ)
     env.update({"WINEARCH": "wow64", "WINEDEBUG": env.get("WINEDEBUG", "-all")})
-    env.setdefault("DYLD_LIBRARY_PATH", os.path.join(args.wine, "lib"))
+    if not args.native:
+        env.setdefault("DYLD_LIBRARY_PATH", os.path.join(args.wine, "lib"))
     if args.reference:
         env["WINEMETALGL"] = "0"
         env["WINEMETALGL_EXPERIMENTAL"] = "0"
@@ -269,7 +283,8 @@ def main():
         key, _, value = item.partition("=")
         env[key] = value
 
-    make_template(args, env)
+    if not args.native:
+        make_template(args, env)
     shard_count = max(1, min(args.shards, len(cases)))
     # Contiguous slices keep related cases (and their shared GL state
     # patterns) together, which matches how the CTS is usually run.
@@ -294,7 +309,8 @@ def main():
     with open(args.out, "w") as handle:
         handle.write("# mustpass %s config %d: %s\n" % (args.mustpass, args.config, " ".join(config_args)))
         handle.write("# commit %s, path %s, %d cases, %.0f s\n" % (
-            git_head(), "apple-reference" if args.reference else "winemetalgl", len(cases), elapsed))
+            git_head(), "apple-reference" if args.reference else "winemetalgl-native" if args.native else "winemetalgl",
+            len(cases), elapsed))
         handle.write("# totals %s\n" % " ".join("%s=%d" % kv for kv in sorted(counts.items())))
         for case in sorted(results):
             handle.write("%s %s\n" % (case, results[case]))
