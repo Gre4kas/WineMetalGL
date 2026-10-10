@@ -336,26 +336,63 @@ void StencilMaskSeparate(Context& ctx, GLenum face, GLuint mask) {
 
 void StencilMask(Context& ctx, GLuint mask) { StencilMaskSeparate(ctx, GL_FRONT_AND_BACK, mask); }
 
-void BlendFuncSeparate(Context& ctx, GLenum srcRGB, GLenum dstRGB, GLenum srcAlpha, GLenum dstAlpha) {
+namespace {
+
+// `buffer` < 0: every draw buffer.
+void blendFunc(Context& ctx, int buffer, GLenum srcRGB, GLenum dstRGB, GLenum srcAlpha, GLenum dstAlpha) {
+    if (buffer >= ContextState::kMaxDrawBuffers) return ctx.setError(GL_INVALID_VALUE);
     if (!validBlendFactor(srcRGB) || !validBlendFactor(dstRGB) || !validBlendFactor(srcAlpha) || !validBlendFactor(dstAlpha))
         return ctx.setError(GL_INVALID_ENUM);
-    ctx.state.blendSrcRGB = srcRGB;
-    ctx.state.blendDstRGB = dstRGB;
-    ctx.state.blendSrcAlpha = srcAlpha;
-    ctx.state.blendDstAlpha = dstAlpha;
+    for (int i = 0; i < ContextState::kMaxDrawBuffers; ++i) {
+        if (buffer >= 0 && i != buffer) continue;
+        ContextState::Blend& b = ctx.state.blend[i];
+        b.srcRGB = srcRGB;
+        b.dstRGB = dstRGB;
+        b.srcAlpha = srcAlpha;
+        b.dstAlpha = dstAlpha;
+    }
     ctx.markDirty(kDirtyBlend);
 }
 
-void BlendFunc(Context& ctx, GLenum sfactor, GLenum dfactor) { BlendFuncSeparate(ctx, sfactor, dfactor, sfactor, dfactor); }
-
-void BlendEquationSeparate(Context& ctx, GLenum modeRGB, GLenum modeAlpha) {
+void blendEquation(Context& ctx, int buffer, GLenum modeRGB, GLenum modeAlpha) {
+    if (buffer >= ContextState::kMaxDrawBuffers) return ctx.setError(GL_INVALID_VALUE);
     if (!validBlendEquation(modeRGB) || !validBlendEquation(modeAlpha)) return ctx.setError(GL_INVALID_ENUM);
-    ctx.state.blendEquationRGB = modeRGB;
-    ctx.state.blendEquationAlpha = modeAlpha;
+    for (int i = 0; i < ContextState::kMaxDrawBuffers; ++i) {
+        if (buffer >= 0 && i != buffer) continue;
+        ctx.state.blend[i].equationRGB = modeRGB;
+        ctx.state.blend[i].equationAlpha = modeAlpha;
+    }
     ctx.markDirty(kDirtyBlend);
 }
 
-void BlendEquation(Context& ctx, GLenum mode) { BlendEquationSeparate(ctx, mode, mode); }
+}  // namespace
+
+void BlendFuncSeparate(Context& ctx, GLenum srcRGB, GLenum dstRGB, GLenum srcAlpha, GLenum dstAlpha) {
+    blendFunc(ctx, -1, srcRGB, dstRGB, srcAlpha, dstAlpha);
+}
+
+void BlendFunc(Context& ctx, GLenum sfactor, GLenum dfactor) { blendFunc(ctx, -1, sfactor, dfactor, sfactor, dfactor); }
+
+void BlendEquationSeparate(Context& ctx, GLenum modeRGB, GLenum modeAlpha) { blendEquation(ctx, -1, modeRGB, modeAlpha); }
+
+void BlendEquation(Context& ctx, GLenum mode) { blendEquation(ctx, -1, mode, mode); }
+
+// GL_ARB_draw_buffers_blend (the core 4.0 names are aliases of these).
+void BlendFunci(Context& ctx, GLuint buf, GLenum src, GLenum dst) {
+    blendFunc(ctx, static_cast<int>(std::min<GLuint>(buf, 1024)), src, dst, src, dst);
+}
+
+void BlendFuncSeparatei(Context& ctx, GLuint buf, GLenum srcRGB, GLenum dstRGB, GLenum srcAlpha, GLenum dstAlpha) {
+    blendFunc(ctx, static_cast<int>(std::min<GLuint>(buf, 1024)), srcRGB, dstRGB, srcAlpha, dstAlpha);
+}
+
+void BlendEquationi(Context& ctx, GLuint buf, GLenum mode) {
+    blendEquation(ctx, static_cast<int>(std::min<GLuint>(buf, 1024)), mode, mode);
+}
+
+void BlendEquationSeparatei(Context& ctx, GLuint buf, GLenum modeRGB, GLenum modeAlpha) {
+    blendEquation(ctx, static_cast<int>(std::min<GLuint>(buf, 1024)), modeRGB, modeAlpha);
+}
 
 void BlendColor(Context& ctx, GLfloat r, GLfloat g, GLfloat b, GLfloat a) {
     // GL 3.0+ does not clamp the constant colour.
@@ -398,6 +435,14 @@ void SampleMaski(Context& ctx, GLuint maskNumber, GLbitfield mask) {
 void ProvokingVertex(Context& ctx, GLenum mode) {
     if (mode != GL_FIRST_VERTEX_CONVENTION && mode != GL_LAST_VERTEX_CONVENTION) return ctx.setError(GL_INVALID_ENUM);
     ctx.state.provokingVertex = mode;
+}
+
+void ClipControl(Context& ctx, GLenum origin, GLenum depth) {
+    if ((origin != GL_LOWER_LEFT && origin != GL_UPPER_LEFT) ||
+        (depth != GL_NEGATIVE_ONE_TO_ONE && depth != GL_ZERO_TO_ONE))
+        return ctx.setError(GL_INVALID_ENUM);
+    ctx.state.clipOrigin = origin;
+    ctx.state.clipDepthMode = depth;
 }
 
 void PrimitiveRestartIndex(Context& ctx, GLuint index) { ctx.state.primitiveRestartIndex = index; }

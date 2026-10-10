@@ -50,6 +50,9 @@ void copyString(const std::string& s, GLsizei bufSize, GLsizei* length, GLchar* 
     if (length) *length = n;
 }
 
+bool programBinaries(Context& ctx) { return ctx.version() >= 41 || ctx.hasExtension("GL_ARB_get_program_binary"); }
+bool separateShaderObjects(Context& ctx) { return ctx.version() >= 41 || ctx.hasExtension("GL_ARB_separate_shader_objects"); }
+
 // Shader or program lookups with GL's error rules: a name that is neither
 // is INVALID_VALUE; a name of the other kind is INVALID_OPERATION.
 Shader* shaderOrError(Context& ctx, GLuint name) {
@@ -220,7 +223,13 @@ void setUniformMatrix(Context& ctx, Program* p, GLint location, GLsizei count, G
     ctx.markDirty(kDirtyUniforms);
 }
 
-Program* current(Context& ctx) { return ctx.state.program.get(); }
+// The target of glUniform*: the current program, else the bound pipeline's
+// active program (GL_ARB_separate_shader_objects).
+Program* current(Context& ctx) {
+    if (Program* p = ctx.state.program.get()) return p;
+    ProgramPipeline* pp = ctx.state.programPipeline.get();
+    return pp ? pp->activeProgram.get() : nullptr;
+}
 
 GLint locationForName(const shader::LinkResult& link, const std::string& name) {
     for (const shader::UniformInfo& u : link.uniforms) {
@@ -502,6 +511,45 @@ void releaseCurrentProgram(Context& ctx) {
     maybeDeleteProgram(ctx, previous.get());
 }
 
+// GL_ARB_get_program_binary with NUM_PROGRAM_BINARY_FORMATS = 0: programs
+// are always compiled from source; applications fall back to that.
+void ProgramParameteri(Context& ctx, GLuint program, GLenum pname, GLint value) {
+    Program* p = programOrError(ctx, program);
+    if (!p) return;
+    switch (pname) {
+    case GL_PROGRAM_BINARY_RETRIEVABLE_HINT:
+        if (!programBinaries(ctx)) break;
+        if (value != GL_FALSE && value != GL_TRUE) return ctx.setError(GL_INVALID_VALUE);
+        p->binaryRetrievableHint = value != GL_FALSE;
+        return;
+    case GL_PROGRAM_SEPARABLE:
+        if (!separateShaderObjects(ctx)) break;
+        if (value != GL_FALSE && value != GL_TRUE) return ctx.setError(GL_INVALID_VALUE);
+        p->separable = value != GL_FALSE;  // takes effect at the next link
+        return;
+    default: break;
+    }
+    ctx.setError(GL_INVALID_ENUM);
+}
+
+void GetProgramBinary(Context& ctx, GLuint program, GLsizei bufSize, GLsizei* length, GLenum* binaryFormat, void* binary) {
+    (void)binaryFormat;
+    (void)binary;
+    Program* p = programOrError(ctx, program);
+    if (!p) return;
+    if (bufSize < 0) return ctx.setError(GL_INVALID_VALUE);
+    if (!p->linkStatus) return ctx.setError(GL_INVALID_OPERATION);
+    if (length) *length = 0;  // PROGRAM_BINARY_LENGTH is 0
+}
+
+void ProgramBinary(Context& ctx, GLuint program, GLenum binaryFormat, const void* binary, GLsizei length) {
+    (void)binaryFormat;
+    (void)binary;
+    (void)length;
+    if (!programOrError(ctx, program)) return;
+    ctx.setError(GL_INVALID_ENUM);  // not one of PROGRAM_BINARY_FORMATS (there are none)
+}
+
 void ValidateProgram(Context& ctx, GLuint program) {
     Program* p = programOrError(ctx, program);
     if (!p) return;
@@ -555,10 +603,13 @@ void GetProgramiv(Context& ctx, GLuint program, GLenum pname, GLint* params) {
         for (int d = 0; d < 3; ++d) params[d] = static_cast<GLint>(link->computeLocalSize[d]);
         return;
     case GL_PROGRAM_BINARY_RETRIEVABLE_HINT:
-        if (ctx.version() >= 41) { *params = p->binaryRetrievableHint; return; }
+        if (programBinaries(ctx)) { *params = p->binaryRetrievableHint; return; }
+        break;
+    case GL_PROGRAM_BINARY_LENGTH:
+        if (programBinaries(ctx)) { *params = 0; return; }  // no binary formats
         break;
     case GL_PROGRAM_SEPARABLE:
-        if (ctx.version() >= 41) { *params = p->separable; return; }
+        if (separateShaderObjects(ctx)) { *params = p->separable; return; }
         break;
     default: break;
     }
@@ -764,6 +815,55 @@ void Uniform1ui(Context& ctx, GLint l, GLuint x) { Uniform1uiv(ctx, l, 1, &x); }
 void Uniform2ui(Context& ctx, GLint l, GLuint x, GLuint y) { const GLuint v[] = {x, y}; Uniform2uiv(ctx, l, 1, v); }
 void Uniform3ui(Context& ctx, GLint l, GLuint x, GLuint y, GLuint z) { const GLuint v[] = {x, y, z}; Uniform3uiv(ctx, l, 1, v); }
 void Uniform4ui(Context& ctx, GLint l, GLuint x, GLuint y, GLuint z, GLuint w) { const GLuint v[] = {x, y, z, w}; Uniform4uiv(ctx, l, 1, v); }
+
+// Double-precision ProgramUniform* (listed by GL_ARB_separate_shader_objects
+// for GL_ARB_gpu_shader_fp64 implementations): no shader has double
+// uniforms here, so every location other than -1 is a type mismatch.
+namespace {
+void programUniformDouble(Context& ctx, GLuint program, GLint location) {
+    if (!linkedProgramOrError(ctx, program) || location == -1) return;
+    ctx.setError(GL_INVALID_OPERATION);
+}
+}  // namespace
+void ProgramUniform1d(Context& ctx, GLuint p, GLint l, GLdouble) { programUniformDouble(ctx, p, l); }
+void ProgramUniform2d(Context& ctx, GLuint p, GLint l, GLdouble, GLdouble) { programUniformDouble(ctx, p, l); }
+void ProgramUniform3d(Context& ctx, GLuint p, GLint l, GLdouble, GLdouble, GLdouble) { programUniformDouble(ctx, p, l); }
+void ProgramUniform4d(Context& ctx, GLuint p, GLint l, GLdouble, GLdouble, GLdouble, GLdouble) { programUniformDouble(ctx, p, l); }
+#define WMGL_UNIFORM_DOUBLE_V(Name) \
+    void ProgramUniform##Name(Context& ctx, GLuint p, GLint l, GLsizei, const GLdouble*) { programUniformDouble(ctx, p, l); }
+WMGL_UNIFORM_DOUBLE_V(1dv)
+WMGL_UNIFORM_DOUBLE_V(2dv)
+WMGL_UNIFORM_DOUBLE_V(3dv)
+WMGL_UNIFORM_DOUBLE_V(4dv)
+#undef WMGL_UNIFORM_DOUBLE_V
+#define WMGL_UNIFORM_DOUBLE_MATRIX(Name) \
+    void ProgramUniformMatrix##Name##dv(Context& ctx, GLuint p, GLint l, GLsizei, GLboolean, const GLdouble*) { \
+        programUniformDouble(ctx, p, l); \
+    }
+WMGL_UNIFORM_DOUBLE_MATRIX(2)
+WMGL_UNIFORM_DOUBLE_MATRIX(3)
+WMGL_UNIFORM_DOUBLE_MATRIX(4)
+WMGL_UNIFORM_DOUBLE_MATRIX(2x3)
+WMGL_UNIFORM_DOUBLE_MATRIX(2x4)
+WMGL_UNIFORM_DOUBLE_MATRIX(3x2)
+WMGL_UNIFORM_DOUBLE_MATRIX(3x4)
+WMGL_UNIFORM_DOUBLE_MATRIX(4x2)
+WMGL_UNIFORM_DOUBLE_MATRIX(4x3)
+#undef WMGL_UNIFORM_DOUBLE_MATRIX
+
+// GL_ARB_separate_shader_objects scalar forms.
+void ProgramUniform1f(Context& ctx, GLuint p, GLint l, GLfloat x) { ProgramUniform1fv(ctx, p, l, 1, &x); }
+void ProgramUniform2f(Context& ctx, GLuint p, GLint l, GLfloat x, GLfloat y) { const GLfloat v[] = {x, y}; ProgramUniform2fv(ctx, p, l, 1, v); }
+void ProgramUniform3f(Context& ctx, GLuint p, GLint l, GLfloat x, GLfloat y, GLfloat z) { const GLfloat v[] = {x, y, z}; ProgramUniform3fv(ctx, p, l, 1, v); }
+void ProgramUniform4f(Context& ctx, GLuint p, GLint l, GLfloat x, GLfloat y, GLfloat z, GLfloat w) { const GLfloat v[] = {x, y, z, w}; ProgramUniform4fv(ctx, p, l, 1, v); }
+void ProgramUniform1i(Context& ctx, GLuint p, GLint l, GLint x) { ProgramUniform1iv(ctx, p, l, 1, &x); }
+void ProgramUniform2i(Context& ctx, GLuint p, GLint l, GLint x, GLint y) { const GLint v[] = {x, y}; ProgramUniform2iv(ctx, p, l, 1, v); }
+void ProgramUniform3i(Context& ctx, GLuint p, GLint l, GLint x, GLint y, GLint z) { const GLint v[] = {x, y, z}; ProgramUniform3iv(ctx, p, l, 1, v); }
+void ProgramUniform4i(Context& ctx, GLuint p, GLint l, GLint x, GLint y, GLint z, GLint w) { const GLint v[] = {x, y, z, w}; ProgramUniform4iv(ctx, p, l, 1, v); }
+void ProgramUniform1ui(Context& ctx, GLuint p, GLint l, GLuint x) { ProgramUniform1uiv(ctx, p, l, 1, &x); }
+void ProgramUniform2ui(Context& ctx, GLuint p, GLint l, GLuint x, GLuint y) { const GLuint v[] = {x, y}; ProgramUniform2uiv(ctx, p, l, 1, v); }
+void ProgramUniform3ui(Context& ctx, GLuint p, GLint l, GLuint x, GLuint y, GLuint z) { const GLuint v[] = {x, y, z}; ProgramUniform3uiv(ctx, p, l, 1, v); }
+void ProgramUniform4ui(Context& ctx, GLuint p, GLint l, GLuint x, GLuint y, GLuint z, GLuint w) { const GLuint v[] = {x, y, z, w}; ProgramUniform4uiv(ctx, p, l, 1, v); }
 
 #define WMGL_UNIFORM_MATRIX(Name, c, r)                                                                       \
     void UniformMatrix##Name##fv(Context& ctx, GLint location, GLsizei count, GLboolean transpose, const GLfloat* value) { \

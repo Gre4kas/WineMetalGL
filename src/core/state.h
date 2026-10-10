@@ -92,6 +92,7 @@ struct ContextState {
     GLfloat pointFadeThresholdSize = 1.0f;
     bool lineSmooth = false, polygonSmooth = false;
     GLenum provokingVertex = GL_LAST_VERTEX_CONVENTION;
+    GLenum clipOrigin = GL_LOWER_LEFT, clipDepthMode = GL_NEGATIVE_ONE_TO_ONE;  // GL_ARB_clip_control
     bool primitiveRestart = false;
     GLuint primitiveRestartIndex = 0;
     bool primitiveRestartFixedIndex = false;
@@ -106,8 +107,12 @@ struct ContextState {
 
     static constexpr int kMaxDrawBuffers = 8;
     uint8_t blendEnable = 0;  // bit per draw buffer
-    GLenum blendSrcRGB = GL_ONE, blendDstRGB = GL_ZERO, blendSrcAlpha = GL_ONE, blendDstAlpha = GL_ZERO;
-    GLenum blendEquationRGB = GL_FUNC_ADD, blendEquationAlpha = GL_FUNC_ADD;
+    // Per draw buffer (GL_ARB_draw_buffers_blend); the non-indexed commands set all.
+    struct Blend {
+        GLenum srcRGB = GL_ONE, dstRGB = GL_ZERO, srcAlpha = GL_ONE, dstAlpha = GL_ZERO;
+        GLenum equationRGB = GL_FUNC_ADD, equationAlpha = GL_FUNC_ADD;
+    };
+    Blend blend[8];
     GLfloat blendColor[4] = {0, 0, 0, 0};
     std::array<std::array<bool, 4>, kMaxDrawBuffers> colorMask;
     bool colorLogicOp = false;
@@ -152,6 +157,7 @@ struct ContextState {
     RefPtr<Framebuffer> readFramebuffer;
     RefPtr<Renderbuffer> renderbuffer;
     RefPtr<Program> program;
+    RefPtr<ProgramPipeline> programPipeline;  // used when no program is current
     RefPtr<TransformFeedback> transformFeedback;  // never null
     // Default framebuffer draw/read buffers.
     GLenum defaultDrawBuffer = GL_BACK;

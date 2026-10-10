@@ -41,7 +41,13 @@
     X(glBindBufferRange) X(glUniformMatrix3fv) X(glUniformMatrix4fv) X(glGetAttribLocation) X(glTransformFeedbackVaryings) X(glBeginTransformFeedback)        \
     X(glEndTransformFeedback) X(glGetBufferSubData) X(glDispatchCompute) X(glDispatchComputeIndirect)     \
     X(glGetIntegeri_v) X(glTexParameterf) X(glProvokingVertex) X(glPointSize)                    \
-    X(glPointParameteri)
+    X(glPointParameteri) X(glDrawArraysInstancedBaseInstance) X(glVertexAttribDivisor)   \
+    X(glBlendFunci) X(glEnablei) X(glBindFramebufferEXT) X(glClipControl) X(glDepthRange) X(glBufferStorage) X(glMapBufferRange) X(glUnmapBuffer)             \
+    X(glDebugMessageCallback) X(glDebugMessageControl) X(glDebugMessageInsert) X(glGetDebugMessageLog)            \
+    X(glPushDebugGroup) X(glPopDebugGroup) X(glObjectLabel) X(glGetObjectLabel)                     \
+    X(glCreateShaderProgramv) X(glGenProgramPipelines) X(glBindProgramPipeline) X(glUseProgramStages)             \
+    X(glProgramUniform4f) X(glGetProgramPipelineiv) X(glValidateProgramPipeline) X(glDeleteProgramPipelines)      \
+    X(glActiveShaderProgram) X(glProgramParameteri)
 
 #define WMGL_DECLARE_FUNC(name) extern PFN_##name name;
 WMGL_GPU_FUNCS(WMGL_DECLARE_FUNC)

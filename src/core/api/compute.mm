@@ -11,8 +11,7 @@ namespace {
 
 // The current program's executable, if it has a compute shader.
 LinkedProgram* computeProgram(Context& ctx) {
-    Program* p = ctx.state.program.get();
-    LinkedProgram* lp = p ? p->linked.get() : nullptr;
+    LinkedProgram* lp = ctx.draw().executable();  // current program or pipeline
     return lp && lp->hasStage(shader::Stage::Compute) ? lp : nullptr;
 }
 
@@ -32,7 +31,7 @@ void DispatchComputeIndirect(Context& ctx, GLintptr indirect) {
     if (indirect < 0 || indirect % 4) return ctx.setError(GL_INVALID_VALUE);
     if (!computeProgram(ctx)) return ctx.setError(GL_INVALID_OPERATION);
     Buffer* buffer = ctx.state.dispatchIndirectBuffer.get();
-    if (!buffer || !buffer->mtl || buffer->mapped || indirect + 12 > buffer->size) return ctx.setError(GL_INVALID_OPERATION);
+    if (!buffer || !buffer->mtl || buffer->mappedNonPersistent() || indirect + 12 > buffer->size) return ctx.setError(GL_INVALID_OPERATION);
     // Group counts above the limit are undefined behaviour; Metal ignores them safely.
     ctx.draw().dispatch(0, 0, 0, buffer, indirect);
 }

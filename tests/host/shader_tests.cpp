@@ -236,3 +236,14 @@ TEST(shader_fragment_point_coord_and_flat) {
     r = link(in);
     CHECK(r.ok && !r.stages[static_cast<int>(Stage::Fragment)].usesPointCoord && !r.stages[static_cast<int>(Stage::Fragment)].flatInputs);
 }
+
+TEST(shader_instance_id_excludes_base_instance) {
+    LinkInput in;
+    in.shaders.push_back({Stage::Vertex, "#version 330 core\nflat out int id; void main() { id = gl_InstanceID; gl_Position = vec4(0.0); }\n"});
+    in.shaders.push_back({Stage::Fragment, "#version 330 core\nflat in int id; out vec4 color; void main() { color = vec4(float(id)); }\n"});
+    LinkResult r = link(in);
+    CHECK(r.ok);
+    // GL's gl_InstanceID does not include the base instance (GL_ARB_base_instance).
+    const std::string& msl = r.stages[static_cast<int>(Stage::Vertex)].msl;
+    CHECK(msl.find("[[base_instance]]") != std::string::npos);
+}

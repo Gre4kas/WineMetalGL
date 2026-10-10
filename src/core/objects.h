@@ -22,9 +22,14 @@ namespace wmgl {
 class Program;
 struct LinkedProgram;
 
+// KHR_debug object label (ObjectLabel / GetObjectLabel).
+struct Labeled {
+    std::string label;
+};
+
 // ---------------------------------------------------------------- buffers
 
-class Buffer : public RefCounted {
+class Buffer : public RefCounted, public Labeled {
 public:
     explicit Buffer(GLuint name) : name(name) {}
     GLuint name;
@@ -45,9 +50,10 @@ public:
     uint64_t lastWriteSerial = 0;
     // Incremented whenever the contents change (keys derived caches).
     uint64_t version = 0;
-    std::string label;
 
     uint8_t* contents() const { return mtl ? static_cast<uint8_t*>(mtl.contents) : nullptr; }
+    // Mapped in a way that forbids GPU use (persistent mappings allow it).
+    bool mappedNonPersistent() const { return mapped && !(mapAccess & GL_MAP_PERSISTENT_BIT); }
 };
 
 // --------------------------------------------------------------- samplers
@@ -70,12 +76,11 @@ struct SamplerParams {
     bool operator==(const SamplerParams& o) const;
 };
 
-class Sampler : public RefCounted {
+class Sampler : public RefCounted, public Labeled {
 public:
     explicit Sampler(GLuint name) : name(name) {}
     GLuint name;
     SamplerParams params;
-    std::string label;
 };
 
 // --------------------------------------------------------------- textures
@@ -90,7 +95,7 @@ struct TextureImage {
     bool defined() const { return format != nullptr; }
 };
 
-class Texture : public RefCounted {
+class Texture : public RefCounted, public Labeled {
 public:
     Texture(GLuint name, GLenum target) : name(name), target(target) {}
     GLuint name;
@@ -121,7 +126,6 @@ public:
     std::vector<View> views;
     uint64_t lastUseSerial = 0;
     uint64_t version = 0;
-    std::string label;
 
     int faceCount() const { return target == GL_TEXTURE_CUBE_MAP ? 6 : 1; }
     const TextureImage& image(int face, int level) const { return images[face][level]; }
@@ -131,7 +135,7 @@ public:
 
 // --------------------------------------------------------- renderbuffers
 
-class Renderbuffer : public RefCounted {
+class Renderbuffer : public RefCounted, public Labeled {
 public:
     explicit Renderbuffer(GLuint name) : name(name) {}
     GLuint name;
@@ -141,7 +145,6 @@ public:
     id<MTLTexture> mtl = nil;
     id<MTLTexture> linearView = nil;  // non-sRGB view of sRGB storage (raw writes)
     uint64_t lastUseSerial = 0;
-    std::string label;
 };
 
 // ----------------------------------------------------------- framebuffers
@@ -157,7 +160,7 @@ struct Attachment {
     bool attached() const { return type != GL_NONE; }
 };
 
-class Framebuffer : public RefCounted {
+class Framebuffer : public RefCounted, public Labeled {
 public:
     explicit Framebuffer(GLuint name) : name(name) {}
     GLuint name;
@@ -168,7 +171,6 @@ public:
                                               GL_NONE, GL_NONE, GL_NONE, GL_NONE};
     GLenum readBuffer = GL_COLOR_ATTACHMENT0;
     uint64_t version = 0;  // bumped on any attachment/draw-buffer change
-    std::string label;
 };
 
 // ----------------------------------------------------------- vertex arrays
@@ -188,7 +190,7 @@ struct VertexAttrib {
     uint32_t elementBytes() const;
 };
 
-class VertexArray : public RefCounted {
+class VertexArray : public RefCounted, public Labeled {
 public:
     explicit VertexArray(GLuint name) : name(name) {}
     GLuint name;
@@ -196,7 +198,6 @@ public:
     std::array<VertexAttrib, kMaxAttribs> attribs;
     RefPtr<Buffer> elementBuffer;
     uint64_t version = 0;
-    std::string label;
 };
 
 // ------------------------------------------------------- shaders/programs
@@ -205,7 +206,7 @@ using Stage = shader::Stage;
 Stage stageFromGL(GLenum type);
 GLenum stageToGL(Stage stage);
 
-class Shader : public RefCounted {
+class Shader : public RefCounted, public Labeled {
 public:
     Shader(GLuint name, GLenum type) : name(name), type(type), stage(stageFromGL(type)) {}
     GLuint name;
@@ -217,10 +218,9 @@ public:
     std::string infoLog;
     bool deletePending = false;
     int attachCount = 0;
-    std::string label;
 };
 
-class Program : public RefCounted {
+class Program : public RefCounted, public Labeled {
 public:
     explicit Program(GLuint name) : name(name) {}
     GLuint name;
@@ -246,12 +246,25 @@ public:
     uint64_t uniformVersion = 0;
     bool deletePending = false;
     int useCount = 0;  // contexts with this program current
-    std::string label;
+};
+
+// GL_ARB_separate_shader_objects program pipeline (per context).
+class ProgramPipeline : public RefCounted, public Labeled {
+public:
+    explicit ProgramPipeline(GLuint name) : name(name) {}
+    GLuint name;
+    RefPtr<Program> stages[6];   // indexed by shader::Stage
+    RefPtr<Program> activeProgram;
+    bool validateStatus = false;
+    std::string infoLog;
+    // The executable built from the stage programs (DrawState::executable).
+    std::shared_ptr<LinkedProgram> executable;
+    std::shared_ptr<LinkedProgram> builtFrom[6];  // the stage programs' executables it was built from
 };
 
 // ------------------------------------------------------- queries and syncs
 
-class Query : public RefCounted {
+class Query : public RefCounted, public Labeled {
 public:
     explicit Query(GLuint name) : name(name) {}
     GLuint name;
@@ -270,18 +283,16 @@ public:
         std::atomic<bool> startSet{false}, endSet{false};
     };
     std::shared_ptr<Timer> timer;
-    std::string label;
 };
 
-class Sync : public RefCounted {
+class Sync : public RefCounted, public Labeled {
 public:
     Sync() = default;
     uint64_t serial = 0;          // signalled when this command-buffer serial completes
     void* shareGroup = nullptr;
-    std::string label;
 };
 
-class TransformFeedback : public RefCounted {
+class TransformFeedback : public RefCounted, public Labeled {
 public:
     explicit TransformFeedback(GLuint name) : name(name) {}
     GLuint name;
@@ -297,7 +308,6 @@ public:
     RefPtr<Program> program;
     std::array<GLsizeiptr, kMaxBuffers> written{};   // bytes written per buffer since Begin
     uint64_t primitivesWritten = 0;
-    std::string label;
 };
 
 }  // namespace wmgl

@@ -46,6 +46,7 @@ Context::Context(RefPtr<ShareGroup> share, const ContextConfig& config, int pixe
         for (TextureUnit& unit : state.textureUnits) unit.bound[i] = defaultTextures[i];
     }
     draw_ = std::make_unique<DrawState>(*this);
+    state.debugOutput = config_.debug;  // DEBUG_OUTPUT starts enabled in debug contexts
     initStrings();
 }
 
@@ -80,6 +81,29 @@ void Context::initStrings() {
     extensions_.push_back("GL_EXT_texture_compression_s3tc");
     extensions_.push_back("GL_EXT_texture_filter_anisotropic");
     extensions_.push_back("GL_ARB_texture_filter_anisotropic");
+    // Extensions core GL 3.3 subsumes. Engines written against 2.x-era
+    // drivers test for them even in 3.3 contexts.
+    for (const char* name : {"GL_ARB_framebuffer_object", "GL_EXT_framebuffer_object", "GL_EXT_framebuffer_blit",
+                             "GL_EXT_framebuffer_multisample", "GL_EXT_packed_depth_stencil", "GL_ARB_vertex_array_object",
+                             "GL_ARB_map_buffer_range", "GL_ARB_texture_rg", "GL_ARB_texture_compression_rgtc",
+                             "GL_ARB_instanced_arrays", "GL_ARB_draw_instanced", "GL_ARB_draw_elements_base_vertex",
+                             "GL_ARB_uniform_buffer_object", "GL_ARB_copy_buffer", "GL_ARB_sync", "GL_ARB_timer_query",
+                             "GL_EXT_timer_query", "GL_ARB_occlusion_query2", "GL_ARB_sampler_objects",
+                             "GL_ARB_texture_swizzle", "GL_ARB_depth_clamp", "GL_ARB_seamless_cube_map",
+                             "GL_ARB_provoking_vertex", "GL_ARB_texture_multisample", "GL_ARB_blend_func_extended",
+                             "GL_ARB_explicit_attrib_location", "GL_ARB_fragment_coord_conventions",
+                             "GL_ARB_shader_bit_encoding", "GL_ARB_texture_rgb10_a2ui",
+                             "GL_ARB_half_float_vertex", "GL_ARB_texture_buffer_object", "GL_ARB_framebuffer_sRGB",
+                             "GL_EXT_framebuffer_sRGB", "GL_EXT_texture_sRGB", "GL_ARB_map_buffer_alignment"})
+        extensions_.push_back(name);
+    extensions_.push_back("GL_ARB_draw_buffers_blend");
+    extensions_.push_back("GL_ARB_base_instance");
+    extensions_.push_back("GL_ARB_clip_control");
+    extensions_.push_back("GL_ARB_get_program_binary");
+    extensions_.push_back("GL_ARB_buffer_storage");
+    extensions_.push_back("GL_KHR_debug");
+    extensions_.push_back("GL_ARB_debug_output");
+    extensions_.push_back("GL_ARB_separate_shader_objects");
     extensionString_.clear();
     for (const std::string& ext : extensions_) {
         if (!extensionString_.empty()) extensionString_ += ' ';
@@ -93,10 +117,16 @@ bool Context::hasExtension(const char* name) const {
 
 void Context::setError(GLenum error) {
     if (error_ == GL_NO_ERROR) error_ = error;
-    if (logEnabled(LogLevel::Trace)) WMGL_TRACE("GL error 0x%04x", error);
-    if (state.debugOutput && debugCallback) {
-        char message[64];
-        std::snprintf(message, sizeof(message), "GL error 0x%04x", error);
+    if (logEnabled(LogLevel::Trace)) WMGL_TRACE("GL error 0x%04x in %s", error, currentCommand);
+    if (state.debugOutput) {
+        const char* name = error == GL_INVALID_ENUM        ? "GL_INVALID_ENUM"
+                           : error == GL_INVALID_VALUE     ? "GL_INVALID_VALUE"
+                           : error == GL_INVALID_OPERATION ? "GL_INVALID_OPERATION"
+                           : error == GL_OUT_OF_MEMORY     ? "GL_OUT_OF_MEMORY"
+                           : error == GL_INVALID_FRAMEBUFFER_OPERATION ? "GL_INVALID_FRAMEBUFFER_OPERATION"
+                                                                       : "GL error";
+        char message[160];
+        std::snprintf(message, sizeof(message), "%s in %s", name, currentCommand);
         debugMessage(GL_DEBUG_SOURCE_API, GL_DEBUG_TYPE_ERROR, error, GL_DEBUG_SEVERITY_HIGH, message);
     }
 }
@@ -112,9 +142,26 @@ void Context::unimplemented(const char* command) {
     setError(GL_INVALID_OPERATION);
 }
 
+bool Context::debugMessageEnabled(GLenum source, GLenum type, GLuint id, GLenum severity) const {
+    bool enabled = severity != GL_DEBUG_SEVERITY_LOW;
+    for (const DebugRule& r : debugGroups.back().rules) {
+        if ((r.source != GL_DONT_CARE && r.source != source) || (r.type != GL_DONT_CARE && r.type != type) ||
+            (r.severity != GL_DONT_CARE && r.severity != severity))
+            continue;
+        if (!r.ids.empty() && std::find(r.ids.begin(), r.ids.end(), id) == r.ids.end()) continue;
+        enabled = r.enabled;
+    }
+    return enabled;
+}
+
 void Context::debugMessage(GLenum source, GLenum type, GLuint id, GLenum severity, const std::string& message) {
-    if (debugCallback)
-        debugCallback(source, type, id, severity, static_cast<GLsizei>(message.size()), message.c_str(), debugUserParam);
+    if (!state.debugOutput || !debugMessageEnabled(source, type, id, severity)) return;
+    const std::string text = message.size() >= kMaxDebugMessageLength ? message.substr(0, kMaxDebugMessageLength - 1) : message;
+    if (debugCallback) {
+        debugCallback(source, type, id, severity, static_cast<GLsizei>(text.size()), text.c_str(), debugUserParam);
+        return;
+    }
+    if (debugLog.size() < kMaxDebugLoggedMessages) debugLog.push_back({source, type, severity, id, text});
 }
 
 void Context::bindSurfaces(Surface* draw, Surface* read) {

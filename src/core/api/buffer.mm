@@ -210,15 +210,42 @@ void BufferData(Context& ctx, GLenum target, GLsizeiptr size, const void* data, 
     ctx.markDirty(kDirtyVertexInput | kDirtyUniformBuffers);
 }
 
+// GL_ARB_buffer_storage: immutable storage. Shared Metal memory is coherent
+// with the GPU, so persistent and coherent mappings need no extra copies.
+void BufferStorage(Context& ctx, GLenum target, GLsizeiptr size, const void* data, GLbitfield flags) {
+    const GLbitfield known = GL_DYNAMIC_STORAGE_BIT | GL_MAP_READ_BIT | GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT |
+                             GL_MAP_COHERENT_BIT | GL_CLIENT_STORAGE_BIT;
+    Buffer* buffer = boundBuffer(ctx, target);
+    if (!buffer) return;
+    if (size <= 0 || (flags & ~known)) return ctx.setError(GL_INVALID_VALUE);
+    if ((flags & GL_MAP_PERSISTENT_BIT) && !(flags & (GL_MAP_READ_BIT | GL_MAP_WRITE_BIT))) return ctx.setError(GL_INVALID_VALUE);
+    if ((flags & GL_MAP_COHERENT_BIT) && !(flags & GL_MAP_PERSISTENT_BIT)) return ctx.setError(GL_INVALID_VALUE);
+    if (buffer->immutable) return ctx.setError(GL_INVALID_OPERATION);
+    if (buffer->mapped) unmapBuffer(*buffer);
+    id<MTLBuffer> storage = newStorage(size);
+    if (!storage) return ctx.setError(GL_OUT_OF_MEMORY);
+    if (data) std::memcpy(storage.contents, data, static_cast<size_t>(size));
+    buffer->mtl = storage;
+    buffer->size = size;
+    buffer->usage = GL_DYNAMIC_DRAW;
+    buffer->immutable = true;
+    buffer->storageFlags = flags;
+    buffer->lastUseSerial = buffer->lastWriteSerial = 0;
+    ++buffer->version;
+    ctx.markDirty(kDirtyVertexInput | kDirtyUniformBuffers);
+}
+
 void BufferSubData(Context& ctx, GLenum target, GLintptr offset, GLsizeiptr size, const void* data) {
     if (offset < 0 || size < 0) return ctx.setError(GL_INVALID_VALUE);
     Buffer* buffer = boundBuffer(ctx, target);
     if (!buffer) return;
     if (offset + size > buffer->size) return ctx.setError(GL_INVALID_VALUE);
     if (buffer->mapped && !(buffer->mapAccess & GL_MAP_PERSISTENT_BIT)) return ctx.setError(GL_INVALID_OPERATION);
+    if (buffer->immutable && !(buffer->storageFlags & GL_DYNAMIC_STORAGE_BIT)) return ctx.setError(GL_INVALID_OPERATION);
     if (!size || !data || !buffer->mtl) return;
     if (gpuBusy(ctx, *buffer)) {
-        if (size == buffer->size || buffer->size <= (256 << 10)) {
+        // Immutable storage keeps its memory (it may be persistently mapped).
+        if (!buffer->immutable && (size == buffer->size || buffer->size <= (256 << 10))) {
             // Small or whole-buffer updates: copy-on-write.
             rename(ctx, *buffer, size != buffer->size);
         } else {
@@ -267,13 +294,26 @@ void* MapBufferRange(Context& ctx, GLenum target, GLintptr offset, GLsizeiptr le
         ctx.setError(GL_INVALID_OPERATION);
         return nullptr;
     }
+    if (buffer->immutable) {
+        const GLbitfield flags = buffer->storageFlags;
+        if ((read && !(flags & GL_MAP_READ_BIT)) || (write && !(flags & GL_MAP_WRITE_BIT)) ||
+            ((access & GL_MAP_PERSISTENT_BIT) && !(flags & GL_MAP_PERSISTENT_BIT)) ||
+            ((access & GL_MAP_COHERENT_BIT) && !(flags & GL_MAP_COHERENT_BIT))) {
+            ctx.setError(GL_INVALID_OPERATION);
+            return nullptr;
+        }
+    } else if (access & (GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT)) {
+        ctx.setError(GL_INVALID_OPERATION);  // only immutable storage can be mapped persistently
+        return nullptr;
+    }
     if (!buffer->mtl) {
         ctx.setError(GL_OUT_OF_MEMORY);
         return nullptr;
     }
     if (!(access & GL_MAP_UNSYNCHRONIZED_BIT) && gpuBusy(ctx, *buffer)) {
-        if (access & GL_MAP_INVALIDATE_BUFFER_BIT) rename(ctx, *buffer, false);
-        else if ((access & GL_MAP_INVALIDATE_RANGE_BIT) && !read) rename(ctx, *buffer, true);
+        // Immutable storage is never renamed: an invalidating map just waits.
+        if ((access & GL_MAP_INVALIDATE_BUFFER_BIT) && !buffer->immutable) rename(ctx, *buffer, false);
+        else if ((access & GL_MAP_INVALIDATE_RANGE_BIT) && !read && !buffer->immutable) rename(ctx, *buffer, true);
         else ctx.stream().waitFor(buffer->lastUseSerial);
     }
     buffer->mapped = true;

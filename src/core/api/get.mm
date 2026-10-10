@@ -180,6 +180,10 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
     // GL_ARB_ES2_compatibility.
     case GL_SHADER_COMPILER: out = bools({true}); return true;
     case GL_NUM_SHADER_BINARY_FORMATS: out = ints({0}); return true;
+    case GL_NUM_PROGRAM_BINARY_FORMATS: case GL_PROGRAM_BINARY_FORMATS:
+        if (ctx.version() < 41 && !ctx.hasExtension("GL_ARB_get_program_binary")) return false;
+        out = pname == GL_NUM_PROGRAM_BINARY_FORMATS ? ints({0}) : ints({});
+        return true;
     case GL_SHADER_BINARY_FORMATS: out = ints({}); return true;
     case GL_IMPLEMENTATION_COLOR_READ_FORMAT:
     case GL_IMPLEMENTATION_COLOR_READ_TYPE: {
@@ -212,6 +216,19 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
         out = ints({kMaxDefaultUniformComponents + static_cast<int64_t>(kMaxUniformBlocksPerStage) * kMaxUniformBlockSize / 4});
         return true;
     case GL_UNIFORM_BUFFER_OFFSET_ALIGNMENT: out = ints({256}); return true;
+    case GL_MIN_MAP_BUFFER_ALIGNMENT: out = ints({64}); return true;  // GL_ARB_map_buffer_alignment
+    case GL_CLIP_ORIGIN: out = ints({s.clipOrigin}); return true;      // GL_ARB_clip_control
+    // KHR_debug
+    case GL_MAX_DEBUG_MESSAGE_LENGTH: out = ints({static_cast<int64_t>(Context::kMaxDebugMessageLength)}); return true;
+    case GL_MAX_DEBUG_LOGGED_MESSAGES: out = ints({static_cast<int64_t>(Context::kMaxDebugLoggedMessages)}); return true;
+    case GL_MAX_DEBUG_GROUP_STACK_DEPTH: out = ints({static_cast<int64_t>(Context::kMaxDebugGroupDepth)}); return true;
+    case GL_MAX_LABEL_LENGTH: out = ints({Context::kMaxLabelLength}); return true;
+    case GL_DEBUG_LOGGED_MESSAGES: out = ints({static_cast<int64_t>(ctx.debugLog.size())}); return true;
+    case GL_DEBUG_NEXT_LOGGED_MESSAGE_LENGTH:
+        out = ints({ctx.debugLog.empty() ? 0 : static_cast<int64_t>(ctx.debugLog.front().message.size() + 1)});
+        return true;
+    case GL_DEBUG_GROUP_STACK_DEPTH: out = ints({static_cast<int64_t>(ctx.debugGroups.size())}); return true;
+    case GL_CLIP_DEPTH_MODE: out = ints({s.clipDepthMode}); return true;
     case GL_MAX_TEXTURE_IMAGE_UNITS: case GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS: case GL_MAX_GEOMETRY_TEXTURE_IMAGE_UNITS:
         out = ints({kMaxTextureUnitsPerStage});
         return true;
@@ -270,12 +287,12 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
     case GL_STENCIL_BACK_FAIL: out = ints({s.stencilBack.sfail}); return true;
     case GL_STENCIL_BACK_PASS_DEPTH_FAIL: out = ints({s.stencilBack.dpfail}); return true;
     case GL_STENCIL_BACK_PASS_DEPTH_PASS: out = ints({s.stencilBack.dppass}); return true;
-    case GL_BLEND_SRC_RGB: out = ints({s.blendSrcRGB}); return true;
-    case GL_BLEND_DST_RGB: out = ints({s.blendDstRGB}); return true;
-    case GL_BLEND_SRC_ALPHA: out = ints({s.blendSrcAlpha}); return true;
-    case GL_BLEND_DST_ALPHA: out = ints({s.blendDstAlpha}); return true;
-    case GL_BLEND_EQUATION_RGB: out = ints({s.blendEquationRGB}); return true;
-    case GL_BLEND_EQUATION_ALPHA: out = ints({s.blendEquationAlpha}); return true;
+    case GL_BLEND_SRC_RGB: out = ints({s.blend[0].srcRGB}); return true;
+    case GL_BLEND_DST_RGB: out = ints({s.blend[0].dstRGB}); return true;
+    case GL_BLEND_SRC_ALPHA: out = ints({s.blend[0].srcAlpha}); return true;
+    case GL_BLEND_DST_ALPHA: out = ints({s.blend[0].dstAlpha}); return true;
+    case GL_BLEND_EQUATION_RGB: out = ints({s.blend[0].equationRGB}); return true;
+    case GL_BLEND_EQUATION_ALPHA: out = ints({s.blend[0].equationAlpha}); return true;
     case GL_BLEND_COLOR: out = floats({s.blendColor[0], s.blendColor[1], s.blendColor[2], s.blendColor[3]}, Value::NormFloat); return true;
     case GL_CULL_FACE_MODE: out = ints({s.cullFaceMode}); return true;
     case GL_FRONT_FACE: out = ints({s.frontFace}); return true;
@@ -413,6 +430,15 @@ bool getIndexed(Context& ctx, GLenum pname, GLuint index, Value& out, bool& badI
         if (index >= static_cast<GLuint>(ContextState::kMaxDrawBuffers)) { badIndex = true; return true; }
         out = bools({((s.blendEnable >> index) & 1) != 0});
         return true;
+    case GL_BLEND_SRC_RGB: case GL_BLEND_DST_RGB: case GL_BLEND_SRC_ALPHA: case GL_BLEND_DST_ALPHA:
+    case GL_BLEND_EQUATION_RGB: case GL_BLEND_EQUATION_ALPHA: {  // GL_ARB_draw_buffers_blend
+        if (index >= static_cast<GLuint>(ContextState::kMaxDrawBuffers)) { badIndex = true; return true; }
+        const ContextState::Blend& b = s.blend[index];
+        out = ints({pname == GL_BLEND_SRC_RGB ? b.srcRGB : pname == GL_BLEND_DST_RGB ? b.dstRGB
+                    : pname == GL_BLEND_SRC_ALPHA ? b.srcAlpha : pname == GL_BLEND_DST_ALPHA ? b.dstAlpha
+                    : pname == GL_BLEND_EQUATION_RGB ? b.equationRGB : b.equationAlpha});
+        return true;
+    }
     case GL_SAMPLE_MASK_VALUE:
         if (index >= 1) { badIndex = true; return true; }
         out = uints({s.sampleMaskValue});

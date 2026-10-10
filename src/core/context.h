@@ -2,6 +2,7 @@
 #pragma once
 
 #include <array>
+#include <deque>
 #include <memory>
 #include <string>
 
@@ -59,6 +60,7 @@ public:
     NameTable<Framebuffer> framebuffers;
     NameTable<Query> queries;
     NameTable<TransformFeedback> transformFeedbacks;
+    NameTable<ProgramPipeline> programPipelines;
     RefPtr<VertexArray> defaultVertexArray;
     RefPtr<TransformFeedback> defaultTransformFeedback;
     // Texture object 0 of each target, and the proxy texture of each target.
@@ -97,9 +99,32 @@ public:
     } occlusionSlot;
     uint64_t occlusionEpoch = 1;
 
-    // Debug output.
+    // Debug output (KHR_debug / ARB_debug_output, core/api/debug.mm).
     GLDEBUGPROC debugCallback = nullptr;
     const void* debugUserParam = nullptr;
+    struct DebugRule {
+        GLenum source, type, severity;  // GL_DONT_CARE matches any
+        std::vector<GLuint> ids;        // empty: any id
+        bool enabled;
+    };
+    struct DebugGroup {
+        GLenum source;
+        GLuint id;
+        std::string message;
+        std::vector<DebugRule> rules;  // applied in order over the default (all but LOW enabled)
+    };
+    struct DebugLogEntry {
+        GLenum source, type, severity;
+        GLuint id;
+        std::string message;
+    };
+    std::vector<DebugGroup> debugGroups{DebugGroup{GL_DEBUG_SOURCE_APPLICATION, 0, "", {}}};
+    std::deque<DebugLogEntry> debugLog;
+    static constexpr size_t kMaxDebugLoggedMessages = 64, kMaxDebugMessageLength = 1024, kMaxDebugGroupDepth = 64;
+    static constexpr GLsizei kMaxLabelLength = 256;
+    bool debugMessageEnabled(GLenum source, GLenum type, GLuint id, GLenum severity) const;
+    // Name of the GL command being executed (set by the generated entry points).
+    const char* currentCommand = "";
 
 private:
     void initStrings();

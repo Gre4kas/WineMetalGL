@@ -106,18 +106,50 @@ def implemented_commands():
     # Families defined through macros in api/program.mm.
     uniform_v = re.compile(r"^WMGL_UNIFORM_V\((\w+),", re.M)
     uniform_matrix = re.compile(r"^WMGL_UNIFORM_MATRIX\((\w+),", re.M)
+    double_v = re.compile(r"^WMGL_UNIFORM_DOUBLE_V\((\w+)\)", re.M)
+    double_matrix = re.compile(r"^WMGL_UNIFORM_DOUBLE_MATRIX\((\w+)\)", re.M)
     for path in glob.glob(rel("src", "core", "**", "*.mm"), recursive=True) + glob.glob(
             rel("src", "core", "**", "*.cpp"), recursive=True):
         text = open(path).read()
         names.update("gl" + m.group(1) for m in pattern.finditer(text))
-        names.update("glUniform" + m.group(1) for m in uniform_v.finditer(text))
-        names.update("glUniformMatrix" + m.group(1) + "fv" for m in uniform_matrix.finditer(text))
+        names.update("glProgramUniform" + m.group(1) for m in double_v.finditer(text))
+        names.update("glProgramUniformMatrix" + m.group(1) + "dv" for m in double_matrix.finditer(text))
+        for prefix in ("glUniform", "glProgramUniform"):
+            names.update(prefix + m.group(1) for m in uniform_v.finditer(text))
+            names.update(prefix + "Matrix" + m.group(1) + "fv" for m in uniform_matrix.finditer(text))
     return names
+
+
+def extension_commands():
+    """{extension: [commands]} and {command: alias target} from the Khronos registry."""
+    root = ET.parse(rel("third_party", "khronos", "gl.xml")).getroot()
+    aliases = {}
+    for command in root.iter("command"):
+        proto = command.find("proto")
+        alias = command.find("alias")
+        if proto is not None and alias is not None:
+            aliases[proto.findtext("name")] = alias.get("name")
+    extensions = {}
+    for ext in root.iter("extension"):
+        if "gl" not in (ext.get("supported") or "").split("|") and "glcore" not in (ext.get("supported") or "").split("|"):
+            continue
+        commands = []
+        for require in ext.iter("require"):
+            if require.get("api") not in (None, "gl"):
+                continue
+            # Blocks marked "Supported only if GL_X is supported" count only when X is advertised.
+            condition = re.search(r"only if (GL_\w+)", require.get("comment") or "")
+            commands += [(c.get("name"), condition.group(1) if condition else None) for c in require.iter("command")]
+        extensions[ext.get("name")] = commands
+    return extensions, aliases
 
 
 def advertised_extensions():
     text = open(rel("src", "core", "context.mm")).read()
-    return re.findall(r'extensions_\.push_back\("([^"]+)"\)', text)
+    start = text.index("void Context::initStrings()")
+    body = text[start:text.index("\n}\n", start)]
+    body = "\n".join(line.split("//")[0] for line in body.splitlines())  # ignore comments
+    return re.findall(r'"((?:GL|WGL)_\w+)"', body)
 
 
 def games():
@@ -138,6 +170,20 @@ def render(baselines):
     implemented = implemented_commands()
     missing = [c for c in core if c not in implemented]
     extensions = advertised_extensions()
+    ext_commands, aliases = extension_commands()
+    incomplete = {}
+    for ext in extensions:
+        if ext.startswith("WGL_"):
+            continue
+        absent = [c for c, condition in ext_commands.get(ext, [])
+                  if (condition is None or condition in extensions) and c not in implemented and aliases.get(c) not in implemented]
+        if ext not in ext_commands:
+            absent = ["(not in gl.xml)"]
+        if absent:
+            incomplete[ext] = absent
+    if incomplete:
+        raise SystemExit("advertised extensions with unimplemented commands:\n  " +
+                         "\n  ".join("%s: %s" % (k, ", ".join(v)) for k, v in sorted(incomplete.items())))
     game_entries, game_results, game_record = games()
 
     # ---- conformance.md

@@ -53,11 +53,22 @@ public:
     // to the attachment's type.
     void clearBuffer(GLenum buffer, GLint drawbuffer, const double color[4], double depth, GLint stencil);
 
+    // The executable that draws use: the current program's, else the bound
+    // program pipeline's (GL_ARB_separate_shader_objects). Null if neither.
+    LinkedProgram* executable();
+
     // glDispatchCompute / glDispatchComputeIndirect (validated by the caller);
     // `indirect` is the DISPATCH_INDIRECT_BUFFER, or null.
     void dispatch(GLuint x, GLuint y, GLuint z, Buffer* indirect, GLintptr offset);
 
     TransientAllocator& transient() { return transient_; }
+
+    // GL_ARB_base_instance: the base instance of the draw being issued.
+    struct BaseInstanceScope {
+        BaseInstanceScope(DrawState& d, GLuint base) : draw(d) { draw.baseInstance_ = base; }
+        ~BaseInstanceScope() { draw.baseInstance_ = 0; }
+        DrawState& draw;
+    };
 
 private:
     bool validateDraw(GLenum mode);
@@ -96,7 +107,12 @@ private:
     bool rotateProvoking(GLenum mode, LinkedProgram& program) const;
     // Depth/stencil, dynamic state, scissor, uniforms and textures for a draw.
     void bindDrawState(id<MTLRenderCommandEncoder> encoder, LinkedProgram& program);
-    void uniformBlockBuffer(size_t block, __strong id<MTLBuffer>& buffer, NSUInteger& offset);
+    void uniformBlockBuffer(LinkedProgram& program, size_t block, __strong id<MTLBuffer>& buffer, NSUInteger& offset);
+    // The program object whose state feeds `stage` (pipelines: the stage's
+    // program), and the owner and own index of a uniform block or sampler.
+    Program* stageProgram(LinkedProgram& program, int stage);
+    std::pair<Program*, size_t> blockSource(LinkedProgram& program, size_t block);
+    std::pair<Program*, size_t> samplerSource(LinkedProgram& program, size_t index);
     void samplerBinding(LinkedProgram& program, size_t index, __strong id<MTLTexture>& view,
                         __strong id<MTLSamplerState>& sampler);
     void waitForCpuVertexReads(LinkedProgram& program, bool gather);
@@ -109,6 +125,8 @@ private:
     Context& ctx_;
     TransientAllocator transient_;
     uint64_t lastPassGeneration_ = 0;
+    GLuint baseInstance_ = 0;
+    std::shared_ptr<LinkedProgram> current_;  // keeps a pipeline executable alive during a draw
     PipelineKey lastKey_{};
     TargetFormats lastFormats_{};
     MTLScissorRect lastScissor_{};

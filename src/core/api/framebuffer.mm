@@ -206,13 +206,17 @@ void DeleteFramebuffers(Context& ctx, GLsizei n, const GLuint* framebuffers) {
 
 GLboolean IsFramebuffer(Context& ctx, GLuint framebuffer) { return ctx.framebuffers.exists(framebuffer) ? GL_TRUE : GL_FALSE; }
 
-void BindFramebuffer(Context& ctx, GLenum target, GLuint name) {
+namespace {
+
+// `createUnused`: EXT_framebuffer_object (and compatibility contexts) create
+// objects for names GenFramebuffers did not return.
+void bindFramebuffer(Context& ctx, GLenum target, GLuint name, bool createUnused) {
     if (target != GL_FRAMEBUFFER && target != GL_DRAW_FRAMEBUFFER && target != GL_READ_FRAMEBUFFER)
         return ctx.setError(GL_INVALID_ENUM);
     RefPtr<Framebuffer> fb;
     if (name) {
         if (!ctx.framebuffers.isGenerated(name)) {
-            if (ctx.isCore()) return ctx.setError(GL_INVALID_OPERATION);
+            if (!createUnused) return ctx.setError(GL_INVALID_OPERATION);
             ctx.framebuffers.reserve(name);
         }
         fb = ctx.framebuffers.getRef(name);
@@ -225,6 +229,31 @@ void BindFramebuffer(Context& ctx, GLenum target, GLuint name) {
     if (target != GL_DRAW_FRAMEBUFFER) ctx.state.readFramebuffer = fb;
     ctx.markDirty(kDirtyFramebuffer);
 }
+
+void bindRenderbuffer(Context& ctx, GLenum target, GLuint name, bool createUnused) {
+    if (target != GL_RENDERBUFFER) return ctx.setError(GL_INVALID_ENUM);
+    if (!name) {
+        ctx.state.renderbuffer.reset();
+        return;
+    }
+    ShareLock lock(ctx);
+    RefPtr<Renderbuffer> rb = ctx.share().renderbuffers.getRef(name);
+    if (!rb) {
+        if (!ctx.share().renderbuffers.isGenerated(name)) {
+            if (!createUnused) return ctx.setError(GL_INVALID_OPERATION);
+            ctx.share().renderbuffers.reserve(name);
+        }
+        rb = makeRef<Renderbuffer>(name);
+        ctx.share().renderbuffers.set(name, rb);
+    }
+    ctx.state.renderbuffer = rb;
+}
+
+}  // namespace
+
+void BindFramebuffer(Context& ctx, GLenum target, GLuint name) { bindFramebuffer(ctx, target, name, !ctx.isCore()); }
+
+void BindFramebufferEXT(Context& ctx, GLenum target, GLuint name) { bindFramebuffer(ctx, target, name, true); }
 
 GLenum CheckFramebufferStatus(Context& ctx, GLenum target) {
     RefPtr<Framebuffer>* binding = framebufferBinding(ctx, target);
@@ -435,24 +464,9 @@ GLboolean IsRenderbuffer(Context& ctx, GLuint renderbuffer) {
     return ctx.share().renderbuffers.exists(renderbuffer) ? GL_TRUE : GL_FALSE;
 }
 
-void BindRenderbuffer(Context& ctx, GLenum target, GLuint name) {
-    if (target != GL_RENDERBUFFER) return ctx.setError(GL_INVALID_ENUM);
-    if (!name) {
-        ctx.state.renderbuffer.reset();
-        return;
-    }
-    ShareLock lock(ctx);
-    RefPtr<Renderbuffer> rb = ctx.share().renderbuffers.getRef(name);
-    if (!rb) {
-        if (!ctx.share().renderbuffers.isGenerated(name)) {
-            if (ctx.isCore()) return ctx.setError(GL_INVALID_OPERATION);
-            ctx.share().renderbuffers.reserve(name);
-        }
-        rb = makeRef<Renderbuffer>(name);
-        ctx.share().renderbuffers.set(name, rb);
-    }
-    ctx.state.renderbuffer = rb;
-}
+void BindRenderbuffer(Context& ctx, GLenum target, GLuint name) { bindRenderbuffer(ctx, target, name, !ctx.isCore()); }
+
+void BindRenderbufferEXT(Context& ctx, GLenum target, GLuint name) { bindRenderbuffer(ctx, target, name, true); }
 
 void RenderbufferStorageMultisample(Context& ctx, GLenum target, GLsizei samples, GLenum internalformat, GLsizei width,
                                     GLsizei height) {
@@ -692,7 +706,7 @@ void ReadPixels(Context& ctx, GLint x, GLint y, GLsizei width, GLsizei height, G
     if (pbo) {
         const TransferLayout layout = transferLayout(format, type, width, height, 1, ps);
         const uintptr_t offset = reinterpret_cast<uintptr_t>(pixels);
-        if (pbo->mapped || !pbo->mtl || offset + layout.bytesNeeded > static_cast<size_t>(pbo->size))
+        if (pbo->mappedNonPersistent() || !pbo->mtl || offset + layout.bytesNeeded > static_cast<size_t>(pbo->size))
             return ctx.setError(GL_INVALID_OPERATION);
         ctx.stream().waitFor(pbo->lastUseSerial);
         destination = pbo->contents() + offset;

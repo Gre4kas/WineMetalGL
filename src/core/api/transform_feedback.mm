@@ -2,6 +2,7 @@
 // Capture itself happens in the draw path (DrawState::captureTransformFeedback).
 
 #include "core/context.h"
+#include "core/draw.h"
 #include "core/program.h"
 #include "gl_api.gen.h"
 
@@ -12,10 +13,12 @@ void BeginTransformFeedback(Context& ctx, GLenum primitiveMode) {
         return ctx.setError(GL_INVALID_ENUM);
     TransformFeedback& xfb = *ctx.state.transformFeedback;
     if (xfb.active) return ctx.setError(GL_INVALID_OPERATION);
-    Program* p = ctx.state.program.get();
-    if (!p || !p->linked || p->linked->link.transformFeedback.empty()) return ctx.setError(GL_INVALID_OPERATION);
+    // The current program, or the bound pipeline's last vertex-processing program.
+    LinkedProgram* lp = ctx.draw().executable();
+    if (!lp || lp->link.transformFeedback.empty()) return ctx.setError(GL_INVALID_OPERATION);
+    Program* p = lp->pipeline ? lp->stageOwner[static_cast<int>(shader::Stage::Vertex)] : ctx.state.program.get();
     // Every buffer the program captures into must be bound.
-    for (int b = 0; b < p->linked->link.xfbBufferCount; ++b)
+    for (int b = 0; b < lp->link.xfbBufferCount; ++b)
         if (!xfb.buffers[b].buffer) return ctx.setError(GL_INVALID_OPERATION);
     xfb.active = true;
     xfb.paused = false;

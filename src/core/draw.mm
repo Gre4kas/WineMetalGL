@@ -267,7 +267,15 @@ bool DrawState::validateDraw(GLenum mode) {
         return false;
     }
     Program* program = ctx_.state.program.get();
-    if (!program || !program->linked) {
+    if (!program && ctx_.state.programPipeline) {
+        // GL_ARB_separate_shader_objects: an invalid pipeline cannot draw.
+        if (!api::validateProgramPipeline(*ctx_.state.programPipeline)) {
+            ctx_.setError(GL_INVALID_OPERATION);
+            return false;
+        }
+        LinkedProgram* lp = executable();
+        if (!lp || !lp->link.stages[static_cast<int>(Stage::Vertex)].present) return false;
+    } else if (!program || !program->linked) {
         if (ctx_.isCore() || !program) {
             // Without a program, core profile draws are undefined but not an error;
             // the compatibility profile needs fixed-function emulation (W22).
@@ -281,7 +289,7 @@ bool DrawState::validateDraw(GLenum mode) {
     }
     // Mapped buffers may not be used by draws.
     for (const VertexAttrib& a : ctx_.state.vertexArray->attribs)
-        if (a.enabled && a.buffer && a.buffer->mapped) {
+        if (a.enabled && a.buffer && a.buffer->mappedNonPersistent()) {
             ctx_.setError(GL_INVALID_OPERATION);
             return false;
         }
@@ -505,7 +513,8 @@ bool DrawState::bindVertexInputs(id<MTLRenderCommandEncoder> encoder, PipelineKe
             count = static_cast<uint32_t>(gather->size());
         } else if (a.divisor) {
             // Instanced attribute: one element per `divisor` instances.
-            count = static_cast<uint32_t>((std::max<GLsizei>(1, instances) + a.divisor - 1) / a.divisor);
+            // Instanced attribute: one element per `divisor` instances, from the base instance.
+            count = baseInstance_ + static_cast<uint32_t>((std::max<GLsizei>(1, instances) + a.divisor - 1) / a.divisor);
         } else {
             first = static_cast<uint32_t>(std::max(0, firstVertex));
             count = static_cast<uint32_t>(std::max(0, vertexCount));
@@ -558,15 +567,38 @@ bool DrawState::bindVertexInputs(id<MTLRenderCommandEncoder> encoder, PipelineKe
     return true;
 }
 
+Program* DrawState::stageProgram(LinkedProgram& program, int stage) {
+    return program.pipeline ? program.stageOwner[stage] : ctx_.state.program.get();
+}
+
+std::pair<Program*, size_t> DrawState::blockSource(LinkedProgram& program, size_t block) {
+    if (!program.pipeline) return {ctx_.state.program.get(), block};
+    return {program.blockOwner[block].first, static_cast<size_t>(program.blockOwner[block].second)};
+}
+
+std::pair<Program*, size_t> DrawState::samplerSource(LinkedProgram& program, size_t index) {
+    if (!program.pipeline) return {ctx_.state.program.get(), index};
+    return {program.samplerOwner[index].first, static_cast<size_t>(program.samplerOwner[index].second)};
+}
+
+LinkedProgram* DrawState::executable() {
+    if (Program* p = ctx_.state.program.get()) return p->linked.get();
+    if (ProgramPipeline* pp = ctx_.state.programPipeline.get()) {
+        current_ = pipelineExecutable(*pp);
+        return current_.get();
+    }
+    return nullptr;
+}
+
 void DrawState::bindUniforms(id<MTLRenderCommandEncoder> encoder, LinkedProgram& program) {
-    Program& p = *ctx_.state.program;
     // Driver uniforms read by the generated vertex code (see compiler.cpp addPointSize).
     const struct {
         float pointSize;
         uint32_t programPointSize;
-    } driver = {std::clamp(ctx_.state.pointSize, 1.0f, 511.0f), ctx_.state.programPointSize ? 1u : 0u};
+        uint32_t clipFlags;  // see compiler.cpp addPointSize
+    } driver = {std::clamp(ctx_.state.pointSize, 1.0f, 511.0f), ctx_.state.programPointSize ? 1u : 0u,
+                (ctx_.state.clipDepthMode == GL_ZERO_TO_ONE ? 1u : 0u) | (ctx_.state.clipOrigin == GL_UPPER_LEFT ? 2u : 0u)};
     [encoder setVertexBytes:&driver length:sizeof(driver) atIndex:shader::kSlotDriverUniforms];
-    const uint32_t size = (program.link.defaultBlockSize + 15) & ~15u;
     const uint64_t serial = ctx_.stream().serial();
     static id<MTLBuffer> zero = [Device::get().mtl() newBufferWithLength:65536 options:MTLResourceStorageModePrivate];
     for (int s : {static_cast<int>(Stage::Vertex), static_cast<int>(Stage::Fragment)}) {
@@ -577,7 +609,11 @@ void DrawState::bindUniforms(id<MTLRenderCommandEncoder> encoder, LinkedProgram&
             const uint32_t flip = ctx_.state.pointSpriteCoordOrigin == GL_UPPER_LEFT ? 1u : 0u;
             [encoder setFragmentBytes:&flip length:sizeof(flip) atIndex:shader::kSlotDriverUniforms];
         }
+        // Default uniforms of the program that owns the stage.
+        Program* owner = stageProgram(program, s);
+        const uint32_t size = owner && owner->linked ? (owner->linked->link.defaultBlockSize + 15) & ~15u : 0;
         if (stage.usesDefaultUniforms && size) {
+            Program& p = *owner;
             if (p.uniformData.size() < size) p.uniformData.resize(size, 0);
             if (size <= 4096) {
                 if (vertex) [encoder setVertexBytes:p.uniformData.data() length:size atIndex:shader::kSlotDefaultUniforms];
@@ -594,15 +630,18 @@ void DrawState::bindUniforms(id<MTLRenderCommandEncoder> encoder, LinkedProgram&
             if (slot < 0) continue;
             id<MTLBuffer> buffer = zero;
             NSUInteger offset = 0;
-            uniformBlockBuffer(b, buffer, offset);
+            uniformBlockBuffer(program, b, buffer, offset);
             if (vertex) [encoder setVertexBuffer:buffer offset:offset atIndex:static_cast<NSUInteger>(slot)];
             else [encoder setFragmentBuffer:buffer offset:offset atIndex:static_cast<NSUInteger>(slot)];
         }
     }
 }
 
-void DrawState::uniformBlockBuffer(size_t block, __strong id<MTLBuffer>& buffer, NSUInteger& offset) {
-    Program& p = *ctx_.state.program;
+void DrawState::uniformBlockBuffer(LinkedProgram& program, size_t index, __strong id<MTLBuffer>& buffer,
+                                   NSUInteger& offset) {
+    const auto [owner, block] = blockSource(program, index);
+    if (!owner) return;
+    const Program& p = *owner;
     const GLuint binding = block < p.uniformBlockBindings.size() ? p.uniformBlockBindings[block] : 0;
     if (binding >= ContextState::kMaxUniformBufferBindings) return;
     const IndexedBufferBinding& ib = ctx_.state.uniformBufferBindings[binding];
@@ -614,9 +653,9 @@ void DrawState::uniformBlockBuffer(size_t block, __strong id<MTLBuffer>& buffer,
 
 void DrawState::samplerBinding(LinkedProgram& program, size_t index, __strong id<MTLTexture>& view,
                                __strong id<MTLSamplerState>& sampler) {
-    Program& p = *ctx_.state.program;
     const shader::SamplerSlotInfo& slot = program.link.samplers[index];
-    const GLint unit = index < p.samplerUnits.size() ? p.samplerUnits[index] : 0;
+    const auto [owner, ownIndex] = samplerSource(program, index);
+    const GLint unit = owner && ownIndex < owner->samplerUnits.size() ? owner->samplerUnits[ownIndex] : 0;
     Texture* texture = nullptr;
     if (unit >= 0 && unit < ContextState::kMaxTextureUnits && slot.textureTarget >= 0)
         texture = ctx_.state.textureUnits[unit].bound[slot.textureTarget].get();
@@ -677,7 +716,9 @@ void DrawState::applyDynamicState(id<MTLRenderCommandEncoder> encoder, const Ren
     MTLCullMode cull = MTLCullModeNone;
     if (st.cullFace) cull = st.cullFaceMode == GL_FRONT ? MTLCullModeFront : MTLCullModeBack;
     [encoder setCullMode:cull];
-    [encoder setFrontFacingWinding:st.frontFace == GL_CCW ? MTLWindingClockwise : MTLWindingCounterClockwise];
+    // With an UPPER_LEFT clip origin (GL_ARB_clip_control) Y is not flipped.
+    const bool flipped = st.clipOrigin == GL_LOWER_LEFT;
+    [encoder setFrontFacingWinding:(st.frontFace == GL_CCW) == flipped ? MTLWindingClockwise : MTLWindingCounterClockwise];
     [encoder setTriangleFillMode:st.polygonMode == GL_LINE ? MTLTriangleFillModeLines : MTLTriangleFillModeFill];
     const bool offset = (st.polygonMode == GL_FILL && st.polygonOffsetFill) ||
                         (st.polygonMode == GL_LINE && st.polygonOffsetLine) ||
@@ -713,7 +754,7 @@ id<MTLRenderCommandEncoder> DrawState::prepare(GLenum mode, MTLPrimitiveType& pr
     }
     if (st.cullFace && st.cullFaceMode == GL_FRONT_AND_BACK && topologyClass(mode) == MTLPrimitiveTopologyClassTriangle)
         return nil;
-    LinkedProgram* program = st.program ? st.program->linked.get() : nullptr;
+    LinkedProgram* program = executable();
     if (!program) return nil;
 
     id<MTLRenderCommandEncoder> encoder = ctx_.stream().render(target);
@@ -738,12 +779,12 @@ id<MTLRenderCommandEncoder> DrawState::prepare(GLenum mode, MTLPrimitiveType& pr
                                            (mask[3] && !formats.alphaIsOne[i] ? MTLColorWriteMaskAlpha : 0));
         b.enabled = (st.blendEnable >> i) & 1 && !formats.integer[i];
         if (b.enabled) {
-            b.srcRGB = static_cast<uint8_t>(mtlBlendFactor(st.blendSrcRGB));
-            b.dstRGB = static_cast<uint8_t>(mtlBlendFactor(st.blendDstRGB));
-            b.srcAlpha = static_cast<uint8_t>(mtlBlendFactor(st.blendSrcAlpha));
-            b.dstAlpha = static_cast<uint8_t>(mtlBlendFactor(st.blendDstAlpha));
-            b.opRGB = static_cast<uint8_t>(mtlBlendOp(st.blendEquationRGB));
-            b.opAlpha = static_cast<uint8_t>(mtlBlendOp(st.blendEquationAlpha));
+            b.srcRGB = static_cast<uint8_t>(mtlBlendFactor(st.blend[i].srcRGB));
+            b.dstRGB = static_cast<uint8_t>(mtlBlendFactor(st.blend[i].dstRGB));
+            b.srcAlpha = static_cast<uint8_t>(mtlBlendFactor(st.blend[i].srcAlpha));
+            b.dstAlpha = static_cast<uint8_t>(mtlBlendFactor(st.blend[i].dstAlpha));
+            b.opRGB = static_cast<uint8_t>(mtlBlendOp(st.blend[i].equationRGB));
+            b.opAlpha = static_cast<uint8_t>(mtlBlendOp(st.blend[i].equationAlpha));
         }
     }
     key.depthFormat = static_cast<uint16_t>(formats.depth);
@@ -864,15 +905,15 @@ bool DrawState::issue(GLenum mode, GLint first, GLsizei count, GLsizei instances
                       id<MTLBuffer> indexBuffer, NSUInteger indexOffset, MTLIndexType indexType, GLint baseVertex,
                       GLint minVertex, GLsizei vertexSpan) {
     queriesCountPrimitives(ctx_, mode, count, instances);
-    if (ctx_.state.program && ctx_.state.program->linked) {
-        waitForCpuVertexReads(*ctx_.state.program->linked, false);
-        prepareSamplerStorage(*ctx_.state.program->linked);
-    }
+    LinkedProgram* current = executable();
+    if (!current) return false;
+    waitForCpuVertexReads(*current, false);
+    prepareSamplerStorage(*current);
     MTLPrimitiveType primitive = MTLPrimitiveTypeTriangle;
     id<MTLRenderCommandEncoder> encoder = prepare(mode, primitive);
     if (!encoder) return false;
     queriesBeforeDraw(ctx_, encoder);
-    LinkedProgram& program = *ctx_.state.program->linked;
+    LinkedProgram& program = *current;
     PipelineKey key = lastKey_;
     // Instanced attributes need data for every instance they cover.
     if (!bindVertexInputs(encoder, key, program, minVertex, vertexSpan, instances)) {
@@ -902,14 +943,14 @@ bool DrawState::issue(GLenum mode, GLint first, GLsizei count, GLsizei instances
         std::memcpy(alloc.data, out.data(), out.size() * 4);
         [encoder drawIndexedPrimitives:native indexCount:out.size() indexType:MTLIndexTypeUInt32
                            indexBuffer:alloc.buffer indexBufferOffset:alloc.offset instanceCount:std::max(1, instances)
-                            baseVertex:indexData ? baseVertex : 0 baseInstance:0];
+                            baseVertex:indexData ? baseVertex : 0 baseInstance:baseInstance_];
     } else if (indexBuffer) {
         [encoder drawIndexedPrimitives:native indexCount:static_cast<NSUInteger>(count) indexType:indexType
                            indexBuffer:indexBuffer indexBufferOffset:indexOffset instanceCount:std::max(1, instances)
-                            baseVertex:baseVertex baseInstance:0];
+                            baseVertex:baseVertex baseInstance:baseInstance_];
     } else {
         [encoder drawPrimitives:native vertexStart:static_cast<NSUInteger>(first) vertexCount:static_cast<NSUInteger>(count)
-                  instanceCount:std::max(1, instances) baseInstance:0];
+                  instanceCount:std::max(1, instances) baseInstance:baseInstance_];
     }
     ctx_.stream().noteDraw();
     return true;
@@ -1002,8 +1043,7 @@ void DrawState::bindCaptureDefaults(id<MTLRenderCommandEncoder> encoder, LinkedP
 
 void DrawState::captureTransformFeedback(GLenum mode, const std::vector<uint32_t>& vertices, GLsizei instances) {
     TransformFeedback& xfb = *ctx_.state.transformFeedback;
-    Program* p = ctx_.state.program.get();
-    LinkedProgram* lp = p ? p->linked.get() : nullptr;
+    LinkedProgram* lp = executable();
     if (!xfb.active || xfb.paused || !lp || !lp->link.xfbVertexCapture) return;
     const shader::LinkResult& link = lp->link;
     const uint32_t perPrimitive = xfb.primitiveMode == GL_POINTS ? 1 : xfb.primitiveMode == GL_LINES ? 2 : 3;
@@ -1082,7 +1122,7 @@ bool DrawState::runVertexCapture(LinkedProgram& lp, const std::vector<uint32_t>&
     std::memcpy(words + 12, list.data(), list.size() * 4);
     [encoder setVertexBuffer:control.buffer offset:control.offset atIndex:shader::kSlotXfbControl];
     [encoder drawPrimitives:MTLPrimitiveTypePoint vertexStart:0 vertexCount:list.size()
-              instanceCount:static_cast<NSUInteger>(std::max(1, instances)) baseInstance:0];
+              instanceCount:static_cast<NSUInteger>(std::max(1, instances)) baseInstance:baseInstance_];
     ctx_.stream().noteDraw();
     return true;
 }
@@ -1141,9 +1181,13 @@ GLenum geometryInputFor(GLenum mode) {
 
 void DrawState::bindKernelResources(id<MTLComputeCommandEncoder> encoder, LinkedProgram& program,
                                     bool usesDefaultUniforms) {
-    Program& p = *ctx_.state.program;
     const int cs = static_cast<int>(Stage::Compute);
-    const uint32_t size = (program.link.defaultBlockSize + 15) & ~15u;
+    // The compute program, or (geometry kernel) the vertex program.
+    Program* owner = stageProgram(program, cs);
+    if (!owner) owner = stageProgram(program, static_cast<int>(Stage::Vertex));
+    if (!owner || !owner->linked) return;
+    Program& p = *owner;
+    const uint32_t size = (p.linked->link.defaultBlockSize + 15) & ~15u;
     if (usesDefaultUniforms && size) {
         if (p.uniformData.size() < size) p.uniformData.resize(size, 0);
         if (size <= 4096) {
@@ -1160,7 +1204,7 @@ void DrawState::bindKernelResources(id<MTLComputeCommandEncoder> encoder, Linked
         if (slot < 0) continue;
         id<MTLBuffer> buffer = zero;
         NSUInteger offset = 0;
-        uniformBlockBuffer(b, buffer, offset);
+        uniformBlockBuffer(program, b, buffer, offset);
         [encoder setBuffer:buffer offset:offset atIndex:static_cast<NSUInteger>(slot)];
     }
     for (size_t i = 0; i < program.link.samplers.size(); ++i) {
@@ -1175,7 +1219,9 @@ void DrawState::bindKernelResources(id<MTLComputeCommandEncoder> encoder, Linked
 }
 
 void DrawState::dispatch(GLuint x, GLuint y, GLuint z, Buffer* indirect, GLintptr offset) {
-    LinkedProgram& lp = *ctx_.state.program->linked;
+    LinkedProgram* current = executable();
+    if (!current) return;
+    LinkedProgram& lp = *current;
     id<MTLComputePipelineState> pipeline = lp.computePipeline();
     if (!pipeline) return;
     if (indirect && indirect->lastWriteSerial) ctx_.stream().waitFor(indirect->lastWriteSerial);
@@ -1195,7 +1241,7 @@ void DrawState::dispatch(GLuint x, GLuint y, GLuint z, Buffer* indirect, GLintpt
 }
 
 void DrawState::drawGeometry(GLenum mode, const std::vector<uint32_t>& vertices, GLsizei instances, uint32_t& primitiveBase) {
-    LinkedProgram& lp = *ctx_.state.program->linked;
+    LinkedProgram& lp = *executable();
     const shader::GeometryEmulation& g = lp.link.geometry;
     const std::vector<uint32_t> list = assembleGeometryInput(mode, vertices);
     const uint32_t primitives = static_cast<uint32_t>(list.size() / static_cast<size_t>(g.verticesIn));
@@ -1331,7 +1377,7 @@ void DrawState::drawArrays(GLenum mode, GLint first, GLsizei count, GLsizei inst
     }
     if (!validateDraw(mode)) return;
     if (count == 0 || instances == 0 || !conditionalRenderAllows(ctx_)) return;
-    if (ctx_.state.program->linked->link.geometry.active) {
+    if (executable()->link.geometry.active) {
         std::vector<uint32_t> vertices(static_cast<size_t>(count));
         for (GLsizei i = 0; i < count; ++i) vertices[static_cast<size_t>(i)] = static_cast<uint32_t>(first + i);
         uint32_t primitiveBase = 0;
@@ -1359,7 +1405,7 @@ void DrawState::drawElements(GLenum mode, GLsizei count, GLenum type, const void
     if (!validateDraw(mode)) return;
     if (count == 0 || instances == 0 || !conditionalRenderAllows(ctx_)) return;
     Buffer* elementBuffer = ctx_.state.vertexArray->elementBuffer.get();
-    if (elementBuffer && elementBuffer->mapped) {
+    if (elementBuffer && elementBuffer->mappedNonPersistent()) {
         ctx_.setError(GL_INVALID_OPERATION);
         return;
     }
@@ -1403,7 +1449,7 @@ void DrawState::drawElements(GLenum mode, GLsizei count, GLenum type, const void
         maxIndex = std::max(maxIndex, v);
     }
     if (minIndex == UINT32_MAX) return;  // only restart indices
-    if (ctx_.state.program->linked->link.geometry.active) {
+    if (executable()->link.geometry.active) {
         // gl_PrimitiveIDIn keeps counting across restarts.
         uint32_t primitiveBase = 0;
         std::vector<uint32_t> segment;
@@ -1447,7 +1493,7 @@ void DrawState::drawElements(GLenum mode, GLsizei count, GLenum type, const void
         }
         return;
     }
-    const bool rotate = rotateProvoking(mode, *ctx_.state.program->linked);
+    const bool rotate = rotateProvoking(mode, *executable());
     if (elementBuffer && !needsIndices && !rotate && indexSize != 1 && offset % indexSize == 0) {
         elementBuffer->lastUseSerial = ctx_.stream().serial();
         issue(mode, 0, count, instances, nullptr, elementBuffer->mtl, offset,

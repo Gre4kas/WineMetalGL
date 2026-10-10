@@ -108,7 +108,8 @@ void addPointSize(std::string& msl) {
     const size_t structAt = msl.find("struct main0_out\n{\n");
     if (fn == std::string::npos || structAt == std::string::npos || structAt > fn) return;
     const bool writes = msl.find("[[point_size]]") != std::string::npos;
-    const std::string driver = "struct wmgl_DriverUniforms\n{\n    float pointSize;\n    uint programPointSize;\n};\n\n";
+    const std::string driver =
+        "struct wmgl_DriverUniforms\n{\n    float pointSize;\n    uint programPointSize;\n    uint clipFlags;\n};\n\n";
     std::string patched = msl.substr(0, structAt) + driver + msl.substr(structAt, fn - structAt);
     if (!writes) {
         const size_t body = patched.find("struct main0_out\n{\n") + std::string("struct main0_out\n{\n").size();
@@ -123,6 +124,16 @@ void addPointSize(std::string& msl) {
                                       : "out.gl_PointSize = wmgl_driver.pointSize; ";
     for (size_t at = main.find("return out;"); at != std::string::npos; at = main.find("return out;", at + assign.size() + 11))
         main.insert(at, assign);
+    // GL_ARB_clip_control: clipFlags bit 0 is ZERO_TO_ONE depth (no depth
+    // remap), bit 1 the UPPER_LEFT origin (no Y flip).
+    const std::pair<std::string, std::string> clip[] = {
+        {"out.gl_Position.z = (out.gl_Position.z + out.gl_Position.w) * 0.5;",
+         "if ((wmgl_driver.clipFlags & 1u) == 0u) out.gl_Position.z = (out.gl_Position.z + out.gl_Position.w) * 0.5;"},
+        {"out.gl_Position.y = -(out.gl_Position.y);",
+         "if ((wmgl_driver.clipFlags & 2u) == 0u) out.gl_Position.y = -(out.gl_Position.y);"},
+    };
+    for (const auto& [from, to] : clip)
+        for (size_t at = main.find(from); at != std::string::npos; at = main.find(from, at + to.size())) main.replace(at, from.size(), to);
     msl = patched + main;
 }
 
@@ -159,6 +170,77 @@ bool hasFlatInputs(const std::string& msl) {
             return true;
     }
     return false;
+}
+
+// Vertex stage: glslang maps gl_InstanceID to Metal's [[instance_id]], which
+// counts from the draw's base instance; GL's gl_InstanceID does not
+// (GL_ARB_base_instance).
+void instanceIdFromZero(std::string& msl) {
+    const std::string param = "uint gl_InstanceIndex [[instance_id]]";
+    const size_t at = msl.find(param);
+    if (at == std::string::npos) return;
+    msl.replace(at, param.size(), "uint wmgl_instance_index [[instance_id]], uint wmgl_base_instance [[base_instance]]");
+    const size_t body = msl.find('{', at);
+    msl.insert(body + 1, "\n    uint gl_InstanceIndex = wmgl_instance_index - wmgl_base_instance;");
+}
+
+// Separable programs (GL_ARB_separate_shader_objects) are linked alone, so
+// their inter-stage varyings cannot be numbered against the other stages.
+// Varyings without an explicit location get a location derived from their
+// name (the block name for blocks), so separately linked stages match by
+// name as GL requires. Metal matches [[user(locnN)]] names, so the large
+// numbers are fine; 64 locations per name leave room for arrays.
+uint32_t nameLocation(const std::string& name) {
+    uint32_t h = 2166136261u;
+    for (char c : name) h = (h ^ static_cast<uint8_t>(c)) * 16777619u;
+    return 1024u + (h % 1000000u) * 64u;
+}
+
+void hashVaryingLocations(std::vector<uint32_t>& spirv, Stage stage, const std::set<std::string>& explicitNames) {
+    if (spirv.size() < 5) return;
+    std::map<uint32_t, std::string> names;
+    std::map<uint32_t, uint32_t> pointee, arrayElement;  // pointer -> type, array -> element
+    std::map<uint32_t, uint32_t> storage;                // variable -> storage class
+    std::map<uint32_t, uint32_t> varType;                // variable -> pointer type
+    std::set<uint32_t> builtins;
+    std::vector<size_t> locationWords;                   // OpDecorate Location: index of the target word
+    for (size_t i = 5; i < spirv.size();) {
+        const uint32_t count = spirv[i] >> 16, op = spirv[i] & 0xffff;
+        if (!count) break;
+        switch (op) {
+        case 5:  // OpName
+            names[spirv[i + 1]] = reinterpret_cast<const char*>(&spirv[i + 2]);
+            break;
+        case 32: pointee[spirv[i + 1]] = spirv[i + 3]; break;  // OpTypePointer
+        case 28: arrayElement[spirv[i + 1]] = spirv[i + 2]; break;  // OpTypeArray
+        case 29: arrayElement[spirv[i + 1]] = spirv[i + 2]; break;  // OpTypeRuntimeArray
+        case 59:  // OpVariable
+            varType[spirv[i + 2]] = spirv[i + 1];
+            storage[spirv[i + 2]] = spirv[i + 3];
+            break;
+        case 71:  // OpDecorate
+            if (spirv[i + 2] == 11) builtins.insert(spirv[i + 1]);
+            if (spirv[i + 2] == 30) locationWords.push_back(i);
+            break;
+        default: break;
+        }
+        i += count;
+    }
+    for (size_t at : locationWords) {
+        const uint32_t var = spirv[at + 1];
+        auto s = storage.find(var);
+        if (s == storage.end() || builtins.count(var)) continue;
+        const bool input = s->second == 1, output = s->second == 3;
+        if (!(input && stage != Stage::Vertex) && !(output && stage != Stage::Fragment)) continue;
+        // The variable's name, or its block's name.
+        uint32_t type = pointee[varType[var]];
+        while (arrayElement.count(type)) type = arrayElement[type];
+        std::string name = names[var];
+        if (name.empty() || name.compare(0, 3, "gl_") == 0) name = names[type];
+        name = unescapeName(name);
+        if (name.empty() || name.compare(0, 3, "gl_") == 0 || explicitNames.count(name)) continue;
+        spirv[at + 3] = nameLocation(name);
+    }
 }
 
 // Strips glslang's trailing "N compilation errors" noise but keeps messages.
@@ -773,6 +855,12 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
         const auto& v = program.getPipeOutput(i);
         pipeOutputs.push_back({unescapeName(v.name), static_cast<GLenum>(v.glDefineType), v.size, v.layoutLocation(), static_cast<uint32_t>(v.stages)});
     }
+    // Separable programs: varyings declared with layout(location) keep it.
+    std::set<std::string> explicitVaryings;
+    for (const PipeVar& v : pipeInputs)
+        if (v.location != kNoLocation && !(v.stages & EShLangVertexMask)) explicitVaryings.insert(v.name);
+    for (const PipeVar& v : pipeOutputs)
+        if (v.location != kNoLocation && !(v.stages & EShLangFragmentMask)) explicitVaryings.insert(v.name);
     // The GLSL I/O mapper matches varyings between stages by name (GL rules);
     // the default (Vulkan) mapper numbers each stage's interface in
     // declaration order, which swaps varyings declared in different orders.
@@ -795,6 +883,8 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
         options.validate = false;
         glslang::GlslangToSpv(*intermediate, result.stages[s].spirv, &options);
         result.stages[s].present = true;
+        if (input.separable && !input.internal)
+            hashVaryingLocations(result.stages[s].spirv, static_cast<Stage>(s), explicitVaryings);
     }
     if (geometry && result.stages[static_cast<int>(Stage::Geometry)].present) {
         std::string glsl;
@@ -1158,12 +1248,14 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
             }
             if (noRaster) {
                 stage.mslNoRaster = msl.compile();
+                instanceIdFromZero(stage.mslNoRaster);
                 continue;
             }
             stage.msl = msl.compile();
             if (s == static_cast<int>(Stage::Vertex)) {
                 ensureVertexOutput(stage.msl);
                 addPointSize(stage.msl);
+                instanceIdFromZero(stage.msl);
             }
             if (s == static_cast<int>(Stage::Fragment)) {
                 stage.usesPointCoord = patchPointCoord(stage.msl);
@@ -1246,6 +1338,7 @@ bool buildGeometryEmulation(const LinkInput& input, const GeometryShaderInfo& in
     }
     LinkInput kernelInput;
     kernelInput.shaders = {{Stage::Compute, sources.compute}};
+    kernelInput.internal = true;
     LinkResult kernel = linkImpl(kernelInput, nullptr);
     if (!kernel.ok) {
         result.log += "error: internal error building the geometry shader kernel:\n" + kernel.log;
@@ -1257,6 +1350,7 @@ bool buildGeometryEmulation(const LinkInput& input, const GeometryShaderInfo& in
     LinkInput passthroughInput;
     passthroughInput.shaders = {{Stage::Vertex, sources.passthrough}};
     passthroughInput.separable = true;
+    passthroughInput.internal = true;
     LinkResult passthrough = linkImpl(passthroughInput, nullptr);
     if (!passthrough.ok) {
         result.log += "error: internal error building the geometry shader output stage:\n" + passthrough.log;

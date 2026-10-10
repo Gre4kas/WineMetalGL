@@ -214,6 +214,7 @@ def main():
             # Every command runs under its share group's lock: contexts on
             # different threads may use the same shared objects.
             out.write("    wmgl::ShareLock shareLock(*ctx);\n")
+            out.write('    ctx->currentCommand = "%s";\n' % cmd)
             out.write("    %swmgl::api::%s(%s);\n}\n" % ("return " if dflt else "", api_name(impl), call))
         out.write("\n}  // namespace\n\nnamespace wmgl {\n\nconst ProcEntry kProcTable[] = {\n")
         for cmd in names:

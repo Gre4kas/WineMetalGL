@@ -54,6 +54,7 @@ struct LinkInput {
     std::vector<std::string> transformFeedbackVaryings;
     GLenum transformFeedbackMode = GL_INTERLEAVED_ATTRIBS;
     bool separable = false;
+    bool internal = false;  // a generated stage (geometry emulation): no separable-varying renumbering
 };
 
 struct UniformInfo {

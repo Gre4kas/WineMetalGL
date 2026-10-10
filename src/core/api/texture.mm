@@ -199,7 +199,7 @@ bool unpackSource(Context& ctx, const void* pixels, size_t bytesNeeded, size_t a
     Buffer* pbo = ctx.state.pixelUnpackBuffer.get();
     if (!pbo) return true;
     const uintptr_t offset = reinterpret_cast<uintptr_t>(pixels);
-    if (pbo->mapped) return ctx.setError(GL_INVALID_OPERATION), false;
+    if (pbo->mappedNonPersistent()) return ctx.setError(GL_INVALID_OPERATION), false;
     if (offset + bytesNeeded > static_cast<size_t>(pbo->size)) return ctx.setError(GL_INVALID_OPERATION), false;
     if (alignment > 1 && offset % alignment) return ctx.setError(GL_INVALID_OPERATION), false;
     if (!pbo->mtl) {
@@ -217,7 +217,7 @@ bool packDestination(Context& ctx, void* pixels, size_t bytesNeeded, size_t alig
     Buffer* pbo = ctx.state.pixelPackBuffer.get();
     if (!pbo) return true;
     const uintptr_t offset = reinterpret_cast<uintptr_t>(pixels);
-    if (pbo->mapped) return ctx.setError(GL_INVALID_OPERATION), false;
+    if (pbo->mappedNonPersistent()) return ctx.setError(GL_INVALID_OPERATION), false;
     if (offset + bytesNeeded > static_cast<size_t>(pbo->size)) return ctx.setError(GL_INVALID_OPERATION), false;
     if (alignment > 1 && offset % alignment) return ctx.setError(GL_INVALID_OPERATION), false;
     if (!pbo->mtl) {

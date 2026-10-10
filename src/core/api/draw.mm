@@ -40,6 +40,25 @@ void DrawRangeElementsBaseVertex(Context& ctx, GLenum mode, GLuint start, GLuint
     ctx.draw().drawElements(mode, count, type, indices, 1, basevertex);
 }
 
+// GL_ARB_base_instance
+void DrawArraysInstancedBaseInstance(Context& ctx, GLenum mode, GLint first, GLsizei count, GLsizei instancecount,
+                                     GLuint baseinstance) {
+    DrawState::BaseInstanceScope scope(ctx.draw(), baseinstance);
+    ctx.draw().drawArrays(mode, first, count, instancecount);
+}
+
+void DrawElementsInstancedBaseInstance(Context& ctx, GLenum mode, GLsizei count, GLenum type, const void* indices,
+                                       GLsizei instancecount, GLuint baseinstance) {
+    DrawState::BaseInstanceScope scope(ctx.draw(), baseinstance);
+    ctx.draw().drawElements(mode, count, type, indices, instancecount, 0);
+}
+
+void DrawElementsInstancedBaseVertexBaseInstance(Context& ctx, GLenum mode, GLsizei count, GLenum type, const void* indices,
+                                                 GLsizei instancecount, GLint basevertex, GLuint baseinstance) {
+    DrawState::BaseInstanceScope scope(ctx.draw(), baseinstance);
+    ctx.draw().drawElements(mode, count, type, indices, instancecount, basevertex);
+}
+
 void MultiDrawArrays(Context& ctx, GLenum mode, const GLint* first, const GLsizei* count, GLsizei drawcount) {
     if (drawcount < 0) return ctx.setError(GL_INVALID_VALUE);
     for (GLsizei i = 0; i < drawcount; ++i) ctx.draw().drawArrays(mode, first[i], count[i], 1);
