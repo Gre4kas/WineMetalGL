@@ -16,6 +16,7 @@ docs/unsupported.md
 include/winemetalgl/driver.h
 LICENSE
 LICENSES/glslang.txt
+LICENSES/GPL-3.0.txt
 LICENSES/SPIRV-Cross-Apache-2.0.txt
 LICENSES/SPIRV-Cross-Khronos-Free-Use.txt
 LICENSES/Wine-LGPL-2.1.txt

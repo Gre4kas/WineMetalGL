@@ -66,5 +66,12 @@ and the [design decisions](docs/decisions/).
 
 ## License
 
-The standalone source is MIT licensed. Wine integration is LGPL-2.1;
-third-party shader compiler licenses are in `LICENSES/`.
+Copyright (c) 2026 MetalSharp. WineMetalGL is licensed under the GNU Lesser
+General Public License, version 3 or (at your option) any later version
+(`LGPL-3.0-or-later`): [`LICENSE`](LICENSE), which adds to the GNU General
+Public License version 3 in [`LICENSES/GPL-3.0.txt`](LICENSES/GPL-3.0.txt).
+Releases up to 2.1.0 were published under the MIT License.
+
+The Wine patches in `patches/wine` are LGPL-2.1-or-later, like Wine
+(`LICENSES/Wine-LGPL-2.1.txt`). The vendored glslang and SPIRV-Cross keep
+their own licenses (`LICENSES/`).

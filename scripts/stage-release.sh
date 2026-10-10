@@ -57,6 +57,9 @@ for library in "$output"/artifacts/wine-driver/*; do
     codesign --force --sign - "$library"
 done
 cp "$project_root/README.md" "$output/README.md"
+# LGPL-3.0-or-later: LICENSE, the GPL-3.0 it builds on and the third-party licenses.
+cp "$project_root/LICENSE" "$output/LICENSE"
+cp -R "$project_root/LICENSES" "$output/LICENSES"
 cp "$project_root/docs/conformance.md" "$output/docs/conformance.md"
 cp "$project_root/docs/api-coverage.json" "$output/docs/api-coverage.json"
 cp "$project_root/docs/games.md" "$output/docs/games.md"

@@ -48,6 +48,9 @@ codesign --force --sign - "$output/lib/libwinemetalgl.dylib"
 cp "$project_root/include/winemetalgl/driver.h" "$output/include/winemetalgl/driver.h"
 cp -R "$project_root/patches/wine" "$output/patches/wine"
 cp "$project_root/README.md" "$output/README.md"
+# LGPL-3.0-or-later: LICENSE, the GPL-3.0 it builds on and the third-party licenses.
+cp "$project_root/LICENSE" "$output/LICENSE"
+cp -R "$project_root/LICENSES" "$output/LICENSES"
 cp "$project_root/docs/conformance.md" "$project_root/docs/unsupported.md" "$project_root/docs/building.md" \
     "$project_root/docs/release.md" "$output/docs/"
 # The native KHR-GL30 to KHR-GL33 runs exercise this build of the core (tests/cts/native).

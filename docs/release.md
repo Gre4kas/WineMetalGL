@@ -18,6 +18,7 @@ OUTPUT/
   evidence/        CTS baselines, corpus results and frame times of the commit
   docs/            conformance.md, unsupported.md, testing.md, building.md,
                    performance.md, games.md, api-coverage.json, release.md
+  LICENSE, LICENSES/  LGPL-3.0-or-later, the GPL-3.0 it builds on, third-party licenses
   README.md, STAGED-FROM.txt, SHA256SUMS
 ```
 
