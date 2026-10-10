@@ -62,6 +62,9 @@ OpenGL; `WINEMETALGL=0` selects Apple's OpenGL instead (used to record
 reference frames), and Wine falls back to Apple's OpenGL if the core cannot be
 loaded.
 
+Building Wine 11.17 with the patches, and checking that a program uses the
+core: [`patches/wine/README.md`](patches/wine/README.md#building-wine-with-the-patches).
+
 ```sh
 ./scripts/stage-wine.sh /path/to/wine-build      # libwinemetalgl.dylib next to winemac.so
 WINEMETALGL_HOST_LIB_DIR=/path/to/x86_64/libs ./scripts/stage-host-libs.sh /path/to/wine-runtime
