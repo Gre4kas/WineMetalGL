@@ -15,6 +15,7 @@
 #include <sstream>
 
 #include "core/shader/glsl_upgrade.h"
+#include "core/shader/transform_feedback.h"
 
 namespace wmgl::shader {
 namespace {
@@ -79,6 +80,51 @@ std::vector<uint32_t> rectImagesAs2D(std::vector<uint32_t> spirv) {
     return spirv;
 }
 
+// A vertex shader without outputs becomes a void function, which Metal only
+// accepts with rasterization disabled: give it a position output (GL leaves
+// the position undefined when the shader does not write it).
+void ensureVertexOutput(std::string& msl) {
+    const size_t fn = msl.find("vertex void main0(");
+    if (fn == std::string::npos) return;
+    std::string head = msl.substr(0, fn) + "struct main0_out\n{\n    float4 gl_Position [[position]];\n};\n\n";
+    std::string main = msl.substr(fn);
+    main.replace(0, std::string("vertex void main0(").size(), "vertex main0_out main0(");
+    const size_t open = main.find('{');
+    main.insert(open + 1, "\n    main0_out out = {};");
+    for (size_t at = main.find("return;"); at != std::string::npos; at = main.find("return;", at + 11))
+        main.replace(at, 7, "return out;");
+    const size_t close = main.rfind('}');
+    main.insert(close, "    return out;\n");
+    msl = head + main;
+}
+
+// Every vertex function writes [[point_size]] (Metal leaves it undefined
+// otherwise). GL 3.3: the size is the shader's gl_PointSize when
+// PROGRAM_POINT_SIZE is enabled, else glPointSize; both come from the driver
+// uniforms in buffer kSlotDriverUniforms (float pointSize, uint programPointSize).
+void addPointSize(std::string& msl) {
+    const size_t fn = msl.find("vertex main0_out main0(");
+    const size_t structAt = msl.find("struct main0_out\n{\n");
+    if (fn == std::string::npos || structAt == std::string::npos || structAt > fn) return;
+    const bool writes = msl.find("[[point_size]]") != std::string::npos;
+    const std::string driver = "struct wmgl_DriverUniforms\n{\n    float pointSize;\n    uint programPointSize;\n};\n\n";
+    std::string patched = msl.substr(0, structAt) + driver + msl.substr(structAt, fn - structAt);
+    if (!writes) {
+        const size_t body = patched.find("struct main0_out\n{\n") + std::string("struct main0_out\n{\n").size();
+        patched.insert(body, "    float gl_PointSize [[point_size]];\n");
+    }
+    std::string main = msl.substr(fn);
+    const size_t open = main.find('(');
+    const bool noParameters = main[open + 1] == ')';
+    main.insert(open + 1, "constant wmgl_DriverUniforms& wmgl_driver [[buffer(" + std::to_string(kSlotDriverUniforms) + ")]]" +
+                              (noParameters ? "" : ", "));
+    const std::string assign = writes ? "out.gl_PointSize = wmgl_driver.programPointSize != 0u ? out.gl_PointSize : wmgl_driver.pointSize; "
+                                      : "out.gl_PointSize = wmgl_driver.pointSize; ";
+    for (size_t at = main.find("return out;"); at != std::string::npos; at = main.find("return out;", at + assign.size() + 11))
+        main.insert(at, assign);
+    msl = patched + main;
+}
+
 // Strips glslang's trailing "N compilation errors" noise but keeps messages.
 std::string cleanLog(const char* info, const char* debug) {
     std::string log = info ? info : "";
@@ -88,10 +134,37 @@ std::string cleanLog(const char* info, const char* debug) {
 
 struct ParsedShader {
     std::unique_ptr<glslang::TShader> shader;
-    std::string source;  // codegen source (after legacy upgrade)
+    std::string source;    // codegen source (after legacy upgrade)
+    std::string epilogue;  // transform feedback capture code (second string)
 };
 
-bool parseForCodegen(Stage stage, const std::string& original, ParsedShader& out, std::string& log) {
+// Inserts `text` after the #version line and the #extension lines that
+// directly follow it, then restores the original line numbering.
+std::string insertAfterDirectives(const std::string& source, const std::string& text, int glslVersion) {
+    size_t at = 0;
+    int line = 1;
+    bool sawVersion = false;
+    while (at < source.size()) {
+        size_t end = source.find('\n', at);
+        if (end == std::string::npos) end = source.size();
+        const std::string l = source.substr(at, end - at);
+        const size_t first = l.find_first_not_of(" \t\r");
+        const bool blank = first == std::string::npos;
+        const bool version = !blank && l.compare(first, 8, "#version") == 0;
+        const bool extension = !blank && l.compare(first, 10, "#extension") == 0;
+        if (!blank && !version && !extension) break;
+        if (version) sawVersion = true;
+        if (!sawVersion && !blank) break;
+        at = end < source.size() ? end + 1 : end;
+        ++line;
+    }
+    // GLSL 3.30+: "#line N" numbers the next line N; earlier versions N + 1.
+    const int lineValue = glslVersion >= 330 ? line : line - 1;
+    return source.substr(0, at) + text + "#line " + std::to_string(lineValue) + "\n" + source.substr(at);
+}
+
+bool parseForCodegen(Stage stage, const std::string& original, ParsedShader& out, std::string& log,
+                     const CaptureCode* capture = nullptr) {
     const EShLanguage lang = language(stage);
     UpgradeResult upgraded = upgradeLegacyGlsl(stage, original);
     if (!upgraded.ok) {
@@ -99,9 +172,23 @@ bool parseForCodegen(Stage stage, const std::string& original, ParsedShader& out
         return false;
     }
     out.source = escapeVulkanKeywords(upgraded.source);
+    if (capture) {
+        // Buffer blocks need a profile (GLSL 1.50+). Upgraded 1.40 code has no legacy built-ins left, so 1.50 core takes it.
+        int version = parseGlslVersion(out.source).number;
+        if (version < 150) {
+            const size_t at = out.source.find("#version");
+            if (at != std::string::npos) {
+                const size_t end = out.source.find('\n', at);
+                out.source.replace(at, end == std::string::npos ? std::string::npos : end - at, "#version 150 core");
+                version = 150;
+            }
+        }
+        out.source = insertAfterDirectives(out.source, capture->declarations, version);
+        out.epilogue = capture->epilogue;
+    }
     out.shader = std::make_unique<glslang::TShader>(lang);
-    const char* text = out.source.c_str();
-    out.shader->setStrings(&text, 1);
+    const char* texts[2] = {out.source.c_str(), out.epilogue.c_str()};
+    out.shader->setStrings(texts, capture ? 2 : 1);
     configure(*out.shader, lang);
     // Validity was decided by compile()'s GL-rules parse; codegen tolerates
     // what desktop drivers accept (e.g. 'defined' produced by macro expansion).
@@ -403,13 +490,74 @@ CompileResult compile(Stage stage, const std::string& source) {
 
 // ---------------------------------------------------------------- link
 
-LinkResult link(const LinkInput& input) {
+namespace {
+
+GLenum glTypeOfAst(const glslang::TType& t) {
+    const int n = t.getVectorSize();
+    auto pick = [&](GLenum s, GLenum v2, GLenum v3, GLenum v4) { return n <= 1 ? s : n == 2 ? v2 : n == 3 ? v3 : v4; };
+    if (t.isMatrix()) {
+        const int c = t.getMatrixCols(), r = t.getMatrixRows();
+        static const GLenum kMat[3][3] = {{GL_FLOAT_MAT2, GL_FLOAT_MAT2x3, GL_FLOAT_MAT2x4},
+                                          {GL_FLOAT_MAT3x2, GL_FLOAT_MAT3, GL_FLOAT_MAT3x4},
+                                          {GL_FLOAT_MAT4x2, GL_FLOAT_MAT4x3, GL_FLOAT_MAT4}};
+        return kMat[c - 2][r - 2];
+    }
+    switch (t.getBasicType()) {
+    case glslang::EbtInt: return pick(GL_INT, GL_INT_VEC2, GL_INT_VEC3, GL_INT_VEC4);
+    case glslang::EbtUint: return pick(GL_UNSIGNED_INT, GL_UNSIGNED_INT_VEC2, GL_UNSIGNED_INT_VEC3, GL_UNSIGNED_INT_VEC4);
+    case glslang::EbtBool: return pick(GL_BOOL, GL_BOOL_VEC2, GL_BOOL_VEC3, GL_BOOL_VEC4);
+    default: return pick(GL_FLOAT, GL_FLOAT_VEC2, GL_FLOAT_VEC3, GL_FLOAT_VEC4);
+    }
+}
+
+// The outputs a stage can capture: its user outputs plus the built-in
+// gl_Position, gl_PointSize and gl_ClipDistance.
+std::vector<StageOutputVar> captureableOutputs(glslang::TIntermediate* intermediate) {
+    std::vector<StageOutputVar> outputs;
+    bool clipDistance = false;
+    glslang::TIntermAggregate* root = intermediate && intermediate->getTreeRoot() ? intermediate->getTreeRoot()->getAsAggregate() : nullptr;
+    if (root) {
+        for (TIntermNode* node : root->getSequence()) {
+            glslang::TIntermAggregate* objects = node->getAsAggregate();
+            if (!objects || objects->getOp() != glslang::EOpLinkerObjects) continue;
+            for (TIntermNode* object : objects->getSequence()) {
+                glslang::TIntermSymbol* symbol = object->getAsSymbolNode();
+                if (!symbol || symbol->getQualifier().storage != glslang::EvqVaryingOut) continue;
+                const glslang::TType& type = symbol->getType();
+                if (type.getBasicType() == glslang::EbtBlock) {
+                    for (const glslang::TTypeLoc& member : *type.getStruct()) {
+                        const glslang::TType& m = *member.type;
+                        if (m.getFieldName() == "gl_ClipDistance" && m.isSizedArray()) {
+                            outputs.push_back({"gl_ClipDistance", GL_FLOAT, m.getOuterArraySize()});
+                            clipDistance = true;
+                        }
+                    }
+                    continue;
+                }
+                const std::string name = unescapeName(symbol->getName().c_str());
+                if (name.rfind("gl_", 0) == 0) continue;
+                outputs.push_back({name, glTypeOfAst(type), type.isSizedArray() ? type.getOuterArraySize() : 0});
+            }
+        }
+    }
+    outputs.push_back({"gl_Position", GL_FLOAT_VEC4, 0});
+    outputs.push_back({"gl_PointSize", GL_FLOAT, 0});
+    if (!clipDistance) outputs.push_back({"gl_ClipDistance", GL_FLOAT, 8});
+    return outputs;
+}
+
+}  // namespace
+
+static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture) {
     initGlslang();
     LinkResult result;
     std::vector<ParsedShader> parsed(input.shaders.size());
     bool stagePresent[kStageCount] = {};
     for (size_t i = 0; i < input.shaders.size(); ++i) {
-        if (!parseForCodegen(input.shaders[i].stage, input.shaders[i].source, parsed[i], result.log)) return result;
+        const bool captureHere = capture && input.shaders[i].stage == Stage::Vertex;
+        if (!parseForCodegen(input.shaders[i].stage, input.shaders[i].source, parsed[i], result.log,
+                             captureHere ? capture : nullptr))
+            return result;
         stagePresent[static_cast<int>(input.shaders[i].stage)] = true;
     }
     if (!stagePresent[static_cast<int>(Stage::Compute)] && !input.separable) {
@@ -429,6 +577,19 @@ LinkResult link(const LinkInput& input) {
     if (!program.link(kMessages)) {
         result.log += unescapeName(cleanLog(program.getInfoLog(), program.getInfoDebugLog()));
         return result;
+    }
+    // Transform feedback varyings are validated against the last vertex
+    // processing stage (geometry if present, else vertex).
+    if (!capture && !input.transformFeedbackVaryings.empty()) {
+        const bool geometry = stagePresent[static_cast<int>(Stage::Geometry)];
+        if (!geometry && !stagePresent[static_cast<int>(Stage::Vertex)]) {
+            result.log += "error: transform feedback varyings need a vertex or geometry shader\n";
+            return result;
+        }
+        glslang::TIntermediate* last = program.getIntermediate(geometry ? EShLangGeometry : EShLangVertex);
+        if (!layoutTransformFeedback(input.transformFeedbackVaryings, input.transformFeedbackMode,
+                                     captureableOutputs(last), result, result.log))
+            return result;
     }
     // Reflect before mapIO: afterwards every input/output has a location and
     // explicit layout(location) can no longer be told apart from assigned ones.
@@ -744,13 +905,18 @@ LinkResult link(const LinkInput& input) {
         }
     }
 
-    // Metal translation per stage.
-    for (int s = 0; s < kStageCount; ++s) {
+    // Metal translation per stage. The vertex stage is translated twice: the
+    // second variant returns void, as Metal requires when rasterization is
+    // disabled (GL_RASTERIZER_DISCARD, transform feedback capture passes).
+    for (int s = 0; s < kStageCount; ++s)
+    for (int variant = 0; variant < (s == static_cast<int>(Stage::Vertex) ? 2 : 1); ++variant) {
         StageOutput& stage = result.stages[s];
         if (!stage.present) continue;
+        const bool noRaster = variant == 1;
         try {
             spirv_cross::CompilerMSL msl(rectImagesAs2D(stage.spirv));
             spirv_cross::CompilerMSL::Options mslOptions;
+            mslOptions.disable_rasterization = noRaster;
             mslOptions.platform = spirv_cross::CompilerMSL::Options::macOS;
             mslOptions.set_msl_version(3, 0);
             mslOptions.enable_decoration_binding = false;
@@ -802,6 +968,22 @@ LinkResult link(const LinkInput& input) {
                 }
                 msl.add_msl_resource_binding(b);
             }
+            // Transform feedback capture buffers (see transform_feedback.h).
+            for (const auto& ssbo : resources.storage_buffers) {
+                const std::string blockName = msl.get_name(ssbo.base_type_id);
+                spirv_cross::MSLResourceBinding b;
+                b.stage = model;
+                msl.set_decoration(ssbo.id, spv::DecorationBinding, uniqueBinding++);
+                b.desc_set = msl.get_decoration(ssbo.id, spv::DecorationDescriptorSet);
+                b.binding = msl.get_decoration(ssbo.id, spv::DecorationBinding);
+                if (blockName == "wmgl_XfbControl") b.msl_buffer = kSlotXfbControl;
+                else if (blockName.rfind("wmgl_XfbData", 0) == 0) b.msl_buffer = kSlotFirstXfbBuffer + std::stoul(blockName.substr(12));
+                else {
+                    result.log += "error: shader storage blocks are not supported\n";
+                    return result;
+                }
+                msl.add_msl_resource_binding(b);
+            }
             // Samplers.
             uint32_t nextTexture = 0;
             for (const auto& image : resources.sampled_images) {
@@ -830,6 +1012,7 @@ LinkResult link(const LinkInput& input) {
             }
             // Vertex inputs: GL locations.
             if (s == static_cast<int>(Stage::Vertex)) {
+                if (noRaster) stage.vertexInputs.clear();  // rebuilt identically below
                 for (const auto& in : resources.stage_inputs) {
                     const std::string name = unescapeName(msl.get_name(in.id));
                     auto it = std::find_if(result.attribs.begin(), result.attribs.end(),
@@ -857,7 +1040,15 @@ LinkResult link(const LinkInput& input) {
                     for (int e = 0; e < it->size; ++e) stage.fragOutputs.push_back({it->location + e, it->index, kind});
                 }
             }
+            if (noRaster) {
+                stage.mslNoRaster = msl.compile();
+                continue;
+            }
             stage.msl = msl.compile();
+            if (s == static_cast<int>(Stage::Vertex)) {
+                ensureVertexOutput(stage.msl);
+                addPointSize(stage.msl);
+            }
             // WINEMETALGL_DUMP_SHADERS=1 prints every generated MSL stage (debugging aid).
             static const bool dump = [] {
                 const char* v = std::getenv("WINEMETALGL_DUMP_SHADERS");
@@ -873,6 +1064,40 @@ LinkResult link(const LinkInput& input) {
     }
 
     result.ok = true;
+    return result;
+}
+
+LinkResult link(const LinkInput& input) {
+    LinkResult result = linkImpl(input, nullptr);
+    if (!result.ok || result.transformFeedback.empty()) return result;
+    // Geometry-stage capture is emitted by the geometry emulation; vertex
+    // capture relinks the program with the capture code appended to the VS.
+    if (result.stages[static_cast<int>(Stage::Geometry)].present) return result;
+    int version = 140;
+    for (const ShaderSource& shader : input.shaders)
+        if (shader.stage == Stage::Vertex) version = std::max(version, parseGlslVersion(shader.source).number);
+    const CaptureCode code = vertexCaptureCode(result, version);
+    LinkInput again = input;
+    again.transformFeedbackVaryings.clear();
+    LinkResult captured = linkImpl(again, &code);
+    if (!captured.ok) {
+        result.ok = false;
+        result.log += "error: internal error building transform feedback capture:\n" + captured.log;
+        return result;
+    }
+    const int vs = static_cast<int>(Stage::Vertex);
+    result.stages[vs] = captured.stages[vs];
+    for (UniformBlockInfo& block : result.blocks)
+        for (const UniformBlockInfo& other : captured.blocks)
+            if (other.name == block.name) block.stageSlot[vs] = other.stageSlot[vs];
+    for (const UniformInfo& u : result.uniforms) {
+        if (u.samplerSlot < 0) continue;
+        for (const UniformInfo& other : captured.uniforms)
+            if (other.name == u.name && other.samplerSlot >= 0)
+                for (GLint e = 0; e < u.size; ++e)
+                    result.samplers[u.samplerSlot + e].stageTexture[vs] = captured.samplers[other.samplerSlot + e].stageTexture[vs];
+    }
+    result.xfbVertexCapture = true;
     return result;
 }
 

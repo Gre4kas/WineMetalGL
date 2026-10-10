@@ -130,6 +130,7 @@ add_library(wmgl_portable STATIC
     src/core/format/formats.cpp
     src/core/format/pixel_transfer.cpp
     src/core/shader/compiler.cpp
+    src/core/shader/transform_feedback.cpp
     src/core/shader/glsl_upgrade.cpp
     src/core/util/log.cpp
 )

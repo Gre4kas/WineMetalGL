@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <vector>
 
 #include "../host/test.h"
@@ -37,7 +38,8 @@
     X(glBeginConditionalRender) X(glEndConditionalRender) X(glFenceSync) X(glClientWaitSync)               \
     X(glGetSynciv) X(glDeleteSync) X(glIsSync) X(glVertexAttribP4ui) X(glGetVertexAttribfv)                \
     X(glGetMultisamplefv) X(glGetUniformBlockIndex) X(glUniformBlockBinding) X(glBindBufferBase)        \
-    X(glBindBufferRange) X(glUniformMatrix3fv) X(glUniformMatrix4fv) X(glGetAttribLocation)
+    X(glBindBufferRange) X(glUniformMatrix3fv) X(glUniformMatrix4fv) X(glGetAttribLocation) X(glTransformFeedbackVaryings) X(glBeginTransformFeedback)        \
+    X(glEndTransformFeedback) X(glGetBufferSubData)
 
 #define WMGL_DECLARE_FUNC(name) extern PFN_##name name;
 WMGL_GPU_FUNCS(WMGL_DECLARE_FUNC)

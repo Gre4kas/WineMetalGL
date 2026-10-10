@@ -16,6 +16,8 @@ struct LinkedProgram {
 
     // Metal functions, compiled on first use.
     id<MTLFunction> function(shader::Stage stage);
+    // Vertex function returning void, for pipelines with rasterization disabled.
+    id<MTLFunction> vertexNoRaster();
     bool functionFailed(shader::Stage stage) const { return failed_[static_cast<int>(stage)]; }
 
     bool hasStage(shader::Stage stage) const { return link.stages[static_cast<int>(stage)].present; }
@@ -25,6 +27,8 @@ private:
     std::mutex mutex_;
     id<MTLFunction> functions_[shader::kStageCount] = {};
     bool failed_[shader::kStageCount] = {};
+    id<MTLFunction> vertexNoRaster_ = nil;
+    bool vertexNoRasterFailed_ = false;
 };
 
 uint64_t nextLinkedProgramId();

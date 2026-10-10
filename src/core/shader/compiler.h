@@ -28,8 +28,9 @@ constexpr uint32_t kSlotDriverUniforms = 1;    // buffer: WineMetalGL driver con
 constexpr uint32_t kSlotFirstUniformBlock = 2; // buffers 2..13: uniform blocks used by the stage
 constexpr uint32_t kMaxStageUniformBlocks = 12;
 constexpr uint32_t kSlotFirstXfbBuffer = 14;   // buffers 14..17: transform feedback outputs
-constexpr uint32_t kSlotFirstVertexBuffer = 18;  // buffers 18..30: vertex buffers
-constexpr uint32_t kMaxVertexBufferSlots = 13;
+constexpr uint32_t kSlotFirstVertexBuffer = 18;  // buffers 18..29: vertex buffers
+constexpr uint32_t kMaxVertexBufferSlots = 12;
+constexpr uint32_t kSlotXfbControl = 30;       // buffer 30: transform feedback capture control
 constexpr uint32_t kMaxStageSamplers = 16;     // textures/samplers 0..15
 
 struct CompileResult {
@@ -102,6 +103,7 @@ struct SamplerSlotInfo {
 struct StageOutput {
     bool present = false;
     std::string msl;
+    std::string mslNoRaster;  // vertex stage: variant returning void (rasterization disabled)
     std::string entryPoint;
     std::vector<uint32_t> spirv;
     bool usesDefaultUniforms = false;
@@ -117,10 +119,15 @@ struct StageOutput {
 };
 
 struct TransformFeedbackVarying {
-    std::string name;
-    GLenum type = 0;
-    GLint size = 1;
-    int components = 0;        // total float/int components
+    std::string name;          // as given to glTransformFeedbackVaryings
+    GLenum type = 0;           // element type
+    GLint size = 1;            // elements captured (array size, or 1)
+    int components = 0;        // total 32-bit components
+    // Capture layout (32-bit words).
+    int buffer = 0;
+    uint32_t offset = 0;       // within one captured vertex in `buffer`
+    std::string expression;    // GLSL expression of the first element ("gl_Position", "v", "v[2]")
+    bool array = false;        // expression names a whole array (elements expression[i])
 };
 
 struct LinkResult {
@@ -134,6 +141,9 @@ struct LinkResult {
     std::vector<FragOutputInfo> fragOutputs;
     std::vector<SamplerSlotInfo> samplers;
     std::vector<TransformFeedbackVarying> transformFeedback;
+    uint32_t xfbStride[4] = {};      // 32-bit words per captured vertex, per buffer
+    int xfbBufferCount = 0;
+    bool xfbVertexCapture = false;   // the vertex stage MSL writes captured vertices
     uint32_t defaultBlockSize = 0;
     StageOutput stages[kStageCount];
     // Geometry shader layout (for emulation).

@@ -165,6 +165,11 @@ void TIntermediate::checkStageIO(TInfoSink& infoSink, TIntermediate& unit) {
     if (spvVersion.vulkan > 0) {
         for (auto& nextStageInterm : unitLinkerObjects) {
             auto* nextStageSymbol = nextStageInterm->getAsSymbolNode();
+            // WineMetalGL: built-in blocks (gl_PerVertex) are implicitly
+            // provided by the previous stage under GL rules.
+            if (nextStageSymbol->getType().getBasicType() == EbtBlock &&
+                nextStageSymbol->getType().getTypeName().compare(0, 3, "gl_") == 0)
+                continue;
             bool found = false;
             for (auto& curStageInterm : linkerObjects) {
                 if (isSameSymbol(curStageInterm->getAsSymbolNode(), getStage(), nextStageSymbol, unit.getStage())) {

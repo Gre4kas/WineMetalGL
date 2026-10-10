@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cstdio>
 
 #include "core/shader/compiler.h"
 #include "core/shader/glsl_upgrade.h"
@@ -138,4 +139,51 @@ TEST(shader_version_parsing) {
     CHECK(parseGlslVersion("#version 150 compatibility\n").compatibility);
     CHECK(parseGlslVersion("void main() {}").compatibility);
     CHECK_EQ(parseGlslVersion("void main() {}").number, 110);
+}
+
+TEST(shader_transform_feedback_vertex_capture) {
+    LinkInput in;
+    in.shaders.push_back({Stage::Vertex,
+                          "#version 330 core\nin vec4 pos; out vec3 a; flat out ivec2 b; out float c[3];\n"
+                          "void main() { a = pos.xyz; b = ivec2(gl_VertexID); c[0] = 1.0; c[1] = 2.0; c[2] = 3.0; gl_Position = pos; }\n"});
+    in.shaders.push_back({Stage::Fragment, kFs});
+    in.transformFeedbackVaryings = {"gl_Position", "a", "b", "c[1]"};
+    in.transformFeedbackMode = GL_INTERLEAVED_ATTRIBS;
+    LinkResult r = link(in);
+    CHECK(r.ok);
+    if (!r.ok) std::fprintf(stderr, "%s\n", r.log.c_str());
+    CHECK_EQ(r.transformFeedback.size(), static_cast<size_t>(4));
+    CHECK_EQ(r.xfbStride[0], 4u + 3u + 2u + 1u);
+    CHECK(r.xfbVertexCapture);
+    if (r.transformFeedback.size() == 4) {
+        CHECK_EQ(r.transformFeedback[3].offset, 9u);
+        CHECK(r.transformFeedback[3].type == GL_FLOAT && r.transformFeedback[3].size == 1);
+    }
+    const std::string& msl = r.stages[static_cast<int>(Stage::Vertex)].msl;
+    CHECK(msl.find("[[buffer(30)]]") != std::string::npos);
+    CHECK(msl.find("[[buffer(14)]]") != std::string::npos);
+
+    in.transformFeedbackMode = GL_SEPARATE_ATTRIBS;
+    in.transformFeedbackVaryings = {"a", "c"};  // c is 3 components: allowed separately
+    r = link(in);
+    CHECK(r.ok && r.xfbBufferCount == 2 && r.xfbStride[0] == 3 && r.xfbStride[1] == 3);
+}
+
+TEST(shader_transform_feedback_link_errors) {
+    LinkInput in;
+    in.shaders.push_back({Stage::Vertex, "#version 330 core\nout vec4 a; out mat2 m; void main() { a = vec4(1); m = mat2(1); gl_Position = a; }\n"});
+    in.shaders.push_back({Stage::Fragment, kFs});
+    in.transformFeedbackVaryings = {"missing"};
+    CHECK(!link(in).ok);
+    in.transformFeedbackVaryings = {"a", "a"};
+    CHECK(!link(in).ok);
+    in.transformFeedbackVaryings = {"a[0]"};
+    CHECK(!link(in).ok);
+    in.transformFeedbackMode = GL_SEPARATE_ATTRIBS;
+    in.transformFeedbackVaryings = {"m", "a"};  // m has 4 components: fine; 5 would not be
+    CHECK(link(in).ok);
+    LinkInput fragmentOnly;
+    fragmentOnly.shaders.push_back({Stage::Fragment, kFs});
+    fragmentOnly.transformFeedbackVaryings = {"color"};
+    CHECK(!link(fragmentOnly).ok);
 }

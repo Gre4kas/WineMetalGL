@@ -8,6 +8,12 @@ configuration:
 | SPIRV-Cross | `bccaa94db814af33d8ef05c153e7c34d8bd4d685` | SPIR-V to GLSL/MSL translation |
 | glslang | `46ef757e048e760b46601e6e77ae0cb72c97bd2f` | GLSL parsing and SPIR-V generation |
 
+Local changes to vendored sources (each marked `WineMetalGL:` in the code):
+
+- glslang `glslang/MachineIndependent/linkValidate.cpp`, `checkStageIO`: the
+  Vulkan "every input has a matching output" check skips built-in blocks
+  (`gl_PerVertex`), which GL provides implicitly.
+
 The built dylib dynamically links only Apple system frameworks and libraries:
 Metal, OpenGL, Foundation, QuartzCore, AppKit, CoreFoundation, libc++,
 libSystem, and libobjc.

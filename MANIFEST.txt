@@ -66,6 +66,7 @@ src/core/api/program.mm
 src/core/api/query.mm
 src/core/api/state.mm
 src/core/api/texture.mm
+src/core/api/transform_feedback.mm
 src/core/api/vertex.mm
 src/core/context.h
 src/core/context.mm
@@ -103,6 +104,8 @@ src/core/shader/compiler.cpp
 src/core/shader/compiler.h
 src/core/shader/glsl_upgrade.cpp
 src/core/shader/glsl_upgrade.h
+src/core/shader/transform_feedback.cpp
+src/core/shader/transform_feedback.h
 src/core/share_group.h
 src/core/share_group.mm
 src/core/state.h
@@ -141,6 +144,7 @@ tests/gpu/gpu.h
 tests/gpu/main.cpp
 tests/gpu/query_tests.cpp
 tests/gpu/texture_tests.cpp
+tests/gpu/transform_feedback_tests.cpp
 tests/gpu/uniform_block_tests.cpp
 tests/host/format_tests.cpp
 tests/host/main.cpp

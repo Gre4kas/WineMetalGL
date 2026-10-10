@@ -39,8 +39,10 @@ public:
     GLintptr mapOffset = 0;
     GLsizeiptr mapLength = 0;
     void* mapPointer = nullptr;
-    // GPU serial of the last command buffer that read or wrote this buffer.
+    // GPU serial of the last command buffer that read or wrote this buffer,
+    // and of the last one that wrote it (CPU reads wait for that one).
     uint64_t lastUseSerial = 0;
+    uint64_t lastWriteSerial = 0;
     // Incremented whenever the contents change (keys derived caches).
     uint64_t version = 0;
     std::string label;

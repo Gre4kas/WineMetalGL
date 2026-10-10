@@ -4,6 +4,7 @@
 #import <Metal/Metal.h>
 
 #include <cstdint>
+#include <vector>
 
 #include "core/format/formats.h"
 #include "core/gl/types.h"
@@ -59,8 +60,17 @@ private:
                id<MTLBuffer> indexBuffer, NSUInteger indexOffset, MTLIndexType indexType, GLint baseVertex,
                GLint minVertex, GLsizei vertexSpan);
     void clearWithDraw(const RenderTargetDesc& target, const TargetFormats& formats, const PendingClear& clear);
+    // `gather`, when given, lists the vertex fetched for each vertex of a
+    // non-indexed draw (transform feedback capture): per-vertex attributes
+    // are gathered on the CPU in that order.
     bool bindVertexInputs(id<MTLRenderCommandEncoder> encoder, PipelineKey& key, LinkedProgram& program,
-                          GLint firstVertex, GLsizei vertexCount, GLsizei instances);
+                          GLint firstVertex, GLsizei vertexCount, GLsizei instances,
+                          const std::vector<uint32_t>* gather = nullptr);
+    // Writes the transform feedback output of a draw: `vertices` are the
+    // vertex numbers (gl_VertexID) in draw order.
+    void captureTransformFeedback(GLenum mode, const std::vector<uint32_t>& vertices, GLsizei instances);
+    void bindCaptureDefaults(id<MTLRenderCommandEncoder> encoder, LinkedProgram& program);
+    void waitForCpuVertexReads(LinkedProgram& program, bool gather);
     void bindUniforms(id<MTLRenderCommandEncoder> encoder, LinkedProgram& program);
     void bindTextures(id<MTLRenderCommandEncoder> encoder, LinkedProgram& program);
     void applyDynamicState(id<MTLRenderCommandEncoder> encoder, const RenderTargetDesc& target);
