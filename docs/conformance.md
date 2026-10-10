@@ -6,43 +6,22 @@ Khronos CTS mustpass lists (`glNN-main.txt`) in configurations 1 to 4 of `mustpa
 
 ## KHR-GL33
 
-| Config | Runner | Pass | Fail | NotSupported | InternalError | Crash | Timeout | Missing | Other | Cases | Applicable passing | Commit | File |
-|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|
-| 1 | native | 9266 | 0 | 620 | 0 | 0 | 0 | 0 | 0 | 9886 | 100% | efa7879 | `tests/cts/baseline/gl33-cfg1-native.txt` |
-| 1 | wine | 9266 | 0 | 620 | 0 | 0 | 0 | 0 | 0 | 9886 | 100% | efa7879 | `tests/cts/baseline/gl33-cfg1-wine.txt` |
-| 2 | native | 9266 | 0 | 620 | 0 | 0 | 0 | 0 | 0 | 9886 | 100% | efa7879 | `tests/cts/baseline/gl33-cfg2-native.txt` |
-| 2 | wine | 9266 | 0 | 620 | 0 | 0 | 0 | 0 | 0 | 9886 | 100% | efa7879 | `tests/cts/baseline/gl33-cfg2-wine.txt` |
-| 3 | native | 9266 | 0 | 620 | 0 | 0 | 0 | 0 | 0 | 9886 | 100% | efa7879 | `tests/cts/baseline/gl33-cfg3-native.txt` |
-| 3 | wine | 9266 | 0 | 620 | 0 | 0 | 0 | 0 | 0 | 9886 | 100% | efa7879 | `tests/cts/baseline/gl33-cfg3-wine.txt` |
-| 4 | native | 9266 | 0 | 620 | 0 | 0 | 0 | 0 | 0 | 9886 | 100% | efa7879 | `tests/cts/baseline/gl33-cfg4-native.txt` |
-| 4 | wine | 9266 | 0 | 620 | 0 | 0 | 0 | 0 | 0 | 9886 | 100% | efa7879 | `tests/cts/baseline/gl33-cfg4-wine.txt` |
+| Config | Runner | Pass | Fail | NotSupported | InternalError | Crash | Timeout | Missing | Other | Cases | Applicable passing | Time | Commit | File |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|
+| 1 | native | 9266 | 0 | 620 | 0 | 0 | 0 | 0 | 0 | 9886 | 100% | 4.5 min | efa7879 | `tests/cts/baseline/gl33-cfg1-native.txt` |
+| 1 | wine | 9266 | 0 | 620 | 0 | 0 | 0 | 0 | 0 | 9886 | 100% | 16.2 min | efa7879 | `tests/cts/baseline/gl33-cfg1-wine.txt` |
+| 2 | native | 9266 | 0 | 620 | 0 | 0 | 0 | 0 | 0 | 9886 | 100% | 4.5 min | efa7879 | `tests/cts/baseline/gl33-cfg2-native.txt` |
+| 2 | wine | 9266 | 0 | 620 | 0 | 0 | 0 | 0 | 0 | 9886 | 100% | 8.0 min | efa7879 | `tests/cts/baseline/gl33-cfg2-wine.txt` |
+| 3 | native | 9266 | 0 | 620 | 0 | 0 | 0 | 0 | 0 | 9886 | 100% | 4.7 min | efa7879 | `tests/cts/baseline/gl33-cfg3-native.txt` |
+| 3 | wine | 9266 | 0 | 620 | 0 | 0 | 0 | 0 | 0 | 9886 | 100% | 7.7 min | efa7879 | `tests/cts/baseline/gl33-cfg3-wine.txt` |
+| 4 | native | 9266 | 0 | 620 | 0 | 0 | 0 | 0 | 0 | 9886 | 100% | 6.0 min | efa7879 | `tests/cts/baseline/gl33-cfg4-native.txt` |
+| 4 | wine | 9266 | 0 | 620 | 0 | 0 | 0 | 0 | 0 | 9886 | 100% | 8.9 min | efa7879 | `tests/cts/baseline/gl33-cfg4-wine.txt` |
 
 Command lines: `scripts/cts/run.py --mustpass gl33-main.txt --config N` reads them from `mustpass.xml`. CTS build: dEQP Core 1942832354c96f0de379f491519734256fbd4f9d.
 
 Against the legacy implementation: `tests/cts/baseline/gl33-cfg1-oldcore.txt` is the last result of the legacy (removed) implementation, configuration 1: 5783 Pass. The core passes 3483 cases it failed and fails 0 cases it passed.
 
-## NotSupported
-
-Every NotSupported case matches an entry of `tests/cts/notsupported.json`:
-
-| Cases | Kind | Pattern | Reason |
-|---:|---|---|---|
-| 218 | extension | `KHR-GL3?.cull_distance.*` | GL_ARB_cull_distance is not advertised. |
-| 15 | extension | `KHR-GL3?.ext_texture_shadow_lod.*` | GL_EXT_texture_shadow_lod is not advertised. |
-| 13 | extension | `KHR-GL3?.transform_feedback_overflow_query_ARB.*` | GL_ARB_transform_feedback_overflow_query is not advertised. |
-| 10 | extension | `KHR-GL3?.pipeline_statistics_query_tests_ARB.*` | GL_ARB_pipeline_statistics_query is not advertised. |
-| 5 | extension | `KHR-GL3?.texture_filter_minmax_tests.*` | GL_ARB_texture_filter_minmax is not advertised. |
-| 1 | extension | `KHR-GL3?.transform_feedback2.*` | GL_ARB_transform_feedback2 is not advertised. |
-| 3 | extension | `KHR-GL3?.transform_feedback3.*` | GL_ARB_transform_feedback3 is not advertised. |
-| 3 | extension | `KHR-GL3?.gpu_shader5_gl.*` | GL_ARB_gpu_shader5 is not advertised. |
-| 6 | extension | `KHR-GL3?.shaders.shader_integer_mix.*` | GL_EXT_shader_integer_mix is not advertised. |
-| 80 | extension | `KHR-GL3?.pixelstoragemodes.compressedteximage*.rgba_astc_*` | ASTC formats need GL_KHR_texture_compression_astc_ldr, which is not advertised. |
-| 2 | version | `KHR-GL3?.packed_depth_stencil.stencil_texturing.*` | Stencil texturing needs GL 4.3 (GL_ARB_stencil_texturing is not advertised). |
-| 1 | version | `KHR-GL3?.CommonBugs.CommonBug_PerVertexValidation` | The case runs only on OpenGL 4.1 or newer contexts. |
-| 263 | test-design | `KHR-GL33.texture_swizzle.*` | The case pairs a texture target with an access routine or format that the test marks invalid (gl3cTextureSwizzleTests.cpp isTargetSuppByAccess/isTargetSuppByFormat, or a format whose m_minimum_gl_context is above 3.3), so it reports NotSupported on every implementation. |
-| 0 | extension | `KHR-GL3[012].frag_coord_conventions.multisample` | Below a GL 3.3 context the case needs GL_ARB_sample_shading (glcFragCoordConventionsTests.cpp), which is not advertised; KHR-GL33 runs it. |
-| 0 | test-design | `KHR-GL31.clip_distance.*` | KHR-GL31 creates a forward-compatible 3.1 context, and glu::contextSupports (gluRenderContext.cpp) matches a forward-compatible context only against its exact version, so the case's check for a GL 3.0 context fails (glcClipDistance.cpp); KHR-GL30, KHR-GL32 and KHR-GL33 run it. |
-| 0 | test-design | `KHR-GL31.texture_lod_bias.texture_lod_bias_all` | KHR-GL31 creates a forward-compatible 3.1 context, and glu::contextSupports (gluRenderContext.cpp) matches a forward-compatible context only against its exact version, so the case's check for a GL 3.0 context fails (glcTextureLodBiasTests.cpp); KHR-GL30, KHR-GL32 and KHR-GL33 run it. |
+NotSupported cases, and the reason for each: [Unsupported](unsupported.md#cts-cases-reported-notsupported).
 
 ## API
 

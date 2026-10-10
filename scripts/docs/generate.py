@@ -14,8 +14,9 @@ Inputs (all tracked):
   src/core                             advertised extensions, implemented commands
 
 Outputs:
-  docs/conformance.md, docs/games.md, docs/api-coverage.json, and the
-  section of README.md between the GENERATED markers.
+  docs/conformance.md, docs/performance.md, docs/games.md,
+  docs/api-coverage.json, and the sections between GENERATED markers in
+  README.md, docs/unsupported.md and docs/testing.md.
 
 --check exits non-zero if any output differs from what is committed;
 --check-provenance if any evidence was recorded from uncommitted changes.
@@ -35,8 +36,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 sys.path.insert(0, os.path.join(ROOT, "scripts", "cts"))
 import results as cts  # noqa: E402
 
-BEGIN = "<!-- BEGIN GENERATED: status (scripts/docs/generate.py) -->"
-END = "<!-- END GENERATED: status -->"
+BEGIN = "<!-- BEGIN GENERATED: %s (scripts/docs/generate.py) -->"
+END = "<!-- END GENERATED: %s -->"
 STATUSES = ["Pass", "Fail", "NotSupported", "InternalError", "Crash", "Timeout", "Missing"]
 # Mustpass lists with committed baselines (tests/cts/baseline/<list>-cfgN-<runner>.txt).
 SUITES = [("gl30", "KHR-GL30"), ("gl31", "KHR-GL31"), ("gl32", "KHR-GL32"), ("gl33", "KHR-GL33")]
@@ -45,18 +46,9 @@ SUITES = [("gl30", "KHR-GL30"), ("gl31", "KHR-GL31"), ("gl32", "KHR-GL32"), ("gl
 CONFIGS = (1, 2, 3, 4)
 CONFIGS_NOTE = ("configurations 1 to 4 of `mustpass.xml` (5 and 6 repeat the command lines of 1 and 2; their only "
                 "difference, `useForFirstEGLConfig`, applies to EGL)")
-# README rows: (version, what the version adds, mustpass list that measures it). Versions
-# without a list are either the compatibility profile's (no public Khronos suite) or above
-# what contexts offer.
+# Conformance totals rows: (version, what the version adds, mustpass list that measures it).
+# OpenGL 1.0 to 2.1 are the compatibility profile, which no public Khronos suite measures.
 VERSIONS = [
-    ("1.0", "Immediate mode, display lists, fixed-function lighting, fog and texturing", None),
-    ("1.1", "Vertex arrays, texture objects, polygon offset", None),
-    ("1.2", "3D textures, BGRA and packed pixels, glDrawRangeElements", None),
-    ("1.3", "Multitexture, cube maps, compressed textures, multisample, texture combiners", None),
-    ("1.4", "Depth textures and shadow compare, window position, point parameters, mipmap generation", None),
-    ("1.5", "Buffer objects, occlusion queries", None),
-    ("2.0", "GLSL 1.10, multiple draw buffers, point sprites, non-power-of-two textures", None),
-    ("2.1", "GLSL 1.20, pixel buffer objects, sRGB textures", None),
     ("3.0", "GLSL 1.30, framebuffer objects, vertex array objects, transform feedback, integer textures", "gl30"),
     ("3.1", "Instancing, texture buffers, uniform buffers, primitive restart", "gl31"),
     ("3.2", "Profiles, geometry shaders, sync objects, multisample textures, base vertex", "gl32"),
@@ -69,8 +61,6 @@ VERSIONS = [
     ("4.5", "Direct state access, clip control, robustness, cull distances", None),
     ("4.6", "SPIR-V shaders, anisotropic filtering, indirect draw counts", None),
 ]
-# Compatibility-profile versions with features listed as not implemented in README.md.
-COMPAT_GAPS = {"1.0", "1.4"}
 # Extensions each 4.x version promoted to core (the version's "new features" appendix).
 PROMOTED = {
     "4.0": ["GL_ARB_draw_buffers_blend", "GL_ARB_draw_indirect", "GL_ARB_gpu_shader5", "GL_ARB_gpu_shader_fp64",
@@ -125,6 +115,9 @@ def load_baselines(suite):
                 meta["command_line"] = line.split(":", 1)[1].strip()
             elif line.startswith("# commit"):
                 meta["commit"] = line.split(",")[0].replace("# commit", "").strip()
+                seconds = re.search(r"(\d+) s$", line.strip())
+                if seconds:
+                    meta["seconds"] = int(seconds.group(1))
             elif line.startswith("# cts"):
                 meta["cts"] = line.replace("# cts", "").strip()
         out[(meta["config"], meta["runner"])] = (meta, results)
@@ -150,6 +143,33 @@ def percent(passed, total):
     if passed == total:
         return "100%"
     return "%.2f%%" % (math.floor(10000.0 * passed / total) / 100)
+
+
+def share(part, whole):
+    """Rounded up, so a small share never shows as 0%."""
+    if part == 0:
+        return "0%"
+    if part == whole:
+        return "100%"
+    return "%.2f%%" % (math.ceil(10000.0 * part / whole) / 100)
+
+
+def lacking(results, kind_of):
+    """(cases NotSupported because the core does not offer what they test, cases any
+    implementation can run): test-design NotSupported cases are skipped everywhere."""
+    missing = design = 0
+    for case, status in results.items():
+        if status != "NotSupported":
+            continue
+        if kind_of(case) == "test-design":
+            design += 1
+        else:
+            missing += 1
+    return missing, len(results) - design
+
+
+def duration(seconds):
+    return "%d s" % seconds if seconds < 120 else "%.1f min" % (seconds / 60.0)
 
 
 def classify_not_supported(suites):
@@ -325,15 +345,16 @@ def render(suites):
         if not baselines:
             continue
         md += ["## %s" % package, "",
-               "| Config | Runner | Pass | Fail | NotSupported | InternalError | Crash | Timeout | Missing | Other | Cases | Applicable passing | Commit | File |",
-               "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|"]
+               "| Config | Runner | Pass | Fail | NotSupported | InternalError | Crash | Timeout | Missing | Other | Cases | Applicable passing | Time | Commit | File |",
+               "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|"]
         for (config, runner) in sorted(baselines):
             meta, results = baselines[(config, runner)]
             t = totals(results)
             other = sum(n for status, n in t.items() if status not in STATUSES)
-            md.append("| %d | %s | %d | %d | %d | %d | %d | %d | %d | %d | %d | %s | %s | `%s` |" % (
+            md.append("| %d | %s | %d | %d | %d | %d | %d | %d | %d | %d | %d | %s | %s | %s | `%s` |" % (
                 config, runner, t["Pass"], t["Fail"], t["NotSupported"], t["InternalError"], t["Crash"], t["Timeout"],
-                t["Missing"], other, len(results), percent(*applicable(results)), meta.get("commit", "?"), meta["file"]))
+                t["Missing"], other, len(results), percent(*applicable(results)),
+                duration(meta["seconds"]) if "seconds" in meta else "?", meta.get("commit", "?"), meta["file"]))
         revisions = sorted({meta.get("cts", "not recorded") for meta, _ in baselines.values()})
         md += ["", "Command lines: `scripts/cts/run.py --mustpass %s-main.txt --config N` reads them from "
                "`mustpass.xml`. CTS build: %s." % (suite, ", ".join(revisions))]
@@ -351,12 +372,8 @@ def render(suites):
                    "result of the legacy (removed) implementation, configuration 1: %d Pass. The core passes %d "
                    "cases it failed and fails %d cases it passed." % (totals(old)["Pass"], gained, lost)]
         md.append("")
-    md += ["## NotSupported", "",
-           "Every NotSupported case matches an entry of `tests/cts/notsupported.json`:", "",
-           "| Cases | Kind | Pattern | Reason |", "|---:|---|---|---|"]
-    for e in entries:
-        md.append("| %d | %s | `%s` | %s |" % (len(per_entry[e["pattern"]]), e["kind"], e["pattern"], e["reason"]))
-    md += ["", "## API", "",
+    md += ["NotSupported cases, and the reason for each: [Unsupported](unsupported.md#cts-cases-reported-notsupported).",
+           "", "## API", "",
            "GL 3.3 core profile commands in the Khronos registry: %d. Implemented: %d. Missing: %s." % (
                len(core), len(core) - len(missing), ", ".join("`%s`" % m for m in missing) if missing else "none"),
            "", "Advertised extensions: %s." % ", ".join("`%s`" % e for e in extensions), "",
@@ -380,7 +397,8 @@ def render(suites):
          "`tests/games/results.json` (commit %s, %s); do not edit." % (
              game_record.get("commit", "?"), game_record.get("date", "?")), "",
          "Each entry renders frames that are compared with reference frames from Apple's OpenGL "
-         "(`scripts/traces/replay.py`). See `tests/games/README.md` for the tiers.", "",
+         "(`scripts/traces/replay.py`). See `tests/games/README.md` for the tiers, and "
+         "[Performance](performance.md) for their frame times.", "",
          "| Entry | Tier | Kind | Result | Differing pixels | Min PSNR | Notes |", "|---|---|---|---|---:|---:|---|"]
     for e in game_entries:
         r = game_results.get(e["name"])
@@ -388,90 +406,145 @@ def render(suites):
             e["name"], e.get("tier", ""), e["kind"], r["status"] if r else "not run",
             "%.4f%%" % (r["worst_fraction"] * 100) if r else "", "%.1f dB" % r["min_psnr_db"] if r else "",
             e.get("notes", "").replace("|", "/")))
-    # Frame times (W24), from scripts/traces/benchmark.py.
-    perf_path = rel("tests", "games", "perf.json")
-    perf = json.load(open(perf_path)) if os.path.exists(perf_path) else None
-    if perf:
-        budget = perf.get("budget", {})
-        g += ["", "## Frame times", "",
-              "Recorded by `scripts/traces/benchmark.py` in `tests/games/perf.json` (commit %s, %s; median of %s runs "
-              "of %s frames, vsync off, after a warm-up). Budgets: at most %.1fx Apple's OpenGL where it runs the "
-              "entry, at least 60 fps for Tier B, no frame over %.0f ms, no more than %.0f%% slower than the "
-              "previous baseline." % (perf.get("commit", "?"), perf.get("date", "?"), perf.get("runs", "?"),
-                                      perf.get("frames", "?"), budget.get("ratio", 1.2), budget.get("hitch_ms", 50),
-                                      100 * (budget.get("regression", 1.1) - 1)), "",
-              "| Entry | Tier | Budget | WineMetalGL avg / p95 / max (ms) | Apple's OpenGL avg (ms) | Ratio |",
-              "|---|---|---|---|---:|---:|"]
-        for p in perf.get("entries", []):
-            new = p.get("new") or {}
-            times = " / ".join("%.3f" % new[k] if new.get(k) is not None else "-" for k in ("avg_ms", "p95_ms", "max_ms"))
-            g.append("| %s | %s | %s | %s | %s | %s |" % (
-                p["name"], p["tier"], p["status"] + (" (" + "; ".join(p["problems"]) + ")" if p.get("problems") else ""),
-                times, "%.3f" % p["apple"]["avg_ms"] if p.get("apple") else "-",
-                "%.2fx" % p["ratio"] if p.get("ratio") else "-"))
-        untimed = [p for p in perf.get("entries", []) if p.get("apple_note")]
-        if untimed:
-            g += ["", "Without an Apple's OpenGL time: %s." % "; ".join(
-                "`%s` (%s)" % (p["name"], p["apple_note"]) for p in untimed)]
     games_md = "\n".join(g) + "\n"
 
-    # ---- README status
-    lines = [BEGIN, "## Status", "",
-             "| OpenGL | Adds | Result | Evidence |", "|---|---|---|---|"]
+    # ---- performance.md (W24), from scripts/traces/benchmark.py.
+    perf_path = rel("tests", "games", "perf.json")
+    perf = json.load(open(perf_path)) if os.path.exists(perf_path) else {"entries": []}
+    budget = perf.get("budget", {})
+    entries_perf = perf.get("entries", [])
+    compared = [p for p in entries_perf if p.get("apple") and (p.get("new") or {}).get("avg_ms")]
+    pm = ["# Performance", "",
+          "Generated by `scripts/docs/generate.py` from `tests/games/perf.json` (commit %s, %s); do not edit." % (
+              perf.get("commit", "?"), perf.get("date", "?")), "",
+          "Frame times of the [game corpus](games.md) entries, recorded by `scripts/traces/benchmark.py`: the median "
+          "of %s runs of %s frames each, vsync off, after a warm-up. The entries are small demos and one trace, so "
+          "the times measure the per-frame cost of the OpenGL implementation and Wine around it more than GPU "
+          "throughput. Apple's OpenGL is the same program with `WINEMETALGL=0`." % (
+              perf.get("runs", "?"), perf.get("frames", "?")), ""]
+    if compared:
+        speedups = sorted(p["apple"]["avg_ms"] / p["new"]["avg_ms"] for p in compared)
+        pm += ["Where both run an entry, WineMetalGL's average frame time is %.1f to %.1f times shorter than "
+               "Apple's OpenGL's (%d entries)." % (speedups[0], speedups[-1], len(compared)), ""]
+    pm += ["| Entry | Tier | WineMetalGL avg / p95 / max (ms) | Apple's OpenGL avg / p95 / max (ms) | Faster by | Budget |",
+           "|---|---|---|---|---:|---|"]
+
+    def triple(t):
+        return " / ".join("%.3f" % t[k] if t and t.get(k) is not None else "-" for k in ("avg_ms", "p95_ms", "max_ms"))
+
+    for p in entries_perf:
+        new, apple = p.get("new") or {}, p.get("apple") or {}
+        faster = "%.2fx" % (apple["avg_ms"] / new["avg_ms"]) if apple.get("avg_ms") and new.get("avg_ms") else "-"
+        pm.append("| %s | %s | %s | %s | %s | %s |" % (
+            p["name"], p["tier"], triple(new), triple(apple) if apple else "-", faster,
+            p["status"] + (" (" + "; ".join(p["problems"]) + ")" if p.get("problems") else "")))
+    untimed = [p for p in entries_perf if p.get("apple_note")]
+    if untimed:
+        pm += ["", "Without an Apple's OpenGL time: %s." % "; ".join(
+            "`%s` (%s)" % (p["name"], p["apple_note"]) for p in untimed)]
+    pm += ["", "Budgets: at most %.1fx Apple's OpenGL's average where it runs the entry, at least 60 fps for Tier B, "
+           "no frame over %.0f ms, and no more than %.0f%% slower than the previous baseline." % (
+               budget.get("ratio", 1.2), budget.get("hitch_ms", 50), 100 * (budget.get("regression", 1.1) - 1)), ""]
+    performance = "\n".join(pm)
+
+    # Kinds of NotSupported entries, for the unsupported share.
+    def kind_of(case):
+        return next(e["kind"] for e in entries if fnmatch.fnmatchcase(case, e["pattern"]))
+
+    blocks = {}
+
+    # ---- docs/unsupported.md: OpenGL 4.x and the NotSupported audit.
+    u = ["| Version | Features | Promoted extensions advertised | Not advertised |", "|---|---|---|---|"]
+    for version, adds, _ in VERSIONS:
+        if version <= "3.3":
+            continue
+        available = [e for e in PROMOTED[version] if e in extensions]
+        absent = [e for e in PROMOTED[version] if e not in extensions]
+        u.append("| %s | %s | %s | %s |" % (
+            version, adds, "%s (%d of %d)" % (", ".join("`%s`" % e for e in available), len(available),
+                                              len(PROMOTED[version])) if available else "none (0 of %d)" % len(PROMOTED[version]),
+            ", ".join("`%s`" % e for e in absent) or "none"))
+    blocks[("docs/unsupported.md", "gl4")] = "\n".join(u)
+    n = ["Every NotSupported case in a committed result matches one entry of `tests/cts/notsupported.json`. "
+         "`extension` and `version` cases test something WineMetalGL does not offer; `test-design` cases are "
+         "skipped by the test itself on every implementation.", "",
+         "| Pattern | Kind | %s | Reason |" % " | ".join(package for _, package in SUITES),
+         "|---|---|%s|---|" % "|".join("---:" for _ in SUITES)]
+    for e in entries:
+        counts = []
+        for suite, _ in SUITES:
+            prefix = dict(SUITES)[suite] + "."
+            counts.append(str(sum(1 for c in per_entry[e["pattern"]] if c.startswith(prefix))))
+        n.append("| `%s` | %s | %s | %s |" % (e["pattern"], e["kind"], " | ".join(counts), e["reason"]))
+    blocks[("docs/unsupported.md", "notsupported")] = "\n".join(n)
+
+    # ---- docs/testing.md: CTS run times from the result headers.
+    t = ["| Mustpass list | Cases | Under Wine, per run | Natively, per run | All %d runs |" % (2 * len(CONFIGS)),
+         "|---|---:|---:|---:|---:|"]
+    for suite, package in SUITES:
+        baselines = suites[suite]
+        times = {runner: [meta["seconds"] for (c, r), (meta, _) in baselines.items() if r == runner and "seconds" in meta]
+                 for runner in ("wine", "native")}
+        if not baselines:
+            continue
+        cases = max(len(results) for _, results in baselines.values())
+
+        def span(values):
+            if not values:
+                return "-"
+            lo, hi = min(values), max(values)
+            return duration(lo) if lo == hi or duration(lo) == duration(hi) else "%s to %s" % (duration(lo), duration(hi))
+
+        total = sum(times["wine"]) + sum(times["native"])
+        t.append("| `%s` | %s | %s | %s | %s |" % (package, "{:,}".format(cases), span(times["wine"]),
+                                                  span(times["native"]), duration(total) if total else "-"))
+    blocks[("docs/testing.md", "cts-times")] = "\n".join(t)
+
+    # ---- README.md: conformance totals.
+    lines = ["## Conformance totals", "",
+             "| OpenGL | Conformance % | Features | Unsupported % |", "|---|---:|---|---:|"]
     commits = sorted({meta.get("commit", "?") for b in suites.values() for meta, _ in b.values()})
     for version, adds, suite in VERSIONS:
+        if version < "3.0":
+            continue
         baselines = suites.get(suite) if suite else None
         if baselines:
-            package = dict(SUITES)[suite]
             runs = sorted(baselines)
             rates = {k: applicable(baselines[k][1]) for k in runs}
             worst = min(runs, key=lambda k: (rates[k][0] / max(rates[k][1], 1), k))
-            passed, total = rates[worst]
-            cases = len(baselines[worst][1])
-            if len(set(rates.values())) == 1:
-                evidence = "`%s`: %s of %s applicable cases (%s cases) in each of %d runs" % (
-                    package, "{:,}".format(passed), "{:,}".format(total), "{:,}".format(cases), len(runs))
-            else:
-                evidence = "`%s`: %s of %s applicable cases (%s cases) in the worst of %d runs (configuration %d, %s)" % (
-                    package, "{:,}".format(passed), "{:,}".format(total), "{:,}".format(cases), len(runs), worst[0],
-                    "Wine" if worst[1] == "wine" else "native")
-            result = percent(passed, total)
-        elif version < "3.0":
-            result = "Compatibility profile" + (", with the gaps listed under "
-                                                "[Compatibility profile](#compatibility-profile)" if version in COMPAT_GAPS else "")
-            evidence = "No public Khronos CTS; Wine fixtures, GPU tests and the game corpus"
+            shares = [lacking(baselines[k][1], kind_of) for k in runs]
+            most = max(shares, key=lambda x: x[0] / max(x[1], 1))
+            conformance_cell, unsupported_cell = percent(*rates[worst]), share(*most)
         elif version > "3.3":
-            available = [e for e in PROMOTED[version] if e in extensions]
-            result = "Not supported"
-            evidence = "Contexts stop at 3.3. " + (
-                "Of the %d extensions %s promoted, advertised: %s" % (
-                    len(PROMOTED[version]), version, ", ".join("`%s`" % e for e in available))
-                if available else "None of the %d extensions %s promoted is advertised" % (len(PROMOTED[version]), version))
+            conformance_cell, unsupported_cell = "-", "100%"
         else:
-            result, evidence = "Not measured", "No committed `%s` baseline" % dict(SUITES).get(suite, suite)
-        lines.append("| %s | %s | %s | %s |" % (version, adds, result, evidence))
+            conformance_cell, unsupported_cell = "not measured", "not measured"
+        lines.append("| %s | %s | %s | %s |" % (version, conformance_cell, adds, unsupported_cell))
     lines += ["",
-              "Percentages are passing cases over applicable cases (those that are not NotSupported) in the worst run. "
-              "Each mustpass list runs in " + CONFIGS_NOTE + ", under Wine (`glcts.exe` through Wine's "
-              "`opengl32`) and natively (the core's driver ABI), at commit %s. NotSupported cases are unadvertised "
-              "extensions, newer GL versions and cases the test marks invalid; [`docs/conformance.md`]"
-              "(docs/conformance.md) lists each with its reason, and the per-run numbers." % ", ".join(commits)]
-    failing = [(case, f) for suite, _ in SUITES for case, f in sorted(failures.get(suite, {}).items())]
+              "**Conformance %%**: passing cases over applicable cases (cases that are not NotSupported) of the "
+              "version's Khronos CTS mustpass list (`KHR-GL30` to `KHR-GL33`), in the worst of its %d runs "
+              "(configurations %s of `mustpass.xml`, each under Wine and natively) at commit %s." % (
+                  2 * len(CONFIGS), "%d to %d" % (CONFIGS[0], CONFIGS[-1]), ", ".join(commits)),
+              "",
+              "**Unsupported %**: cases the CTS reports NotSupported because WineMetalGL does not offer what they "
+              "test (an extension it does not advertise or a newer GL version), over the cases any implementation "
+              "can run. Contexts stop at OpenGL 3.3, so 4.x is 100%; some 4.x features are available as "
+              "extensions ([Unsupported](docs/unsupported.md#opengl-4x))."]
+    failing = [(suite, case, f) for suite, _ in SUITES for case, f in sorted(failures.get(suite, {}).items())]
     if failing:
-        lines += ["", "Cases that fail in some run:", ""]
-        lines += ["- `%s` (%s): %s" % (case, describe_runs(f["runs"]), f["reason"] or "not yet explained.")
-                  for case, f in failing]
-    passed = [e for e in game_entries if game_results.get(e["name"], {}).get("status") == "PASS"]
-    lines += ["", "Game corpus: %d of %d entries match their reference frames ([`docs/games.md`](docs/games.md))."
-              % (len(passed), len(game_entries))]
-    if perf:
-        within = [p for p in perf.get("entries", []) if p["status"] == "PASS"]
-        lines.append("Frame-time budgets met by %d of %d entries." % (len(within), len(perf.get("entries", []))))
+        explained = all(f["reason"] for _, case, f in failing)
+        lines += ["", "Failing cases: %s. %s" % (
+            ", ".join("`%s`" % case for _, case, _ in failing),
+            "[Conformance results](docs/conformance.md) gives the reason for each." if explained else
+            "[Conformance results](docs/conformance.md) lists them; some are not yet explained.")]
     lines += ["",
-              "GL 3.3 core commands with an implementation: %d of %d (their behaviour is what the CTS results "
-              "above measure)." % (len(core) - len(missing), len(core)), END]
-    status = "\n".join(lines)
-    return {"docs/conformance.md": conformance, "docs/api-coverage.json": coverage, "docs/games.md": games_md}, status
+              "OpenGL 1.0 to 2.1 are implemented by WineMetalGL itself, as its compatibility profile: the "
+              "fixed-function pipeline, immediate mode, display lists and legacy GLSL, alongside every 3.x feature. "
+              "No public Khronos suite measures them; the Wine fixtures, GPU tests and game corpus exercise them, and "
+              "[Unsupported](docs/unsupported.md#compatibility-profile-opengl-10-to-21) lists what is not implemented."]
+    blocks[("README.md", "totals")] = "\n".join(lines)
+    return {"docs/conformance.md": conformance, "docs/api-coverage.json": coverage, "docs/games.md": games_md,
+            "docs/performance.md": performance}, blocks
 
 
 def main():
@@ -494,11 +567,13 @@ def main():
         dirty = ["%s (%s)" % (f, c) for f, c in recorded if c.endswith("-dirty") or "uncommitted" in c]
         if dirty:
             raise SystemExit("evidence recorded from uncommitted trees:\n  " + "\n  ".join(dirty))
-    outputs, status = render(suites)
-    readme = open(rel("README.md")).read()
-    if BEGIN not in readme or END not in readme:
-        raise SystemExit("README.md has no generated status section")
-    outputs["README.md"] = readme[:readme.index(BEGIN)] + status + readme[readme.index(END) + len(END):]
+    outputs, blocks = render(suites)
+    for (path, name), content in sorted(blocks.items()):
+        text = outputs.get(path) or open(rel(path)).read()
+        begin, end = BEGIN % name, END % name
+        if begin not in text or end not in text:
+            raise SystemExit("%s has no generated %s section" % (path, name))
+        outputs[path] = text[:text.index(begin)] + begin + "\n" + content + "\n" + end + text[text.index(end) + len(end):]
     stale = []
     for path, text in outputs.items():
         full = rel(path)

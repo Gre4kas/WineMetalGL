@@ -61,6 +61,9 @@ cp "$project_root/docs/conformance.md" "$output/docs/conformance.md"
 cp "$project_root/docs/api-coverage.json" "$output/docs/api-coverage.json"
 cp "$project_root/docs/games.md" "$output/docs/games.md"
 cp "$project_root/docs/release.md" "$output/docs/release.md"
+for doc in unsupported testing building performance; do
+    cp "$project_root/docs/$doc.md" "$output/docs/$doc.md"
+done
 # The evidence the generated documents were built from.
 cp "$project_root"/tests/cts/baseline/*.txt "$output/evidence/cts/"
 cp "$project_root/tests/cts/notsupported.json" "$output/evidence/cts/notsupported.json"

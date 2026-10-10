@@ -5,10 +5,14 @@ CMakeLists.txt
 CMakePresets.json
 DEPENDENCIES.md
 docs/api-coverage.json
+docs/building.md
 docs/conformance.md
 docs/decisions/0001-gl-implementation-strategy.md
 docs/games.md
+docs/performance.md
 docs/release.md
+docs/testing.md
+docs/unsupported.md
 include/winemetalgl/driver.h
 LICENSE
 LICENSES/glslang.txt

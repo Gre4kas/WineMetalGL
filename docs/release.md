@@ -16,7 +16,8 @@ OUTPUT/
     guest/i386/    opengl32.dll
     guest/x86_64/  opengl32.dll
   evidence/        CTS baselines, corpus results and frame times of the commit
-  docs/            conformance.md, games.md, api-coverage.json
+  docs/            conformance.md, unsupported.md, testing.md, building.md,
+                   performance.md, games.md, api-coverage.json, release.md
   README.md, STAGED-FROM.txt, SHA256SUMS
 ```
 
