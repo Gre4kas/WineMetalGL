@@ -137,6 +137,11 @@ void Context::initStrings() {
                              "GL_ARB_half_float_vertex", "GL_ARB_texture_buffer_object", "GL_ARB_framebuffer_sRGB",
                              "GL_EXT_framebuffer_sRGB", "GL_EXT_texture_sRGB", "GL_ARB_map_buffer_alignment"})
         extensions_.push_back(name);
+    // Texture format extensions core GL 3.0 subsumes, which format queries
+    // (and the CTS internalformat cases) test for in core contexts too.
+    for (const char* name : {"GL_ARB_depth_texture", "GL_ARB_texture_float", "GL_EXT_texture_shared_exponent",
+                             "GL_EXT_texture_integer"})
+        if (!hasExtension(name)) extensions_.push_back(name);
     extensions_.push_back("GL_ARB_draw_buffers_blend");
     extensions_.push_back("GL_ARB_base_instance");
     extensions_.push_back("GL_ARB_clip_control");
