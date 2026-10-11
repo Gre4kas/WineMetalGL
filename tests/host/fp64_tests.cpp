@@ -200,3 +200,70 @@ TEST(fp64_frexp_ldexp_match_libm) {
     }
     CHECK_EQ(bad, 0);
 }
+
+// ------------------------------------------------- the lowering in the linker
+
+#include "core/shader/compiler.h"
+#include "core/shader/fp64.h"
+
+TEST(fp64_link_lowers_every_double_stage) {
+    using namespace wmgl::shader;
+    const char* vs = R"(#version 410 core
+layout(std140) uniform Block { layout(row_major) dmat3x2 r; double s; } b;
+uniform dvec3 u;
+layout(location = 0) in dvec4 a;
+layout(location = 1) in dmat2x3 m;
+flat out dvec3 v;
+flat out double w;
+void main() {
+    v = u * b.s + dvec3(b.r * dvec3(1.0), a.w) + m[1];
+    w = determinant(dmat2(a.xy, a.zw));
+    gl_Position = vec4(vec3(v), 1.0);
+})";
+    const char* fs = R"(#version 410 core
+flat in dvec3 v;
+flat in double w;
+out vec4 color;
+void main() { color = vec4(dvec4(v, w)); })";
+    LinkInput input;
+    input.shaders = {{Stage::Vertex, vs}, {Stage::Fragment, fs}};
+    const LinkResult r = link(input);
+    CHECK(r.ok);
+    if (!r.ok) {
+        std::fprintf(stderr, "%s\n", r.log.c_str());
+        return;
+    }
+    for (int s : {static_cast<int>(Stage::Vertex), static_cast<int>(Stage::Fragment)}) {
+        const std::string& msl = r.stages[s].msl;
+        // No double type reaches Metal.
+        for (const char* type : {"double ", "double2", "double3", "double4", "double2x"}) CHECK(msl.find(type) == std::string::npos);
+        CHECK(msl.find("wmgl_d_round_pack") != std::string::npos);
+        // Every stub definition ("... wmgl_s<N>_<lib>(...)\n{") returns a library call.
+        int stubs = 0;
+        for (size_t at = msl.find(" wmgl_s"); at != std::string::npos; at = msl.find(" wmgl_s", at + 1)) {
+            const size_t open = msl.find('(', at), eol = msl.find('\n', at);
+            if (open == std::string::npos || eol == std::string::npos || msl.compare(eol, 3, "\n{\n") != 0) continue;
+            ++stubs;
+            CHECK(msl.compare(eol + 3, 16, "    return wmgl_") == 0);
+        }
+        CHECK(stubs > 0);
+    }
+    // dvec4 a takes one location (part 1 on a spare Metal attribute); the
+    // dmat2x3 m two (one per column), each split in two.
+    int parts = 0, seconds = 0;
+    for (const StageOutput::VertexInput& in : r.stages[static_cast<int>(Stage::Vertex)].vertexInputs) {
+        CHECK_EQ(in.kind, 'd');
+        ++parts;
+        if (in.part == 1) {
+            ++seconds;
+            CHECK(in.location > 2);
+        }
+    }
+    CHECK_EQ(parts, 6);
+    CHECK_EQ(seconds, 3);
+    // Shaders without doubles are not touched.
+    LinkInput plain;
+    plain.shaders = {{Stage::Vertex, "#version 330 core\nin vec4 p; void main() { gl_Position = p; }"}};
+    const LinkResult q = link(plain);
+    CHECK(q.ok && q.stages[0].msl.find("wmgl_d_") == std::string::npos);
+}
