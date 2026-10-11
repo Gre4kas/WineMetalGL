@@ -152,6 +152,10 @@ private:
         return it == valueTypes_.end() ? 0 : it->second;
     }
     void emitCall(std::vector<Inst>& out, const std::string& lib, uint32_t type, uint32_t id, const std::vector<uint32_t>& args);
+    // Element-wise store and load of an array value through `pointer`
+    // (nested arrays down to their vector elements).
+    void storeElements(std::vector<Inst>& out, uint32_t pointer, uint32_t type, uint32_t value);
+    uint32_t loadElements(std::vector<Inst>& out, uint32_t pointer, uint32_t type);
 
     // Interface value conversions: words of a (lowered) double-holding value
     // and back.
@@ -199,6 +203,9 @@ private:
     struct Interface {
         uint32_t privateVar = 0, type = 0;
         bool input = false, split = false;
+        // An interface block: its member types, and their Metal-facing types.
+        bool block = false;
+        std::vector<uint32_t> members, mappedMembers;
         // The Metal-passable variables: one (a varying), or the split parts
         // of a vertex input (name suffixes in `labels`); zero words follow a
         // part in the word stream when it is the short second half of a
@@ -709,13 +716,54 @@ bool Lowering::rewriteInterfaces() {
         const uint32_t var = in.w[1], ptrType = in.w[0], type = pointee(ptrType);
         if (builtins.count(var) || builtins.count(type) || !containsDouble(type)) continue;
         const Inst* t = typeDef(type);
-        if (t && t->op == Op::OpTypeStruct) return fail("stage interface blocks with double members");
         Interface itf;
         itf.privateVar = var;
         itf.type = type;
         itf.input = storage == spv::StorageClassInput;
         itf.split = model_ == spv::ExecutionModelVertex && itf.input;
-        if (itf.split) {
+        if (t && t->op == Op::OpTypeStruct) {
+            // An interface block: the Metal-facing block has every double
+            // member mapped as a plain varying would be (same locations), the
+            // others unchanged; the shader works on a private copy of the
+            // original struct, converted member by member.
+            if (itf.split) return fail("vertex input blocks");
+            itf.block = true;
+            std::vector<uint32_t> members(t->w.begin() + 1, t->w.end());
+            std::vector<uint32_t> mapped;
+            for (uint32_t m : members) mapped.push_back(containsDouble(m) ? interfaceType(m) : m);
+            if (!ok_) return false;
+            const uint32_t block = newId();
+            std::vector<uint32_t> w = {block};
+            w.insert(w.end(), mapped.begin(), mapped.end());
+            late_.push_back({Op::OpTypeStruct, w});
+            types_[block] = late_.back();
+            itf.members = members;
+            itf.mappedMembers = mapped;
+            // The new block takes the original's decorations and names; the
+            // original struct, now private, is no longer a Block.
+            for (size_t d = 0; d < insts_.size(); ++d) {
+                const Inst& dec = insts_[d];
+                if (dec.op == Op::OpMemberDecorate && dec.w[0] == type) {
+                    Inst copy = dec;
+                    copy.w[0] = block;
+                    newDecorations_.push_back(copy);
+                } else if (dec.op == Op::OpDecorate && dec.w[0] == type) {
+                    Inst copy = dec;
+                    copy.w[0] = block;
+                    newDecorations_.push_back(copy);
+                    if (dec.w[1] == spv::DecorationBlock) removed_.insert(d);
+                } else if (dec.op == Op::OpMemberName && dec.w[0] == type) {
+                    Inst copy = dec;
+                    copy.w[0] = block;
+                    newNames_.push_back(copy);
+                } else if (dec.op == Op::OpName && dec.w[0] == type) {
+                    name(block, wordsString(dec.w, 1));
+                }
+            }
+            itf.types.push_back(block);
+            itf.padAfter.push_back(0);
+            itf.labels.push_back("");
+        } else if (itf.split) {
             // A vertex input takes one location per column; a column of three
             // or four doubles needs a second Metal attribute (placed by
             // compiler.cpp), so every column is its own variable or two.
@@ -820,6 +868,46 @@ void Lowering::emitCall(std::vector<Inst>& out, const std::string& lib, uint32_t
     w.insert(w.end(), passed.begin(), passed.end());
     out.push_back({Op::OpFunctionCall, w});
     valueTypes_[id] = type;
+}
+
+void Lowering::storeElements(std::vector<Inst>& out, uint32_t pointer, uint32_t type, uint32_t value) {
+    const Inst* d = typeDef(type);
+    if (!d || d->op != Op::OpTypeArray) {
+        out.push_back({Op::OpStore, {pointer, value}});
+        return;
+    }
+    const uint32_t storage = storageOf(valueType(pointer)), element = d->w[1];
+    const uint32_t count = constValues_.count(d->w[2]) ? constValues_[d->w[2]] : 0;
+    for (uint32_t i = 0; i < count; ++i) {
+        const uint32_t at = newId(), part = newId();
+        out.push_back({Op::OpAccessChain, {pointerTo(storage, element), at, pointer, uintConst(i)}});
+        valueTypes_[at] = pointerTo(storage, element);
+        out.push_back({Op::OpCompositeExtract, {element, part, value, i}});
+        valueTypes_[part] = element;
+        storeElements(out, at, element, part);
+    }
+}
+
+uint32_t Lowering::loadElements(std::vector<Inst>& out, uint32_t pointer, uint32_t type) {
+    const Inst* d = typeDef(type);
+    if (!d || d->op != Op::OpTypeArray) {
+        const uint32_t value = newId();
+        out.push_back({Op::OpLoad, {type, value, pointer}});
+        valueTypes_[value] = type;
+        return value;
+    }
+    const uint32_t storage = storageOf(valueType(pointer)), element = d->w[1];
+    const uint32_t count = constValues_.count(d->w[2]) ? constValues_[d->w[2]] : 0;
+    std::vector<uint32_t> w = {type, newId()};
+    for (uint32_t i = 0; i < count; ++i) {
+        const uint32_t at = newId();
+        out.push_back({Op::OpAccessChain, {pointerTo(storage, element), at, pointer, uintConst(i)}});
+        valueTypes_[at] = pointerTo(storage, element);
+        w.push_back(loadElements(out, at, element));
+    }
+    out.push_back({Op::OpCompositeConstruct, w});
+    valueTypes_[w[1]] = type;
+    return w[1];
 }
 
 bool Lowering::lowerInstruction(const Inst& in, std::vector<Inst>& out) {
@@ -968,9 +1056,42 @@ bool Lowering::lowerFunctions() {
     std::unordered_map<uint32_t, uint32_t> columnLoads;  // pointer id -> column index id (column of rows at the pointer)
     std::vector<Inst> out;
     // Interface conversions (fresh ids for every place they are emitted).
+    // Copies an interface block member by member between the private copy
+    // and the Metal-facing block (inputs: into the copy).
+    auto convertBlock = [&](std::vector<Inst>& code, const Interface& itf) {
+        const uint32_t storage = itf.input ? spv::StorageClassInput : spv::StorageClassOutput;
+        for (size_t k = 0; k < itf.members.size(); ++k) {
+            const uint32_t index = uintConst(static_cast<uint32_t>(k));
+            const uint32_t from = newId(), to = newId(), loaded = newId();
+            const uint32_t fromType = itf.input ? itf.mappedMembers[k] : itf.members[k];
+            const uint32_t toType = itf.input ? itf.members[k] : itf.mappedMembers[k];
+            code.push_back({Op::OpAccessChain, {pointerTo(itf.input ? storage : spv::StorageClassPrivate, fromType), from,
+                                                itf.input ? itf.vars[0] : itf.privateVar, index}});
+            code.push_back({Op::OpLoad, {fromType, loaded, from}});
+            uint32_t value = loaded;
+            if (fromType != toType) {
+                std::vector<uint32_t> words;
+                size_t at = 0;
+                if (itf.input) {
+                    unpackInterface(code, fromType, loaded, words);
+                    value = fromWords(code, toType, words, at);
+                } else {
+                    toWords(code, fromType, loaded, words);
+                    value = packInterface(code, toType, words, at);
+                }
+            }
+            code.push_back({Op::OpAccessChain, {pointerTo(itf.input ? spv::StorageClassPrivate : storage, toType), to,
+                                                itf.input ? itf.privateVar : itf.vars[0], index}});
+            code.push_back({Op::OpStore, {to, value}});
+        }
+    };
     auto convertInputs = [&](std::vector<Inst>& code) {
         for (const Interface& itf : interfaces_) {
             if (!itf.input) continue;
+            if (itf.block) {
+                convertBlock(code, itf);
+                continue;
+            }
             std::vector<uint32_t> words;
             for (size_t p = 0; p < itf.vars.size(); ++p) {
                 const uint32_t loaded = newId();
@@ -986,6 +1107,10 @@ bool Lowering::lowerFunctions() {
     auto convertOutputs = [&](std::vector<Inst>& code) {
         for (const Interface& itf : interfaces_) {
             if (itf.input) continue;
+            if (itf.block) {
+                convertBlock(code, itf);
+                continue;
+            }
             const uint32_t loaded = newId();
             code.push_back({Op::OpLoad, {itf.type, loaded, itf.privateVar}});
             std::vector<uint32_t> words;
@@ -1101,6 +1226,22 @@ bool Lowering::lowerFunctions() {
         for (size_t k = 0; k < in.w.size(); ++k)
             if (rowPointers.count(in.w[k]) && !(hasResult(in.op, nullptr) && k <= 1))
                 return fail("unsupported use of a row-major double matrix");
+        // Whole double matrices (now arrays) in threadgroup memory move column
+        // by column: SPIRV-Cross's array copies into and out of threadgroup
+        // memory do not take its spvUnsafeArray members.
+        if ((in.op == Op::OpStore || in.op == Op::OpLoad) &&
+            storageOf(valueType(in.op == Op::OpStore ? in.w[0] : in.w[2])) == spv::StorageClassWorkgroup) {
+            const uint32_t pointer = in.op == Op::OpStore ? in.w[0] : in.w[2];
+            const uint32_t type = pointee(valueType(pointer));
+            const Inst* d = typeDef(type);
+            if (d && d->op == Op::OpTypeArray && containsDouble(type)) {
+                if (in.op == Op::OpStore)
+                    storeElements(out, pointer, type, in.w[1]);
+                else
+                    out.push_back({Op::OpCopyObject, {type, in.w[1], loadElements(out, pointer, type)}});
+                continue;
+            }
+        }
         if (in.op == Op::OpLoad) {
             const uint32_t storage = storageOf(valueType(in.w[2]));
             if (storage == spv::StorageClassUniform || storage == spv::StorageClassStorageBuffer ||

@@ -138,6 +138,7 @@ bool layoutTransformFeedback(const std::vector<std::string>& varyings, GLenum mo
         v.size = index >= 0 || out->arraySize == 0 ? 1 : out->arraySize;
         v.components = glTypeWords(out->type) * v.size;
         v.array = index < 0 && out->arraySize > 0;
+        v.source = out->qualified.empty() ? base : out->qualified;
         const std::string access = out->expression.empty() ? base : out->expression;
         v.expression = index >= 0 ? access + "[" + std::to_string(index) + "]" : access;
         if (separate) {

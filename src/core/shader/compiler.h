@@ -192,6 +192,9 @@ struct TransformFeedbackVarying {
     uint32_t offset = 0;       // within one captured vertex in `buffer`
     std::string expression;    // GLSL expression of the first element ("gl_Position", "v", "v[2]")
     bool array = false;        // expression names a whole array (elements expression[i])
+    // The captured output by its qualified name ("Block.member" for a member
+    // of an anonymous block captured as "member"; see StageOutputVar).
+    std::string source;
     // Geometry emulation: word offset of the first element in the emitted
     // vertex record (kNotEmitted: the shader never writes it).
     uint32_t sourceOffset = 0;

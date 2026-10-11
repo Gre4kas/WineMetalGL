@@ -1125,7 +1125,8 @@ std::vector<StageOutputVar> captureableOutputs(glslang::TIntermediate* intermedi
                         outputs.push_back({blockName + "." + field, glTypeOfAst(m), m.isSizedArray() ? m.getOuterArraySize() : 0,
                                            expression});
                         if (anonymous)
-                            outputs.push_back({field, glTypeOfAst(m), m.isSizedArray() ? m.getOuterArraySize() : 0, expression});
+                            outputs.push_back({field, glTypeOfAst(m), m.isSizedArray() ? m.getOuterArraySize() : 0, expression,
+                                               blockName + "." + field});
                     }
                     continue;
                 }
@@ -2303,7 +2304,8 @@ bool buildGeometryEmulation(const LinkInput& input, const GeometryShaderInfo& in
     for (TransformFeedbackVarying& v : result.transformFeedback) {
         if (v.type == GL_NONE) continue;
         const size_t open = v.name.find('[');
-        const std::string base = v.name.substr(0, open);
+        // The kernel's GLSL names anonymous block members "Block.member".
+        const std::string base = v.source.empty() ? v.name.substr(0, open) : v.source;
         const int index = open == std::string::npos ? 0 : std::atoi(v.name.c_str() + open + 1);
         v.sourceOffset = TransformFeedbackVarying::kNotEmitted;
         for (const GeometryEmulation::Field& f : g.outputs)
@@ -2379,7 +2381,14 @@ bool buildTessellationEmulation(const LinkInput& input, const TessellationLink& 
     LinkInput evaluationInput;
     evaluationInput.shaders = {{Stage::Vertex, vertex}};
     if (!t.geometryGlsl.empty()) evaluationInput.shaders.push_back({Stage::Geometry, t.geometryGlsl});
-    evaluationInput.transformFeedbackVaryings = input.transformFeedbackVaryings;
+    // Varyings by their qualified names: the geometry stage here is GLSL
+    // translated by SPIRV-Cross, which names anonymous blocks.
+    for (const TransformFeedbackVarying& v : result.transformFeedback) {
+        const size_t open = v.name.find('[');
+        evaluationInput.transformFeedbackVaryings.push_back(
+            v.source.empty() || v.source == v.name.substr(0, open) ? v.name
+                                                                   : v.source + (open == std::string::npos ? "" : v.name.substr(open)));
+    }
     evaluationInput.transformFeedbackMode = input.transformFeedbackMode;
     evaluationInput.internal = true;
     auto evaluation = std::make_shared<LinkResult>(link(evaluationInput));
