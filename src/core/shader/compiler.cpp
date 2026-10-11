@@ -1106,7 +1106,12 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
     // Transform feedback varyings are validated against the last vertex
     // processing stage (geometry if present, else tessellation evaluation,
     // else vertex).
-    if (!capture && !input.transformFeedbackVaryings.empty()) {
+    // A separable control-only program captures nothing: its varyings would
+    // apply if it ended a pipeline, which the control stage cannot, so desktop
+    // GL accepts them without checking (unlike OpenGL ES).
+    const bool controlOnly = input.separable && stagePresent[static_cast<int>(Stage::TessControl)] && !tessellated &&
+                             !stagePresent[static_cast<int>(Stage::Geometry)] && !stagePresent[static_cast<int>(Stage::Vertex)];
+    if (!capture && !input.transformFeedbackVaryings.empty() && !controlOnly) {
         const bool geometry = stagePresent[static_cast<int>(Stage::Geometry)];
         if (!geometry && !tessellated && !stagePresent[static_cast<int>(Stage::Vertex)]) {
             result.log += "error: transform feedback varyings need a vertex or geometry shader\n";

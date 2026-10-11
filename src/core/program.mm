@@ -212,6 +212,10 @@ std::shared_ptr<LinkedProgram> LinkedProgram::tessEvaluation() {
     const shader::LinkResult& e = *link.tess.evaluation;
     auto out = std::make_shared<LinkedProgram>();
     out->uid = nextLinkedProgramId();
+    if (pipeline) {
+        tessEvaluation_ = pipelineTessEvaluation(e, std::move(out));
+        return tessEvaluation_;
+    }
     shader::LinkResult& l = out->link;
     l.ok = true;
     l.stages[static_cast<int>(Stage::Vertex)] = e.stages[static_cast<int>(Stage::Vertex)];
@@ -261,6 +265,70 @@ std::shared_ptr<LinkedProgram> LinkedProgram::tessEvaluation() {
     return out;
 }
 
+// A program pipeline's evaluation executable: the vertex program's
+// evaluation stage (and geometry emulation) with the pipeline's fragment
+// stage, each stage's state from its program.
+std::shared_ptr<LinkedProgram> LinkedProgram::pipelineTessEvaluation(const shader::LinkResult& e,
+                                                                     std::shared_ptr<LinkedProgram> out) {
+    using shader::Stage;
+    const int vs = static_cast<int>(Stage::Vertex), fs = static_cast<int>(Stage::Fragment), cs = static_cast<int>(Stage::Compute);
+    auto inner = std::make_shared<LinkedProgram>();
+    inner->uid = nextLinkedProgramId();
+    inner->link = e;
+    Program* vertexOwner = stageOwner[vs];
+    out->pipeline = true;
+    out->stageOwner[vs] = vertexOwner;
+    out->stageOwner[cs] = vertexOwner;  // the geometry kernel
+    out->stageOwner[fs] = stageOwner[fs];
+    out->stageExecutable[vs] = inner;
+    out->stageExecutable[fs] = stageExecutable[fs];
+    shader::LinkResult& l = out->link;
+    l.ok = true;
+    l.stages[vs] = e.stages[vs];
+    l.stages[fs] = link.stages[fs];
+    l.geometry = e.geometry;
+    l.transformFeedback = e.transformFeedback;
+    std::copy(std::begin(e.xfbStride), std::end(e.xfbStride), std::begin(l.xfbStride));
+    l.xfbBufferCount = e.xfbBufferCount;
+    l.xfbVertexCapture = e.xfbVertexCapture;
+    l.fragOutputs = link.fragOutputs;
+    l.blocks = link.blocks;
+    out->blockOwner = blockOwner;
+    for (size_t b = 0; b < l.blocks.size(); ++b) {
+        shader::UniformBlockInfo& block = l.blocks[b];
+        for (int s = 0; s < shader::kStageCount; ++s)
+            if (s != fs) block.stageSlot[s] = -1;
+        if (blockOwner[b].first != vertexOwner) continue;
+        for (const shader::UniformBlockInfo& other : e.blocks)
+            if (other.name == block.name) {
+                block.stageSlot[vs] = other.stageSlot[vs];
+                block.stageSlot[cs] = other.stageSlot[cs];
+            }
+    }
+    l.samplers = link.samplers;
+    out->samplerOwner = samplerOwner;
+    const std::vector<shader::UniformInfo>& ownUniforms =
+        vertexOwner && vertexOwner->linked ? vertexOwner->linked->link.uniforms : std::vector<shader::UniformInfo>();
+    for (size_t i = 0; i < l.samplers.size(); ++i) {
+        shader::SamplerSlotInfo& slot = l.samplers[i];
+        for (int s = 0; s < shader::kStageCount; ++s)
+            if (s != fs) slot.stageTexture[s] = -1;
+        if (samplerOwner[i].first != vertexOwner) continue;
+        // The vertex program's sampler uniform and element of this slot, by name in the evaluation link.
+        const int own = samplerOwner[i].second;
+        for (const shader::UniformInfo& u : ownUniforms) {
+            if (u.samplerSlot < 0 || own < u.samplerSlot || own >= u.samplerSlot + u.size) continue;
+            for (const shader::UniformInfo& other : e.uniforms)
+                if (other.name == u.name && other.samplerSlot >= 0 && own - u.samplerSlot < other.size) {
+                    const shader::SamplerSlotInfo& from = e.samplers[static_cast<size_t>(other.samplerSlot + own - u.samplerSlot)];
+                    slot.stageTexture[vs] = from.stageTexture[vs];
+                    slot.stageTexture[cs] = from.stageTexture[cs];
+                }
+        }
+    }
+    return out;
+}
+
 std::shared_ptr<LinkedProgram> pipelineExecutable(ProgramPipeline& pp) {
     using shader::Stage;
     constexpr int kStages = shader::kStageCount;
@@ -293,6 +361,8 @@ std::shared_ptr<LinkedProgram> pipelineExecutable(ProgramPipeline& pp) {
         std::copy(std::begin(l.xfbStride), std::end(l.xfbStride), std::begin(out->link.xfbStride));
         out->link.xfbBufferCount = l.xfbBufferCount;
         out->link.xfbVertexCapture = l.xfbVertexCapture;
+        // Tessellation is emulated with the vertex program (api/pipeline.mm validation).
+        if (out->stageOwner[static_cast<int>(Stage::TessEval)] == v) out->link.tess = l.tess;
         // Geometry shaders are emulated with the vertex program (api/pipeline.mm validation).
         if (out->stageOwner[gs] == v) {
             out->link.geometry = l.geometry;

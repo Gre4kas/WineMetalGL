@@ -2,6 +2,9 @@
 #include <cstdlib>
 #include <cstring>
 
+#include <sys/wait.h>
+#include <unistd.h>
+
 #include "gpu.h"
 
 #define WMGL_DEFINE_FUNC(name) PFN_##name name = nullptr;
@@ -129,10 +132,27 @@ bool near(const uint8_t* got, const uint8_t want[4], int tolerance) {
 
 }  // namespace gpu
 
+// GL 4.x tests (named gpu_gl4_*) need contexts above the version the core
+// reports, which only the development override gives (WINEMETALGL_DEV_MAX_VERSION,
+// read once per process): they run in a child process with it set.
 int main(int argc, char** argv) {
+    const char* filter = nullptr;
+    bool gl4Only = false;
+    for (int i = 1; i < argc; ++i) {
+        if (!std::strcmp(argv[i], "--gl4")) gl4Only = true;
+        else filter = argv[i];
+    }
+    const bool dev = std::getenv("WINEMETALGL_DEV_MAX_VERSION") != nullptr;
     int run = 0;
+    bool gl4Pending = false;
     for (const auto& test : wmgl_test::registry()) {
-        if (argc > 1 && !std::strstr(test.name, argv[1])) continue;
+        if (filter && !std::strstr(test.name, filter)) continue;
+        const bool gl4 = std::strncmp(test.name, "gpu_gl4_", 8) == 0;
+        if (gl4 && !dev) {
+            gl4Pending = true;
+            continue;
+        }
+        if (gl4Only && !gl4) continue;
         const int before = wmgl_test::failures;
         test.body();
         std::printf("%s %s\n", wmgl_test::failures == before ? "PASS" : "FAIL", test.name);
@@ -140,5 +160,18 @@ int main(int argc, char** argv) {
         ++run;
     }
     std::printf("%d tests, %d failed checks\n", run, wmgl_test::failures);
-    return wmgl_test::failures ? 1 : 0;
+    int childFailed = 0;
+    if (gl4Pending) {
+        std::fflush(stdout);
+        const pid_t pid = fork();
+        if (pid == 0) {
+            setenv("WINEMETALGL_DEV_MAX_VERSION", "4.6", 1);
+            if (filter) execl(argv[0], argv[0], "--gl4", filter, static_cast<char*>(nullptr));
+            else execl(argv[0], argv[0], "--gl4", static_cast<char*>(nullptr));
+            _exit(127);
+        }
+        int status = 0;
+        if (pid < 0 || waitpid(pid, &status, 0) != pid || !WIFEXITED(status) || WEXITSTATUS(status) != 0) childFailed = 1;
+    }
+    return wmgl_test::failures || childFailed ? 1 : 0;
 }

@@ -62,6 +62,7 @@ struct LinkedProgram {
     // program's, in the same order, so the draw binds the program's state.
     id<MTLComputePipelineState> tessControlKernel();
     std::shared_ptr<LinkedProgram> tessEvaluation();
+    std::shared_ptr<LinkedProgram> pipelineTessEvaluation(const shader::LinkResult& evaluation, std::shared_ptr<LinkedProgram> out);
 
     // Whether the vertex function reads gl_VertexID (draws then keep GL's
     // vertex numbering; see DrawState::issue).

@@ -22,6 +22,8 @@ struct StageBit {
 };
 const StageBit kStageBits[] = {
     {GL_VERTEX_SHADER_BIT, Stage::Vertex, GL_VERTEX_SHADER},
+    {GL_TESS_CONTROL_SHADER_BIT, Stage::TessControl, GL_TESS_CONTROL_SHADER},
+    {GL_TESS_EVALUATION_SHADER_BIT, Stage::TessEval, GL_TESS_EVALUATION_SHADER},
     {GL_GEOMETRY_SHADER_BIT, Stage::Geometry, GL_GEOMETRY_SHADER},
     {GL_FRAGMENT_SHADER_BIT, Stage::Fragment, GL_FRAGMENT_SHADER},
     {GL_COMPUTE_SHADER_BIT, Stage::Compute, GL_COMPUTE_SHADER},
@@ -66,6 +68,10 @@ bool validate(ProgramPipeline& pp, std::string& log) {
     const Program* gs = pp.stages[static_cast<int>(Stage::Geometry)].get();
     if (gs && gs != vs)
         log += "error: WineMetalGL needs the geometry shader in the same program as the vertex shader\n";
+    const Program* tcs = pp.stages[static_cast<int>(Stage::TessControl)].get();
+    const Program* tes = pp.stages[static_cast<int>(Stage::TessEval)].get();
+    if ((tcs && tcs != vs) || (tes && tes != vs))
+        log += "error: WineMetalGL needs the tessellation shaders in the same program as the vertex shader\n";
     return log.empty();
 }
 
@@ -116,6 +122,7 @@ void BindProgramPipeline(Context& ctx, GLuint pipeline) {
 void UseProgramStages(Context& ctx, GLuint pipeline, GLbitfield stages, GLuint program) {
     GLbitfield known = GL_VERTEX_SHADER_BIT | GL_GEOMETRY_SHADER_BIT | GL_FRAGMENT_SHADER_BIT;
     if (ctx.computeShaders()) known |= GL_COMPUTE_SHADER_BIT;
+    if (ctx.tessellationShaders()) known |= GL_TESS_CONTROL_SHADER_BIT | GL_TESS_EVALUATION_SHADER_BIT;
     if (stages != GL_ALL_SHADER_BITS && (stages & ~known)) return ctx.setError(GL_INVALID_VALUE);
     ProgramPipeline* pp = pipelineOrError(ctx, pipeline);
     if (!pp) return;
@@ -161,7 +168,10 @@ void GetProgramPipelineiv(Context& ctx, GLuint pipeline, GLenum pname, GLint* pa
     case GL_VERTEX_SHADER: *params = stageName(Stage::Vertex); return;
     case GL_GEOMETRY_SHADER: *params = stageName(Stage::Geometry); return;
     case GL_FRAGMENT_SHADER: *params = stageName(Stage::Fragment); return;
-    case GL_TESS_CONTROL_SHADER: case GL_TESS_EVALUATION_SHADER: *params = 0; return;
+    case GL_TESS_CONTROL_SHADER: case GL_TESS_EVALUATION_SHADER:
+        if (!ctx.tessellationShaders()) break;
+        *params = stageName(pname == GL_TESS_CONTROL_SHADER ? Stage::TessControl : Stage::TessEval);
+        return;
     case GL_COMPUTE_SHADER:
         if (!ctx.computeShaders()) break;
         *params = stageName(Stage::Compute);

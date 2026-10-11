@@ -329,10 +329,7 @@ bool DrawState::validateDraw(GLenum mode) {
         ctx_.setError(GL_INVALID_OPERATION);
         return false;
     }
-    if (tessellated && (!executableNow->link.tess.active || executableNow->pipeline)) {
-        logOnce(LogLevel::Warn, "tessellation-pipeline", "tessellation in program pipelines is not supported");
-        return false;
-    }
+    if (tessellated && !executableNow->link.tess.active) return false;  // a pipeline without the vertex program's emulation
     // Active transform feedback restricts the draw mode (GL 3.3 section 2.15.2).
     const TransformFeedback& xfb = *ctx_.state.transformFeedback;
     if (xfb.active && !xfb.paused) {
