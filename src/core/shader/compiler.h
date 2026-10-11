@@ -69,6 +69,9 @@ struct LinkInput {
     GLenum transformFeedbackMode = GL_INTERLEAVED_ATTRIBS;
     bool separable = false;
     bool internal = false;  // a generated stage (geometry emulation): no separable-varying renumbering
+    // transformFeedbackVaryings list the outputs an emulation captures: no
+    // MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS limit.
+    bool captureLayout = false;
 };
 
 struct UniformInfo {
@@ -330,6 +333,37 @@ std::string fragmentWithLogicOp(const std::string& msl, unsigned op, const Logic
 std::string fragmentWithSampleMask(const std::string& msl);
 
 LinkResult link(const LinkInput& input);
+
+// Copies stage `from`'s uniform block, atomic counter buffer, image and
+// sampler slots of `source` (matched by name) into stage `to` of `result`.
+void copyStageSlots(const LinkResult& source, int from, LinkResult& result, int to);
+
+// GL_ARB_separate_shader_objects: a program pipeline whose vertex, control,
+// evaluation and geometry stages come from different programs. Every
+// emulated stage (vertex capture, control kernel, evaluation vertex shader,
+// geometry kernel) is built from its own program's linked stage, so it keeps
+// that program's default uniform block and resource names. `stages[s]` is
+// the link input and result of the program bound to stage s (null if none).
+struct PipelineStageInput {
+    const LinkInput* input = nullptr;
+    const LinkResult* link = nullptr;
+};
+struct PipelinePiece {
+    int owner = 0;            // the pipeline stage whose program owns the piece's resources
+    int from = 0, to = 0;     // stage slots in `slots` -> stage slots of the executable
+    bool evaluation = false;  // a stage of the tessellation evaluation executable
+    std::shared_ptr<LinkResult> slots;
+};
+struct PipelineLinkResult {
+    bool ok = false;
+    std::string log;
+    // The vertex stage (capture variant), the geometry emulation or the
+    // tessellation emulation (whose evaluation holds the geometry emulation
+    // after tessellation), and transform feedback, as link() builds them.
+    LinkResult link;
+    std::vector<PipelinePiece> pieces;
+};
+PipelineLinkResult linkPipeline(const PipelineStageInput stages[kStageCount]);
 
 // GL type helpers.
 int glTypeComponents(GLenum type);       // e.g. GL_FLOAT_MAT3 -> 9

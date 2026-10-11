@@ -213,7 +213,7 @@ std::shared_ptr<LinkedProgram> LinkedProgram::tessEvaluation() {
     auto out = std::make_shared<LinkedProgram>();
     out->uid = nextLinkedProgramId();
     if (pipeline) {
-        tessEvaluation_ = pipelineTessEvaluation(e, std::move(out));
+        tessEvaluation_ = pipelineLink ? spanningTessEvaluation(std::move(out)) : pipelineTessEvaluation(e, std::move(out));
         return tessEvaluation_;
     }
     shader::LinkResult& l = out->link;
@@ -383,6 +383,92 @@ std::shared_ptr<LinkedProgram> LinkedProgram::pipelineTessEvaluation(const shade
     return out;
 }
 
+namespace {
+
+// Appends `owner`'s blocks, samplers, images and atomic counter buffers to
+// `out`, with only stage `keep`'s slots (-1: none) of the owner's own link
+// plus the slots of the pipeline pieces it owns.
+void appendOwnerResources(LinkedProgram& out, Program* owner, int keep, const std::vector<const shader::PipelinePiece*>& pieces) {
+    const shader::LinkResult& l = owner->linked->link;
+    shader::LinkResult own;
+    own.blocks = l.blocks;
+    own.uniforms = l.uniforms;
+    own.samplers = l.samplers;
+    own.images = l.images;
+    own.atomicBuffers = l.atomicBuffers;
+    for (int s = 0; s < shader::kStageCount; ++s) {
+        if (s == keep) continue;
+        for (shader::UniformBlockInfo& b : own.blocks) b.stageSlot[s] = -1;
+        for (shader::SamplerSlotInfo& slot : own.samplers) slot.stageTexture[s] = -1;
+        for (shader::ImageSlotInfo& slot : own.images) slot.stageTexture[s] = -1;
+        for (shader::AtomicCounterBufferInfo& b : own.atomicBuffers) b.stageSlot[s] = -1;
+    }
+    for (const shader::PipelinePiece* piece : pieces) shader::copyStageSlots(*piece->slots, piece->from, own, piece->to);
+    for (size_t b = 0; b < own.blocks.size(); ++b) {
+        out.link.blocks.push_back(own.blocks[b]);
+        out.blockOwner.emplace_back(owner, static_cast<int>(b));
+    }
+    for (size_t i = 0; i < own.samplers.size(); ++i) {
+        out.link.samplers.push_back(own.samplers[i]);
+        out.samplerOwner.emplace_back(owner, static_cast<int>(i));
+    }
+    for (size_t i = 0; i < own.images.size(); ++i) {
+        out.link.images.push_back(own.images[i]);
+        out.imageOwner.emplace_back(owner, static_cast<int>(i));
+    }
+    for (const shader::AtomicCounterBufferInfo& b : own.atomicBuffers) out.link.atomicBuffers.push_back(b);
+}
+
+// The distinct programs of `stages` (in stage order).
+std::vector<Program*> distinctOwners(Program* const stages[shader::kStageCount]) {
+    std::vector<Program*> owners;
+    for (int s = 0; s < shader::kStageCount; ++s)
+        if (stages[s] && std::find(owners.begin(), owners.end(), stages[s]) == owners.end()) owners.push_back(stages[s]);
+    return owners;
+}
+
+}  // namespace
+
+// The evaluation executable of a pipeline whose stages span programs: the
+// evaluation stage (and the geometry emulation after it) assembled by
+// shader::linkPipeline, with the pipeline's fragment stage; every stage's
+// state comes from its own program.
+std::shared_ptr<LinkedProgram> LinkedProgram::spanningTessEvaluation(std::shared_ptr<LinkedProgram> out) {
+    using shader::Stage;
+    const int vs = static_cast<int>(Stage::Vertex), fs = static_cast<int>(Stage::Fragment);
+    const shader::LinkResult& e = *link.tess.evaluation;
+    auto inner = std::make_shared<LinkedProgram>();
+    inner->uid = nextLinkedProgramId();
+    inner->link = e;
+    out->pipeline = true;
+    std::vector<const shader::PipelinePiece*> pieces;
+    for (const shader::PipelinePiece& piece : pipelineLink->pieces)
+        if (piece.evaluation) {
+            out->stageOwner[piece.to] = stageOwner[piece.owner];
+            pieces.push_back(&piece);
+        }
+    out->stageOwner[fs] = stageOwner[fs];
+    out->stageExecutable[vs] = inner;
+    out->stageExecutable[fs] = stageExecutable[fs];
+    shader::LinkResult& l = out->link;
+    l.ok = true;
+    l.stages[vs] = e.stages[vs];
+    l.stages[fs] = link.stages[fs];
+    l.geometry = e.geometry;
+    l.transformFeedback = e.transformFeedback;
+    std::copy(std::begin(e.xfbStride), std::end(e.xfbStride), std::begin(l.xfbStride));
+    l.xfbBufferCount = e.xfbBufferCount;
+    l.xfbVertexCapture = e.xfbVertexCapture;
+    l.fragOutputs = link.fragOutputs;
+    for (Program* owner : distinctOwners(out->stageOwner)) {
+        std::vector<const shader::PipelinePiece*> owned;
+        for (const shader::PipelinePiece* piece : pieces)
+            if (stageOwner[piece->owner] == owner) owned.push_back(piece);
+        appendOwnerResources(*out, owner, out->stageOwner[fs] == owner ? fs : -1, owned);
+    }
+    return out;
+}
+
 std::shared_ptr<LinkedProgram> pipelineExecutable(ProgramPipeline& pp) {
     using shader::Stage;
     constexpr int kStages = shader::kStageCount;
@@ -423,6 +509,49 @@ std::shared_ptr<LinkedProgram> pipelineExecutable(ProgramPipeline& pp) {
             out->link.geometryInputType = l.geometryInputType;
             out->link.geometryOutputType = l.geometryOutputType;
             out->link.geometryVerticesOut = l.geometryVerticesOut;
+        }
+    }
+    // Vertex processing stages from several programs: their emulations are
+    // assembled from each stage's program.
+    const int tcs = static_cast<int>(Stage::TessControl), tes = static_cast<int>(Stage::TessEval);
+    if (Program* v = out->stageOwner[vs];
+        v && ((out->stageOwner[tcs] && out->stageOwner[tcs] != v) || (out->stageOwner[tes] && out->stageOwner[tes] != v) ||
+              (out->stageOwner[gs] && out->stageOwner[gs] != v))) {
+        shader::PipelineStageInput stages[kStages];
+        for (int s : {vs, tcs, tes, gs})
+            if (Program* p = out->stageOwner[s]) stages[s] = {&p->linked->input, &p->linked->link};
+        auto assembled = std::make_shared<shader::PipelineLinkResult>(shader::linkPipeline(stages));
+        out->pipelineLink = assembled;
+        if (!assembled->ok) {
+            WMGL_WARN("program pipeline stages cannot be assembled:\n%s", assembled->log.c_str());
+        } else {
+            const shader::LinkResult& a = assembled->link;
+            auto inner = std::make_shared<LinkedProgram>();
+            inner->uid = nextLinkedProgramId();
+            inner->link = a;
+            inner->link.ok = true;
+            out->stageExecutable[vs] = inner;
+            out->link.stages[vs] = a.stages[vs];
+            out->link.geometry = a.geometry;
+            out->link.geometryInputType = a.geometryInputType;
+            out->link.geometryOutputType = a.geometryOutputType;
+            out->link.geometryVerticesOut = a.geometryVerticesOut;
+            out->link.tess = a.tess;
+            out->link.transformFeedback = a.transformFeedback;
+            std::copy(std::begin(a.xfbStride), std::end(a.xfbStride), std::begin(out->link.xfbStride));
+            out->link.xfbBufferCount = a.xfbBufferCount;
+            out->link.xfbVertexCapture = false;
+            for (const shader::PipelinePiece& piece : assembled->pieces)
+                if (!piece.evaluation) out->stageOwner[piece.to] = out->stageOwner[piece.owner];
+            if (Program* f = out->stageOwner[fs]) out->link.fragOutputs = f->linked->link.fragOutputs;
+            for (Program* owner : distinctOwners(out->stageOwner)) {
+                std::vector<const shader::PipelinePiece*> owned;
+                for (const shader::PipelinePiece& piece : assembled->pieces)
+                    if (!piece.evaluation && out->stageOwner[piece.owner] == owner) owned.push_back(&piece);
+                appendOwnerResources(*out, owner, out->stageOwner[fs] == owner ? fs : -1, owned);
+            }
+            pp.executable = out;
+            return out;
         }
     }
     if (Program* f = out->stageOwner[fs]) out->link.fragOutputs = f->linked->link.fragOutputs;

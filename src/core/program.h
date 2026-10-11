@@ -63,6 +63,10 @@ struct LinkedProgram {
     id<MTLComputePipelineState> tessControlKernel();
     std::shared_ptr<LinkedProgram> tessEvaluation();
     std::shared_ptr<LinkedProgram> pipelineTessEvaluation(const shader::LinkResult& evaluation, std::shared_ptr<LinkedProgram> out);
+    // A pipeline whose vertex processing stages span programs: the emulation
+    // assembled from each stage's program (shader::linkPipeline), or null.
+    std::shared_ptr<const shader::PipelineLinkResult> pipelineLink;
+    std::shared_ptr<LinkedProgram> spanningTessEvaluation(std::shared_ptr<LinkedProgram> out);
 
     // Whether the vertex function reads gl_VertexID (draws then keep GL's
     // vertex numbering; see DrawState::issue).

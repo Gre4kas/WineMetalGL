@@ -2241,10 +2241,6 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
     return result;
 }
 
-namespace {
-
-// Copies stage `from`'s uniform block and sampler slots of `source` (matched
-// by name) into stage `to` of `result`.
 void copyStageSlots(const LinkResult& source, int from, LinkResult& result, int to) {
     for (UniformBlockInfo& block : result.blocks)
         for (const UniformBlockInfo& other : source.blocks)
@@ -2267,6 +2263,8 @@ void copyStageSlots(const LinkResult& source, int from, LinkResult& result, int 
                     result.samplers[u.samplerSlot + e].stageTexture[to] = source.samplers[other.samplerSlot + e].stageTexture[from];
     }
 }
+
+namespace {
 
 // Relinks the program with capture code in its vertex shader and makes that
 // the program's vertex stage.
@@ -2431,6 +2429,273 @@ LinkResult link(const LinkInput& input) {
     }
     result.xfbVertexCapture = true;
     return result;
+}
+
+}  // namespace wmgl::shader
+
+// ------------------------------------------------------ program pipelines
+
+namespace wmgl::shader {
+namespace {
+
+// SPIRV-Cross GLSL of `stage` of a linked program (the emulations rebuild
+// stages from it, so they keep that program's default uniform block).
+bool linkedStageGlsl(const LinkResult& link, Stage stage, std::string& glsl, std::string& log) {
+    try {
+        spirv_cross::CompilerGLSL glslOut(link.stages[static_cast<int>(stage)].spirv);
+        spirv_cross::CompilerGLSL::Options options = glslOut.get_common_options();
+        options.version = 450;
+        options.es = false;
+        options.vulkan_semantics = false;
+        options.enable_row_major_load_workaround = false;
+        glslOut.set_common_options(options);
+        glsl = glslOut.compile();
+        return true;
+    } catch (const std::exception& error) {
+        log += std::string("error: shader translation failed: ") + error.what() + "\n";
+        return false;
+    }
+}
+
+// The layout of the outputs `varyings` of `input`'s vertex stage, captured
+// one record per vertex.
+bool vertexCaptureLayout(const LinkInput& input, const std::vector<std::string>& varyings, LinkResult& layout,
+                         std::string& log) {
+    LinkInput vertexOnly;
+    for (const ShaderSource& shader : input.shaders)
+        if (shader.stage == Stage::Vertex) vertexOnly.shaders.push_back(shader);
+    vertexOnly.attribBindings = input.attribBindings;
+    vertexOnly.separable = true;
+    vertexOnly.internal = true;
+    vertexOnly.captureLayout = true;
+    vertexOnly.transformFeedbackVaryings = varyings;
+    layout = linkImpl(vertexOnly, nullptr);
+    if (!layout.ok) log += "error: a pipeline stage reads outputs the vertex stage does not write:\n" + layout.log;
+    return layout.ok;
+}
+
+// `input` relinked with capture code writing `layout` from its vertex stage.
+bool relinkVertexCapture(const LinkInput& input, const LinkResult& layout, LinkResult& captured, std::string& log) {
+    int version = 140;
+    for (const ShaderSource& shader : input.shaders)
+        if (shader.stage == Stage::Vertex) version = std::max(version, parseGlslVersion(shader.source).number);
+    const CaptureCode code = vertexCaptureCode(layout, version);
+    LinkInput again = input;
+    again.transformFeedbackVaryings.clear();
+    captured = linkImpl(again, &code);
+    if (!captured.ok) log += "error: internal error building vertex output capture:\n" + captured.log;
+    return captured.ok;
+}
+
+// Transform feedback of the program that owns the last stage (`source`),
+// captured from the geometry emulation's output records.
+void geometryTransformFeedback(const LinkResult& source, LinkResult& out) {
+    out.transformFeedback = source.transformFeedback;
+    std::copy(std::begin(source.xfbStride), std::end(source.xfbStride), std::begin(out.xfbStride));
+    out.xfbBufferCount = source.xfbBufferCount;
+    for (TransformFeedbackVarying& v : out.transformFeedback) {
+        if (v.type == GL_NONE) continue;
+        const size_t open = v.name.find('[');
+        const std::string base = v.source.empty() ? v.name.substr(0, open) : v.source;
+        const int index = open == std::string::npos ? 0 : std::atoi(v.name.c_str() + open + 1);
+        v.sourceOffset = TransformFeedbackVarying::kNotEmitted;
+        for (const GeometryEmulation::Field& f : out.geometry.outputs)
+            if (f.name == base) v.sourceOffset = f.offset + static_cast<uint32_t>(index * glTypeWords(f.type));
+    }
+}
+
+// The geometry emulation of `geometryGlsl` fed by `vertexInput`'s vertex
+// stage: out.stages[Vertex] (capture variant) and out.geometry; the slots of
+// the capture variant and of the kernel go to `vertexSlots` / `kernelSlots`.
+bool buildGeometryPieces(const LinkInput& vertexInput, const std::string& geometryGlsl, LinkResult& out, LinkResult& vertexSlots,
+                         LinkResult& kernelSlots, std::string& log) {
+    GeometryShaderInfo info;
+    if (!parseGeometryGlsl(geometryGlsl, info, log)) return false;
+    LinkResult layout;
+    if (!vertexCaptureLayout(vertexInput, geometryCaptureVaryings(info), layout, log)) return false;
+    if (!relinkVertexCapture(vertexInput, layout, vertexSlots, log)) return false;
+    const int vs = static_cast<int>(Stage::Vertex), cs = static_cast<int>(Stage::Compute);
+    out.stages[vs] = vertexSlots.stages[vs];
+    const GeometrySources sources = geometrySources(info, layout);
+    GeometryEmulation& g = out.geometry;
+    g.inputType = info.inputType;
+    g.outputType = info.outputType;
+    g.verticesIn = info.verticesIn;
+    g.maxVertices = info.maxVertices;
+    g.invocations = info.invocations;
+    g.inputStride = layout.xfbStride[0];
+    g.outputStride = sources.outputStride;
+    g.outputs = sources.fields;
+    out.geometryInputType = info.inputType;
+    out.geometryOutputType = info.outputType;
+    out.geometryVerticesOut = info.maxVertices;
+    out.geometryInvocations = info.invocations;
+    LinkInput kernelInput;
+    kernelInput.shaders = {{Stage::Compute, sources.compute}};
+    kernelInput.internal = true;
+    kernelSlots = linkImpl(kernelInput, nullptr);
+    if (!kernelSlots.ok) {
+        log += "error: internal error building the geometry shader kernel:\n" + kernelSlots.log;
+        return false;
+    }
+    g.kernel = kernelSlots.stages[cs];
+    // The outputs keep their names; separable stages match by name.
+    LinkInput passthroughInput;
+    passthroughInput.separable = true;
+    passthroughInput.shaders = {{Stage::Vertex, stripHashedLocations(sources.passthrough)}};
+    LinkResult passthrough = linkImpl(passthroughInput, nullptr);
+    if (!passthrough.ok) {
+        log += "error: internal error building the geometry shader output stage:\n" + passthrough.log;
+        return false;
+    }
+    g.passthrough = passthrough.stages[vs];
+    g.active = true;
+    return true;
+}
+
+// Transform feedback varyings of a program as link() takes them for a
+// stage SPIRV-Cross translated (which names anonymous blocks).
+std::vector<std::string> qualifiedVaryings(const LinkResult& link) {
+    std::vector<std::string> varyings;
+    for (const TransformFeedbackVarying& v : link.transformFeedback) {
+        const size_t open = v.name.find('[');
+        varyings.push_back(v.source.empty() || v.source == v.name.substr(0, open)
+                               ? v.name
+                               : v.source + (open == std::string::npos ? "" : v.name.substr(open)));
+    }
+    return varyings;
+}
+
+}  // namespace
+
+PipelineLinkResult linkPipeline(const PipelineStageInput stages[kStageCount]) {
+    PipelineLinkResult out;
+    const int vs = static_cast<int>(Stage::Vertex), tcs = static_cast<int>(Stage::TessControl),
+              tes = static_cast<int>(Stage::TessEval), gs = static_cast<int>(Stage::Geometry), cs = static_cast<int>(Stage::Compute);
+    auto bound = [&](int s) { return stages[s].input && stages[s].link && stages[s].link->stages[s].present; };
+    if (!bound(vs)) {
+        out.log += "error: the pipeline has no vertex shader\n";
+        return out;
+    }
+    auto piece = [&](int owner, LinkResult&& slots, int from, int to, bool evaluation) {
+        out.pieces.push_back({owner, from, to, evaluation, std::make_shared<LinkResult>(std::move(slots))});
+    };
+    std::string& log = out.log;
+    LinkResult& l = out.link;
+    // The program whose stage is last before rasterization owns transform feedback.
+    const int last = bound(gs) ? gs : bound(tes) ? tes : vs;
+    const LinkInput& vertexInput = *stages[vs].input;
+
+    if (!bound(tes)) {
+        if (!bound(gs)) {
+            log += "error: nothing to assemble\n";
+            return out;
+        }
+        std::string geometryGlsl;
+        LinkResult vertexSlots, kernelSlots;
+        if (!linkedStageGlsl(*stages[gs].link, Stage::Geometry, geometryGlsl, log) ||
+            !buildGeometryPieces(vertexInput, geometryGlsl, l, vertexSlots, kernelSlots, log))
+            return out;
+        geometryTransformFeedback(*stages[gs].link, l);
+        piece(vs, std::move(vertexSlots), vs, vs, false);
+        piece(gs, std::move(kernelSlots), cs, cs, false);
+        out.ok = true;
+        return out;
+    }
+
+    // Tessellation: control (optional) and evaluation stages from their programs.
+    TessStageInfo control, evaluation;
+    std::string glsl;
+    const bool hasControl = bound(tcs);
+    if (hasControl && (!linkedStageGlsl(*stages[tcs].link, Stage::TessControl, glsl, log) ||
+                       !parseTessellationGlsl(Stage::TessControl, glsl, control, log)))
+        return out;
+    if (!linkedStageGlsl(*stages[tes].link, Stage::TessEval, glsl, log) ||
+        !parseTessellationGlsl(Stage::TessEval, glsl, evaluation, log))
+        return out;
+    LinkResult layout;
+    if (!vertexCaptureLayout(vertexInput, tessellationCaptureVaryings(hasControl ? control : evaluation), layout, log)) return out;
+    LinkResult vertexSlots;
+    if (!relinkVertexCapture(vertexInput, layout, vertexSlots, log)) return out;
+    l.stages[vs] = vertexSlots.stages[vs];
+    piece(vs, std::move(vertexSlots), vs, vs, false);
+    TessellationEmulation& t = l.tess;
+    const LinkResult& evaluationLink = *stages[tes].link;
+    t.mode = evaluationLink.tess.mode;
+    t.spacing = evaluationLink.tess.spacing;
+    t.order = evaluationLink.tess.order;
+    t.pointMode = evaluationLink.tess.pointMode;
+    t.hasControl = hasControl;
+    t.inputStride = layout.xfbStride[0];
+    TessControlSources controlSources;
+    if (hasControl) {
+        controlSources = tessControlSources(control, layout);
+        t.verticesOut = control.verticesOut;
+        t.vertexWords = controlSources.vertexWords;
+        t.patchWords = controlSources.patchWords;
+        LinkInput kernelInput;
+        kernelInput.shaders = {{Stage::Compute, controlSources.kernel}};
+        kernelInput.internal = true;
+        LinkResult kernel = linkImpl(kernelInput, nullptr);
+        if (!kernel.ok) {
+            log += "error: internal error building the tessellation control kernel:\n" + kernel.log;
+            return out;
+        }
+        t.control = kernel.stages[cs];
+        piece(tcs, std::move(kernel), cs, tcs, false);
+    }
+    const std::string evaluationVertex =
+        tessEvaluationVertexShader(evaluation, hasControl ? &controlSources : nullptr, &layout, log);
+    if (evaluationVertex.empty()) return out;
+    // The evaluation outputs keep their names; separable stages match by name.
+    LinkInput evaluationInput;
+    evaluationInput.shaders = {{Stage::Vertex, stripHashedLocations(evaluationVertex)}};
+    evaluationInput.separable = true;
+    auto evaluationResult = std::make_shared<LinkResult>();
+    const bool geometryElsewhere = bound(gs) && stages[gs].link != stages[tes].link;
+    if (!geometryElsewhere) {
+        // The evaluation stage alone, or with the geometry stage of its own program.
+        if (bound(gs)) {
+            std::string geometryGlsl;
+            if (!linkedStageGlsl(*stages[gs].link, Stage::Geometry, geometryGlsl, log)) return out;
+            evaluationInput.shaders.push_back({Stage::Geometry, stripHashedLocations(geometryGlsl)});
+        }
+        evaluationInput.transformFeedbackVaryings = qualifiedVaryings(*stages[last].link);
+        evaluationInput.transformFeedbackMode = stages[last].input->transformFeedbackMode;
+        *evaluationResult = link(evaluationInput);
+        if (!evaluationResult->ok) {
+            log += "error: internal error building the tessellation evaluation stage:\n" + evaluationResult->log;
+            return out;
+        }
+        piece(tes, LinkResult(*evaluationResult), vs, vs, true);
+        if (bound(gs)) piece(tes, LinkResult(*evaluationResult), cs, cs, true);
+    } else {
+        // The geometry stage of another program, fed by the evaluation stage.
+        std::string geometryGlsl;
+        LinkResult evaluationSlots, kernelSlots;
+        if (!linkedStageGlsl(*stages[gs].link, Stage::Geometry, geometryGlsl, log) ||
+            !buildGeometryPieces(evaluationInput, geometryGlsl, *evaluationResult, evaluationSlots, kernelSlots, log))
+            return out;
+        evaluationResult->ok = true;
+        geometryTransformFeedback(*stages[gs].link, *evaluationResult);
+        piece(tes, std::move(evaluationSlots), vs, vs, true);
+        piece(gs, std::move(kernelSlots), cs, cs, true);
+    }
+    t.evaluation = evaluationResult;
+    t.active = true;
+    // The pipeline's own transform feedback (the API reads it from the
+    // executable; capture happens in the evaluation executable).
+    l.transformFeedback = evaluationResult->transformFeedback;
+    std::copy(std::begin(evaluationResult->xfbStride), std::end(evaluationResult->xfbStride), std::begin(l.xfbStride));
+    l.xfbBufferCount = evaluationResult->xfbBufferCount;
+    if (bound(gs)) {
+        l.geometryInputType = evaluationResult->geometryInputType;
+        l.geometryOutputType = evaluationResult->geometryOutputType;
+        l.geometryVerticesOut = evaluationResult->geometryVerticesOut;
+        l.geometryInvocations = evaluationResult->geometryInvocations;
+    }
+    out.ok = true;
+    return out;
 }
 
 }  // namespace wmgl::shader

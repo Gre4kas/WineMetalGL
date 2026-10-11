@@ -64,14 +64,18 @@ bool validate(ProgramPipeline& pp, std::string& log) {
         if (!p->linkStatus || !p->linked) log += "error: a stage program is not linked\n";
         else if (!p->separable) log += "error: program " + std::to_string(p->name) + " is not separable\n";
     }
-    const Program* vs = pp.stages[static_cast<int>(Stage::Vertex)].get();
-    const Program* gs = pp.stages[static_cast<int>(Stage::Geometry)].get();
-    if (gs && gs != vs)
-        log += "error: WineMetalGL needs the geometry shader in the same program as the vertex shader\n";
-    const Program* tcs = pp.stages[static_cast<int>(Stage::TessControl)].get();
-    const Program* tes = pp.stages[static_cast<int>(Stage::TessEval)].get();
-    if ((tcs && tcs != vs) || (tes && tes != vs))
-        log += "error: WineMetalGL needs the tessellation shaders in the same program as the vertex shader\n";
+    // Stages from several programs are assembled when the pipeline draws
+    // (shader::linkPipeline); report what cannot be.
+    if (log.empty()) {
+        const Program* vs = pp.stages[static_cast<int>(Stage::Vertex)].get();
+        bool spans = false;
+        for (Stage s : {Stage::TessControl, Stage::TessEval, Stage::Geometry})
+            if (const Program* p = pp.stages[static_cast<int>(s)].get(); p && p != vs) spans = true;
+        if (spans && vs) {
+            if (std::shared_ptr<LinkedProgram> e = pipelineExecutable(pp); !e->pipelineLink || !e->pipelineLink->ok)
+                log += e->pipelineLink ? e->pipelineLink->log : std::string("error: the pipeline stages cannot be combined\n");
+        }
+    }
     return log.empty();
 }
 
