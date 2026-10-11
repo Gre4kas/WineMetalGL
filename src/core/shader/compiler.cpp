@@ -1310,6 +1310,9 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
             options.version = 450;
             options.es = false;
             options.vulkan_semantics = false;
+            // The GLSL is compiled again by glslang, not by a GL driver: no
+            // row-major load workaround (it has no double-matrix overloads).
+            options.enable_row_major_load_workaround = false;
             glslOut.set_common_options(options);
             glsl = glslOut.compile();
         } catch (const std::exception& error) {
