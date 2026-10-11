@@ -141,6 +141,7 @@ struct FragOutputInfo {
 // program's image unit values.
 struct ImageSlotInfo {
     GLenum type = 0;           // GL image type (GL_IMAGE_2D, ...)
+    GLenum format = 0;         // the uniform's format layout qualifier (GL_R32I, ...), 0 if none
     int stageTexture[kStageCount] = {-1, -1, -1, -1, -1, -1};  // Metal texture index per stage
 };
 

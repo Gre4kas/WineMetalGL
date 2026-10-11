@@ -693,6 +693,52 @@ GLenum samplerTypeWithComponent(GLenum base, spirv_cross::SPIRType::BaseType com
     return base;
 }
 
+// The GL internal format of an image format layout qualifier (0: none).
+GLenum imageFormatOf(spv::ImageFormat format) {
+    switch (format) {
+    case spv::ImageFormatRgba32f: return GL_RGBA32F;
+    case spv::ImageFormatRgba16f: return GL_RGBA16F;
+    case spv::ImageFormatR32f: return GL_R32F;
+    case spv::ImageFormatRgba8: return GL_RGBA8;
+    case spv::ImageFormatRgba8Snorm: return GL_RGBA8_SNORM;
+    case spv::ImageFormatRg32f: return GL_RG32F;
+    case spv::ImageFormatRg16f: return GL_RG16F;
+    case spv::ImageFormatR11fG11fB10f: return GL_R11F_G11F_B10F;
+    case spv::ImageFormatR16f: return GL_R16F;
+    case spv::ImageFormatRgba16: return GL_RGBA16;
+    case spv::ImageFormatRgb10A2: return GL_RGB10_A2;
+    case spv::ImageFormatRg16: return GL_RG16;
+    case spv::ImageFormatRg8: return GL_RG8;
+    case spv::ImageFormatR16: return GL_R16;
+    case spv::ImageFormatR8: return GL_R8;
+    case spv::ImageFormatRgba16Snorm: return GL_RGBA16_SNORM;
+    case spv::ImageFormatRg16Snorm: return GL_RG16_SNORM;
+    case spv::ImageFormatRg8Snorm: return GL_RG8_SNORM;
+    case spv::ImageFormatR16Snorm: return GL_R16_SNORM;
+    case spv::ImageFormatR8Snorm: return GL_R8_SNORM;
+    case spv::ImageFormatRgba32i: return GL_RGBA32I;
+    case spv::ImageFormatRgba16i: return GL_RGBA16I;
+    case spv::ImageFormatRgba8i: return GL_RGBA8I;
+    case spv::ImageFormatR32i: return GL_R32I;
+    case spv::ImageFormatRg32i: return GL_RG32I;
+    case spv::ImageFormatRg16i: return GL_RG16I;
+    case spv::ImageFormatRg8i: return GL_RG8I;
+    case spv::ImageFormatR16i: return GL_R16I;
+    case spv::ImageFormatR8i: return GL_R8I;
+    case spv::ImageFormatRgba32ui: return GL_RGBA32UI;
+    case spv::ImageFormatRgba16ui: return GL_RGBA16UI;
+    case spv::ImageFormatRgba8ui: return GL_RGBA8UI;
+    case spv::ImageFormatR32ui: return GL_R32UI;
+    case spv::ImageFormatRgb10a2ui: return GL_RGB10_A2UI;
+    case spv::ImageFormatRg32ui: return GL_RG32UI;
+    case spv::ImageFormatRg16ui: return GL_RG16UI;
+    case spv::ImageFormatRg8ui: return GL_RG8UI;
+    case spv::ImageFormatR16ui: return GL_R16UI;
+    case spv::ImageFormatR8ui: return GL_R8UI;
+    default: return 0;
+    }
+}
+
 // The GL type of a storage image (GL 4.2).
 GLenum imageTypeOf(const spirv_cross::SPIRType& base, spirv_cross::SPIRType::BaseType component) {
     using BT = spirv_cross::SPIRType::BaseType;
@@ -1714,6 +1760,7 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
             for (uint32_t e = 0; e < count; ++e) {
                 ImageSlotInfo slot;
                 slot.type = glType;
+                slot.format = imageFormatOf(base.image.format);
                 result.images.push_back(slot);
             }
             imageUniformByName[name] = static_cast<int>(result.uniforms.size());

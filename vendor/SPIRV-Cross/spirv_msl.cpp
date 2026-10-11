@@ -1877,7 +1877,8 @@ void CompilerMSL::extract_global_variables_from_function(uint32_t func_id, std::
 				// When using the pointer, we need to know which variable it is actually loaded from.
 				uint32_t base_id = ops[2];
 				auto *var = maybe_get_backing_variable(base_id);
-				if (var && atomic_image_vars.count(var->self))
+				// WineMetalGL: native texture atomics use the image itself.
+				if (var && (atomic_image_vars.count(var->self) || msl_options.native_texture_atomics))
 				{
 					if (global_var_ids.find(base_id) != global_var_ids.end())
 						added_arg_ids.insert(base_id);

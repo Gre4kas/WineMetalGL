@@ -765,7 +765,7 @@ id<MTLTexture> DrawState::imageBinding(LinkedProgram& program, size_t index) {
     id<MTLTexture> view = nil;
     if (unit >= 0 && unit < ContextState::kMaxImageUnits) {
         const ImageUnit& u = ctx_.state.imageUnits[unit];
-        view = imageView(ctx_, u, slot.type);
+        view = imageView(ctx_, u, slot.type, slot.format);
         if (view && u.texture) u.texture->lastUseSerial = ctx_.stream().serial();
     }
     return view ? view : dummyImage(slot.type);

@@ -603,9 +603,9 @@ id<MTLTexture> dummyImage(GLenum imageType) {
     return texture;
 }
 
-id<MTLTexture> imageView(Context& ctx, const ImageUnit& unit, GLenum imageType) {
+id<MTLTexture> imageView(Context& ctx, const ImageUnit& unit, GLenum imageType, GLenum shaderFormat) {
     Texture* tex = unit.texture.get();
-    const FormatInfo* format = formatInfo(unit.format);
+    const FormatInfo* format = formatInfo(shaderFormat ? shaderFormat : unit.format);
     if (!tex || !format) return nil;
     const ImageShape shape = imageShape(imageType);
     const MTLPixelFormat pixelFormat = mtlPixelFormat(format->storage);

@@ -261,6 +261,32 @@ std::shared_ptr<LinkedProgram> LinkedProgram::tessEvaluation() {
                     slot.stageTexture[cs] = from.stageTexture[cs];
                 }
     }
+    // Images and atomic counter buffers the same way.
+    l.images = link.images;
+    for (shader::ImageSlotInfo& slot : l.images)
+        for (int s = 0; s < shader::kStageCount; ++s)
+            if (s != fs) slot.stageTexture[s] = -1;
+    for (const shader::UniformInfo& u : link.uniforms) {
+        if (u.imageSlot < 0) continue;
+        for (const shader::UniformInfo& other : e.uniforms)
+            if (other.name == u.name && other.imageSlot >= 0)
+                for (GLint i = 0; i < std::min(u.size, other.size); ++i) {
+                    shader::ImageSlotInfo& slot = l.images[static_cast<size_t>(u.imageSlot + i)];
+                    const shader::ImageSlotInfo& from = e.images[static_cast<size_t>(other.imageSlot + i)];
+                    slot.stageTexture[vs] = from.stageTexture[vs];
+                    slot.stageTexture[cs] = from.stageTexture[cs];
+                }
+    }
+    l.atomicBuffers = link.atomicBuffers;
+    for (shader::AtomicCounterBufferInfo& b : l.atomicBuffers) {
+        for (int s = 0; s < shader::kStageCount; ++s)
+            if (s != fs) b.stageSlot[s] = -1;
+        for (const shader::AtomicCounterBufferInfo& other : e.atomicBuffers)
+            if (other.binding == b.binding) {
+                b.stageSlot[vs] = other.stageSlot[vs];
+                b.stageSlot[cs] = other.stageSlot[cs];
+            }
+    }
     tessEvaluation_ = out;
     return out;
 }
@@ -325,6 +351,34 @@ std::shared_ptr<LinkedProgram> LinkedProgram::pipelineTessEvaluation(const shade
                     slot.stageTexture[cs] = from.stageTexture[cs];
                 }
         }
+    }
+    l.images = link.images;
+    out->imageOwner = imageOwner;
+    for (size_t i = 0; i < l.images.size(); ++i) {
+        shader::ImageSlotInfo& slot = l.images[i];
+        for (int s = 0; s < shader::kStageCount; ++s)
+            if (s != fs) slot.stageTexture[s] = -1;
+        if (imageOwner[i].first != vertexOwner) continue;
+        const int own = imageOwner[i].second;
+        for (const shader::UniformInfo& u : ownUniforms) {
+            if (u.imageSlot < 0 || own < u.imageSlot || own >= u.imageSlot + u.size) continue;
+            for (const shader::UniformInfo& other : e.uniforms)
+                if (other.name == u.name && other.imageSlot >= 0 && own - u.imageSlot < other.size) {
+                    const shader::ImageSlotInfo& from = e.images[static_cast<size_t>(other.imageSlot + own - u.imageSlot)];
+                    slot.stageTexture[vs] = from.stageTexture[vs];
+                    slot.stageTexture[cs] = from.stageTexture[cs];
+                }
+        }
+    }
+    l.atomicBuffers = link.atomicBuffers;
+    for (shader::AtomicCounterBufferInfo& b : l.atomicBuffers) {
+        for (int s = 0; s < shader::kStageCount; ++s)
+            if (s != fs) b.stageSlot[s] = -1;
+        for (const shader::AtomicCounterBufferInfo& other : e.atomicBuffers)
+            if (other.binding == b.binding) {
+                b.stageSlot[vs] = other.stageSlot[vs];
+                b.stageSlot[cs] = other.stageSlot[cs];
+            }
     }
     return out;
 }

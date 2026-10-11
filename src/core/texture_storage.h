@@ -35,7 +35,9 @@ id<MTLTexture> dummyTexture(GLenum samplerType);
 // for `unit` (format, level, layer or all layers), or nil when the unit
 // cannot give one (no texture, incompatible format or shape).
 struct ImageUnit;
-id<MTLTexture> imageView(Context& ctx, const ImageUnit& unit, GLenum imageType);
+// `format` is the image uniform's format qualifier, which decides how the
+// texels are interpreted (the unit's format when it has none).
+id<MTLTexture> imageView(Context& ctx, const ImageUnit& unit, GLenum imageType, GLenum format);
 // A small writable texture for image uniforms without a usable unit.
 id<MTLTexture> dummyImage(GLenum imageType);
 
