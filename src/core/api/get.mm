@@ -477,6 +477,10 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
     case GL_READ_FRAMEBUFFER_BINDING: out = ints({s.readFramebuffer ? s.readFramebuffer->name : 0}); return true;
     case GL_RENDERBUFFER_BINDING: out = ints({s.renderbuffer ? s.renderbuffer->name : 0}); return true;
     case GL_CURRENT_PROGRAM: out = ints({s.program ? s.program->name : 0}); return true;
+    case GL_PROGRAM_PIPELINE_BINDING:
+        if (ctx.version() < 41 && !ctx.hasExtension("GL_ARB_separate_shader_objects")) return false;
+        out = ints({s.programPipeline ? s.programPipeline->name : 0});
+        return true;
     case GL_ACTIVE_TEXTURE: out = ints({GL_TEXTURE0 + static_cast<int64_t>(s.activeTexture)}); return true;
     case GL_SAMPLER_BINDING: {
         const auto& unit = s.textureUnits[s.activeTexture];

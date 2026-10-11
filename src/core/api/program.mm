@@ -838,7 +838,10 @@ void GetProgramiv(Context& ctx, GLuint program, GLenum pname, GLint* params) {
         if (programBinaries(ctx)) { *params = programBinaryLength(*p); return; }
         break;
     case GL_PROGRAM_SEPARABLE:
-        if (separateShaderObjects(ctx)) { *params = p->separable; return; }
+        // A program whose last link failed (or that never linked) reports the
+        // initial FALSE, as the Khronos CTS expects of glCreateShaderProgramv
+        // with a shader that does not compile (Mesa behaves the same).
+        if (separateShaderObjects(ctx)) { *params = p->linkStatus ? p->separable : GL_FALSE; return; }
         break;
     default: break;
     }

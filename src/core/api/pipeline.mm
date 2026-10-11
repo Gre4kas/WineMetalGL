@@ -58,11 +58,30 @@ bool hasStage(const Program& p, Stage stage) {
 // GL 4.1 section 11.1.3.11 checks for drawing with the pipeline.
 bool validate(ProgramPipeline& pp, std::string& log) {
     log.clear();
+    bool any = false;
+    for (const StageBit& s : kStageBits) any |= pp.stages[static_cast<int>(s.stage)] != nullptr;
+    if (!any) {
+        log += "error: no program is bound to the pipeline\n";
+        return false;
+    }
     for (const StageBit& s : kStageBits) {
         const Program* p = pp.stages[static_cast<int>(s.stage)].get();
         if (!p) continue;
-        if (!p->linkStatus || !p->linked) log += "error: a stage program is not linked\n";
+        // A failed relink keeps the program's previous executable active.
+        if (!p->linked) log += "error: a stage program is not linked\n";
         else if (!p->separable) log += "error: program " + std::to_string(p->name) + " is not separable\n";
+    }
+    // A program must be active for every stage it was linked with (GL 4.1
+    // section 11.1.3.11), compute aside.
+    for (const StageBit& s : kStageBits) {
+        const Program* p = pp.stages[static_cast<int>(s.stage)].get();
+        if (!p || !p->linked || s.stage == Stage::Compute) continue;
+        for (const StageBit& other : kStageBits)
+            if (other.stage != Stage::Compute && hasStage(*p, other.stage) && pp.stages[static_cast<int>(other.stage)].get() != p) {
+                log += "error: program " + std::to_string(p->name) + " is active for only some of its stages\n";
+                break;
+            }
+        if (!log.empty()) break;
     }
     // Stages from several programs are assembled when the pipeline draws
     // (shader::linkPipeline); report what cannot be.
@@ -71,7 +90,9 @@ bool validate(ProgramPipeline& pp, std::string& log) {
         bool spans = false;
         for (Stage s : {Stage::TessControl, Stage::TessEval, Stage::Geometry})
             if (const Program* p = pp.stages[static_cast<int>(s)].get(); p && p != vs) spans = true;
-        if (spans && vs) {
+        // Tessellation or geometry stages need a vertex stage (GL 4.1 section 11.1.3.11).
+        if (spans && !vs) log += "error: tessellation and geometry stages need a vertex shader\n";
+        else if (spans) {
             if (std::shared_ptr<LinkedProgram> e = pipelineExecutable(pp); !e->pipelineLink || !e->pipelineLink->ok)
                 log += e->pipelineLink ? e->pipelineLink->log : std::string("error: the pipeline stages cannot be combined\n");
         }
@@ -194,6 +215,8 @@ void ValidateProgramPipeline(Context& ctx, GLuint pipeline) {
 
 void GetProgramPipelineInfoLog(Context& ctx, GLuint pipeline, GLsizei bufSize, GLsizei* length, GLchar* infoLog) {
     if (bufSize < 0) return ctx.setError(GL_INVALID_VALUE);
+    // Not a pipeline name: INVALID_VALUE here (GL 4.1 section 6.1.12).
+    if (!ctx.programPipelines.isGenerated(pipeline)) return ctx.setError(GL_INVALID_VALUE);
     ProgramPipeline* pp = pipelineOrError(ctx, pipeline);
     if (!pp) return;
     const GLsizei n = bufSize > 0 ? std::min<GLsizei>(bufSize - 1, static_cast<GLsizei>(pp->infoLog.size())) : 0;
