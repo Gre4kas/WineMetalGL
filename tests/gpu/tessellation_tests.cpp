@@ -415,3 +415,60 @@ out vec4 o; void main() { o = vec4(1.0); })";
     glDeleteVertexArrays(1, &vao);
     glDeleteProgram(p);
 }
+
+TESS_TEST(gpu_tess_instanced_elements) {
+    // Instanced, indexed patches with a base vertex: each instance runs the
+    // whole pipeline again; gl_PrimitiveID restarts at 0 for every instance.
+    const char* vs = R"(#version 400 core
+out float vid;
+void main() { vid = float(gl_VertexID) + 100.0 * float(gl_InstanceID); gl_Position = vec4(0.0); })";
+    const char* tcs = R"(#version 400 core
+layout(vertices = 2) out;
+in float vid[];
+out float v[];
+patch out float primitive;
+void main() {
+    v[gl_InvocationID] = vid[gl_InvocationID];
+    primitive = float(gl_PrimitiveID);
+    gl_TessLevelOuter[0] = 1.0; gl_TessLevelOuter[1] = 1.0;
+})";
+    const char* tes = R"(#version 400 core
+layout(isolines, point_mode) in;
+in float v[];
+patch in float primitive;
+out vec3 result;
+void main() { result = vec3(v[0], v[1], primitive); gl_Position = vec4(0.0); })";
+    GLuint p = link({vs, tcs, tes, nullptr, nullptr}, {"result"});
+    GLuint vao = 0, indices = 0, buffer = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    const GLushort elements[4] = {3, 1, 0, 2};
+    glGenBuffers(1, &indices);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, indices);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(elements), elements, GL_STATIC_DRAW);
+    glGenBuffers(1, &buffer);
+    glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, buffer);
+    glBufferData(GL_TRANSFORM_FEEDBACK_BUFFER, 3 * 16 * 4, nullptr, GL_STATIC_READ);
+    glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 0, buffer);
+    glUseProgram(p);
+    patchParameteri()(GL_PATCH_VERTICES, 2);
+    auto drawElementsInstancedBaseVertex = reinterpret_cast<PFN_glDrawElementsInstancedBaseVertex>(
+        wmgl_get_proc_address("glDrawElementsInstancedBaseVertex"));
+    glEnable(GL_RASTERIZER_DISCARD);
+    glBeginTransformFeedback(GL_POINTS);
+    drawElementsInstancedBaseVertex(GL_PATCHES, 4, GL_UNSIGNED_SHORT, nullptr, 2, 10);
+    glEndTransformFeedback();
+    glDisable(GL_RASTERIZER_DISCARD);
+    CHECK_GL();
+    float data[3 * 16] = {};
+    glGetBufferSubData(GL_TRANSFORM_FEEDBACK_BUFFER, 0, sizeof(data), data);
+    // Two patches per instance, two points per patch, in patch order.
+    const float want[4][3] = {{13, 11, 0}, {10, 12, 1}, {113, 111, 0}, {110, 112, 1}};
+    for (int patch = 0; patch < 4; ++patch)
+        for (int point = 0; point < 2; ++point)
+            for (int c = 0; c < 3; ++c) CHECK_EQ(data[(patch * 2 + point) * 3 + c], want[patch][c]);
+    glDeleteBuffers(1, &buffer);
+    glDeleteBuffers(1, &indices);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
+}
