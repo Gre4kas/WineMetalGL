@@ -106,6 +106,73 @@ void DrawElementsInstancedBaseVertexBaseInstance(Context& ctx, GLenum mode, GLsi
     ctx.draw().drawElements(mode, count, type, indices, instancecount, basevertex);
 }
 
+// GL 4.0 / GL_ARB_draw_indirect. The command is read from DRAW_INDIRECT_BUFFER
+// on the CPU, after any GPU write to it completes, and drawn like the direct
+// command with the same parameters.
+namespace {
+
+bool drawIndirect(Context& ctx) { return ctx.version() >= 40 || ctx.hasExtension("GL_ARB_draw_indirect"); }
+
+// The `words` 32-bit words of the command at `indirect`, or false with the GL error set.
+bool readIndirectCommand(Context& ctx, const void* indirect, uint32_t* words, size_t count) {
+    const uintptr_t offset = reinterpret_cast<uintptr_t>(indirect);
+    Buffer* buffer = ctx.state.drawIndirectBuffer.get();
+    if (!buffer) {
+        // The compatibility profile may source the command from client memory.
+        if (ctx.isCore() || !indirect) return ctx.setError(GL_INVALID_OPERATION), false;
+        std::memcpy(words, indirect, count * 4);
+        return true;
+    }
+    if (offset % 4) return ctx.setError(GL_INVALID_VALUE), false;
+    if (buffer->mappedNonPersistent()) return ctx.setError(GL_INVALID_OPERATION), false;
+    if (!buffer->mtl || offset + count * 4 > static_cast<uint64_t>(buffer->size)) return ctx.setError(GL_INVALID_OPERATION), false;
+    if (buffer->lastWriteSerial) waitForGpuUnlocked(ctx, buffer->lastWriteSerial);
+    std::memcpy(words, buffer->contents() + offset, count * 4);
+    return true;
+}
+
+bool validIndirectMode(Context& ctx, GLenum mode) {
+    switch (mode) {
+    case GL_POINTS: case GL_LINES: case GL_LINE_LOOP: case GL_LINE_STRIP: case GL_TRIANGLES: case GL_TRIANGLE_STRIP:
+    case GL_TRIANGLE_FAN: case GL_LINES_ADJACENCY: case GL_LINE_STRIP_ADJACENCY: case GL_TRIANGLES_ADJACENCY:
+    case GL_TRIANGLE_STRIP_ADJACENCY: case GL_PATCHES:
+        return true;
+    default:
+        ctx.setError(GL_INVALID_ENUM);
+        return false;
+    }
+}
+
+}  // namespace
+
+void DrawArraysIndirect(Context& ctx, GLenum mode, const void* indirect) {
+    if (!drawIndirect(ctx)) return ctx.unimplemented("glDrawArraysIndirect");
+    if (!validIndirectMode(ctx, mode)) return;
+    // Core profile: a vertex array object must be bound.
+    if (ctx.isCore() && ctx.state.vertexArray == ctx.defaultVertexArray) return ctx.setError(GL_INVALID_OPERATION);
+    uint32_t command[4];  // count, instance count, first, base instance
+    if (!readIndirectCommand(ctx, indirect, command, 4)) return;
+    if (command[0] > INT32_MAX || command[1] > INT32_MAX || command[2] > INT32_MAX) return;
+    DrawState::BaseInstanceScope scope(ctx.draw(), command[3]);
+    ctx.draw().drawArrays(mode, static_cast<GLint>(command[2]), static_cast<GLsizei>(command[0]), static_cast<GLsizei>(command[1]));
+}
+
+void DrawElementsIndirect(Context& ctx, GLenum mode, GLenum type, const void* indirect) {
+    if (!drawIndirect(ctx)) return ctx.unimplemented("glDrawElementsIndirect");
+    if (!validIndirectMode(ctx, mode)) return;
+    if (type != GL_UNSIGNED_BYTE && type != GL_UNSIGNED_SHORT && type != GL_UNSIGNED_INT) return ctx.setError(GL_INVALID_ENUM);
+    if (ctx.isCore() && ctx.state.vertexArray == ctx.defaultVertexArray) return ctx.setError(GL_INVALID_OPERATION);
+    if (!ctx.state.vertexArray->elementBuffer) return ctx.setError(GL_INVALID_OPERATION);
+    uint32_t command[5];  // count, instance count, first index, base vertex, base instance
+    if (!readIndirectCommand(ctx, indirect, command, 5)) return;
+    if (command[0] > INT32_MAX || command[1] > INT32_MAX) return;
+    const size_t size = type == GL_UNSIGNED_BYTE ? 1 : type == GL_UNSIGNED_SHORT ? 2 : 4;
+    const uintptr_t offset = static_cast<uintptr_t>(command[2]) * size;
+    DrawState::BaseInstanceScope scope(ctx.draw(), command[4]);
+    ctx.draw().drawElements(mode, static_cast<GLsizei>(command[0]), type, reinterpret_cast<const void*>(offset),
+                            static_cast<GLsizei>(command[1]), static_cast<GLint>(command[3]));
+}
+
 void MultiDrawArrays(Context& ctx, GLenum mode, const GLint* first, const GLsizei* count, GLsizei drawcount) {
     if (drawcount < 0) return ctx.setError(GL_INVALID_VALUE);
     for (GLsizei i = 0; i < drawcount; ++i)

@@ -395,6 +395,10 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
     case GL_ARRAY_BUFFER_BINDING: out = ints({nameOf(s.arrayBuffer)}); return true;
     case GL_ELEMENT_ARRAY_BUFFER_BINDING: out = ints({nameOf(s.vertexArray->elementBuffer)}); return true;
     case GL_COPY_READ_BUFFER_BINDING: out = ints({nameOf(s.copyReadBuffer)}); return true;
+    case GL_DRAW_INDIRECT_BUFFER_BINDING:
+        if (ctx.version() < 40 && !ctx.hasExtension("GL_ARB_draw_indirect")) return false;
+        out = ints({nameOf(s.drawIndirectBuffer)});
+        return true;
     case GL_COPY_WRITE_BUFFER_BINDING: out = ints({nameOf(s.copyWriteBuffer)}); return true;
     case GL_PIXEL_PACK_BUFFER_BINDING: out = ints({nameOf(s.pixelPackBuffer)}); return true;
     case GL_PIXEL_UNPACK_BUFFER_BINDING: out = ints({nameOf(s.pixelUnpackBuffer)}); return true;
