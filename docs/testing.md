@@ -10,7 +10,7 @@ next to another project's GPU tests.
 |---|---|---:|
 | Host tests | The GLSL upgrade, the shader compiler and the format code, without a GPU | under 1 s |
 | GPU tests | The core on Metal through its own API, without Wine | about 2 s |
-| Wine fixtures | 48 programs, each as an x86_64 and an i386 guest in one WoW64 prefix, through Wine's `opengl32` | about 1.5 min |
+| Wine fixtures | 49 programs, each as an x86_64 and an i386 guest in one WoW64 prefix, through Wine's `opengl32` | about 1.5 min |
 | Khronos CTS | `KHR-GL30` to `KHR-GL33`, 8 runs each (per list below) | about 1.5 h |
 | Game corpus | Rendered frames compared with Apple's OpenGL | about 1 min |
 | Frame times | The game corpus timed on both implementations | about 4 min |
@@ -37,7 +37,7 @@ checks.
 WINEMETALGL_WINE_RUNTIME=/path/to/wine tests/wine/probe-opengl-wow64.sh
 ```
 
-The 48 gate fixtures run by default; `--all` adds the 18 GL 4.x fixtures kept
+The 49 gate fixtures run by default; `--all` adds the 18 GL 4.x fixtures kept
 for the 4.x work, which need features a 3.3 context does not have.
 
 ## Khronos CTS

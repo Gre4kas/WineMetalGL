@@ -230,6 +230,7 @@ tests/wine/opengl_image.c
 tests/wine/opengl_indirect_elements.c
 tests/wine/opengl_indirect.c
 tests/wine/opengl_interface.c
+tests/wine/opengl_later_entry_points.c
 tests/wine/opengl_load_probe.c
 tests/wine/opengl_multi_draw.c
 tests/wine/opengl_multisample.c

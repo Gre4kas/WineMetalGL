@@ -1,0 +1,65 @@
+/* Entry points of later GL versions on a 3.2 core context. HashLink's GL
+ * loader (Dead Cells) refuses to start without glBindImageTexture,
+ * glMemoryBarrier, glDispatchCompute and glMultiDrawElementsIndirect, which
+ * Windows drivers return whatever the context's version. Wine returns them
+ * only for applications with HKCU\Software\Wine\AppDefaults\<app.exe>\OpenGL
+ * LaterEntryPoints = "Y" (patch 0001), so this checks both: NULL without the
+ * setting, entry points with it. The context does not advertise them, so
+ * calling one may only raise GL_INVALID_OPERATION.
+ * Prints WINEMETALGL_LATER_ENTRY_POINTS_OK. */
+#include <windows.h>
+#include <GL/gl.h>
+#include <GL/glext.h>
+#include <GL/wglext.h>
+#include <stdio.h>
+
+static LRESULT CALLBACK proc(HWND h, UINT m, WPARAM w, LPARAM l) { return DefWindowProcA(h, m, w, l); }
+
+int main(void) {
+    static const char *const names[] = {"glBindImageTexture", "glMemoryBarrier", "glDispatchCompute",
+                                        "glMultiDrawElementsIndirect"};
+    WNDCLASSA wc = {0};
+    wc.lpfnWndProc = proc; wc.hInstance = GetModuleHandleA(NULL); wc.lpszClassName = "wmgl"; wc.style = CS_OWNDC;
+    RegisterClassA(&wc);
+    HWND hwnd = CreateWindowA("wmgl", "wmgl", WS_POPUP, 0, 0, 64, 64, NULL, NULL, wc.hInstance, NULL);
+    HDC dc = GetDC(hwnd);
+    PIXELFORMATDESCRIPTOR pfd = {sizeof(pfd), 1, PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER, PFD_TYPE_RGBA, 32};
+    pfd.cDepthBits = 24;
+    pfd.cStencilBits = 8;
+    if (!SetPixelFormat(dc, ChoosePixelFormat(dc, &pfd), &pfd)) return 11;
+    HGLRC legacy = wglCreateContext(dc);
+    if (!legacy || !wglMakeCurrent(dc, legacy)) return 12;
+    PFNWGLCREATECONTEXTATTRIBSARBPROC create = (PFNWGLCREATECONTEXTATTRIBSARBPROC)wglGetProcAddress("wglCreateContextAttribsARB");
+    if (!create) return 13;
+    /* What SDL2 asks for when a program wants a 3.2 core profile. */
+    int attribs[] = {WGL_CONTEXT_MAJOR_VERSION_ARB, 3, WGL_CONTEXT_MINOR_VERSION_ARB, 2,
+                     WGL_CONTEXT_PROFILE_MASK_ARB, WGL_CONTEXT_CORE_PROFILE_BIT_ARB, 0};
+    HGLRC core = create(dc, NULL, attribs);
+    if (!core || !wglMakeCurrent(dc, core)) { printf("3.2 core context failed %lu\n", GetLastError()); return 14; }
+    printf("GL_VERSION %s\n", (const char *)glGetString(GL_VERSION));
+    /* The setting belongs to this executable's name. */
+    char module[MAX_PATH], key[MAX_PATH + 64];
+    const char *app = module;
+    GetModuleFileNameA(NULL, module, sizeof(module));
+    for (const char *p = module; *p; p++) if (*p == '\\' || *p == '/') app = p + 1;
+    snprintf(key, sizeof(key), "Software\\Wine\\AppDefaults\\%s\\OpenGL", app);
+    RegDeleteKeyValueA(HKEY_CURRENT_USER, key, "LaterEntryPoints");
+    if (wglGetProcAddress("glDispatchCompute")) { printf("glDispatchCompute without LaterEntryPoints\n"); return 17; }
+    if (RegSetKeyValueA(HKEY_CURRENT_USER, key, "LaterEntryPoints", REG_SZ, "Y", 2)) return 18;
+    for (int i = 0; i < 4; i++) {
+        if (!wglGetProcAddress(names[i])) { printf("missing %s\n", names[i]); return 15; }
+    }
+    PFNGLMEMORYBARRIERPROC barrier = (PFNGLMEMORYBARRIERPROC)wglGetProcAddress("glMemoryBarrier");
+    while (glGetError() != GL_NO_ERROR) {}
+    barrier(GL_ALL_BARRIER_BITS);
+    GLenum error = glGetError();
+    if (error != GL_NO_ERROR && error != GL_INVALID_OPERATION) { printf("glMemoryBarrier error 0x%x\n", error); return 16; }
+    RegDeleteKeyValueA(HKEY_CURRENT_USER, key, "LaterEntryPoints");
+    printf("WINEMETALGL_LATER_ENTRY_POINTS_OK\n");
+    wglMakeCurrent(NULL, NULL);
+    wglDeleteContext(core);
+    wglDeleteContext(legacy);
+    ReleaseDC(hwnd, dc);
+    DestroyWindow(hwnd);
+    return 0;
+}

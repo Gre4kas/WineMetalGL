@@ -8,11 +8,21 @@ The results in `docs/` were recorded with MetalSharp's Wine 11.17, which the
 x86_64 release's prebuilt Wine modules are built from. Other Wine versions may
 need a small rebase when Wine's OpenGL driver interface changes.
 
-- `0001-opengl-wgl-fixes.patch`: three Wine OpenGL fixes.
-  `win32u` indexes the parsed extension list correctly for drivers without
-  `GL_NUM_EXTENSIONS`, `wglChoosePixelFormatARB` keeps window requests
-  within the on-screen pixel formats, and `glDeleteSync(0)` is ignored
-  instead of raising `GL_INVALID_VALUE`.
+- `0001-opengl-wgl-fixes.patch`: four Wine OpenGL fixes.
+  - `win32u` indexes the parsed extension list correctly for drivers without
+    `GL_NUM_EXTENSIONS`.
+  - `wglChoosePixelFormatARB` keeps window requests within the on-screen
+    pixel formats.
+  - `glDeleteSync(0)` is ignored instead of raising `GL_INVALID_VALUE`.
+  - `wglGetProcAddress` can return entry points of GL versions above the
+    context's, as Windows drivers do, for applications that opt in with
+    `HKCU\Software\Wine\AppDefaults\<app.exe>\OpenGL`
+    `LaterEntryPoints = "Y"` (or `HKCU\Software\Wine\OpenGL` for every
+    application). HashLink's GL loader (Dead Cells) needs
+    `glDispatchCompute`, `glMemoryBarrier`, `glBindImageTexture` and
+    `glMultiDrawElementsIndirect` to start on a 3.3 context. It is opt-in
+    because programs that take a non-NULL entry point as support would
+    misbehave; calling one raises `GL_INVALID_OPERATION`.
 - `0002-winemac-winemetalgl-core.patch`: `winemac.drv` loads
   `libwinemetalgl.dylib` from its own directory and hands it a `CAMetalLayer`
   per window; contexts, surfaces, pbuffers and swaps go through the driver ABI

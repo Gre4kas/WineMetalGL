@@ -39,7 +39,7 @@ build/host/wmgl_host_tests && build/host/wmgl_gpu_tests
 ## Wine 11.17 with the patches
 
 The patches in [`patches/wine/wine-11.17`](../patches/wine/README.md) add the
-core to `winemac.drv` and fix three Wine OpenGL bugs. They apply to the
+core to `winemac.drv` and fix four Wine OpenGL bugs. They apply to the
 `wine-11.17` release; other Wine versions may need a small rebase when Wine's
 OpenGL driver interface changes. These steps build an x86_64 Wine (run under
 Rosetta) with x86_64 and i386 guests, and cover only what WineMetalGL needs;
@@ -107,3 +107,14 @@ OpenGL.
 | `WINEMETALGL_TRACE=1` | Log every GL call |
 | `WINEMETALGL_STATS=1` | Log per-frame statistics |
 | `WINEMETALGL_VENDOR`, `WINEMETALGL_RENDERER` | Replace the `GL_VENDOR` and `GL_RENDERER` strings, for games that refuse unknown vendors |
+
+Some programs' OpenGL loaders need entry points of GL versions above 3.3,
+which Windows drivers return whatever the context's version. Wine returns them
+to programs that opt in through the registry of their prefix:
+
+```text
+HKCU\Software\Wine\AppDefaults\<app.exe>\OpenGL    LaterEntryPoints = "Y"
+```
+
+Dead Cells (`deadcells_gl.exe`) needs it. Calling one of these functions
+raises `GL_INVALID_OPERATION`, since 3.3 contexts do not offer them.

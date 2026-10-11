@@ -85,7 +85,7 @@ while read -r source defines scope markers; do
         exe="$RUN_ROOT/$name-$bits.exe"
         out="$exe.stdout"
         if ! "$cc" -O2 ${flags[@]+"${flags[@]}"} -I"$WINE_RUNTIME/include" "$PROJECT_ROOT/tests/wine/$source.c" -o "$exe" \
-            -lopengl32 -luser32 -lgdi32 >"$exe.build.log" 2>&1; then
+            -lopengl32 -luser32 -lgdi32 -ladvapi32 >"$exe.build.log" 2>&1; then
             summary+=("BUILD-FAIL $name ($bits-bit)")
             failed=1
             continue

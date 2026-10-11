@@ -1,5 +1,5 @@
 diff --git a/dlls/opengl32/wgl.c b/dlls/opengl32/wgl.c
-index 9ff082d..6b27871 100644
+index 9ff082d..746a380 100644
 --- a/dlls/opengl32/wgl.c
 +++ b/dlls/opengl32/wgl.c
 @@ -2000,6 +2000,7 @@ BOOL WINAPI wglChoosePixelFormatARB( HDC hdc, const int *attribs_int, const FLOA
@@ -36,7 +36,55 @@ index 9ff082d..6b27871 100644
          else format_array[i] = &wgl_formats[i];
      }
  
-@@ -2935,6 +2946,7 @@ void WINAPI glDeleteSync( GLsync sync )
+@@ -2238,6 +2249,38 @@ int WINAPI wglGetLayerPaletteEntries( HDC hdc, int plane, int start, int count,
+ /***********************************************************************
+  *		wglGetProcAddress (OPENGL32.@)
+  */
++/* Windows drivers return the entry points they export whatever the current
++ * context's version, and some loaders require entry points of later GL
++ * versions that they only call on newer contexts: HashLink's GL loader (Dead
++ * Cells) refuses to start on a 3.3 context without glDispatchCompute. Programs
++ * that take a non-NULL entry point as support would misbehave, so this is an
++ * opt-in per application:
++ *   HKCU\Software\Wine\AppDefaults\<app.exe>\OpenGL  LaterEntryPoints = "Y"
++ * or for every application in HKCU\Software\Wine\OpenGL. Calls the driver
++ * cannot serve are ignored. */
++static BOOL later_entry_points(void)
++{
++    WCHAR module[MAX_PATH], key[MAX_PATH + 64], value[8];
++    const WCHAR *app = module, *p;
++    DWORD size = sizeof(value);
++
++    if (!GetModuleFileNameW( NULL, module, ARRAY_SIZE(module) )) module[0] = 0;
++    for (p = module; *p; p++) if (*p == '\\' || *p == '/') app = p + 1;
++    if (*app && lstrlenW( app ) < MAX_PATH)
++    {
++        lstrcpyW( key, L"Software\\Wine\\AppDefaults\\" );
++        lstrcatW( key, app );
++        lstrcatW( key, L"\\OpenGL" );
++        if (!RegGetValueW( HKEY_CURRENT_USER, key, L"LaterEntryPoints", RRF_RT_REG_SZ, NULL, value, &size ))
++            return value[0] == 'y' || value[0] == 'Y' || value[0] == '1';
++        size = sizeof(value);
++    }
++    if (!RegGetValueW( HKEY_CURRENT_USER, L"Software\\Wine\\OpenGL", L"LaterEntryPoints", RRF_RT_REG_SZ, NULL,
++                       value, &size ))
++        return value[0] == 'y' || value[0] == 'Y' || value[0] == '1';
++    return FALSE;
++}
++
+ PROC WINAPI wglGetProcAddress( LPCSTR name )
+ {
+     const struct registry_entry *func;
+@@ -2268,6 +2311,8 @@ PROC WINAPI wglGetProcAddress( LPCSTR name )
+         if (ctx->base.extensions[*ext]) return func->func;
+     }
+ 
++    if (func->major && later_entry_points()) return func->func;
++
+     WARN( "Extensions required for %s not supported\n", name );
+     return NULL;
+ }
+@@ -2935,6 +2980,7 @@ void WINAPI glDeleteSync( GLsync sync )
      TRACE( "sync %p\n", sync );
  
      if (!(ctx = context_from_handle( teb->glCurrentRC ))) return;
