@@ -2301,6 +2301,9 @@ bool buildGeometryEmulation(const LinkInput& input, const GeometryShaderInfo& in
     g.inputStride = captureLayout.xfbStride[0];
     g.outputStride = sources.outputStride;
     g.outputs = sources.fields;
+    g.streams = info.streams;
+    g.streamOffset = sources.streamOffset;
+    bool bufferStreamSet[4] = {};
     for (TransformFeedbackVarying& v : result.transformFeedback) {
         if (v.type == GL_NONE) continue;
         const size_t open = v.name.find('[');
@@ -2309,7 +2312,18 @@ bool buildGeometryEmulation(const LinkInput& input, const GeometryShaderInfo& in
         const int index = open == std::string::npos ? 0 : std::atoi(v.name.c_str() + open + 1);
         v.sourceOffset = TransformFeedbackVarying::kNotEmitted;
         for (const GeometryEmulation::Field& f : g.outputs)
-            if (f.name == base) v.sourceOffset = f.offset + static_cast<uint32_t>(index * glTypeWords(f.type));
+            if (f.name == base) {
+                v.sourceOffset = f.offset + static_cast<uint32_t>(index * glTypeWords(f.type));
+                v.stream = f.stream;
+            }
+        // Each buffer captures the vertices of one stream (GL 4.0 section 13.2.2).
+        if (bufferStreamSet[v.buffer] && result.xfbStream[v.buffer] != v.stream) {
+            result.log += "error: transform feedback buffer " + std::to_string(v.buffer) +
+                          " captures varyings of more than one vertex stream\n";
+            return false;
+        }
+        bufferStreamSet[v.buffer] = true;
+        result.xfbStream[v.buffer] = v.stream;
     }
     LinkInput kernelInput;
     kernelInput.shaders = {{Stage::Compute, sources.compute}};

@@ -195,6 +195,7 @@ struct TransformFeedbackVarying {
     // The captured output by its qualified name ("Block.member" for a member
     // of an anonymous block captured as "member"; see StageOutputVar).
     std::string source;
+    int stream = 0;            // the vertex stream it comes from (geometry shaders)
     // Geometry emulation: word offset of the first element in the emitted
     // vertex record (kNotEmitted: the shader never writes it).
     uint32_t sourceOffset = 0;
@@ -217,8 +218,14 @@ struct GeometryEmulation {
         GLenum type = 0;
         GLint size = 1;         // array elements
         uint32_t offset = 0;    // in words
+        int stream = 0;         // vertex stream (GL 4.0)
     };
     std::vector<Field> outputs;  // emitted vertex layout
+    // Vertex streams: emitted vertices record their stream at word
+    // `streamOffset` (only stream 0 is rasterized; each transform feedback
+    // buffer captures one stream, LinkResult::xfbStream).
+    bool streams = false;
+    uint32_t streamOffset = 0;
     StageOutput kernel;          // compute: one thread per input primitive
     StageOutput passthrough;     // vertex: draws the emitted vertices
 };
@@ -291,6 +298,7 @@ struct LinkResult {
     SubroutineStageInfo subroutines[kStageCount];
     std::vector<TransformFeedbackVarying> transformFeedback;
     uint32_t xfbStride[4] = {};      // 32-bit words per captured vertex, per buffer
+    int xfbStream[4] = {};           // the vertex stream each buffer captures (geometry streams)
     int xfbBufferCount = 0;
     bool xfbVertexCapture = false;   // the vertex stage MSL writes captured vertices
     uint32_t defaultBlockSize = 0;
