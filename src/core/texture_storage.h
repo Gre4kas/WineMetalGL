@@ -37,18 +37,25 @@ id<MTLTexture> dummyTexture(GLenum samplerType);
 struct ImageUnit;
 // `format` is the image uniform's format qualifier, which decides how the
 // texels are interpreted (the unit's format when it has none).
-id<MTLTexture> imageView(Context& ctx, const ImageUnit& unit, GLenum imageType, GLenum format);
-// Metal has no 2D view of one slice of a 3D texture, so a slice bound to a
-// 2D image is a 2D shadow texture that the draw copies the slice into before
-// it and back after it (DrawState::prepareImageShadows). imageView returns
-// the shadow (or a view of it in the image's format); this finds it, for a
-// unit and image type that use one.
-struct ImageSliceShadow {
-    id<MTLTexture> texture;  // the 3D texture
-    id<MTLTexture> shadow;   // in the 3D texture's pixel format
-    NSUInteger level = 0, slice = 0;
+//
+// Some bindings get a shadow texture instead of a view, which the draw
+// copies the texels into before it and back after it
+// (DrawState::prepareImageShadows):
+//  - one slice of a 3D texture bound to a 2D image (Metal has no 2D view of
+//    a 3D texture's slice);
+//  - an r32i or r32ui image of a texture of another 32-bit format (Metal
+//    texture atomics need an R32 texture made for them).
+// `shadow`, when given, describes the shadow imageView returns, if any.
+struct ImageShadow {
+    id<MTLTexture> texture;  // the texture the image unit names
+    id<MTLTexture> shadow;   // nil: the binding is a view, not a shadow
+    NSUInteger level = 0, firstSlice = 0, slices = 1, firstPlane = 0, planes = 1;
+    NSUInteger width = 0, height = 0, texelBytes = 4;
 };
-bool imageSliceShadow(const ImageUnit& unit, GLenum imageType, ImageSliceShadow& out);
+id<MTLTexture> imageView(Context& ctx, const ImageUnit& unit, GLenum imageType, GLenum format,
+                         ImageShadow* shadow = nullptr);
+// Copies a shadow's texels from its texture (toShadow) or back.
+void copyImageShadow(Context& ctx, const ImageShadow& shadow, bool toShadow);
 // A small writable texture for image uniforms without a usable unit.
 id<MTLTexture> dummyImage(GLenum imageType);
 

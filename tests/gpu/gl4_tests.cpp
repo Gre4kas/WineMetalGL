@@ -552,3 +552,80 @@ void main() { o = vec4(gl_DepthRange.near, gl_DepthRange.far, gl_DepthRange.diff
     glDeleteVertexArrays(1, &quad);
     glDeleteProgram(p);
 }
+
+GPU_TEST_VERSION(gpu_gl4_image_atomics_sequence, 42) {
+    // Two atomics on the same texel in one invocation, on two RGBA8 textures
+    // reinterpreted as r32i and r32ui (IMAGE_FORMAT_COMPATIBILITY_BY_SIZE:
+    // R32 shadow textures, core::ImageShadow), then read back.
+    const char* fs = R"(#version 420 core
+layout(r32i) coherent uniform iimage2D image0;
+layout(r32ui) coherent uniform uimage2D image1;
+out vec4 o;
+void main() {
+    o = vec4(0.0, 1.0, 0.0, 1.0);
+    ivec2 c = ivec2(gl_FragCoord.xy);
+    if (imageAtomicAdd(image0, c, 2) != 0) o = vec4(1.0, 0.0, 0.0, 1.0);
+    if (imageAtomicAdd(image0, c, -1) != 2) o = vec4(1.0, 0.0, 0.0, 1.0);
+    if (imageAtomicAdd(image1, c, 1u) != 0u) o = vec4(1.0, 0.0, 0.0, 1.0);
+    if (imageAtomicAdd(image1, c, 2u) != 1u) o = vec4(1.0, 0.0, 0.0, 1.0);
+})";
+    GLuint p = gpu::program(kQuadVs, fs);
+    glUseProgram(p);
+    glUniform1i(glGetUniformLocation(p, "image0"), 0);
+    glUniform1i(glGetUniformLocation(p, "image1"), 1);
+    GLuint tex[2] = {};
+    glGenTextures(2, tex);
+    std::vector<GLubyte> zero(64 * 64 * 4, 0);
+    for (GLuint t : tex) {
+        glBindTexture(GL_TEXTURE_2D, t);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 64, 64, 0, GL_RGBA, GL_UNSIGNED_BYTE, zero.data());
+    }
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glBindImageTexture(0, tex[0], 0, GL_FALSE, 0, GL_READ_WRITE, GL_R32I);
+    glBindImageTexture(1, tex[1], 0, GL_FALSE, 0, GL_READ_WRITE, GL_R32UI);
+    glClear(GL_COLOR_BUFFER_BIT);
+    // The draw as the CTS issues it: four interleaved attributes and indices.
+    const float vertices[] = {-1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                              -1, 1,  0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1,  0, 0, 0, 0, 0, 0, 0, 0, 0};
+    const GLushort indices[] = {0, 1, 2, 3};
+    GLuint quad = 0, vbo = 0, ebo = 0;
+    glGenVertexArrays(1, &quad);
+    glBindVertexArray(quad);
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+    for (GLuint a = 0; a < 4; ++a) {
+        glVertexAttribPointer(a, a ? 3 : 2, GL_FLOAT, GL_FALSE, 44, reinterpret_cast<const void*>(a ? 8 + 12 * (a - 1) : 0));
+        glEnableVertexAttribArray(a);
+    }
+    glGenBuffers(1, &ebo);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
+    auto drawBaseInstance = reinterpret_cast<PFN_glDrawElementsInstancedBaseInstance>(
+        wmgl_get_proc_address("glDrawElementsInstancedBaseInstance"));
+    drawBaseInstance(GL_TRIANGLE_STRIP, 4, GL_UNSIGNED_SHORT, nullptr, 1, 0);
+    glMemoryBarrier(GL_TEXTURE_UPDATE_BARRIER_BIT);
+    std::vector<GLubyte> data(64 * 64 * 4, 0xee);
+    const GLubyte want[2] = {1, 3};
+    for (int i = 0; i < 2; ++i) {
+        glBindTexture(GL_TEXTURE_2D, tex[i]);
+        glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, data.data());
+        // Every texel, read back right after the draw: the readback must wait
+        // for the fragment stage's texture atomics (CommandStream::noteShaderWrites).
+        for (int t = 0; t < 64 * 64; ++t)
+            if (data[t * 4] != want[i] || data[t * 4 + 1] != 0) {
+                std::fprintf(stderr, "  image%d texel %d = %d %d\n", i, t, data[t * 4], data[t * 4 + 1]);
+                CHECK(false);
+                break;
+            }
+    }
+    const std::vector<uint8_t> px = gpu::readRGBA8(10, 10, 1, 1);
+    CHECK_EQ(px[0], 0);
+    CHECK_GL();
+    glDeleteBuffers(1, &vbo);
+    glDeleteBuffers(1, &ebo);
+    glDeleteVertexArrays(1, &quad);
+    glDeleteTextures(2, tex);
+    glDeleteProgram(p);
+}

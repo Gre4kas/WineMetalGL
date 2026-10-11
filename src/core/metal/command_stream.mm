@@ -39,6 +39,13 @@ uint64_t CommandStream::serial() {
 }
 
 void CommandStream::endEncoder() {
+    if (shaderWrites_ && (render_ || compute_)) {
+        if (!writesFence_) writesFence_ = [Device::get().mtl() newFence];
+        if (render_) [render_ updateFence:writesFence_ afterStages:MTLRenderStageVertex | MTLRenderStageFragment];
+        else [compute_ updateFence:writesFence_];
+        fenced_ = true;
+    }
+    shaderWrites_ = false;
     if (render_) {
         [render_ endEncoding];
         render_ = nil;
@@ -51,6 +58,17 @@ void CommandStream::endEncoder() {
         [compute_ endEncoding];
         compute_ = nil;
     }
+}
+
+void CommandStream::waitForShaderWrites(id<MTLCommandEncoder> encoder, bool render) {
+    if (!fenced_) return;
+    if (render)
+        [static_cast<id<MTLRenderCommandEncoder>>(encoder) waitForFence:writesFence_
+                                                           beforeStages:MTLRenderStageVertex | MTLRenderStageFragment];
+    else if ([encoder conformsToProtocol:@protocol(MTLBlitCommandEncoder)])
+        [static_cast<id<MTLBlitCommandEncoder>>(encoder) waitForFence:writesFence_];
+    else
+        [static_cast<id<MTLComputeCommandEncoder>>(encoder) waitForFence:writesFence_];
 }
 
 void CommandStream::startRender(const RenderTargetDesc& target) {
@@ -110,6 +128,7 @@ void CommandStream::startRender(const RenderTargetDesc& target) {
     }
     if (clearsApply) pending_ = PendingClear();
     render_ = [commandBuffer() renderCommandEncoderWithDescriptor:pass];
+    waitForShaderWrites(render_, true);
     stats::passStarted(target.width, target.height);
     target_ = target;
     drawsInPass_ = false;
@@ -160,6 +179,7 @@ id<MTLBlitCommandEncoder> CommandStream::blit() {
     resolvePendingClear();
     endEncoder();
     blit_ = [commandBuffer() blitCommandEncoder];
+    waitForShaderWrites(blit_, false);
     return blit_;
 }
 
@@ -168,6 +188,7 @@ id<MTLComputeCommandEncoder> CommandStream::compute() {
     resolvePendingClear();
     endEncoder();
     compute_ = [commandBuffer() computeCommandEncoder];
+    waitForShaderWrites(compute_, false);
     return compute_;
 }
 

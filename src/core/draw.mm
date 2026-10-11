@@ -805,6 +805,7 @@ id<MTLTexture> DrawState::imageBinding(LinkedProgram& program, size_t index) {
         if (view && u.texture) {
             const uint64_t serial = ctx_.stream().serial();
             u.texture->lastUseSerial = serial;
+            if (u.access != GL_READ_ONLY) ctx_.stream().noteShaderWrites();
             // Stores to a buffer image change the buffer: CPU reads and later uploads wait for this draw.
             if (Buffer* buffer = u.texture->buffer.get(); buffer && u.access != GL_READ_ONLY) {
                 buffer->lastUseSerial = buffer->lastWriteSerial = serial;
@@ -959,6 +960,7 @@ void DrawState::atomicCounterBuffer(LinkedProgram& program, size_t index, __stro
     offset = static_cast<NSUInteger>(ib.offset);
     // Counters change the buffer: CPU reads and later uploads wait for this draw.
     ib.buffer->lastUseSerial = ib.buffer->lastWriteSerial = ctx_.stream().serial();
+    ctx_.stream().noteShaderWrites();
     ++ib.buffer->version;
 }
 
@@ -1001,44 +1003,33 @@ void DrawState::prepareSamplerStorage(LinkedProgram& program) {
 }
 
 void DrawState::prepareImageShadows(LinkedProgram& program) {
-    // 3D texture slices bound to 2D images (imageSliceShadow): the shadows
-    // take the slices' texels before the draw, once per draw (an earlier
-    // pass of the draw may have written a shadow already).
+    // Bindings with a shadow texture (core::ImageShadow): the shadows take
+    // their texels before the draw, once per draw (an earlier pass of the
+    // draw may have written a shadow already).
     for (size_t i = 0; i < program.link.images.size(); ++i) {
         const GLint unit = imageUnit(program, i);
         if (unit < 0 || unit >= ContextState::kMaxImageUnits) continue;
         const ImageUnit& u = ctx_.state.imageUnits[unit];
-        ImageShadow entry;
-        if (!imageSliceShadow(u, program.link.images[i].type, entry.slice)) continue;
+        const shader::ImageSlotInfo& slot = program.link.images[i];
+        PendingShadow entry;
+        if (!imageView(ctx_, u, slot.type, slot.format, &entry.shadow) || !entry.shadow.shadow) continue;
         bool known = false;
-        for (ImageShadow& other : imageShadows_)
-            if (other.slice.shadow == entry.slice.shadow) {
+        for (PendingShadow& other : imageShadows_)
+            if (other.shadow.shadow == entry.shadow.shadow) {
                 other.write = other.write || u.access != GL_READ_ONLY;
                 known = true;
             }
         if (known) continue;
         entry.write = u.access != GL_READ_ONLY;
-        const ImageSliceShadow& s = entry.slice;
-        [ctx_.stream().blit() copyFromTexture:s.texture sourceSlice:0 sourceLevel:s.level
-                                 sourceOrigin:MTLOriginMake(0, 0, s.slice)
-                                   sourceSize:MTLSizeMake(s.shadow.width, s.shadow.height, 1)
-                                    toTexture:s.shadow destinationSlice:0 destinationLevel:0
-                            destinationOrigin:MTLOriginMake(0, 0, 0)];
+        copyImageShadow(ctx_, entry.shadow, true);
         imageShadows_.push_back(entry);
     }
 }
 
 void DrawState::finishImageShadows() {
-    // The written shadows give their texels back to the 3D textures.
-    if (imageShadows_.empty()) return;
-    for (const ImageShadow& entry : imageShadows_) {
-        if (!entry.write) continue;
-        const ImageSliceShadow& s = entry.slice;
-        [ctx_.stream().blit() copyFromTexture:s.shadow sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0)
-                                   sourceSize:MTLSizeMake(s.shadow.width, s.shadow.height, 1)
-                                    toTexture:s.texture destinationSlice:0 destinationLevel:s.level
-                            destinationOrigin:MTLOriginMake(0, 0, s.slice)];
-    }
+    // The written shadows give their texels back to their textures.
+    for (const PendingShadow& entry : imageShadows_)
+        if (entry.write) copyImageShadow(ctx_, entry.shadow, false);
     imageShadows_.clear();
 }
 

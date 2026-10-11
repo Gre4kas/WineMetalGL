@@ -613,36 +613,82 @@ namespace {
 
 constexpr uint64_t kShadowTag = 0x4000000000000000ull;
 
-uint64_t shadowKey(MTLPixelFormat format, NSUInteger level, NSUInteger slice) {
-    return kShadowTag | (static_cast<uint64_t>(format) << 40) | (static_cast<uint64_t>(level & 0xff) << 24) |
-           (static_cast<uint64_t>(slice & 0xfff) << 12);
-}
-
-// The slice of a 3D texture a non-layered (or 2D) image binding reads.
-bool shadowSlice(const Texture& tex, const ImageUnit& unit, NSUInteger& level, NSUInteger& slice) {
-    if (!tex.mtl || tex.mtl.textureType != MTLTextureType3D || unit.level < 0 || unit.layer < 0) return false;
-    level = static_cast<NSUInteger>(unit.level);
-    slice = unit.layered ? 0 : static_cast<NSUInteger>(unit.layer);
-    return level < tex.mtl.mipmapLevelCount && slice < std::max<NSUInteger>(1, tex.mtl.depth >> level);
-}
-
 id<MTLTexture> findView(const Texture& tex, uint64_t key) {
     for (const Texture::View& v : tex.views)
         if (v.key == key) return v.view;
     return nil;
 }
 
-}  // namespace
-
-bool imageSliceShadow(const ImageUnit& unit, GLenum imageType, ImageSliceShadow& out) {
-    const Texture* tex = unit.texture.get();
-    if (!tex || imageShape(imageType) != ImageShape::Plane || !shadowSlice(*tex, unit, out.level, out.slice)) return false;
-    out.texture = tex->mtl;
-    out.shadow = findView(*tex, shadowKey(tex->mtl.pixelFormat, out.level, out.slice));
-    return out.shadow != nil;
+// A shadow texture (ImageShadow) of `type` and `format` for `slices` slices
+// (or `planes` depth planes) of tex.mtl's `level`.
+id<MTLTexture> shadowTexture(Texture& tex, MTLTextureType type, MTLPixelFormat format, NSUInteger level,
+                             NSUInteger firstSlice, NSUInteger slices, NSUInteger firstPlane, NSUInteger planes,
+                             ImageShadow* out) {
+    const uint64_t key = kShadowTag | (static_cast<uint64_t>(format) << 40) | (static_cast<uint64_t>(type) << 32) |
+                         (static_cast<uint64_t>(level & 0xff) << 24) |
+                         (static_cast<uint64_t>((firstSlice + firstPlane) & 0xfff) << 12) |
+                         static_cast<uint64_t>((slices * planes) & 0xfff);
+    const NSUInteger width = std::max<NSUInteger>(1, tex.mtl.width >> level);
+    const NSUInteger height = std::max<NSUInteger>(1, tex.mtl.height >> level);
+    id<MTLTexture> shadow = findView(tex, key);
+    if (!shadow) {
+        const bool atomics = format == MTLPixelFormatR32Uint || format == MTLPixelFormatR32Sint;
+        MTLTextureDescriptor* desc = [MTLTextureDescriptor new];
+        desc.textureType = type;
+        desc.pixelFormat = format;
+        desc.width = width;
+        desc.height = height;
+        desc.depth = type == MTLTextureType3D ? planes : 1;
+        desc.arrayLength = type == MTLTextureType2DArray ? slices : 1;
+        desc.storageMode = MTLStorageModePrivate;
+        desc.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite | (atomics ? MTLTextureUsageShaderAtomic : 0);
+        shadow = [Device::get().mtl() newTextureWithDescriptor:desc];
+        if (!shadow) return nil;
+        tex.views.push_back({key, shadow});
+    }
+    if (out) {
+        out->texture = tex.mtl;
+        out->shadow = shadow;
+        out->level = level;
+        out->firstSlice = firstSlice;
+        out->slices = slices;
+        out->firstPlane = firstPlane;
+        out->planes = planes;
+        out->width = width;
+        out->height = height;
+        out->texelBytes = storageBytes(tex.storage);
+    }
+    return shadow;
 }
 
-id<MTLTexture> imageView(Context& ctx, const ImageUnit& unit, GLenum imageType, GLenum shaderFormat) {
+}  // namespace
+
+void copyImageShadow(Context& ctx, const ImageShadow& s, bool toShadow) {
+    // Through a buffer: the shadow's format may differ from the texture's
+    // (same texel size), which texture-to-texture copies do not allow.
+    const NSUInteger row = s.width * s.texelBytes, image = row * s.height;
+    id<MTLBuffer> staging = [Device::get().mtl() newBufferWithLength:std::max<NSUInteger>(1, image * s.planes * s.slices)
+                                                            options:MTLResourceStorageModePrivate];
+    if (!staging) return;
+    id<MTLBlitCommandEncoder> blit = ctx.stream().blit();
+    const MTLSize size = MTLSizeMake(s.width, s.height, s.planes);
+    for (NSUInteger i = 0; i < s.slices; ++i) {
+        const NSUInteger offset = image * s.planes * i;
+        id<MTLTexture> from = toShadow ? s.texture : s.shadow, to = toShadow ? s.shadow : s.texture;
+        const NSUInteger fromSlice = toShadow ? s.firstSlice + i : i, toSlice = toShadow ? i : s.firstSlice + i;
+        const NSUInteger fromLevel = toShadow ? s.level : 0, toLevel = toShadow ? 0 : s.level;
+        const MTLOrigin fromOrigin = MTLOriginMake(0, 0, toShadow ? s.firstPlane : 0);
+        const MTLOrigin toOrigin = MTLOriginMake(0, 0, toShadow ? 0 : s.firstPlane);
+        [blit copyFromTexture:from sourceSlice:fromSlice sourceLevel:fromLevel sourceOrigin:fromOrigin sourceSize:size
+                     toBuffer:staging destinationOffset:offset destinationBytesPerRow:row destinationBytesPerImage:image];
+        [blit copyFromBuffer:staging sourceOffset:offset sourceBytesPerRow:row sourceBytesPerImage:image sourceSize:size
+                   toTexture:to destinationSlice:toSlice destinationLevel:toLevel destinationOrigin:toOrigin];
+    }
+}
+
+id<MTLTexture> imageView(Context& ctx, const ImageUnit& unit, GLenum imageType, GLenum shaderFormat,
+                         ImageShadow* shadow) {
+    if (shadow) shadow->shadow = nil;
     Texture* tex = unit.texture.get();
     const FormatInfo* format = formatInfo(shaderFormat ? shaderFormat : unit.format);
     if (!tex || !format) return nil;
@@ -693,31 +739,11 @@ id<MTLTexture> imageView(Context& ctx, const ImageUnit& unit, GLenum imageType, 
     switch (shape) {
     case ImageShape::Plane:
         if (type == MTLTextureType3D) {
-            // A slice of a 3D texture: its 2D shadow (imageSliceShadow).
-            NSUInteger level = 0, slice = 0;
-            if (!shadowSlice(*tex, unit, level, slice)) return nil;
-            const uint64_t key = shadowKey(tex->mtl.pixelFormat, level, slice);
-            id<MTLTexture> shadow = findView(*tex, key);
-            if (!shadow) {
-                MTLTextureDescriptor* desc = [MTLTextureDescriptor new];
-                desc.textureType = MTLTextureType2D;
-                desc.pixelFormat = tex->mtl.pixelFormat;
-                desc.width = std::max<NSUInteger>(1, tex->mtl.width >> level);
-                desc.height = std::max<NSUInteger>(1, tex->mtl.height >> level);
-                desc.storageMode = MTLStorageModePrivate;
-                desc.usage = tex->mtl.usage | MTLTextureUsagePixelFormatView;
-                shadow = [Device::get().mtl() newTextureWithDescriptor:desc];
-                if (!shadow) return nil;
-                tex->views.push_back({key, shadow});
-            }
-            if (pixelFormat == tex->mtl.pixelFormat) return shadow;
-            const uint64_t viewKey = shadowKey(pixelFormat, level, slice) | 1;
-            id<MTLTexture> view = findView(*tex, viewKey);
-            if (!view) {
-                view = [shadow newTextureViewWithPixelFormat:pixelFormat];
-                if (view) tex->views.push_back({viewKey, view});
-            }
-            return view;
+            // A slice of a 3D texture: a 2D shadow (ImageShadow).
+            const NSUInteger level = static_cast<NSUInteger>(unit.level);
+            const NSUInteger plane = unit.layered ? 0 : static_cast<NSUInteger>(unit.layer);
+            if (unit.layer < 0 || plane >= std::max<NSUInteger>(1, tex->mtl.depth >> level)) return nil;
+            return shadowTexture(*tex, MTLTextureType2D, pixelFormat, level, 0, 1, plane, 1, shadow);
         }
         // One layer of an array, cube or cube array (a layered binding
         // of such a texture to a 2D image reads layer 0).
@@ -738,6 +764,13 @@ id<MTLTexture> imageView(Context& ctx, const ImageUnit& unit, GLenum imageType, 
         viewType = MTLTextureType3D;
         break;
     default: return nil;
+    }
+    // Texture atomics on another 32-bit format: an R32 shadow (ImageShadow).
+    if ((pixelFormat == MTLPixelFormatR32Uint || pixelFormat == MTLPixelFormatR32Sint) &&
+        !(tex->mtl.usage & MTLTextureUsageShaderAtomic)) {
+        const NSUInteger level = static_cast<NSUInteger>(unit.level);
+        const NSUInteger planes = viewType == MTLTextureType3D ? std::max<NSUInteger>(1, tex->mtl.depth >> level) : 1;
+        return shadowTexture(*tex, viewType, pixelFormat, level, first, count, 0, planes, shadow);
     }
     const uint64_t key = viewTag | (static_cast<uint64_t>(pixelFormat) << 40) | (static_cast<uint64_t>(viewType) << 32) |
                          (static_cast<uint64_t>(unit.level & 0xff) << 24) | (static_cast<uint64_t>(first & 0xfff) << 12) |

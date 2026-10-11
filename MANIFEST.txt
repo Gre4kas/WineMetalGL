@@ -188,7 +188,6 @@ tests/cts/baseline/gl33-cfg3-native.txt
 tests/cts/baseline/gl33-cfg3-wine.txt
 tests/cts/baseline/gl33-cfg4-native.txt
 tests/cts/baseline/gl33-cfg4-wine.txt
-tests/cts/baseline/gl42-cfg1-native.txt
 tests/cts/known-failures.json
 tests/cts/native/build.sh
 tests/cts/native/README.md

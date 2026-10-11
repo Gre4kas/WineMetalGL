@@ -162,14 +162,13 @@ private:
         std::vector<DirectGroup> groups;
     };
     void planVertexInputs(LinkedProgram& program, bool gather, VertexInputPlan& plan) const;
-    // 3D texture slices bound to 2D images, for the draw in progress
-    // (imageSliceShadow): copied in by prepareSamplerStorage, back when the
-    // draw ends.
-    struct ImageShadow {
-        ImageSliceShadow slice;
+    // Image bindings with a shadow texture (core::ImageShadow) for the draw
+    // in progress: copied in by prepareSamplerStorage, back when the draw ends.
+    struct PendingShadow {
+        ImageShadow shadow;
         bool write = false;
     };
-    std::vector<ImageShadow> imageShadows_;
+    std::vector<PendingShadow> imageShadows_;
     void prepareImageShadows(LinkedProgram& program);
     void finishImageShadows();
     struct ImageShadowScope {
