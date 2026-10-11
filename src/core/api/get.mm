@@ -212,6 +212,10 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
     case GL_MAX_GEOMETRY_OUTPUT_COMPONENTS: out = ints({128}); return true;
     case GL_MAX_FRAGMENT_INPUT_COMPONENTS: out = ints({128}); return true;
     case GL_MAX_GEOMETRY_OUTPUT_VERTICES: out = ints({256}); return true;
+    case GL_MAX_IMAGE_UNITS:  // placeholder until image units exist (api/image_units_stub.mm)
+        if (ctx.version() < 42) return false;
+        out = ints({8});
+        return true;
     // --- tessellation (GL 4.0)
     case GL_PATCH_VERTICES: case GL_PATCH_DEFAULT_OUTER_LEVEL: case GL_PATCH_DEFAULT_INNER_LEVEL:
     case GL_MAX_PATCH_VERTICES: case GL_MAX_TESS_GEN_LEVEL: case GL_MAX_TESS_CONTROL_UNIFORM_COMPONENTS:

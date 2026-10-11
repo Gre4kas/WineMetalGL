@@ -68,6 +68,7 @@ src/core/api/fixed_state.mm
 src/core/api/fixed_vertex.mm
 src/core/api/framebuffer.mm
 src/core/api/get.mm
+src/core/api/image_units_stub.mm
 src/core/api/pipeline.mm
 src/core/api/program.mm
 src/core/api/query.mm
