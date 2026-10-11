@@ -119,6 +119,10 @@ src/core/program.mm
 src/core/query.h
 src/core/shader/compiler.cpp
 src/core/shader/compiler.h
+src/core/shader/fp64_library.inc
+src/core/shader/fp64_soft.h
+src/core/shader/fp64.cpp
+src/core/shader/fp64.h
 src/core/shader/geometry.cpp
 src/core/shader/geometry.h
 src/core/shader/glsl_upgrade.cpp
@@ -209,6 +213,7 @@ tests/gpu/texture_tests.cpp
 tests/gpu/transform_feedback_tests.cpp
 tests/gpu/uniform_block_tests.cpp
 tests/host/format_tests.cpp
+tests/host/fp64_tests.cpp
 tests/host/main.cpp
 tests/host/shader_tests.cpp
 tests/host/test.h

@@ -85,6 +85,7 @@ struct AttribInfo {
     GLint size = 1;
     GLint location = -1;
     int locationCount = 1;     // matrices use one location per column
+    bool array = false;        // declared as an array ("name[i]" names its elements)
     // A lowered legacy attribute (wmgl_Vertex for gl_Vertex, ...) at its
     // conventional-array location; the API reports it as gl_* at location -1.
     bool conventional = false;
@@ -126,7 +127,17 @@ struct StageOutput {
     bool usesPointCoord = false;  // fragment: reads gl_PointCoord (flip flag in kSlotDriverUniforms)
     bool flatInputs = false;      // fragment: has flat inputs (provoking vertex matters)
     // Vertex stage: Metal [[attribute(n)]] -> GL location and input component type.
-    struct VertexInput { GLint location; int components; char kind; /* 'f', 'i', 'u' */ };
+    // 'd' (64-bit, GL_ARB_vertex_attrib_64bit): the Metal attribute reads 16
+    // raw bytes, `part` 0 or 1 of the element of GL attribute `attrib` (a
+    // dvec3/dvec4 spans two locations; see shader/fp64.h).
+    struct VertexInput {
+        GLint location;
+        int components;
+        char kind;  // 'f', 'i', 'u', 'd'
+        GLint attrib = -1;  // GL attribute supplying the data (-1: `location`)
+        int part = 0;
+        GLint source() const { return attrib >= 0 ? attrib : location; }
+    };
     std::vector<VertexInput> vertexInputs;
     // Fragment stage: outputs written (location, index, component kind).
     struct FragOutput { GLint location; GLint index; char kind; };
@@ -221,6 +232,10 @@ LinkResult link(const LinkInput& input);
 // GL type helpers.
 int glTypeComponents(GLenum type);       // e.g. GL_FLOAT_MAT3 -> 9
 int glTypeLocations(GLenum type);        // attribute locations used (matrix columns)
+bool glTypeIsDouble(GLenum type);        // GL_DOUBLE, GL_DOUBLE_VEC*, GL_DOUBLE_MAT*
+int glTypeColumns(GLenum type);          // matrix columns (1 for scalars and vectors)
+int glTypeAttribSlots(GLenum type);      // MAX_VERTEX_ATTRIBS slots of one element (dvec3/dvec4 columns count twice)
+int glTypeWords(GLenum type);            // 32-bit words of one element (two per double component)
 bool glTypeIsSampler(GLenum type);
 const char* glTypeName(GLenum type);
 

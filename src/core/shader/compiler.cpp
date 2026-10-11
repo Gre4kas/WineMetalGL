@@ -15,6 +15,7 @@
 #include <set>
 #include <sstream>
 
+#include "core/shader/fp64.h"
 #include "core/shader/glsl_upgrade.h"
 #include "core/shader/geometry.h"
 #include "core/shader/transform_feedback.h"
@@ -800,9 +801,44 @@ int glTypeLocations(GLenum type) {
     case GL_FLOAT_MAT2: case GL_FLOAT_MAT2x3: case GL_FLOAT_MAT2x4: return 2;
     case GL_FLOAT_MAT3: case GL_FLOAT_MAT3x2: case GL_FLOAT_MAT3x4: return 3;
     case GL_FLOAT_MAT4: case GL_FLOAT_MAT4x2: case GL_FLOAT_MAT4x3: return 4;
+    // Vertex inputs of double types take one location per column too (GLSL
+    // 4.60 section 4.4.1); dvec3/dvec4 columns count twice against
+    // MAX_VERTEX_ATTRIBS (glTypeAttribSlots).
+    case GL_DOUBLE_MAT2: case GL_DOUBLE_MAT2x3: case GL_DOUBLE_MAT2x4: return 2;
+    case GL_DOUBLE_MAT3: case GL_DOUBLE_MAT3x2: case GL_DOUBLE_MAT3x4: return 3;
+    case GL_DOUBLE_MAT4: case GL_DOUBLE_MAT4x2: case GL_DOUBLE_MAT4x3: return 4;
     default: return 1;
     }
 }
+
+int glTypeAttribSlots(GLenum type) {
+    const int columns = glTypeColumns(type);
+    const bool wide = glTypeIsDouble(type) && glTypeComponents(type) / columns > 2;
+    return glTypeLocations(type) * (wide ? 2 : 1);
+}
+
+int glTypeColumns(GLenum type) {
+    switch (type) {
+    case GL_FLOAT_MAT2: case GL_FLOAT_MAT2x3: case GL_FLOAT_MAT2x4: case GL_DOUBLE_MAT2: case GL_DOUBLE_MAT2x3:
+    case GL_DOUBLE_MAT2x4: return 2;
+    case GL_FLOAT_MAT3: case GL_FLOAT_MAT3x2: case GL_FLOAT_MAT3x4: case GL_DOUBLE_MAT3: case GL_DOUBLE_MAT3x2:
+    case GL_DOUBLE_MAT3x4: return 3;
+    case GL_FLOAT_MAT4: case GL_FLOAT_MAT4x2: case GL_FLOAT_MAT4x3: case GL_DOUBLE_MAT4: case GL_DOUBLE_MAT4x2:
+    case GL_DOUBLE_MAT4x3: return 4;
+    default: return 1;
+    }
+}
+
+bool glTypeIsDouble(GLenum type) {
+    switch (type) {
+    case GL_DOUBLE: case GL_DOUBLE_VEC2: case GL_DOUBLE_VEC3: case GL_DOUBLE_VEC4: case GL_DOUBLE_MAT2: case GL_DOUBLE_MAT3:
+    case GL_DOUBLE_MAT4: case GL_DOUBLE_MAT2x3: case GL_DOUBLE_MAT2x4: case GL_DOUBLE_MAT3x2: case GL_DOUBLE_MAT3x4:
+    case GL_DOUBLE_MAT4x2: case GL_DOUBLE_MAT4x3: return true;
+    default: return false;
+    }
+}
+
+int glTypeWords(GLenum type) { return glTypeComponents(type) * (glTypeIsDouble(type) ? 2 : 1); }
 
 bool glTypeIsSampler(GLenum type) { return textureTargetForSampler(type) >= 0; }
 
@@ -902,9 +938,13 @@ GLenum glTypeOfAst(const glslang::TType& t) {
         static const GLenum kMat[3][3] = {{GL_FLOAT_MAT2, GL_FLOAT_MAT2x3, GL_FLOAT_MAT2x4},
                                           {GL_FLOAT_MAT3x2, GL_FLOAT_MAT3, GL_FLOAT_MAT3x4},
                                           {GL_FLOAT_MAT4x2, GL_FLOAT_MAT4x3, GL_FLOAT_MAT4}};
-        return kMat[c - 2][r - 2];
+        static const GLenum kDMat[3][3] = {{GL_DOUBLE_MAT2, GL_DOUBLE_MAT2x3, GL_DOUBLE_MAT2x4},
+                                           {GL_DOUBLE_MAT3x2, GL_DOUBLE_MAT3, GL_DOUBLE_MAT3x4},
+                                           {GL_DOUBLE_MAT4x2, GL_DOUBLE_MAT4x3, GL_DOUBLE_MAT4}};
+        return t.getBasicType() == glslang::EbtDouble ? kDMat[c - 2][r - 2] : kMat[c - 2][r - 2];
     }
     switch (t.getBasicType()) {
+    case glslang::EbtDouble: return pick(GL_DOUBLE, GL_DOUBLE_VEC2, GL_DOUBLE_VEC3, GL_DOUBLE_VEC4);
     case glslang::EbtInt: return pick(GL_INT, GL_INT_VEC2, GL_INT_VEC3, GL_INT_VEC4);
     case glslang::EbtUint: return pick(GL_UNSIGNED_INT, GL_UNSIGNED_INT_VEC2, GL_UNSIGNED_INT_VEC3, GL_UNSIGNED_INT_VEC4);
     case glslang::EbtBool: return pick(GL_BOOL, GL_BOOL_VEC2, GL_BOOL_VEC3, GL_BOOL_VEC4);
@@ -1168,12 +1208,12 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
 
     // Collect attributes/outputs from this pre-mapIO reflection (see below),
     // then assign locations for codegen.
-    struct PipeVar { std::string name; GLenum type; int size; unsigned location; uint32_t stages; int index; };
+    struct PipeVar { std::string name; GLenum type; int size; unsigned location; uint32_t stages; int index; bool array = false; };
     std::vector<PipeVar> pipeInputs, pipeOutputs;
     for (int i = 0; i < program.getNumPipeInputs(); ++i) {
         const auto& v = program.getPipeInput(i);
         pipeInputs.push_back({unescapeName(v.name), static_cast<GLenum>(v.glDefineType), v.size, v.layoutLocation(),
-                              static_cast<uint32_t>(v.stages), 0});
+                              static_cast<uint32_t>(v.stages), 0, v.getType() && v.getType()->isArray()});
     }
     for (int i = 0; i < program.getNumPipeOutputs(); ++i) {
         const auto& v = program.getPipeOutput(i);
@@ -1354,6 +1394,7 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
         a.name = in.name;
         a.type = in.type;
         a.size = std::max(1, in.size);
+        a.array = in.array;
         a.locationCount = glTypeLocations(a.type) * a.size;
         a.location = in.location != kNoLocation ? static_cast<GLint>(in.location) : -1;
         // Lowered legacy attributes (gl_Vertex, ...) read the conventional arrays.
@@ -1393,11 +1434,18 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
         a.location = location;
         for (int l = 0; l < a.locationCount && location + l < 64; ++l) usedLocations[location + l] = true;
     }
+    int attribSlots = 0;
     for (const AttribInfo& a : result.attribs) {
         if (!a.conventional && a.location + a.locationCount > 16) {
             result.log += "error: vertex attribute '" + a.name + "' uses a location beyond GL_MAX_VERTEX_ATTRIBS\n";
             return result;
         }
+        if (!a.conventional) attribSlots += glTypeAttribSlots(a.type) * a.size;
+    }
+    // dvec3 and dvec4 columns count twice (GL_ARB_vertex_attrib_64bit).
+    if (attribSlots > 16) {
+        result.log += "error: vertex attributes exceed GL_MAX_VERTEX_ATTRIBS\n";
+        return result;
     }
 
     // Fragment outputs.
@@ -1445,7 +1493,10 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
         if (!stage.present || s == static_cast<int>(Stage::Geometry)) continue;
         const bool noRaster = variant == 1;
         try {
-            spirv_cross::CompilerMSL msl(rectImagesAs2D(stage.spirv));
+            // Doubles become soft-float code (fp64.h); no-op without them.
+            std::vector<uint32_t> spirv = rectImagesAs2D(stage.spirv);
+            if (!lowerFp64(spirv, result.log)) return result;
+            spirv_cross::CompilerMSL msl(std::move(spirv));
             spirv_cross::CompilerMSL::Options mslOptions;
             mslOptions.disable_rasterization = noRaster;
             mslOptions.platform = spirv_cross::CompilerMSL::Options::macOS;
@@ -1550,8 +1601,41 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
             // Vertex inputs: GL locations.
             if (s == static_cast<int>(Stage::Vertex)) {
                 if (noRaster) stage.vertexInputs.clear();  // rebuilt identically below
+                // 64-bit inputs come split into one Metal input per 16 bytes
+                // ("<name>_wmgl_<column>_<part>", fp64.h): part 0 of column
+                // k reads at GL location + k, part 1 at a free Metal index.
+                std::set<GLint> usedAttributes;
+                for (const AttribInfo& a : result.attribs)
+                    for (int l = 0; l < a.locationCount; ++l) usedAttributes.insert(a.location + l);
+                GLint nextFree = 30;
+                for (const auto& in : resources.stage_inputs) {
+                    std::string split = unescapeName(msl.get_name(in.id));
+                    const size_t marker = split.rfind("_wmgl_");
+                    if (marker == std::string::npos || split.find('_', marker + 6) == std::string::npos) continue;
+                    const int column = std::atoi(split.c_str() + marker + 6);
+                    const int part = std::atoi(split.c_str() + split.find('_', marker + 6) + 1);
+                    const std::string base = split.substr(0, marker);
+                    auto it = std::find_if(result.attribs.begin(), result.attribs.end(),
+                                           [&](const AttribInfo& a) { return a.name == base; });
+                    if (it == result.attribs.end()) continue;
+                    const spirv_cross::SPIRType& type = msl.get_type(in.type_id);
+                    const GLint attrib = it->location + column;
+                    GLint metal = attrib;
+                    if (part == 1) {
+                        while (nextFree >= 0 && usedAttributes.count(nextFree)) --nextFree;
+                        if (nextFree < 0) {
+                            result.log += "error: too many 64-bit vertex attribute components\n";
+                            return result;
+                        }
+                        metal = nextFree--;
+                    }
+                    msl.set_decoration(in.id, spv::DecorationLocation, static_cast<uint32_t>(metal));
+                    stage.vertexInputs.push_back({metal, static_cast<int>(type.vecsize), 'd', attrib, part});
+                }
                 for (const auto& in : resources.stage_inputs) {
                     const std::string name = unescapeName(msl.get_name(in.id));
+                    if (name.rfind("_wmgl_") != std::string::npos && name.find('_', name.rfind("_wmgl_") + 6) != std::string::npos)
+                        continue;
                     auto it = std::find_if(result.attribs.begin(), result.attribs.end(),
                                            [&](const AttribInfo& a) { return a.name == name; });
                     const spirv_cross::SPIRType& type = msl.get_type(in.type_id);
@@ -1578,11 +1662,11 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
                 }
             }
             if (noRaster) {
-                stage.mslNoRaster = msl.compile();
+                stage.mslNoRaster = finishFp64Msl(msl.compile());
                 instanceIdFromZero(stage.mslNoRaster);
                 continue;
             }
-            stage.msl = msl.compile();
+            stage.msl = finishFp64Msl(msl.compile());
             if (s == static_cast<int>(Stage::Vertex)) {
                 ensureVertexOutput(stage.msl);
                 addPointSize(stage.msl);
@@ -1661,12 +1745,13 @@ bool buildGeometryEmulation(const LinkInput& input, const GeometryShaderInfo& in
     g.outputStride = sources.outputStride;
     g.outputs = sources.fields;
     for (TransformFeedbackVarying& v : result.transformFeedback) {
+        if (v.type == GL_NONE) continue;
         const size_t open = v.name.find('[');
         const std::string base = v.name.substr(0, open);
         const int index = open == std::string::npos ? 0 : std::atoi(v.name.c_str() + open + 1);
         v.sourceOffset = TransformFeedbackVarying::kNotEmitted;
         for (const GeometryEmulation::Field& f : g.outputs)
-            if (f.name == base) v.sourceOffset = f.offset + static_cast<uint32_t>(index * glTypeComponents(f.type));
+            if (f.name == base) v.sourceOffset = f.offset + static_cast<uint32_t>(index * glTypeWords(f.type));
     }
     LinkInput kernelInput;
     kernelInput.shaders = {{Stage::Compute, sources.compute}};

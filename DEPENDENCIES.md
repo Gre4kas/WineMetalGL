@@ -14,6 +14,12 @@ Local changes to vendored sources (each marked `WineMetalGL:` in the code):
   Vulkan "every input has a matching output" check skips built-in blocks
   (`gl_PerVertex`) and redeclared built-in inputs (`gl_ClipDistance`), which
   GL provides implicitly.
+- SPIRV-Cross `spirv_glsl.cpp`, `type_to_packed_alignment` and
+  `type_to_packed_size`: std140 rounds a matrix column (or row) up to the
+  alignment of a float vec4 (16 bytes), as GL 4.6 section 7.6.2.2 rule 4
+  says, not of a vector of the matrix's component type; double matrices with
+  two rows otherwise fail the layout check when geometry shaders are
+  translated to GLSL. Float layouts are unchanged.
 
 The built dylib dynamically links only Apple system frameworks and libraries
 (Metal, Foundation, QuartzCore, CoreFoundation, libc++, libSystem and
