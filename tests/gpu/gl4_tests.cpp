@@ -528,3 +528,28 @@ void main() {
     glDeleteProgram(p);
     glDeleteTextures(1, &tex);
 }
+
+GPU_TEST_VERSION(gpu_gl4_builtin_uniforms, 42) {
+    // gl_DepthRange and gl_NumSamples are hidden default-block uniforms the
+    // draw fills (glsl_upgrade.h lowerBuiltinUniforms).
+    const char* fs = R"(#version 400 core
+out vec4 o;
+void main() { o = vec4(gl_DepthRange.near, gl_DepthRange.far, gl_DepthRange.diff, float(gl_NumSamples) / 4.0); })";
+    GLuint p = gpu::program(kQuadVs, fs);
+    glUseProgram(p);
+    GLint count = 0;
+    glGetProgramiv(p, GL_ACTIVE_UNIFORMS, &count);
+    CHECK_EQ(count, 0);  // built-in uniforms are not active uniforms of the program
+    GLuint quad = gpu::quad();
+    glDepthRange(0.25, 0.75);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glDepthRange(0.0, 1.0);
+    const std::vector<uint8_t> px = gpu::readRGBA8(0, 0, 1, 1);
+    CHECK(std::abs(px[0] - 64) <= 1);
+    CHECK(std::abs(px[1] - 191) <= 1);
+    CHECK(std::abs(px[2] - 128) <= 1);
+    CHECK(std::abs(px[3] - 64) <= 1);  // one sample
+    CHECK_GL();
+    glDeleteVertexArrays(1, &quad);
+    glDeleteProgram(p);
+}

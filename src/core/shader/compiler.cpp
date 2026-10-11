@@ -51,10 +51,12 @@ const TBuiltInResource* resources() {
         x.maxVertexImageUniforms = x.maxTessControlImageUniforms = x.maxTessEvaluationImageUniforms = L::kMaxImageUniformsPerStage;
         x.maxGeometryImageUniforms = x.maxFragmentImageUniforms = x.maxComputeImageUniforms = L::kMaxImageUniformsPerStage;
         x.maxCombinedImageUniforms = L::kMaxCombinedImageUniforms;
-        x.maxVertexAtomicCounters = x.maxTessControlAtomicCounters = x.maxTessEvaluationAtomicCounters = 0;
-        x.maxGeometryAtomicCounters = x.maxFragmentAtomicCounters = x.maxComputeAtomicCounters = L::kMaxStageAtomicCounters;
+        x.maxTessControlAtomicCounters = x.maxTessEvaluationAtomicCounters = 0;
+        x.maxVertexAtomicCounters = x.maxGeometryAtomicCounters = x.maxFragmentAtomicCounters = x.maxComputeAtomicCounters =
+            L::kMaxStageAtomicCounters;
         x.maxCombinedAtomicCounters = L::kMaxStageAtomicCounters;
-        x.maxVertexAtomicCounterBuffers = x.maxTessControlAtomicCounterBuffers = x.maxTessEvaluationAtomicCounterBuffers = 0;
+        x.maxTessControlAtomicCounterBuffers = x.maxTessEvaluationAtomicCounterBuffers = 0;
+        x.maxVertexAtomicCounterBuffers = L::kMaxVertexAtomicCounterBuffers;
         x.maxGeometryAtomicCounterBuffers = x.maxFragmentAtomicCounterBuffers = x.maxComputeAtomicCounterBuffers =
             L::kMaxStageAtomicCounterBuffers;
         x.maxCombinedAtomicCounterBuffers = L::kMaxStageAtomicCounterBuffers;
@@ -320,6 +322,60 @@ std::string voidFragmentWithSampleMask(const std::string& msl) {
 
 }  // namespace
 
+std::string fragmentAtSampleRate(const std::string& msl) {
+    std::string out = msl;
+    // Interpolated (floating-point, not flat) inputs move to the sample.
+    const size_t start = out.find("struct main0_in\n{");
+    const size_t end = start == std::string::npos ? std::string::npos : out.find("};", start);
+    if (start != std::string::npos && end != std::string::npos) {
+        std::string body = out.substr(start, end - start), moved;
+        std::istringstream lines(body);
+        std::string line;
+        while (std::getline(lines, line)) {
+            const size_t first = line.find_first_not_of(' ');
+            const bool floating = first != std::string::npos &&
+                                  (line.compare(first, 5, "float") == 0 || line.compare(first, 4, "half") == 0);
+            const size_t user = line.find("[[user(");
+            if (floating && user != std::string::npos && line.find(", flat]]") == std::string::npos) {
+                const size_t close = line.find(")", user);
+                const size_t attrEnd = line.find("]]", user);
+                if (close != std::string::npos && attrEnd != std::string::npos) {
+                    const bool noPerspective = line.find("no_perspective", close) < attrEnd;
+                    line = line.substr(0, close + 1) + (noPerspective ? ", sample_no_perspective" : ", sample_perspective") +
+                           line.substr(attrEnd);
+                }
+            }
+            moved += line + "\n";
+        }
+        out.replace(start, end - start, moved);
+    }
+    if (out.find("[[sample_id]]") != std::string::npos) return out;
+    for (const char* signature : {"fragment main0_out main0(", "fragment void main0("}) {
+        const size_t fn = out.find(signature);
+        if (fn == std::string::npos) continue;
+        const size_t open = fn + std::strlen(signature) - 1;
+        const bool noParameters = out[open + 1] == ')';
+        out.insert(open + 1, std::string("uint wmgl_sample_rate [[sample_id]]") + (noParameters ? "" : ", "));
+        return out;
+    }
+    return std::string();
+}
+
+std::string fragmentIgnoringSampleMask(const std::string& msl) {
+    const size_t structAt = msl.find("struct main0_out\n{");
+    const size_t structEnd = structAt == std::string::npos ? std::string::npos : msl.find("};", structAt);
+    const size_t attribute = msl.find(" [[sample_mask]]", structAt);
+    if (structAt == std::string::npos || attribute == std::string::npos || attribute > structEnd) return std::string();
+    const size_t nameStart = msl.rfind(' ', attribute - 1) + 1;
+    const std::string assign = "out." + msl.substr(nameStart, attribute - nameStart) + " = 0xffffffffu; ";
+    std::string out = msl;
+    const size_t fn = out.find("fragment main0_out main0(");
+    if (fn == std::string::npos) return std::string();
+    for (size_t at = out.find("return out;", fn); at != std::string::npos; at = out.find("return out;", at + assign.size() + 11))
+        out.insert(at, assign);
+    return out;
+}
+
 std::string fragmentWithSampleMask(const std::string& msl) {
     const std::string signature = "fragment main0_out main0(", member = "struct main0_out\n{\n";
     const size_t structAt = msl.find(member);
@@ -581,7 +637,8 @@ bool parseForCodegen(Stage stage, const std::string& original, ParsedShader& out
         log += subroutines.log;
         return false;
     }
-    UpgradeResult upgraded = upgradeLegacyGlsl(stage, raiseComputeVersion(stage, subroutines.source), upgrade);
+    UpgradeResult upgraded =
+        upgradeLegacyGlsl(stage, lowerBuiltinUniforms(stage, raiseComputeVersion(stage, subroutines.source)), upgrade);
     if (!upgraded.ok) {
         log += upgraded.log;
         return false;
@@ -1008,6 +1065,32 @@ std::string raiseComputeVersion(Stage stage, const std::string& source) {
     return raised;
 }
 
+// layout(binding) on a uniform block must leave every element of the block
+// within GL_MAX_UNIFORM_BUFFER_BINDINGS (a compile-time error in GLSL).
+// glslang checks opaque bindings itself but has no limit for blocks.
+std::string checkBlockBindings(glslang::TShader& shader) {
+    const glslang::TIntermediate* intermediate = shader.getIntermediate();
+    glslang::TIntermAggregate* root =
+        intermediate && intermediate->getTreeRoot() ? intermediate->getTreeRoot()->getAsAggregate() : nullptr;
+    if (!root) return {};
+    for (TIntermNode* node : root->getSequence()) {
+        glslang::TIntermAggregate* objects = node->getAsAggregate();
+        if (!objects || objects->getOp() != glslang::EOpLinkerObjects) continue;
+        for (TIntermNode* object : objects->getSequence()) {
+            glslang::TIntermSymbol* symbol = object->getAsSymbolNode();
+            if (!symbol) continue;
+            const glslang::TType& type = symbol->getType();
+            const glslang::TQualifier& q = type.getQualifier();
+            if (type.getBasicType() != glslang::EbtBlock || q.storage != glslang::EvqUniform || !q.hasBinding()) continue;
+            const int count = type.isSizedArray() ? type.getCumulativeArraySize() : 1;
+            if (static_cast<int64_t>(q.layoutBinding) + count > wmgl::limits::kMaxUniformBufferBindings)
+                return "ERROR: uniform block '" + unescapeName(type.getTypeName().c_str()) +
+                       "': binding is not less than GL_MAX_UNIFORM_BUFFER_BINDINGS\n";
+        }
+    }
+    return {};
+}
+
 }  // namespace
 
 CompileResult compile(Stage stage, const std::string& original) {
@@ -1019,7 +1102,7 @@ CompileResult compile(Stage stage, const std::string& original) {
         result.log = subroutines.log;
         return result;
     }
-    const std::string source = raiseComputeVersion(stage, subroutines.source);
+    const std::string source = lowerBuiltinUniforms(stage, raiseComputeVersion(stage, subroutines.source));
     // Status and log come from a plain GL parse, which accepts every GLSL
     // version and profile with GL's own rules.
     const EShLanguage lang = language(stage);
@@ -1045,6 +1128,13 @@ CompileResult compile(Stage stage, const std::string& original) {
                 result.ok = true;
                 result.log = relaxedLog;
             }
+        }
+    }
+    if (result.ok) {
+        const std::string bindings = checkBlockBindings(shader);
+        if (!bindings.empty()) {
+            result.ok = false;
+            result.log += bindings;
         }
     }
     if (result.ok) {
@@ -1629,11 +1719,20 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
         }
         // A separable geometry-only program links; its emulation needs the
         // vertex stage and is not built (program pipelines then report it).
-        if (stagePresent[static_cast<int>(Stage::Vertex)] &&
-            !layoutTransformFeedback(geometryCaptureVaryings(*geometry), GL_INTERLEAVED_ATTRIBS,
-                                     captureableOutputs(program.getIntermediate(EShLangVertex)), *geometryCapture, result.log,
-                                     UINT32_MAX))
-            return result;
+        if (stagePresent[static_cast<int>(Stage::Vertex)]) {
+            // Inputs the vertex stage does not write (allowed when the
+            // geometry shader never reads them) are not captured.
+            const std::vector<StageOutputVar> vertexOutputs = captureableOutputs(program.getIntermediate(EShLangVertex));
+            std::vector<std::string> varyings;
+            for (const std::string& v : geometryCaptureVaryings(*geometry))
+                for (const StageOutputVar& o : vertexOutputs)
+                    if (o.name == v) {
+                        varyings.push_back(v);
+                        break;
+                    }
+            if (!layoutTransformFeedback(varyings, GL_INTERLEAVED_ATTRIBS, vertexOutputs, *geometryCapture, result.log, UINT32_MAX))
+                return result;
+        }
         result.geometryInputType = geometry->inputType;
         result.geometryOutputType = geometry->outputType;
         result.geometryVerticesOut = geometry->maxVertices;
@@ -1829,6 +1928,15 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
         std::vector<int> map(result.uniforms.size(), -1);
         for (size_t i = 0; i < result.uniforms.size(); ++i) {
             const UniformInfo& u = result.uniforms[i];
+            if (u.blockIndex < 0 && u.name.rfind(kBuiltinUniformPrefix, 0) == 0) {
+                // Hidden built-in uniforms (lowerBuiltinUniforms).
+                const std::string name = u.name.substr(std::string(kBuiltinUniformPrefix).size());
+                if (name == "DepthRange.near") result.builtinUniforms.depthRange[0] = static_cast<int>(u.offset);
+                if (name == "DepthRange.far") result.builtinUniforms.depthRange[1] = static_cast<int>(u.offset);
+                if (name == "DepthRange.diff") result.builtinUniforms.depthRange[2] = static_cast<int>(u.offset);
+                if (name == "NumSamples") result.builtinUniforms.numSamples = static_cast<int>(u.offset);
+                continue;
+            }
             if (u.blockIndex < 0 && isSubroutineSelectionUniform(u.name)) {
                 for (int st = 0; st < kStageCount; ++st)
                     for (auto& su : result.subroutines[st].uniforms)
@@ -2074,11 +2182,15 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
                 if (auto internal = kInternalBuffers.find(blockName); internal != kInternalBuffers.end()) b.msl_buffer = internal->second;
                 else if (blockName.rfind("wmgl_XfbData", 0) == 0) b.msl_buffer = kSlotFirstXfbBuffer + std::stoul(blockName.substr(12));
                 else if (counterBinding >= 0) {
-                    if (s != static_cast<int>(Stage::Fragment) && s != static_cast<int>(Stage::Compute)) {
+                    const bool vertexStage = s == static_cast<int>(Stage::Vertex);
+                    if (!vertexStage && s != static_cast<int>(Stage::Fragment) && s != static_cast<int>(Stage::Compute)) {
                         result.log += "error: atomic counters are not supported in this shader stage\n";
                         return result;
                     }
-                    if (nextAtomicSlot >= kSlotFirstAtomicCounterBuffer + kMaxStageAtomicCounterBuffers) {
+                    const uint32_t slotEnd = vertexStage ? kSlotVertexAtomicCounterBuffer + kMaxVertexAtomicCounterBuffers
+                                                         : kSlotFirstAtomicCounterBuffer + kMaxStageAtomicCounterBuffers;
+                    if (vertexStage && nextAtomicSlot < kSlotVertexAtomicCounterBuffer) nextAtomicSlot = kSlotVertexAtomicCounterBuffer;
+                    if (nextAtomicSlot >= slotEnd) {
                         result.log += "error: too many atomic counter buffers in one stage\n";
                         return result;
                     }
@@ -2299,6 +2411,9 @@ bool buildGeometryEmulation(const LinkInput& input, const GeometryShaderInfo& in
     g.inputStride = captureLayout.xfbStride[0];
     g.outputStride = sources.outputStride;
     g.outputs = sources.fields;
+    g.streams = info.streams;
+    g.streamOffset = sources.streamOffset;
+    bool bufferStreamSet[4] = {};
     for (TransformFeedbackVarying& v : result.transformFeedback) {
         if (v.type == GL_NONE) continue;
         const size_t open = v.name.find('[');
@@ -2307,7 +2422,18 @@ bool buildGeometryEmulation(const LinkInput& input, const GeometryShaderInfo& in
         const int index = open == std::string::npos ? 0 : std::atoi(v.name.c_str() + open + 1);
         v.sourceOffset = TransformFeedbackVarying::kNotEmitted;
         for (const GeometryEmulation::Field& f : g.outputs)
-            if (f.name == base) v.sourceOffset = f.offset + static_cast<uint32_t>(index * glTypeWords(f.type));
+            if (f.name == base) {
+                v.sourceOffset = f.offset + static_cast<uint32_t>(index * glTypeWords(f.type));
+                v.stream = f.stream;
+            }
+        // Each buffer captures the vertices of one stream (GL 4.0 section 13.2.2).
+        if (bufferStreamSet[v.buffer] && result.xfbStream[v.buffer] != v.stream) {
+            result.log += "error: transform feedback buffer " + std::to_string(v.buffer) +
+                          " captures varyings of more than one vertex stream\n";
+            return false;
+        }
+        bufferStreamSet[v.buffer] = true;
+        result.xfbStream[v.buffer] = v.stream;
     }
     LinkInput kernelInput;
     kernelInput.shaders = {{Stage::Compute, sources.compute}};
@@ -2401,7 +2527,44 @@ bool buildTessellationEmulation(const LinkInput& input, const TessellationLink& 
 
 }  // namespace
 
-LinkResult link(const LinkInput& input) {
+namespace {
+
+bool usesIdentifier(const std::string& source, const std::string& name) {
+    for (size_t at = source.find(name); at != std::string::npos; at = source.find(name, at + 1)) {
+        const bool before = at > 0 && (std::isalnum(static_cast<unsigned char>(source[at - 1])) || source[at - 1] == '_');
+        const size_t end = at + name.size();
+        const bool after = end < source.size() && (std::isalnum(static_cast<unsigned char>(source[end])) || source[end] == '_');
+        if (!before && !after) return true;
+    }
+    return false;
+}
+
+// A geometry shader's gl_PrimitiveID reaches the fragment shader as a flat
+// varying: the emulation draws the emitted vertices with a vertex shader, so
+// Metal's primitive ID would count the pass-through draw's primitives.
+LinkInput withGeometryPrimitiveId(const LinkInput& input) {
+    bool geometry = false, fragment = false;
+    for (const ShaderSource& shader : input.shaders) {
+        if (shader.stage == Stage::Geometry) geometry |= usesIdentifier(shader.source, "gl_PrimitiveID");
+        if (shader.stage == Stage::Fragment) fragment |= usesIdentifier(shader.source, "gl_PrimitiveID");
+    }
+    if (!geometry || !fragment) return input;
+    LinkInput out = input;
+    for (ShaderSource& shader : out.shaders) {
+        if ((shader.stage != Stage::Geometry && shader.stage != Stage::Fragment) || !usesIdentifier(shader.source, "gl_PrimitiveID"))
+            continue;
+        const std::string declaration = shader.stage == Stage::Geometry ? "flat out int wmgl_gs_primitive_id;\n"
+                                                                         : "flat in int wmgl_gs_primitive_id;\n";
+        shader.source = insertAfterDirectives(shader.source, declaration + "#define gl_PrimitiveID wmgl_gs_primitive_id\n",
+                                              parseGlslVersion(shader.source).number);
+    }
+    return out;
+}
+
+}  // namespace
+
+LinkResult link(const LinkInput& original) {
+    const LinkInput input = withGeometryPrimitiveId(original);
     GeometryShaderInfo geometry;
     LinkResult geometryCapture;
     TessellationLink tessellation;

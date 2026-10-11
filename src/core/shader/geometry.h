@@ -42,6 +42,7 @@ struct GeometryVar {
     std::string blockName;    // interface block name for block members
     int arraySize = 0;        // array size (0 = not an array); for inputs, of a block member (not the vertex index)
     std::string declaration;  // outputs: the original declaration line(s)
+    int stream = 0;           // outputs: layout(stream = N) (GL 4.0 vertex streams)
 };
 
 struct GeometryShaderInfo {
@@ -56,6 +57,10 @@ struct GeometryShaderInfo {
     int inputClipDistances = 0;
     bool writesPointSize = false, writesLayer = false, writesPrimitiveId = false, writesViewportIndex = false;
     int outputClipDistances = 0;
+    // GL 4.0 vertex streams: outputs of streams other than 0, or
+    // EmitStreamVertex (only with points output). Emitted vertices then carry
+    // their stream; only stream 0 is rasterized.
+    bool streams = false;
     std::string globals;      // other global declarations (uniforms, constants, structs)
     std::string functions;    // function definitions, built-ins renamed
 };
@@ -72,6 +77,7 @@ struct GeometrySources {
     std::string compute;      // the kernel (GLSL 4.50 compute)
     std::string passthrough;  // the drawing vertex shader (GLSL 4.50)
     uint32_t outputStride = 0;  // 32-bit words per output vertex
+    uint32_t streamOffset = 0;  // vertex streams: word of the record holding its stream
     // The output vertex record by GL varying name ("gl_Position" first).
     std::vector<GeometryEmulation::Field> fields;
 };

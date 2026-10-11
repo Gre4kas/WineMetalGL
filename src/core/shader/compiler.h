@@ -26,23 +26,26 @@ constexpr int kStageCount = static_cast<int>(Stage::Count);
 // Metal argument-table layout used by every generated stage function.
 constexpr uint32_t kSlotDefaultUniforms = 0;   // buffer: default uniform block
 constexpr uint32_t kSlotDriverUniforms = 1;    // buffer: WineMetalGL driver constants
-constexpr uint32_t kSlotFirstUniformBlock = 2; // buffers 2..13: uniform blocks used by the stage
-constexpr uint32_t kMaxStageUniformBlocks = 12;
-constexpr uint32_t kSlotFirstXfbBuffer = 14;   // buffers 14..17: transform feedback outputs
+constexpr uint32_t kSlotFirstUniformBlock = 2; // buffers 2..15: uniform blocks used by the stage
+constexpr uint32_t kMaxStageUniformBlocks = 14;
+constexpr uint32_t kSlotFirstXfbBuffer = 16;   // buffers 16..19: transform feedback outputs
                                                // (geometry kernel: input, output, indices, control)
-constexpr uint32_t kSlotFirstVertexBuffer = 18;  // buffers 18..29: vertex buffers
-constexpr uint32_t kMaxVertexBufferSlots = 12;
+constexpr uint32_t kSlotFirstVertexBuffer = 20;  // buffers 20..29: vertex buffers
+constexpr uint32_t kMaxVertexBufferSlots = 10;
 constexpr uint32_t kSlotXfbControl = 30;       // buffer 30: transform feedback capture control
 constexpr uint32_t kMaxStageSamplers = 16;     // textures/samplers 0..15
 // Tessellation emulation (tessellation.h): the control kernel reads the
-// captured vertices and writes patch records through buffers 14..16; the
+// captured vertices and writes patch records through buffers 16..18; the
 // evaluation vertex function, which has no vertex attributes, reads its
-// domain points, patch records and control block from buffers 18..20.
-constexpr uint32_t kSlotTessVertices = 18, kSlotTessPatches = 19, kSlotTessControl = 20;
-// Atomic counter buffers (GL 4.2): buffers 18..25 of fragment and compute
+// domain points, patch records and control block from buffers 20..22.
+constexpr uint32_t kSlotTessVertices = 20, kSlotTessPatches = 21, kSlotTessControl = 22;
+// Atomic counter buffers (GL 4.2): buffers 20..27 of fragment and compute
 // functions (the geometry kernel included), which bind no vertex buffers.
-// Vertex functions have no free slot, so they have none.
-constexpr uint32_t kSlotFirstAtomicCounterBuffer = 18;
+// A vertex function's one counter buffer takes the last vertex buffer slot
+// (29), leaving its program 9 vertex buffers (DrawState::vertexBufferSlots).
+constexpr uint32_t kSlotFirstAtomicCounterBuffer = 20;
+constexpr uint32_t kSlotVertexAtomicCounterBuffer = kSlotFirstVertexBuffer + kMaxVertexBufferSlots - 1;
+constexpr uint32_t kMaxVertexAtomicCounterBuffers = 1;
 // Image uniforms (GL 4.2 image load/store): textures 16..23 of every stage.
 constexpr uint32_t kSlotFirstImage = 16;
 constexpr uint32_t kMaxStageImages = 8;
@@ -198,6 +201,7 @@ struct TransformFeedbackVarying {
     // The captured output by its qualified name ("Block.member" for a member
     // of an anonymous block captured as "member"; see StageOutputVar).
     std::string source;
+    int stream = 0;            // the vertex stream it comes from (geometry shaders)
     // Geometry emulation: word offset of the first element in the emitted
     // vertex record (kNotEmitted: the shader never writes it).
     uint32_t sourceOffset = 0;
@@ -220,8 +224,14 @@ struct GeometryEmulation {
         GLenum type = 0;
         GLint size = 1;         // array elements
         uint32_t offset = 0;    // in words
+        int stream = 0;         // vertex stream (GL 4.0)
     };
     std::vector<Field> outputs;  // emitted vertex layout
+    // Vertex streams: emitted vertices record their stream at word
+    // `streamOffset` (only stream 0 is rasterized; each transform feedback
+    // buffer captures one stream, LinkResult::xfbStream).
+    bool streams = false;
+    uint32_t streamOffset = 0;
     StageOutput kernel;          // compute: one thread per input primitive
     StageOutput passthrough;     // vertex: draws the emitted vertices
 };
@@ -292,8 +302,15 @@ struct LinkResult {
     std::vector<ImageSlotInfo> images;
     std::vector<AtomicCounterBufferInfo> atomicBuffers;
     SubroutineStageInfo subroutines[kStageCount];
+    // Default-block offsets of the hidden built-in uniforms (-1: unused):
+    // gl_DepthRange's near, far and diff, gl_NumSamples (glsl_upgrade.h).
+    struct BuiltinUniforms {
+        int depthRange[3] = {-1, -1, -1};
+        int numSamples = -1;
+    } builtinUniforms;
     std::vector<TransformFeedbackVarying> transformFeedback;
     uint32_t xfbStride[4] = {};      // 32-bit words per captured vertex, per buffer
+    int xfbStream[4] = {};           // the vertex stream each buffer captures (geometry streams)
     int xfbBufferCount = 0;
     bool xfbVertexCapture = false;   // the vertex stage MSL writes captured vertices
     uint32_t defaultBlockSize = 0;
@@ -331,6 +348,15 @@ std::string fragmentWithLogicOp(const std::string& msl, unsigned op, const Logic
 // [[sample_mask]] output, word 1 of buffer kSlotDriverUniforms (empty if the
 // stage has no output struct or writes the sample mask itself).
 std::string fragmentWithSampleMask(const std::string& msl);
+
+// GL_SAMPLE_SHADING: the fragment function run once per sample (it takes
+// [[sample_id]]) with its interpolated inputs evaluated at the sample.
+std::string fragmentAtSampleRate(const std::string& msl);
+
+// gl_SampleMask has no effect without multisample rasterization (GL 4.6
+// section 14.9.3); Metal applies [[sample_mask]] to single-sample targets
+// too, so this variant writes all ones (empty if the stage writes no mask).
+std::string fragmentIgnoringSampleMask(const std::string& msl);
 
 LinkResult link(const LinkInput& input);
 

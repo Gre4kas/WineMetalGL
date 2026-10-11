@@ -472,3 +472,85 @@ void main() { result = vec3(v[0], v[1], primitive); gl_Position = vec4(0.0); })"
     glDeleteVertexArrays(1, &vao);
     glDeleteProgram(p);
 }
+
+GPU_TEST_VERSION(gpu_tess_image_atomics_every_stage, 42) {
+    // Each stage of a tessellation + geometry pipeline adds its own amount
+    // to one texel of a 20-byte buffer image: 1 vertex, 1 control
+    // invocation, 3 domain points, 3 geometry invocations and 3 fragments.
+    const char* vs = R"(#version 420 core
+layout(location = 0) in vec4 position;
+layout(r32i) coherent uniform iimageBuffer counts;
+void main() { gl_Position = position; imageAtomicAdd(counts, 0, 1); })";
+    const char* tcs = R"(#version 420 core
+layout(vertices = 1) out;
+layout(r32i) coherent uniform iimageBuffer counts;
+void main() {
+    gl_out[gl_InvocationID].gl_Position = gl_in[0].gl_Position;
+    gl_TessLevelInner[0] = 1.0; gl_TessLevelInner[1] = 1.0;
+    gl_TessLevelOuter[0] = 1.0; gl_TessLevelOuter[1] = 1.0; gl_TessLevelOuter[2] = 1.0; gl_TessLevelOuter[3] = 1.0;
+    imageAtomicAdd(counts, 1, 1);
+})";
+    const char* tes = R"(#version 420 core
+layout(triangles, point_mode) in;
+layout(r32i) coherent uniform iimageBuffer counts;
+void main() { imageAtomicAdd(counts, 2, 1); gl_Position = gl_in[0].gl_Position; })";
+    const char* gs = R"(#version 420 core
+layout(points) in;
+layout(points, max_vertices = 1) out;
+layout(r32i) coherent uniform iimageBuffer counts;
+void main() { imageAtomicAdd(counts, 3, 1); gl_Position = gl_in[0].gl_Position; EmitVertex(); })";
+    const char* fs = R"(#version 420 core
+layout(location = 0) out vec4 o;
+layout(r32i) coherent uniform iimageBuffer counts;
+void main() { imageAtomicAdd(counts, 4, 1); o = vec4(0.0, 1.0, 0.0, 1.0); })";
+    Stages stages;
+    stages.vs = vs;
+    stages.tcs = tcs;
+    stages.tes = tes;
+    stages.gs = gs;
+    stages.fs = fs;
+    GLuint p = link(stages);
+    glUseProgram(p);
+    glUniform1i(glGetUniformLocation(p, "counts"), 0);
+    GLuint buffer = 0, tex = 0;
+    const GLint zero[5] = {};
+    glGenBuffers(1, &buffer);
+    glBindBuffer(GL_TEXTURE_BUFFER, buffer);
+    glBufferData(GL_TEXTURE_BUFFER, sizeof(zero), zero, GL_STATIC_DRAW);
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_BUFFER, tex);
+    glTexBuffer(GL_TEXTURE_BUFFER, GL_R32I, buffer);
+    glBindTexture(GL_TEXTURE_BUFFER, 0);
+    glBindImageTexture(0, tex, 0, GL_FALSE, 0, GL_READ_WRITE, GL_R32I);
+    const float position[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+    GLuint vao = 0, vbo = 0, ebo = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(position), position, GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, 0, nullptr);
+    glEnableVertexAttribArray(0);
+    const GLushort index = 0;
+    glGenBuffers(1, &ebo);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(index), &index, GL_STATIC_DRAW);
+    patchParameteri()(GL_PATCH_VERTICES, 1);
+    glDrawElementsInstancedBaseVertex(GL_PATCHES, 1, GL_UNSIGNED_SHORT, nullptr, 1, 0);
+    glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
+    CHECK_GL();
+    GLint counts[5] = {};
+    glBindBuffer(GL_TEXTURE_BUFFER, buffer);
+    glGetBufferSubData(GL_TEXTURE_BUFFER, 0, sizeof(counts), counts);
+    CHECK_EQ(counts[0], 1);
+    CHECK_EQ(counts[1], 1);
+    CHECK_EQ(counts[2], 3);
+    CHECK_EQ(counts[3], 3);
+    CHECK_EQ(counts[4], 3);  // three points at the window's center
+    glDeleteBuffers(1, &ebo);
+    glDeleteBuffers(1, &vbo);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteTextures(1, &tex);
+    glDeleteBuffers(1, &buffer);
+    glDeleteProgram(p);
+}

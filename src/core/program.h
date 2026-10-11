@@ -41,7 +41,10 @@ struct LinkedProgram {
     // mask (shader::fragmentWithSampleMask), and applying logical operation
     // `logicOp` - 1 (0: none; shader::fragmentWithLogicOp) to attachments of
     // `colorFormats` (MTLPixelFormat). Nil if the stage cannot have it.
-    id<MTLFunction> fragmentVariant(bool sampleMask, unsigned logicOp, const uint16_t colorFormats[8]);
+    id<MTLFunction> fragmentVariant(bool sampleMask, unsigned logicOp, const uint16_t colorFormats[8],
+                                    bool sampleRate = false, bool ignoreSampleMask = false);
+    // The fragment stage writes gl_SampleMask.
+    bool writesSampleMask();
     id<MTLFunction> fragmentSampleMask() { return fragmentVariant(true, 0, nullptr); }
     bool functionFailed(shader::Stage stage) const { return failed_[static_cast<int>(stage)]; }
     // Geometry shader emulation (link.geometry): the drawing vertex function

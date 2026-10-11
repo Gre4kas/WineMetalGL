@@ -21,7 +21,10 @@ bool validUsage(GLenum usage) {
 
 id<MTLBuffer> newStorage(GLsizeiptr size) {
     if (size <= 0) return nil;
-    return [Device::get().mtl() newBufferWithLength:static_cast<NSUInteger>(size) options:MTLResourceStorageModeShared];
+    // Padded to 256 bytes, so texture views of the buffer (texture buffers,
+    // buffer images) have room for Metal's aligned rows at any size.
+    const NSUInteger length = (static_cast<NSUInteger>(size) + 255) & ~NSUInteger(255);
+    return [Device::get().mtl() newBufferWithLength:length options:MTLResourceStorageModeShared];
 }
 
 bool gpuBusy(Context& ctx, const Buffer& buffer) {

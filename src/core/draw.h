@@ -14,6 +14,7 @@
 #include "core/metal/pipeline_cache.h"
 #include "core/metal/transient.h"
 #include "core/shader/compiler.h"
+#include "core/texture_storage.h"
 #include "core/tess/tessellator.h"
 
 namespace wmgl {
@@ -161,6 +162,24 @@ private:
         std::vector<DirectGroup> groups;
     };
     void planVertexInputs(LinkedProgram& program, bool gather, VertexInputPlan& plan) const;
+    // 3D texture slices bound to 2D images, for the draw in progress
+    // (imageSliceShadow): copied in by prepareSamplerStorage, back when the
+    // draw ends.
+    struct ImageShadow {
+        ImageSliceShadow slice;
+        bool write = false;
+    };
+    std::vector<ImageShadow> imageShadows_;
+    void prepareImageShadows(LinkedProgram& program);
+    void finishImageShadows();
+    struct ImageShadowScope {
+        DrawState& draw;
+        explicit ImageShadowScope(DrawState& d) : draw(d) {}
+        ~ImageShadowScope() { draw.finishImageShadows(); }
+    };
+    GLint imageUnit(LinkedProgram& program, size_t index);
+    void applyBuiltinUniforms(Program& program);
+    static size_t vertexBufferSlots(LinkedProgram& program);
     void waitForCpuVertexReads(LinkedProgram& program, bool gather);
     const VertexAttrib& attribFor(const VertexArray& vao, int location) const;
     void bindUniforms(id<MTLRenderCommandEncoder> encoder, LinkedProgram& program);

@@ -112,6 +112,7 @@ int textureBindingTarget(GLenum pname) {
     case GL_TEXTURE_BINDING_BUFFER: return kTexBuffer;
     case GL_TEXTURE_BINDING_2D_MULTISAMPLE: return kTex2DMultisample;
     case GL_TEXTURE_BINDING_2D_MULTISAMPLE_ARRAY: return kTex2DMultisampleArray;
+    case GL_TEXTURE_BINDING_CUBE_MAP_ARRAY: return kTexCubeMapArray;
     default: return -1;
     }
 }
@@ -229,8 +230,8 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
         case GL_ATOMIC_COUNTER_BUFFER_BINDING: out = ints({nameOf(s.atomicCounterBuffer)}); break;
         case GL_MAX_ATOMIC_COUNTER_BUFFER_BINDINGS: out = ints({kMaxAtomicCounterBufferBindings}); break;
         case GL_MAX_ATOMIC_COUNTER_BUFFER_SIZE: out = ints({kMaxAtomicCounterBufferSize}); break;
-        case GL_MAX_VERTEX_ATOMIC_COUNTER_BUFFERS: case GL_MAX_TESS_CONTROL_ATOMIC_COUNTER_BUFFERS:
-        case GL_MAX_TESS_EVALUATION_ATOMIC_COUNTER_BUFFERS: case GL_MAX_VERTEX_ATOMIC_COUNTERS:
+        case GL_MAX_VERTEX_ATOMIC_COUNTER_BUFFERS: out = ints({kMaxVertexAtomicCounterBuffers}); break;
+        case GL_MAX_TESS_CONTROL_ATOMIC_COUNTER_BUFFERS: case GL_MAX_TESS_EVALUATION_ATOMIC_COUNTER_BUFFERS:
         case GL_MAX_TESS_CONTROL_ATOMIC_COUNTERS: case GL_MAX_TESS_EVALUATION_ATOMIC_COUNTERS:
             out = ints({0});
             break;
@@ -499,6 +500,13 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
         if (!ctx.sampleShading()) return false;
         out = floats({s.minSampleShading});
         return true;
+    // GL 4.0 interpolateAtOffset: offsets in [-0.5, 0.5 - 1/16], in sixteenths.
+    case GL_MIN_FRAGMENT_INTERPOLATION_OFFSET: case GL_MAX_FRAGMENT_INTERPOLATION_OFFSET:
+    case GL_FRAGMENT_INTERPOLATION_OFFSET_BITS:
+        if (ctx.version() < 40) return false;
+        if (pname == GL_FRAGMENT_INTERPOLATION_OFFSET_BITS) out = ints({4});
+        else out = floats({pname == GL_MIN_FRAGMENT_INTERPOLATION_OFFSET ? -0.5f : 0.4375f});
+        return true;
     case GL_MAX_TRANSFORM_FEEDBACK_BUFFERS: case GL_MAX_VERTEX_STREAMS:
         if (ctx.version() < 40) return false;
         out = ints({4});
@@ -553,7 +561,7 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
         }
     }
     const int target = textureBindingTarget(pname);
-    if (target >= 0) {
+    if (target >= 0 && (target != kTexCubeMapArray || ctx.version() >= 40)) {
         const RefPtr<Texture>& t = s.textureUnits[s.activeTexture].bound[target];
         out = ints({t ? t->name : 0});
         return true;

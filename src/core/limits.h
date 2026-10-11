@@ -8,7 +8,7 @@ namespace wmgl::limits {
 constexpr GLint kMaxTextureSize = 16384, kMax3DTextureSize = 2048, kMaxArrayLayers = 2048;
 // Combined limits cover the five graphics stages of GL 4.0 (5 x per stage).
 constexpr GLint kMaxDrawBuffers = 8, kMaxVertexAttribs = 16, kMaxTextureUnitsPerStage = 16, kMaxCombinedTextureUnits = 80;
-constexpr GLint kMaxUniformBlocksPerStage = 12, kMaxCombinedUniformBlocks = 60, kMaxUniformBufferBindings = 72;
+constexpr GLint kMaxUniformBlocksPerStage = 14, kMaxCombinedUniformBlocks = 70, kMaxUniformBufferBindings = 72;
 constexpr GLint kMaxUniformBlockSize = 65536, kMaxDefaultUniformComponents = 4096;
 constexpr GLint kMaxTextureBufferSize = 1 << 27;
 // Metal clamps a sampler's LOD bias just below 16, so 15 is the largest
@@ -26,6 +26,7 @@ constexpr GLint kMaxPatchVertices = 32, kMaxTessGenLevel = 64;
 constexpr GLint kMaxImageUnits = 8, kMaxImageUniformsPerStage = 8, kMaxCombinedImageUniforms = 48;
 constexpr GLint kMaxCombinedImageUnitsAndFragmentOutputs = 16;
 constexpr GLint kMaxAtomicCounterBufferBindings = 8, kMaxStageAtomicCounterBuffers = 8, kMaxStageAtomicCounters = 8;
+constexpr GLint kMaxVertexAtomicCounterBuffers = 1;
 constexpr GLint kMaxAtomicCounterBufferSize = 16384;
 constexpr GLint kMaxViewports = 16, kMaxGeometryShaderInvocations = 32;
 constexpr GLfloat kMaxTextureLodBias = 15.0f, kMaxAnisotropy = 16.0f;

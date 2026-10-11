@@ -14,7 +14,8 @@ Local changes to vendored sources (each marked `WineMetalGL:` in the code):
 - glslang `glslang/MachineIndependent/linkValidate.cpp`, `checkStageIO`: the
   Vulkan "every input has a matching output" check skips built-in blocks
   (`gl_PerVertex`) and redeclared built-in inputs (`gl_ClipDistance`), which
-  GL provides implicitly.
+  GL provides implicitly, and inputs the stage never reads, which GL does
+  not require to be written.
 - glslang `glslang/MachineIndependent/linkValidate.cpp`, `isIoResizeArray`:
   per-patch tessellation evaluation inputs (`patch in`) are not arrayed per
   vertex, so `patch` arrays match their control-stage outputs at link time.
@@ -39,6 +40,23 @@ Local changes to vendored sources (each marked `WineMetalGL:` in the code):
 - SPIRV-Cross `spirv_msl.{hpp,cpp}`: an MSL option, `native_texture_atomics`,
   emits image atomics as MSL 3.1 texture atomics instead of emulating them
   through a buffer that aliases the texture.
+- SPIRV-Cross `spirv_msl.cpp`, `OpImageWrite`: a write to a `read_write`
+  texture is followed by `fence()`, so the invocation's later loads see it.
+- SPIRV-Cross `spirv_msl.cpp`, `InterpolateAtOffset`: the GLSL offset is
+  biased by 1/2 (upstream uses 7/16 for Intel GPUs), so on Apple GPUs an
+  offset of `gl_SamplePosition - 0.5` interpolates exactly at the sample.
+- glslang `glslang/MachineIndependent/ParseHelper.cpp`, `invariantCheck`:
+  desktop GLSL 4.20 and later accept `invariant` on inputs outside the vertex
+  stage, as desktop drivers do; only ESSL 3.00 and later restrict it to
+  outputs.
+- glslang `glslang/MachineIndependent/ParseHelper.cpp`, `layoutTypeCheck`:
+  an image's `layout(binding)` is checked against `gl_MaxImageUnits` (the
+  image units it names) instead of `gl_MaxCombinedTextureImageUnits`.
+- SPIRV-Cross `spirv_glsl.cpp`, `to_function_name` and `to_function_args`:
+  GLSL has no `textureLod` for rectangle textures and their `texelFetch`
+  takes no level, so a level-0 sample (glslang's `texture()` outside fragment
+  shaders) is written as `texture()` and a fetch without a level, when
+  geometry and tessellation control stages are translated back to GLSL.
 
 The built dylib dynamically links only Apple system frameworks and libraries
 (Metal, Foundation, QuartzCore, CoreFoundation, libc++, libSystem and

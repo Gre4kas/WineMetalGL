@@ -1239,6 +1239,19 @@ void TransformFeedbackVaryings(Context& ctx, GLuint program, GLsizei count, cons
     if (bufferMode == GL_SEPARATE_ATTRIBS && count > TransformFeedback::kMaxBuffers) return ctx.setError(GL_INVALID_VALUE);
     Program* p = programOrError(ctx, program);
     if (!p) return;
+    // GL_ARB_transform_feedback3: gl_NextBuffer and gl_SkipComponents1-4 only
+    // interleave, and gl_NextBuffer cannot go past the last buffer.
+    if (ctx.version() >= 40 || ctx.hasExtension("GL_ARB_transform_feedback3")) {
+        int nextBuffers = 0;
+        for (GLsizei i = 0; i < count && varyings; ++i) {
+            const char* name = varyings[i] ? varyings[i] : "";
+            const bool next = std::strcmp(name, "gl_NextBuffer") == 0;
+            const bool skip = std::strncmp(name, "gl_SkipComponents", 17) == 0 && name[17] >= '1' && name[17] <= '4' && !name[18];
+            if ((next || skip) && bufferMode != GL_INTERLEAVED_ATTRIBS) return ctx.setError(GL_INVALID_OPERATION);
+            nextBuffers += next ? 1 : 0;
+        }
+        if (nextBuffers >= TransformFeedback::kMaxBuffers) return ctx.setError(GL_INVALID_OPERATION);
+    }
     p->transformFeedbackVaryings.clear();
     for (GLsizei i = 0; i < count; ++i) p->transformFeedbackVaryings.emplace_back(varyings && varyings[i] ? varyings[i] : "");
     p->transformFeedbackMode = bufferMode;

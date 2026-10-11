@@ -100,12 +100,23 @@ shader::LogicOpTarget logicOpTarget(MTLPixelFormat format) {
 
 bool logicOpApplies(MTLPixelFormat format) { return logicOpTarget(format).kind != 0; }
 
-id<MTLFunction> LinkedProgram::fragmentVariant(bool sampleMask, unsigned logicOp, const uint16_t colorFormats[8]) {
+bool LinkedProgram::writesSampleMask() {
     if (pipeline) {
         const auto& fs = stageExecutable[static_cast<int>(shader::Stage::Fragment)];
-        return fs ? fs->fragmentVariant(sampleMask, logicOp, colorFormats) : nil;
+        return fs && fs->writesSampleMask();
     }
-    std::string key = std::string(sampleMask ? "m" : "-") + std::to_string(logicOp);
+    const shader::StageOutput& output = link.stages[static_cast<int>(shader::Stage::Fragment)];
+    return output.present && output.msl.find("[[sample_mask]]") != std::string::npos;
+}
+
+id<MTLFunction> LinkedProgram::fragmentVariant(bool sampleMask, unsigned logicOp, const uint16_t colorFormats[8],
+                                               bool sampleRate, bool ignoreSampleMask) {
+    if (pipeline) {
+        const auto& fs = stageExecutable[static_cast<int>(shader::Stage::Fragment)];
+        return fs ? fs->fragmentVariant(sampleMask, logicOp, colorFormats, sampleRate, ignoreSampleMask) : nil;
+    }
+    std::string key = std::string(sampleMask ? "m" : "-") + (sampleRate ? "s" : "-") + (ignoreSampleMask ? "i" : "-") +
+                      std::to_string(logicOp);
     if (logicOp)
         for (int i = 0; i < 8; ++i) key += "/" + std::to_string(colorFormats[i]);
     std::lock_guard<std::mutex> lock(mutex_);
@@ -118,6 +129,8 @@ id<MTLFunction> LinkedProgram::fragmentVariant(bool sampleMask, unsigned logicOp
         msl = shader::fragmentWithLogicOp(msl, logicOp - 1, targets);
     }
     if (!msl.empty() && sampleMask) msl = shader::fragmentWithSampleMask(msl);
+    if (!msl.empty() && sampleRate) msl = shader::fragmentAtSampleRate(msl);
+    if (!msl.empty() && ignoreSampleMask) msl = shader::fragmentIgnoringSampleMask(msl);
     id<MTLFunction> function =
         msl.empty() ? nil : compileFunction(msl, output.entryPoint, static_cast<int>(shader::Stage::Fragment));
     fragmentVariants_[key] = function;

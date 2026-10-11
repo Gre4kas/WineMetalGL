@@ -174,6 +174,10 @@ void TIntermediate::checkStageIO(TInfoSink& infoSink, TIntermediate& unit) {
             if (nextStageSymbol->getType().getBasicType() != EbtBlock &&
                 nextStageSymbol->getName().compare(0, 3, "gl_") == 0)
                 continue;
+            // WineMetalGL: an input the stage never reads needs no output
+            // (GL rules; it is only an error when statically used).
+            if (nextStageSymbol->getType().getBasicType() != EbtBlock && !unit.inIoAccessed(nextStageSymbol->getName()))
+                continue;
             bool found = false;
             for (auto& curStageInterm : linkerObjects) {
                 if (isSameSymbol(curStageInterm->getAsSymbolNode(), getStage(), nextStageSymbol, unit.getStage())) {
