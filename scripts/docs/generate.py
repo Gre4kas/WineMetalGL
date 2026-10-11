@@ -4,13 +4,13 @@
     scripts/docs/generate.py [--check] [--check-provenance]
 
 Inputs (all tracked):
-  tests/cts/baseline/glMN-cfgN-*.txt   KHR-GL30 to KHR-GL42 results (scripts/cts/run.py)
+  tests/cts/baseline/glMN-cfgN-*.txt   KHR-GL30 to KHR-GL43 results (scripts/cts/run.py)
   tests/cts/notsupported.json          reason for every NotSupported case
   tests/cts/known-failures.json        reasons for failing cases the core does not fix
   tests/games/corpus.json              game corpus manifest
   tests/games/results.json             last corpus run (scripts/traces/replay.py --json)
   tests/games/perf.json                frame times (scripts/traces/benchmark.py)
-  third_party/khronos/gl.xml           the GL 4.2 core command list
+  third_party/khronos/gl.xml           the GL 4.3 core command list
   src/core                             advertised extensions, implemented commands
 
 Outputs:
@@ -41,9 +41,9 @@ END = "<!-- END GENERATED: %s -->"
 STATUSES = ["Pass", "Fail", "NotSupported", "InternalError", "Crash", "Timeout", "Missing"]
 # Mustpass lists with committed baselines (tests/cts/baseline/<list>-cfgN-<runner>.txt).
 SUITES = [("gl30", "KHR-GL30"), ("gl31", "KHR-GL31"), ("gl32", "KHR-GL32"), ("gl33", "KHR-GL33"),
-          ("gl40", "KHR-GL40"), ("gl41", "KHR-GL41"), ("gl42", "KHR-GL42")]
+          ("gl40", "KHR-GL40"), ("gl41", "KHR-GL41"), ("gl42", "KHR-GL42"), ("gl43", "KHR-GL43")]
 # The highest version contexts get (src/core/driver.mm).
-MAX_VERSION = "4.2"
+MAX_VERSION = "4.3"
 # mustpass.xml configurations that are run. Configurations 5 and 6 repeat the command
 # lines of 1 and 2: their only difference, useForFirstEGLConfig, applies to EGL.
 CONFIGS = (1, 2, 3, 4)
@@ -59,7 +59,7 @@ VERSIONS = [
     ("4.0", "Tessellation, GLSL 4.00, double precision, indirect draws, per-sample shading", "gl40"),
     ("4.1", "Separate shader objects, program binaries, viewport arrays, 64-bit attributes", "gl41"),
     ("4.2", "Image load/store, atomic counters, immutable texture storage", "gl42"),
-    ("4.3", "Compute shaders, shader storage buffers, debug output, texture views", None),
+    ("4.3", "Compute shaders, shader storage buffers, debug output, texture views", "gl43"),
     ("4.4", "Buffer storage, multi-bind, texture clears, enhanced layouts", None),
     ("4.5", "Direct state access, clip control, robustness, cull distances", None),
     ("4.6", "SPIR-V shaders, anisotropic filtering, indirect draw counts", None),
@@ -527,7 +527,7 @@ def render(suites):
         lines.append("| %s | %s | %s | %s |" % (version, conformance_cell, adds, unsupported_cell))
     lines += ["",
               "**Conformance %%**: passing cases over applicable cases (cases that are not NotSupported) of the "
-              "version's Khronos CTS mustpass list (`KHR-GL30` to `KHR-GL42`), in the worst of its %d runs "
+              "version's Khronos CTS mustpass list (`KHR-GL30` to `KHR-GL43`), in the worst of its %d runs "
               "(configurations %s of `mustpass.xml`, each under Wine and natively) at commit %s." % (
                   2 * len(CONFIGS), "%d to %d" % (CONFIGS[0], CONFIGS[-1]), ", ".join(commits)),
               "",

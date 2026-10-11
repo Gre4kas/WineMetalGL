@@ -285,6 +285,7 @@ tests/wine/opengl_gl33_metal.c
 tests/wine/opengl_gl33_resources.c
 tests/wine/opengl_gl33_texture.c
 tests/wine/opengl_gl42.c
+tests/wine/opengl_gl43.c
 tests/wine/opengl_glsl110.c
 tests/wine/opengl_glsl120.c
 tests/wine/opengl_image_formats.c

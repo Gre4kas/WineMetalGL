@@ -37,15 +37,15 @@ checks.
 WINEMETALGL_WINE_RUNTIME=/path/to/wine tests/wine/probe-opengl-wow64.sh
 ```
 
-The 51 gate fixtures run by default; `--all` adds the 17 fixtures kept for
-the later 4.x milestones, which need features of GL 4.3 or later.
+The 59 gate fixtures run by default; `--all` adds the 10 fixtures kept for
+the later 4.x milestones, which need features of GL 4.4 or later.
 
 ## Khronos CTS
 
 The Khronos VK-GL-CTS at commit `1942832`, built for Wine with
 `tests/cts/windows/build.sh` (`glcts.exe`) and natively with
 `tests/cts/native/build.sh` (a `glcts` that calls the core through its driver
-ABI, without Wine). Each mustpass list, `KHR-GL30` to `KHR-GL42`, runs in
+ABI, without Wine). Each mustpass list, `KHR-GL30` to `KHR-GL43`, runs in
 configurations 1 to 4 of `mustpass.xml`, under Wine and natively: 8 runs per
 list. Configurations 5 and 6 repeat the command lines of 1 and 2 (their only
 difference, `useForFirstEGLConfig`, applies to EGL), so they are not run.

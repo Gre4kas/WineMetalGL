@@ -5,10 +5,10 @@ that fail, are in [Conformance results](conformance.md).
 
 ## OpenGL 4.x
 
-Contexts stop at OpenGL 4.2: `wglCreateContextAttribsARB` refuses a request
-for 4.3 or newer with `ERROR_INVALID_VERSION_ARB`, as it does for any version
+Contexts stop at OpenGL 4.3: `wglCreateContextAttribsARB` refuses a request
+for 4.4 or newer with `ERROR_INVALID_VERSION_ARB`, as it does for any version
 an implementation does not offer. Some features of later versions are
-available in 4.2 contexts as the extensions that were promoted into each
+available in 4.3 contexts as the extensions that were promoted into each
 version:
 
 <!-- BEGIN GENERATED: gl4 (scripts/docs/generate.py) -->
