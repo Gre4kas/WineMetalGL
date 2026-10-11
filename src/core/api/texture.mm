@@ -1032,6 +1032,11 @@ void getTexParameter(Context& ctx, GLenum target, GLenum pname, T* params, Param
         if (ctx.version() < 42 && !ctx.hasExtension("GL_ARB_texture_storage")) return ctx.setError(GL_INVALID_ENUM);
         v.i[0] = tex->immutable;
         break;
+    case GL_IMAGE_FORMAT_COMPATIBILITY_TYPE:
+        // GL 4.2: image views of a texture match its format by texel size.
+        if (!ctx.imageLoadStore()) return ctx.setError(GL_INVALID_ENUM);
+        v.i[0] = GL_IMAGE_FORMAT_COMPATIBILITY_BY_SIZE;
+        break;
     case GL_TEXTURE_IMMUTABLE_LEVELS:
         if (ctx.version() < 43) return ctx.setError(GL_INVALID_ENUM);
         v.i[0] = tex->immutableLevels;
@@ -1237,6 +1242,9 @@ void unbindTextureEverywhere(Context& ctx, Texture* tex) {
     for (TextureUnit& unit : ctx.state.textureUnits)
         for (int i = 0; i < kTexTargetCount; ++i)
             if (unit.bound[i].get() == tex) unit.bound[i] = ctx.defaultTextures[i];
+    // A deleted texture's image units are unbound (texture 0).
+    for (ImageUnit& unit : ctx.state.imageUnits)
+        if (unit.texture.get() == tex) unit.texture.reset();
     for (Framebuffer* fb : {ctx.state.drawFramebuffer.get(), ctx.state.readFramebuffer.get()}) {
         if (!fb) continue;
         bool changed = false;

@@ -674,6 +674,24 @@ std::pair<Program*, size_t> DrawState::samplerSource(LinkedProgram& program, siz
     return {program.samplerOwner[index].first, static_cast<size_t>(program.samplerOwner[index].second)};
 }
 
+std::pair<Program*, size_t> DrawState::imageSource(LinkedProgram& program, size_t index) {
+    if (!program.pipeline) return {ownerProgram(), index};
+    return {program.imageOwner[index].first, static_cast<size_t>(program.imageOwner[index].second)};
+}
+
+id<MTLTexture> DrawState::imageBinding(LinkedProgram& program, size_t index) {
+    const shader::ImageSlotInfo& slot = program.link.images[index];
+    const auto [owner, ownIndex] = imageSource(program, index);
+    const GLint unit = owner && ownIndex < owner->imageUnits.size() ? owner->imageUnits[ownIndex] : 0;
+    id<MTLTexture> view = nil;
+    if (unit >= 0 && unit < ContextState::kMaxImageUnits) {
+        const ImageUnit& u = ctx_.state.imageUnits[unit];
+        view = imageView(ctx_, u, slot.type);
+        if (view && u.texture) u.texture->lastUseSerial = ctx_.stream().serial();
+    }
+    return view ? view : dummyImage(slot.type);
+}
+
 LinkedProgram* DrawState::executable() {
     if (Program* p = ctx_.state.program.get()) return p->linked.get();
     if (ProgramPipeline* pp = ctx_.state.programPipeline.get()) {
@@ -835,12 +853,14 @@ void DrawState::samplerBinding(LinkedProgram& program, size_t index, __strong id
 
 void DrawState::prepareSamplerStorage(LinkedProgram& program) {
     // textureComplete builds pending storage with the blit encoder, which
-    // would end the render or compute encoder of a draw in progress.
+    // would end the render or compute encoder of a draw in progress. Image
+    // units (re)allocate writable storage the same way.
     for (size_t i = 0; i < program.link.samplers.size(); ++i) {
         id<MTLTexture> view = nil;
         id<MTLSamplerState> sampler = nil;
         samplerBinding(program, i, view, sampler);
     }
+    for (size_t i = 0; i < program.link.images.size(); ++i) imageBinding(program, i);
 }
 
 void DrawState::bindTextures(id<MTLRenderCommandEncoder> encoder, LinkedProgram& program) {
@@ -860,6 +880,15 @@ void DrawState::bindTextures(id<MTLRenderCommandEncoder> encoder, LinkedProgram&
                 [encoder setFragmentSamplerState:sampler atIndex:static_cast<NSUInteger>(index)];
             }
         }
+    }
+    for (size_t i = 0; i < program.link.images.size(); ++i) {
+        const shader::ImageSlotInfo& slot = program.link.images[i];
+        const int vertex = slot.stageTexture[static_cast<int>(Stage::Vertex)];
+        const int fragment = slot.stageTexture[static_cast<int>(Stage::Fragment)];
+        if (vertex < 0 && fragment < 0) continue;
+        id<MTLTexture> view = imageBinding(program, i);
+        if (vertex >= 0) [encoder setVertexTexture:view atIndex:static_cast<NSUInteger>(vertex)];
+        if (fragment >= 0) [encoder setFragmentTexture:view atIndex:static_cast<NSUInteger>(fragment)];
     }
 }
 
@@ -1544,6 +1573,10 @@ void DrawState::bindKernelResources(id<MTLComputeCommandEncoder> encoder, Linked
         NSUInteger offset = 0;
         atomicCounterBuffer(program, b, buffer, offset);
         [encoder setBuffer:buffer offset:offset atIndex:static_cast<NSUInteger>(slot)];
+    }
+    for (size_t i = 0; i < program.link.images.size(); ++i) {
+        const int index = program.link.images[i].stageTexture[cs];
+        if (index >= 0) [encoder setTexture:imageBinding(program, i) atIndex:static_cast<NSUInteger>(index)];
     }
 }
 

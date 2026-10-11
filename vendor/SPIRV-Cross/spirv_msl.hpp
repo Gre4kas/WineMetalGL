@@ -371,6 +371,10 @@ public:
 		// Use Metal's native frame-buffer fetch API for subpass inputs.
 		bool use_framebuffer_fetch_subpasses = false;
 
+		// WineMetalGL: image atomics use MSL 3.1 texture atomics (texture.atomic_fetch_add(...))
+		// instead of the emulation through a buffer aliasing the texture.
+		bool native_texture_atomics = false;
+
 		// Enables use of "fma" intrinsic for invariant float math
 		bool invariant_float_math = false;
 
@@ -1182,6 +1186,10 @@ protected:
 	SmallVector<std::pair<uint32_t, uint32_t>> buffer_aliases_argument;
 	SmallVector<uint32_t> buffer_aliases_discrete;
 	std::unordered_set<uint32_t> atomic_image_vars; // Emulate texture2D atomic operations
+	// WineMetalGL: native texture atomics: texel pointer -> (image, coordinate).
+	std::unordered_map<uint32_t, std::pair<uint32_t, uint32_t>> native_texel_pointers;
+	bool emit_native_texture_atomic(uint32_t result_type, uint32_t result_id, const char *op, uint32_t obj, uint32_t op1,
+	                                bool op1_is_literal, uint32_t op2);
 	std::unordered_set<uint32_t> pull_model_inputs;
 
 	// Must be ordered since array is in a specific order.

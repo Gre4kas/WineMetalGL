@@ -26,6 +26,9 @@ Local changes to vendored sources (each marked `WineMetalGL:` in the code):
 - glslang `glslang/MachineIndependent/ParseHelper.cpp`, `setLayoutQualifier`:
   `layout(binding)` is also accepted with `GL_ARB_shader_atomic_counters`,
   which adds it for atomic counters.
+- SPIRV-Cross `spirv_msl.{hpp,cpp}`: an MSL option, `native_texture_atomics`,
+  emits image atomics as MSL 3.1 texture atomics instead of emulating them
+  through a buffer that aliases the texture.
 
 The built dylib dynamically links only Apple system frameworks and libraries
 (Metal, Foundation, QuartzCore, CoreFoundation, libc++, libSystem and

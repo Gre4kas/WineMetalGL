@@ -37,6 +37,9 @@ constexpr uint32_t kMaxStageSamplers = 16;     // textures/samplers 0..15
 // functions (the geometry kernel included), which bind no vertex buffers.
 // Vertex functions have no free slot, so they have none.
 constexpr uint32_t kSlotFirstAtomicCounterBuffer = 18;
+// Image uniforms (GL 4.2 image load/store): textures 16..23 of every stage.
+constexpr uint32_t kSlotFirstImage = 16;
+constexpr uint32_t kMaxStageImages = 8;
 constexpr uint32_t kMaxStageAtomicCounterBuffers = 8;
 
 struct CompileResult {
@@ -73,6 +76,8 @@ struct UniformInfo {
     bool rowMajor = false;
     int samplerSlot = -1;      // first program sampler slot (elements are consecutive)
     int atomicBufferIndex = -1;  // atomic counters: index into LinkResult::atomicBuffers
+    int imageSlot = -1;          // images: first program image slot (elements are consecutive)
+    GLint explicitBinding = -1;  // samplers and images: layout(binding = N) (GL 4.2), else -1
     uint32_t stageMask = 0;    // stages referencing it
 };
 
@@ -123,6 +128,13 @@ struct FragOutputInfo {
     GLint location = 0;
     GLint index = 0;
     GLint size = 1;
+};
+
+// One image uniform element (GL 4.2): the unit it reads comes from the
+// program's image unit values.
+struct ImageSlotInfo {
+    GLenum type = 0;           // GL image type (GL_IMAGE_2D, ...)
+    int stageTexture[kStageCount] = {-1, -1, -1, -1, -1, -1};  // Metal texture index per stage
 };
 
 struct SamplerSlotInfo {
@@ -229,6 +241,7 @@ struct LinkResult {
     std::vector<AttribInfo> attribs;
     std::vector<FragOutputInfo> fragOutputs;
     std::vector<SamplerSlotInfo> samplers;
+    std::vector<ImageSlotInfo> images;
     std::vector<AtomicCounterBufferInfo> atomicBuffers;
     SubroutineStageInfo subroutines[kStageCount];
     std::vector<TransformFeedbackVarying> transformFeedback;
@@ -273,6 +286,7 @@ LinkResult link(const LinkInput& input);
 int glTypeComponents(GLenum type);       // e.g. GL_FLOAT_MAT3 -> 9
 int glTypeLocations(GLenum type);        // attribute locations used (matrix columns)
 bool glTypeIsSampler(GLenum type);
+bool glTypeIsImage(GLenum type);
 const char* glTypeName(GLenum type);
 
 }  // namespace wmgl::shader

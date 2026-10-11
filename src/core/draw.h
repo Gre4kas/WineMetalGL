@@ -131,6 +131,9 @@ private:
     Program* stageProgram(LinkedProgram& program, int stage);
     std::pair<Program*, size_t> blockSource(LinkedProgram& program, size_t block);
     std::pair<Program*, size_t> samplerSource(LinkedProgram& program, size_t index);
+    std::pair<Program*, size_t> imageSource(LinkedProgram& program, size_t index);
+    // The view image slot `index` reads (GL 4.2), or a dummy image.
+    id<MTLTexture> imageBinding(LinkedProgram& program, size_t index);
     void samplerBinding(LinkedProgram& program, size_t index, __strong id<MTLTexture>& view,
                         __strong id<MTLSamplerState>& sampler);
     // How a draw's vertex inputs are fed (planVertexInputs): read directly

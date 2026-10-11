@@ -138,7 +138,7 @@ TypeInfo typeInfo(GLenum type) {
     case GL_FLOAT_MAT4x2: return {'f', 4, 2};
     case GL_FLOAT_MAT4x3: return {'f', 4, 3};
     case GL_DOUBLE: return {'d', 1, 1};
-    default: return {shader::glTypeIsSampler(type) ? 's' : 'f', 1, 1};
+    default: return {shader::glTypeIsSampler(type) ? 's' : shader::glTypeIsImage(type) ? 'g' : 'f', 1, 1};
     }
 }
 
@@ -163,7 +163,7 @@ void setUniform(Context& ctx, Program* p, GLint location, GLsizei count, char ki
     const TypeInfo info = typeInfo(u->type);
     if (info.columns != 1 || info.rows != components) return ctx.setError(GL_INVALID_OPERATION);
     if (count > 1 && u->size == 1) return ctx.setError(GL_INVALID_OPERATION);
-    if (info.base == 's') {
+    if (info.base == 's' || info.base == 'g') {
         if (kind != 'i' || components != 1) return ctx.setError(GL_INVALID_OPERATION);
     } else if (info.base == 'b') {
         // bools accept f, i and u variants
@@ -171,6 +171,15 @@ void setUniform(Context& ctx, Program* p, GLint location, GLsizei count, char ki
         return ctx.setError(GL_INVALID_OPERATION);
     }
     const GLsizei n = std::min<GLsizei>(count, u->size - element);
+    if (info.base == 'g') {
+        // Image uniforms (GL 4.2) hold image unit numbers.
+        for (GLsizei i = 0; i < n; ++i)
+            if (static_cast<GLint>(values[i]) < 0 || static_cast<GLint>(values[i]) >= limits::kMaxImageUnits)
+                return ctx.setError(GL_INVALID_VALUE);
+        for (GLsizei i = 0; i < n; ++i) p->imageUnits[static_cast<size_t>(u->imageSlot + element + i)] = static_cast<GLint>(values[i]);
+        ctx.markDirty(kDirtyTextures);
+        return;
+    }
     if (info.base == 's') {
         for (GLsizei i = 0; i < n; ++i) {
             const GLint unit = static_cast<GLint>(values[i]);
@@ -474,6 +483,18 @@ void linkFrom(Context& ctx, Program* p, shader::LinkInput input, std::string log
     p->uniformData.assign((linked->link.defaultBlockSize + 15) & ~15u, 0);
     p->uniformBlockBindings.assign(linked->link.blocks.size(), 0);
     p->samplerUnits.assign(linked->link.samplers.size(), 0);
+    p->imageUnits.assign(linked->link.images.size(), 0);
+    // layout(binding = N) (GL 4.2) gives the initial bindings and units;
+    // array elements take consecutive ones.
+    for (size_t b = 0; b < linked->link.blocks.size(); ++b)
+        if (linked->link.blocks[b].explicitBinding >= 0) p->uniformBlockBindings[b] = static_cast<GLuint>(linked->link.blocks[b].explicitBinding);
+    for (const shader::UniformInfo& u : linked->link.uniforms) {
+        if (u.explicitBinding < 0) continue;
+        for (GLint e = 0; e < u.size; ++e) {
+            if (u.samplerSlot >= 0) p->samplerUnits[static_cast<size_t>(u.samplerSlot + e)] = u.explicitBinding + e;
+            if (u.imageSlot >= 0) p->imageUnits[static_cast<size_t>(u.imageSlot + e)] = u.explicitBinding + e;
+        }
+    }
     p->linked = std::move(linked);
     ++p->uniformVersion;
     if (ctx.state.program.get() == p) ctx.markDirty(kDirtyProgram | kDirtyUniforms | kDirtyTextures | kDirtyVertexInput);
@@ -1105,6 +1126,10 @@ void getUniform(Context& ctx, GLuint program, GLint location, T* params) {
     const TypeInfo info = typeInfo(u->type);
     if (info.base == 's') {
         *params = static_cast<T>(p->samplerUnits[static_cast<size_t>(u->samplerSlot + element)]);
+        return;
+    }
+    if (info.base == 'g') {
+        *params = static_cast<T>(p->imageUnits[static_cast<size_t>(u->imageSlot + element)]);
         return;
     }
     const size_t matrixStride = u->matrixStride ? static_cast<size_t>(u->matrixStride) : 16;

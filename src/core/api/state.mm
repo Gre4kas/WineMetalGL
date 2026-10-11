@@ -283,6 +283,11 @@ void DepthRangeIndexed(Context& ctx, GLuint index, GLdouble n, GLdouble f) {
     ctx.markDirty(kDirtyViewport);
 }
 
+// GL_ARB_viewport_array's NV_depth_buffer_float interaction: the same ranges.
+void DepthRangeArraydvNV(Context& ctx, GLuint first, GLsizei count, const GLdouble* v) { DepthRangeArrayv(ctx, first, count, v); }
+
+void DepthRangeIndexeddNV(Context& ctx, GLuint index, GLdouble n, GLdouble f) { DepthRangeIndexed(ctx, index, n, f); }
+
 void Scissor(Context& ctx, GLint x, GLint y, GLsizei width, GLsizei height) {
     if (width < 0 || height < 0) return ctx.setError(GL_INVALID_VALUE);
     for (auto& box : ctx.state.scissors) {

@@ -118,6 +118,9 @@ public:
     // images[face][level]; face is 0 except for cube maps.
     std::array<std::array<TextureImage, kMaxLevels>, 6> images{};
     SamplerParams sampler;
+    // Bound to an image unit (GL 4.2): storage is (re)allocated with
+    // shader write (and, for 32-bit integer formats, atomic) usage.
+    bool shaderWrite = false;
     GLint baseLevel = 0, maxLevel = 1000;
     GLenum swizzle[4] = {GL_RED, GL_GREEN, GL_BLUE, GL_ALPHA};
     GLenum depthStencilMode = GL_DEPTH_COMPONENT;
@@ -267,6 +270,7 @@ public:
     std::vector<uint8_t> uniformData;
     std::vector<GLuint> uniformBlockBindings;   // per block index
     std::vector<GLint> samplerUnits;            // per sampler slot
+    std::vector<GLint> imageUnits;              // per image slot (GL 4.2)
     uint64_t uniformVersion = 0;
     bool deletePending = false;
     int useCount = 0;  // contexts with this program current

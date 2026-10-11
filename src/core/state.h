@@ -74,6 +74,16 @@ struct IndexedBufferBinding {
     GLsizeiptr size = 0;  // 0 = whole buffer
 };
 
+// An image unit (GL 4.2 glBindImageTexture).
+struct ImageUnit {
+    RefPtr<Texture> texture;
+    GLint level = 0;
+    bool layered = false;
+    GLint layer = 0;
+    GLenum access = GL_READ_ONLY;
+    GLenum format = GL_R8;
+};
+
 struct TextureUnit {
     // Indexed by TextureTarget.
     std::array<RefPtr<Texture>, 11> bound;
@@ -178,6 +188,8 @@ struct ContextState {
     // GL 4.2 atomic counter buffer bindings.
     static constexpr int kMaxAtomicCounterBufferBindings = 8;  // = limits::kMaxAtomicCounterBufferBindings
     std::array<IndexedBufferBinding, kMaxAtomicCounterBufferBindings> atomicCounterBufferBindings;
+    static constexpr int kMaxImageUnits = 8;  // = limits::kMaxImageUnits
+    std::array<ImageUnit, kMaxImageUnits> imageUnits;
     static constexpr int kMaxTextureUnits = 80;
     std::array<TextureUnit, kMaxTextureUnits> textureUnits;
     GLuint activeTexture = 0;

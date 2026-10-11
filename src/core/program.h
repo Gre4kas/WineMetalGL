@@ -30,7 +30,7 @@ struct LinkedProgram {
     bool pipeline = false;
     Program* stageOwner[shader::kStageCount] = {};
     std::shared_ptr<LinkedProgram> stageExecutable[shader::kStageCount];
-    std::vector<std::pair<Program*, int>> blockOwner, samplerOwner;
+    std::vector<std::pair<Program*, int>> blockOwner, samplerOwner, imageOwner;
 
     // Metal functions, compiled on first use.
     id<MTLFunction> function(shader::Stage stage);

@@ -31,6 +31,13 @@ id<MTLSamplerState> samplerState(Context& ctx, const SamplerParams& params, bool
 
 // 1x1 texture returning (0, 0, 0, 1) for incomplete textures of a sampler type.
 id<MTLTexture> dummyTexture(GLenum samplerType);
+// GL 4.2 image units: the view an image uniform of GL type `imageType` reads
+// for `unit` (format, level, layer or all layers), or nil when the unit
+// cannot give one (no texture, incompatible format or shape).
+struct ImageUnit;
+id<MTLTexture> imageView(Context& ctx, const ImageUnit& unit, GLenum imageType);
+// A small writable texture for image uniforms without a usable unit.
+id<MTLTexture> dummyImage(GLenum imageType);
 
 // Number of mip levels in a full chain for these dimensions.
 GLsizei fullMipCount(GLsizei width, GLsizei height, GLsizei depth);

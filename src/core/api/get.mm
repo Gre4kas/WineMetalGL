@@ -236,6 +236,17 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
         default: out = ints({kMaxStageAtomicCounters}); break;
         }
         return true;
+    // GL 4.2 image load/store (limits.h): every stage has image uniforms.
+    case GL_MAX_IMAGE_UNITS: case GL_MAX_COMBINED_IMAGE_UNITS_AND_FRAGMENT_OUTPUTS: case GL_MAX_IMAGE_SAMPLES:
+    case GL_MAX_VERTEX_IMAGE_UNIFORMS: case GL_MAX_TESS_CONTROL_IMAGE_UNIFORMS: case GL_MAX_TESS_EVALUATION_IMAGE_UNIFORMS:
+    case GL_MAX_GEOMETRY_IMAGE_UNIFORMS: case GL_MAX_FRAGMENT_IMAGE_UNIFORMS: case GL_MAX_COMBINED_IMAGE_UNIFORMS:
+        if (!ctx.imageLoadStore()) return false;
+        out = ints({pname == GL_MAX_IMAGE_UNITS ? kMaxImageUnits
+                    : pname == GL_MAX_COMBINED_IMAGE_UNITS_AND_FRAGMENT_OUTPUTS ? kMaxCombinedImageUnitsAndFragmentOutputs
+                    : pname == GL_MAX_IMAGE_SAMPLES ? 0  // multisample images: Metal cannot write them
+                    : pname == GL_MAX_COMBINED_IMAGE_UNIFORMS ? kMaxCombinedImageUniforms
+                                                               : kMaxImageUniformsPerStage});
+        return true;
     case GL_MAX_SUBROUTINES: case GL_MAX_SUBROUTINE_UNIFORM_LOCATIONS:
         if (ctx.version() < 40 && !ctx.hasExtension("GL_ARB_shader_subroutine")) return false;
         out = ints({pname == GL_MAX_SUBROUTINES ? 256 : 1024});
@@ -607,6 +618,21 @@ bool getIndexed(Context& ctx, GLenum pname, GLuint index, Value& out, bool& badI
             out = bools({((s.scissorTests >> index) & 1) != 0});
         }
         return true;
+    case GL_IMAGE_BINDING_NAME: case GL_IMAGE_BINDING_LEVEL: case GL_IMAGE_BINDING_LAYERED: case GL_IMAGE_BINDING_LAYER:
+    case GL_IMAGE_BINDING_ACCESS: case GL_IMAGE_BINDING_FORMAT: {
+        if (!ctx.imageLoadStore()) return false;
+        if (index >= static_cast<GLuint>(ContextState::kMaxImageUnits)) { badIndex = true; return true; }
+        const ImageUnit& u = s.imageUnits[index];
+        switch (pname) {
+        case GL_IMAGE_BINDING_NAME: out = ints({u.texture ? u.texture->name : 0}); break;
+        case GL_IMAGE_BINDING_LEVEL: out = ints({u.level}); break;
+        case GL_IMAGE_BINDING_LAYERED: out = bools({u.layered}); break;
+        case GL_IMAGE_BINDING_LAYER: out = ints({u.layer}); break;
+        case GL_IMAGE_BINDING_ACCESS: out = ints({u.access}); break;
+        default: out = ints({u.format}); break;
+        }
+        return true;
+    }
     case GL_ATOMIC_COUNTER_BUFFER_BINDING: case GL_ATOMIC_COUNTER_BUFFER_START: case GL_ATOMIC_COUNTER_BUFFER_SIZE: {
         if (!ctx.atomicCounters()) return false;
         if (index >= static_cast<GLuint>(ContextState::kMaxAtomicCounterBufferBindings)) { badIndex = true; return true; }

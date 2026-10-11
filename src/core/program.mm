@@ -18,7 +18,7 @@ namespace {
 
 id<MTLFunction> compileFunction(const std::string& msl, const std::string& entryPoint, int stage) {
     MTLCompileOptions* options = [MTLCompileOptions new];
-    options.languageVersion = MTLLanguageVersion3_0;
+    options.languageVersion = MTLLanguageVersion3_1;  // texture atomics
     options.mathMode = MTLMathModeSafe;  // GL requires IEEE behaviour for inf/nan propagation
     NSError* error = nil;
     id<MTLLibrary> library = [Device::get().mtl() newLibraryWithSource:[NSString stringWithUTF8String:msl.c_str()]
@@ -261,6 +261,19 @@ std::shared_ptr<LinkedProgram> pipelineExecutable(ProgramPipeline& pp) {
                 if (!owns(p, t)) slot.stageTexture[t] = -1;
             out->link.samplers.push_back(slot);
             out->samplerOwner.emplace_back(p, static_cast<int>(i));
+        }
+        for (size_t i = 0; i < l.images.size(); ++i) {
+            shader::ImageSlotInfo slot = l.images[i];
+            for (int t = 0; t < kStages; ++t)
+                if (!owns(p, t)) slot.stageTexture[t] = -1;
+            out->link.images.push_back(slot);
+            out->imageOwner.emplace_back(p, static_cast<int>(i));
+        }
+        // Atomic counter buffers read the context's binding points: no owner.
+        for (shader::AtomicCounterBufferInfo buffer : l.atomicBuffers) {
+            for (int t = 0; t < kStages; ++t)
+                if (!owns(p, t)) buffer.stageSlot[t] = -1;
+            out->link.atomicBuffers.push_back(buffer);
         }
     }
     pp.executable = out;

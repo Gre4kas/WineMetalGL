@@ -45,7 +45,7 @@ const TBuiltInResource* resources() {
         x.maxImageUnits = L::kMaxImageUnits;
         x.maxCombinedImageUnitsAndFragmentOutputs = x.maxCombinedShaderOutputResources = L::kMaxCombinedImageUnitsAndFragmentOutputs;
         x.maxImageSamples = 0;
-        x.maxVertexImageUniforms = x.maxTessControlImageUniforms = x.maxTessEvaluationImageUniforms = 0;
+        x.maxVertexImageUniforms = x.maxTessControlImageUniforms = x.maxTessEvaluationImageUniforms = L::kMaxImageUniformsPerStage;
         x.maxGeometryImageUniforms = x.maxFragmentImageUniforms = x.maxComputeImageUniforms = L::kMaxImageUniformsPerStage;
         x.maxCombinedImageUniforms = L::kMaxCombinedImageUniforms;
         x.maxVertexAtomicCounters = x.maxTessControlAtomicCounters = x.maxTessEvaluationAtomicCounters = 0;
@@ -690,6 +690,34 @@ GLenum samplerTypeWithComponent(GLenum base, spirv_cross::SPIRType::BaseType com
     return base;
 }
 
+// The GL type of a storage image (GL 4.2).
+GLenum imageTypeOf(const spirv_cross::SPIRType& base, spirv_cross::SPIRType::BaseType component) {
+    using BT = spirv_cross::SPIRType::BaseType;
+    const auto& image = base.image;
+    const int kind = component == BT::Int ? 1 : component == BT::UInt ? 2 : 0;
+    static const GLenum kTypes[3][11] = {
+        {GL_IMAGE_1D, GL_IMAGE_2D, GL_IMAGE_3D, GL_IMAGE_2D_RECT, GL_IMAGE_CUBE, GL_IMAGE_BUFFER, GL_IMAGE_1D_ARRAY,
+         GL_IMAGE_2D_ARRAY, GL_IMAGE_CUBE_MAP_ARRAY, GL_IMAGE_2D_MULTISAMPLE, GL_IMAGE_2D_MULTISAMPLE_ARRAY},
+        {GL_INT_IMAGE_1D, GL_INT_IMAGE_2D, GL_INT_IMAGE_3D, GL_INT_IMAGE_2D_RECT, GL_INT_IMAGE_CUBE, GL_INT_IMAGE_BUFFER,
+         GL_INT_IMAGE_1D_ARRAY, GL_INT_IMAGE_2D_ARRAY, GL_INT_IMAGE_CUBE_MAP_ARRAY, GL_INT_IMAGE_2D_MULTISAMPLE,
+         GL_INT_IMAGE_2D_MULTISAMPLE_ARRAY},
+        {GL_UNSIGNED_INT_IMAGE_1D, GL_UNSIGNED_INT_IMAGE_2D, GL_UNSIGNED_INT_IMAGE_3D, GL_UNSIGNED_INT_IMAGE_2D_RECT,
+         GL_UNSIGNED_INT_IMAGE_CUBE, GL_UNSIGNED_INT_IMAGE_BUFFER, GL_UNSIGNED_INT_IMAGE_1D_ARRAY,
+         GL_UNSIGNED_INT_IMAGE_2D_ARRAY, GL_UNSIGNED_INT_IMAGE_CUBE_MAP_ARRAY, GL_UNSIGNED_INT_IMAGE_2D_MULTISAMPLE,
+         GL_UNSIGNED_INT_IMAGE_2D_MULTISAMPLE_ARRAY}};
+    int index = 1;
+    switch (image.dim) {
+    case spv::Dim1D: index = image.arrayed ? 6 : 0; break;
+    case spv::Dim2D: index = image.ms ? (image.arrayed ? 10 : 9) : (image.arrayed ? 7 : 1); break;
+    case spv::Dim3D: index = 2; break;
+    case spv::DimRect: index = 3; break;
+    case spv::DimCube: index = image.arrayed ? 8 : 4; break;
+    case spv::DimBuffer: index = 5; break;
+    default: break;
+    }
+    return kTypes[kind][index];
+}
+
 int textureTargetForSampler(GLenum type) {
     // Must match TextureTarget in core/state.h.
     switch (type) {
@@ -834,7 +862,7 @@ int glTypeComponents(GLenum type) {
     case GL_FLOAT_MAT2x3: case GL_FLOAT_MAT3x2: case GL_DOUBLE_MAT2x3: case GL_DOUBLE_MAT3x2: return 6;
     case GL_FLOAT_MAT2x4: case GL_FLOAT_MAT4x2: case GL_DOUBLE_MAT2x4: case GL_DOUBLE_MAT4x2: return 8;
     case GL_FLOAT_MAT3x4: case GL_FLOAT_MAT4x3: case GL_DOUBLE_MAT3x4: case GL_DOUBLE_MAT4x3: return 12;
-    default: return glTypeIsSampler(type) ? 1 : 0;
+    default: return glTypeIsSampler(type) || glTypeIsImage(type) ? 1 : 0;
     }
 }
 
@@ -860,6 +888,10 @@ int glTypeLocations(GLenum type) {
 }
 
 bool glTypeIsSampler(GLenum type) { return textureTargetForSampler(type) >= 0; }
+
+bool glTypeIsImage(GLenum type) {
+    return (type >= GL_IMAGE_1D && type <= GL_UNSIGNED_INT_IMAGE_2D_MULTISAMPLE_ARRAY);
+}
 
 const char* glTypeName(GLenum type) {
     switch (type) {
@@ -1168,6 +1200,7 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
     // Separable programs: varyings declared with layout(location) keep it
     // (reflection reports only the program's own inputs and outputs).
     std::set<std::string> explicitVaryings;
+    std::map<std::string, int> explicitBindings;  // "block:<name>" or opaque uniform name -> binding
     for (int s = 0; s < kStageCount; ++s) {
         if (!stagePresent[s]) continue;
         glslang::TIntermediate* intermediate = program.getIntermediate(language(static_cast<Stage>(s)));
@@ -1188,6 +1221,13 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
                 if (varying && q.hasLocation())
                     explicitVaryings.insert(unescapeName(type.getBasicType() == glslang::EbtBlock ? type.getTypeName().c_str()
                                                                                                     : symbol->getName().c_str()));
+                if (q.storage == glslang::EvqUniform && q.hasBinding()) {
+                    // layout(binding = N) (GL 4.2): the initial binding of blocks, samplers and images.
+                    if (type.getBasicType() == glslang::EbtBlock)
+                        explicitBindings["block:" + unescapeName(type.getTypeName().c_str())] = static_cast<int>(q.layoutBinding);
+                    else if (type.getBasicType() == glslang::EbtSampler)
+                        explicitBindings[unescapeName(symbol->getName().c_str())] = static_cast<int>(q.layoutBinding);
+                }
                 if (q.storage == glslang::EvqUniform) {
                     if (type.getBasicType() == glslang::EbtBlock) {
                         const bool anonymous = glslang::IsAnonymous(symbol->getName());
@@ -1309,7 +1349,7 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
     // Program-wide interface, built from the first stage that declares each resource.
     // Default uniform block members.
     std::map<std::string, int> blockIndexByName;
-    std::map<std::string, int> samplerUniformByName;
+    std::map<std::string, int> samplerUniformByName, imageUniformByName;
     for (int s = 0; s < kStageCount; ++s) {
         if (!result.stages[s].present) continue;
         spirv_cross::Compiler compiler(result.stages[s].spirv);
@@ -1352,6 +1392,9 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
                     UniformBlockInfo block;
                     block.name = name;
                     block.dataSize = static_cast<GLint>(compiler.get_declared_struct_size(compiler.get_type(ubo.base_type_id)));
+                    // An array of blocks binds consecutive points from its layout(binding).
+                    if (auto b = explicitBindings.find("block:" + blockName); b != explicitBindings.end())
+                        block.explicitBinding = b->second + static_cast<GLint>(element);
                     result.blocks.push_back(block);
                     std::vector<UniformInfo> members;
                     const spirv_cross::SPIRType& structType = compiler.get_type(ubo.base_type_id);
@@ -1394,11 +1437,40 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
                     slot.shadow = isShadowSampler(glType);
                     result.samplers.push_back(slot);
                 }
+                if (auto b = explicitBindings.find(name); b != explicitBindings.end()) u.explicitBinding = b->second;
                 samplerUniformByName[name] = static_cast<int>(result.uniforms.size());
                 result.uniforms.push_back(u);
             } else {
                 result.uniforms[it->second].stageMask |= 1u << s;
             }
+        }
+        // Images (GL 4.2 image load/store): uniforms whose values are image units.
+        for (const auto& image : resources.storage_images) {
+            const spirv_cross::SPIRType& type = compiler.get_type(image.type_id);
+            const spirv_cross::SPIRType& base = compiler.get_type(image.base_type_id);
+            const std::string name = unescapeName(compiler.get_name(image.id));
+            if (!liveSamplers.count(topLevelName(name))) continue;
+            const GLenum glType = imageTypeOf(base, compiler.get_type(base.image.type).basetype);
+            const uint32_t count = type.array.empty() ? 1 : std::max(1u, type.array.back());
+            auto it = imageUniformByName.find(name);
+            if (it != imageUniformByName.end()) {
+                result.uniforms[it->second].stageMask |= 1u << s;
+                continue;
+            }
+            UniformInfo u;
+            u.name = type.array.empty() ? name : name + "[0]";
+            u.type = glType;
+            u.size = static_cast<GLint>(count);
+            u.imageSlot = static_cast<int>(result.images.size());
+            u.stageMask = 1u << s;
+            if (auto b = explicitBindings.find(name); b != explicitBindings.end()) u.explicitBinding = b->second;
+            for (uint32_t e = 0; e < count; ++e) {
+                ImageSlotInfo slot;
+                slot.type = glType;
+                result.images.push_back(slot);
+            }
+            imageUniformByName[name] = static_cast<int>(result.uniforms.size());
+            result.uniforms.push_back(u);
         }
         // Atomic counters (GL 4.2): the storage blocks glslang made of them.
         for (const auto& ssbo : resources.storage_buffers) {
@@ -1480,6 +1552,7 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
             for (AtomicCounterBufferInfo& b : result.atomicBuffers)
                 for (int& u : b.activeUniforms) u = map[static_cast<size_t>(u)];
             for (auto& [name, index] : samplerUniformByName) index = map[static_cast<size_t>(index)];
+            for (auto& [name, index] : imageUniformByName) index = map[static_cast<size_t>(index)];
             result.uniforms = std::move(kept);
         }
     }
@@ -1616,11 +1689,12 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
         if (!stage.present || s == static_cast<int>(Stage::Geometry)) continue;
         const bool noRaster = variant == 1;
         try {
-            spirv_cross::CompilerMSL msl(lowerGatherOffsets(rectImagesAs2D(stage.spirv)));
+            spirv_cross::CompilerMSL msl(cubeStorageImagesAs2DArrays(lowerGatherOffsets(rectImagesAs2D(stage.spirv))));
             spirv_cross::CompilerMSL::Options mslOptions;
             mslOptions.disable_rasterization = noRaster;
             mslOptions.platform = spirv_cross::CompilerMSL::Options::macOS;
-            mslOptions.set_msl_version(3, 0);
+            mslOptions.set_msl_version(3, 1);      // texture atomics (macOS 14+; the floor is macOS 15)
+            mslOptions.native_texture_atomics = true;
             mslOptions.enable_decoration_binding = false;
             mslOptions.pad_fragment_output_components = true;
             mslOptions.force_native_arrays = false;
@@ -1732,6 +1806,30 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
                     return result;
                 }
             }
+            // Images: textures kSlotFirstImage.. (read_write textures).
+            uint32_t nextImage = kSlotFirstImage;
+            for (const auto& image : resources.storage_images) {
+                const std::string name = unescapeName(msl.get_name(image.id));
+                const spirv_cross::SPIRType& type = msl.get_type(image.type_id);
+                const uint32_t count = type.array.empty() ? 1 : std::max(1u, type.array.back());
+                msl.set_decoration(image.id, spv::DecorationBinding, uniqueBinding++);
+                spirv_cross::MSLResourceBinding b;
+                b.stage = model;
+                b.desc_set = msl.get_decoration(image.id, spv::DecorationDescriptorSet);
+                b.binding = msl.get_decoration(image.id, spv::DecorationBinding);
+                b.count = count;
+                b.msl_texture = nextImage;
+                msl.add_msl_resource_binding(b);
+                if (auto it = imageUniformByName.find(name); it != imageUniformByName.end()) {
+                    const int first = result.uniforms[it->second].imageSlot;
+                    for (uint32_t e = 0; e < count; ++e) result.images[first + e].stageTexture[s] = static_cast<int>(nextImage + e);
+                }
+                nextImage += count;
+                if (nextImage > kSlotFirstImage + kMaxStageImages) {
+                    result.log += "error: too many images in one stage\n";
+                    return result;
+                }
+            }
             // Vertex inputs: GL locations.
             if (s == static_cast<int>(Stage::Vertex)) {
                 if (noRaster) stage.vertexInputs.clear();  // rebuilt identically below
@@ -1807,6 +1905,13 @@ void copyStageSlots(const LinkResult& source, int from, LinkResult& result, int 
     for (AtomicCounterBufferInfo& buffer : result.atomicBuffers)
         for (const AtomicCounterBufferInfo& other : source.atomicBuffers)
             if (other.binding == buffer.binding) buffer.stageSlot[to] = other.stageSlot[from];
+    for (const UniformInfo& u : result.uniforms) {
+        if (u.imageSlot < 0) continue;
+        for (const UniformInfo& other : source.uniforms)
+            if (other.name == u.name && other.imageSlot >= 0)
+                for (GLint e = 0; e < std::min(u.size, other.size); ++e)
+                    result.images[u.imageSlot + e].stageTexture[to] = source.images[other.imageSlot + e].stageTexture[from];
+    }
     for (const UniformInfo& u : result.uniforms) {
         if (u.samplerSlot < 0) continue;
         for (const UniformInfo& other : source.uniforms)
