@@ -45,6 +45,9 @@ Local changes to vendored sources (each marked `WineMetalGL:` in the code):
 - SPIRV-Cross `spirv_msl.cpp`, `InterpolateAtOffset`: the GLSL offset is
   biased by 1/2 (upstream uses 7/16 for Intel GPUs), so on Apple GPUs an
   offset of `gl_SamplePosition - 0.5` interpolates exactly at the sample.
+- glslang `glslang/MachineIndependent/{Versions.h,Versions.cpp,Initialize.cpp}`:
+  `GL_ARB_texture_query_levels` (`textureQueryLevels` from GLSL 1.30 with the
+  extension, as before from 4.30 without).
 - glslang `glslang/MachineIndependent/ParseHelper.cpp`, `invariantCheck`:
   desktop GLSL 4.20 and later accept `invariant` on inputs outside the vertex
   stage, as desktop drivers do; only ESSL 3.00 and later restrict it to
@@ -78,6 +81,11 @@ Local changes to vendored sources (each marked `WineMetalGL:` in the code):
 - SPIRV-Cross `spirv_msl.cpp`, `emit_array_copy`: an array member of a struct
   in threadgroup memory is an `spvUnsafeArray`, so copies to and from it pass
   its `.elements`.
+- SPIRV-Cross `spirv_glsl.{hpp,cpp}`, `replace_illegal_names`: the prefix for
+  identifiers that clash with GLSL keywords and built-in functions is
+  configurable (`illegal_name_prefix`); WineMetalGL uses its own escape prefix
+  when it translates emulated stages back to GLSL, so a sampler named
+  `texture` keeps its name.
 - SPIRV-Cross `spirv_glsl.cpp`, `to_function_name` and `to_function_args`:
   GLSL has no `textureLod` for rectangle textures and their `texelFetch`
   takes no level, so a level-0 sample (glslang's `texture()` outside fragment

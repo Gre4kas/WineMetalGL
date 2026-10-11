@@ -6574,7 +6574,8 @@ void TBuiltIns::addQueryFunctions(TSampler sampler, const TString& typeName, int
     // textureQueryLevels()
     //
 
-    if (profile != EEsProfile && version >= 430 && ! sampler.isImage() && sampler.dim != EsdRect &&
+    // WineMetalGL: from GLSL 1.30 with GL_ARB_texture_query_levels (required below 4.30).
+    if (profile != EEsProfile && version >= 130 && ! sampler.isImage() && sampler.dim != EsdRect &&
         ! sampler.isMultiSample() && ! sampler.isBuffer()) {
         commonBuiltins.append("int textureQueryLevels(");
         commonBuiltins.append(typeName);
@@ -8372,6 +8373,8 @@ void TBuiltIns::identifyBuiltIns(int version, EProfile profile, const SpvVersion
         if (profile != EEsProfile && version < 400) {
             symbolTable.setFunctionExtensions("textureQueryLOD", 1, &E_GL_ARB_texture_query_lod);
         }
+        if (profile != EEsProfile && version < 430)
+            symbolTable.setFunctionExtensions("textureQueryLevels", 1, &E_GL_ARB_texture_query_levels);
 
         if (profile != EEsProfile && version >= 460) {
             symbolTable.setFunctionExtensions("rayQueryInitializeEXT",                                            1, &E_GL_EXT_ray_query);

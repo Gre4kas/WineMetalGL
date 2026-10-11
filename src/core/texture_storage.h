@@ -67,4 +67,9 @@ MTLTextureType mtlTextureType(GLenum target, GLsizei samples);
 void uploadTexels(Context& ctx, Texture& tex, int face, int level, int x, int y, int z, int width, int height,
                   int depth, const void* data, size_t bytesPerRow, size_t bytesPerImage);
 
+namespace api {
+// glGenerateMipmap of a depth or depth/stencil texture (api/blit.mm).
+void generateDepthMipmaps(Context& ctx, Texture& tex, int base, int last);
+}  // namespace api
+
 }  // namespace wmgl

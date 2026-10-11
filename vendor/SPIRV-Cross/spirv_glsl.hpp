@@ -849,6 +849,13 @@ protected:
 
 	virtual void replace_illegal_names();
 	void replace_illegal_names(const std::unordered_set<std::string> &keywords);
+
+public:
+	// WineMetalGL: the prefix given to identifiers that clash with keywords
+	// and built-in function names (default "_").
+	std::string illegal_name_prefix = "_";
+
+protected:
 	virtual void emit_entry_point_declarations();
 
 	void replace_fragment_output(SPIRVariable &var);

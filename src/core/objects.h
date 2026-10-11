@@ -126,6 +126,13 @@ public:
     GLenum depthStencilMode = GL_DEPTH_COMPONENT;
     bool immutable = false;
     GLsizei immutableLevels = 0;
+    // GL 4.3 texture views: GL_TEXTURE_VIEW_* (TexStorage sets the levels
+    // and layers; a view's minimums are relative to its root). A view's
+    // storage is a Metal view of the root texture's storage (`viewOf`, never
+    // itself a view), remade when the root's storage changes (`viewSource`).
+    GLuint viewMinLevel = 0, viewNumLevels = 0, viewMinLayer = 0, viewNumLayers = 0;
+    RefPtr<Texture> viewOf;
+    id<MTLTexture> viewSource = nil;
     // Texture buffer (GL_TEXTURE_BUFFER).
     RefPtr<Buffer> buffer;
     GLenum bufferFormat = 0;

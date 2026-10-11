@@ -175,7 +175,10 @@ void Context::initStrings() {
     if (version >= 43)
         for (const char* name :
              {"GL_ARB_compute_shader", "GL_ARB_explicit_uniform_location", "GL_ARB_program_interface_query",
-              "GL_ARB_shader_storage_buffer_object", "GL_ARB_texture_buffer_range", "GL_ARB_vertex_attrib_binding"})
+              "GL_ARB_shader_storage_buffer_object", "GL_ARB_texture_buffer_range", "GL_ARB_texture_view",
+              "GL_ARB_texture_query_levels", "GL_ARB_vertex_attrib_binding",
+              // GL 4.5, implemented: the Khronos CTS calls glTextureBarrier in GL 4.3 view tests
+              "GL_ARB_texture_barrier"})
             extensions_.push_back(name);
     // Later extensions the core implements, in 4.x contexts: wined3d reads
     // EXT_shader_integer_mix and polygon_offset_clamp for its feature level.

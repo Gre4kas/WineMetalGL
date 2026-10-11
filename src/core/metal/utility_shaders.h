@@ -142,6 +142,15 @@ fragment BlitDepthOut wmgl_blit_depth_ms_fs(ClearOut in [[stage_in]], depth2d_ms
     return BlitDepthOut{source.read(uint2(c), 0)};
 }
 
+// The texels of one 2D slice of a compressed image as float4 (glGetTexImage
+// of S3TC/BPTC/ETC2/EAC data): the hardware decode at each texel centre.
+kernel void wmgl_decode_texels(texture2d<float> source [[texture(0)]], device float4* out [[buffer(0)]],
+                               constant uint2& size [[buffer(1)]], uint2 id [[thread_position_in_grid]]) {
+    if (id.x >= size.x || id.y >= size.y) return;
+    constexpr sampler nearest(coord::normalized, filter::nearest, address::clamp_to_edge);
+    out[id.y * size.x + id.x] = source.sample(nearest, (float2(id) + 0.5) / float2(size), level(0));
+}
+
 // Geometry-shader strips as lists listing GL's last-vertex provoking vertex
 // first (Metal flat-shades from a primitive's first vertex); each triangle is
 // rotated, so its winding is unchanged. One thread per input primitive:

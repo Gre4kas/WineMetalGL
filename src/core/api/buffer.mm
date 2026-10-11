@@ -474,6 +474,14 @@ void GetBufferPointerv(Context& ctx, GLenum target, GLenum pname, void** params)
 }
 
 // GL 4.2 / GL_ARB_shader_image_load_store.
+// GL 4.5 / GL_ARB_texture_barrier: texels written by earlier draws become
+// readable by later ones. Ending the render pass orders them (Apple GPUs
+// cannot order fragment-stage writes inside one; see CommandStream).
+void TextureBarrier(Context& ctx) {
+    if (ctx.version() < 45 && !ctx.hasExtension("GL_ARB_texture_barrier")) return ctx.unimplemented("glTextureBarrier");
+    ctx.stream().memoryBarrier();
+}
+
 void MemoryBarrier(Context& ctx, GLbitfield barriers) {
     if (ctx.version() < 42 && !ctx.hasExtension("GL_ARB_shader_image_load_store")) return ctx.unimplemented("glMemoryBarrier");
     if (barriers != GL_ALL_BARRIER_BITS && (barriers & ~0xffefu)) return ctx.setError(GL_INVALID_VALUE);

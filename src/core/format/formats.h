@@ -27,6 +27,8 @@ enum class Storage : uint8_t {
     BC1_RGBA, BC1_RGBA_sRGB, BC2_RGBA, BC2_RGBA_sRGB, BC3_RGBA, BC3_RGBA_sRGB,
     BC4_RUnorm, BC4_RSnorm, BC5_RGUnorm, BC5_RGSnorm,
     BC6H_RGBFloat, BC6H_RGBUfloat, BC7_RGBAUnorm, BC7_RGBAUnorm_sRGB,
+    ETC2_RGB8, ETC2_RGB8_sRGB, ETC2_RGB8A1, ETC2_RGB8A1_sRGB, EAC_RGBA8, EAC_RGBA8_sRGB,
+    EAC_R11Unorm, EAC_R11Snorm, EAC_RG11Unorm, EAC_RG11Snorm,
     Depth16Unorm, Depth32Float, Stencil8, Depth32Float_Stencil8,
     Count
 };

@@ -1,4 +1,6 @@
 // GL 4.3 features: shader storage blocks and compute shaders.
+#include <cmath>
+#include <cstdlib>
 #include <string>
 
 #include "gpu.h"
@@ -309,4 +311,245 @@ void main() {
     CHECK_GL();
     glDeleteBuffers(1, &out);
     glDeleteProgram(p);
+}
+
+// A texture view samples its own level range in every stage, the emulated
+// geometry stage included (KHR-GL43.texture_view.view_sampling).
+// A texture view samples its own level range in every stage, the emulated
+// geometry stage included, through a sampler named `texture` (a GLSL
+// built-in function name; KHR-GL43.texture_view.view_sampling).
+GPU_TEST_VERSION(gpu_gl43_texture_view_levels, 43) {
+    GLuint parent = 0, view = 0;
+    glGenTextures(1, &parent);
+    glBindTexture(GL_TEXTURE_2D, parent);
+    glTexStorage2D(GL_TEXTURE_2D, 3, GL_RGBA8, 4, 4);
+    const uint8_t colors[3][4] = {{255, 0, 0, 255}, {0, 255, 0, 255}, {0, 0, 255, 255}};
+    for (int level = 0; level < 3; ++level) {
+        const int size = 4 >> level;
+        std::vector<uint8_t> texels(static_cast<size_t>(size * size * 4));
+        for (size_t i = 0; i < texels.size(); ++i) texels[i] = colors[level][i % 4];
+        glTexSubImage2D(GL_TEXTURE_2D, level, 0, 0, size, size, GL_RGBA, GL_UNSIGNED_BYTE, texels.data());
+    }
+    glGenTextures(1, &view);
+    glTextureView(view, GL_TEXTURE_2D, parent, GL_RGBA8, 1, 2, 0, 1);
+    CHECK_GL();
+    GLint levels = 0;
+    glBindTexture(GL_TEXTURE_2D, view);
+    glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_VIEW_NUM_LEVELS, &levels);
+    CHECK_EQ(levels, 2);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_NEAREST);
+    const char* vs = R"(#version 430 core
+in vec2 position;
+uniform sampler2D texture;
+out vec4 vc;
+void main() { vc = textureLod(texture, vec2(0.5), 1.0); gl_Position = vec4(position, 0.0, 1.0); })";
+    const char* gs = R"(#version 430 core
+layout(triangles) in;
+layout(triangle_strip, max_vertices = 3) out;
+uniform sampler2D texture;
+in vec4 vc[];
+out vec4 c;
+void main() {
+    vec4 g = textureLod(texture, vec2(0.5), 1.0);
+    for (int i = 0; i < 3; ++i) { c = g == vc[i] ? g : vec4(1.0); gl_Position = gl_in[i].gl_Position; EmitVertex(); }
+})";
+    const char* fs = R"(#version 430 core
+in vec4 c;
+out vec4 o;
+void main() { o = c; })";
+    GLuint p = glCreateProgram();
+    for (auto [type, src] : {std::pair<GLenum, const char*>{GL_VERTEX_SHADER, vs}, {GL_GEOMETRY_SHADER, gs}, {GL_FRAGMENT_SHADER, fs}}) {
+        GLuint sh = glCreateShader(type);
+        glShaderSource(sh, 1, &src, nullptr);
+        glCompileShader(sh);
+        glAttachShader(p, sh);
+        glDeleteShader(sh);
+    }
+    glBindAttribLocation(p, 0, "position");
+    glLinkProgram(p);
+    GLint linked = 0;
+    glGetProgramiv(p, GL_LINK_STATUS, &linked);
+    CHECK(linked);
+    GLuint vao = gpu::quad();
+    glUseProgram(p);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    const std::vector<uint8_t> px = gpu::readRGBA8(32, 32, 1, 1);
+    std::fprintf(stderr, "  sampled %u %u %u %u\n", px[0], px[1], px[2], px[3]);
+    CHECK(gpu::near(px.data(), colors[2]));  // view level 1 = parent level 2
+    CHECK_GL();
+    glDeleteVertexArrays(1, &vao);
+    GLuint textures[2] = {view, parent};
+    glDeleteTextures(2, textures);
+    glDeleteProgram(p);
+}
+
+// A view of a 2D array texture's layers 1..2 samples them as its layers 0..1.
+// A view of level 1, layers 1..2 of a 2D array texture samples them as its
+// level 0, layers 0..1.
+GPU_TEST_VERSION(gpu_gl43_texture_view_layers, 43) {
+    GLuint parent = 0, view = 0;
+    glGenTextures(1, &parent);
+    glBindTexture(GL_TEXTURE_2D_ARRAY, parent);
+    glTexStorage3D(GL_TEXTURE_2D_ARRAY, 3, GL_RGBA8, 4, 4, 4);
+    // Level 1 of layer L holds grey 64 * L (level 0 stays black).
+    for (int layer = 0; layer < 4; ++layer) {
+        const uint8_t c = static_cast<uint8_t>(64 * layer);
+        std::vector<uint8_t> texels(16);
+        for (size_t i = 0; i < texels.size(); ++i) texels[i] = i % 4 == 3 ? 255 : c;
+        glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 1, 0, 0, layer, 2, 2, 1, GL_RGBA, GL_UNSIGNED_BYTE, texels.data());
+        // Level 2 of layer L holds 32 + 64 * L.
+        const uint8_t c2[4] = {static_cast<uint8_t>(32 + 64 * layer), static_cast<uint8_t>(32 + 64 * layer),
+                               static_cast<uint8_t>(32 + 64 * layer), 255};
+        glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 2, 0, 0, layer, 1, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, c2);
+    }
+    glGenTextures(1, &view);
+    glTextureView(view, GL_TEXTURE_2D_ARRAY, parent, GL_RGBA8, 1, 2, 1, 2);  // levels 1..2, layers 1..2
+    CHECK_GL();
+    glBindTexture(GL_TEXTURE_2D_ARRAY, view);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    const char* fs = R"(#version 430 core
+uniform sampler2DArray t;
+uniform float layer, lod;
+out vec4 o;
+void main() { o = textureLod(t, vec3(0.5, 0.5, layer), lod); })";
+    GLuint p = gpu::program(R"(#version 430 core
+in vec2 position;
+void main() { gl_Position = vec4(position, 0.0, 1.0); })", fs);
+    GLuint vao = gpu::quad();
+    glUseProgram(p);
+    for (int lod = 0; lod < 2; ++lod)
+        for (int layer = 0; layer < 2; ++layer) {
+            glUniform1f(glGetUniformLocation(p, "layer"), static_cast<float>(layer));
+            glUniform1f(glGetUniformLocation(p, "lod"), static_cast<float>(lod));
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+            const std::vector<uint8_t> px = gpu::readRGBA8(32, 32, 1, 1);
+            const uint8_t g = static_cast<uint8_t>(32 * lod + 64 * (layer + 1));
+            const uint8_t want[4] = {g, g, g, 255};
+            std::fprintf(stderr, "  view lod %d layer %d: %u %u %u %u\n", lod, layer, px[0], px[1], px[2], px[3]);
+            CHECK(gpu::near(px.data(), want));
+        }
+    CHECK_GL();
+    glDeleteVertexArrays(1, &vao);
+    GLuint textures[2] = {view, parent};
+    glDeleteTextures(2, textures);
+    glDeleteProgram(p);
+}
+
+// Cube faces cleared through a framebuffer at level 1, sampled through a
+// cube view starting at that level (KHR-GL43.texture_view.view_sampling).
+GPU_TEST_VERSION(gpu_gl43_texture_view_cube_levels, 43) {
+    GLuint parent = 0, view = 0, fbo = 0;
+    glGenTextures(1, &parent);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, parent);
+    glTexStorage2D(GL_TEXTURE_CUBE_MAP, 3, GL_RGBA8, 4, 4);
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo);
+    for (int face = 0; face < 6; ++face)
+        for (int level = 0; level < 3; ++level) {
+            glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, parent, level);
+            glClearColor(static_cast<float>(face) / 8.0f, static_cast<float>(level) / 4.0f, 0.0f, 1.0f);
+            glClear(GL_COLOR_BUFFER_BIT);
+        }
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+    glGenTextures(1, &view);
+    glTextureView(view, GL_TEXTURE_CUBE_MAP, parent, GL_RGBA8, 1, 2, 0, 6);
+    CHECK_GL();
+    glBindTexture(GL_TEXTURE_CUBE_MAP, view);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_NEAREST);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    GLuint p = gpu::program(R"(#version 430 core
+in vec2 position;
+void main() { gl_Position = vec4(position, 0.0, 1.0); })", R"(#version 430 core
+uniform samplerCube t;
+uniform float lod;
+out vec4 o;
+void main() { o = textureLod(t, vec3(-1.0, 0.0, 0.0), lod); })");
+    GLuint vao = gpu::quad();
+    glUseProgram(p);
+    for (int lod = 0; lod < 2; ++lod) {
+        glUniform1f(glGetUniformLocation(p, "lod"), static_cast<float>(lod));
+        glClearColor(0, 0, 0, 0);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        const std::vector<uint8_t> px = gpu::readRGBA8(32, 32, 1, 1);
+        // -X is face 1; view level `lod` is parent level lod + 1.
+        const uint8_t want[4] = {32, static_cast<uint8_t>(64 * (lod + 1)), 0, 255};
+        std::fprintf(stderr, "  cube view lod %d: %u %u %u %u\n", lod, px[0], px[1], px[2], px[3]);
+        CHECK(gpu::near(px.data(), want, 2));
+    }
+    CHECK_GL();
+    glDeleteVertexArrays(1, &vao);
+    glDeleteFramebuffers(1, &fbo);
+    GLuint textures[2] = {view, parent};
+    glDeleteTextures(2, textures);
+    glDeleteProgram(p);
+}
+
+// glGenerateMipmap on a depth texture (KHR-GL43.texture_query_levels.*Shadow*).
+GPU_TEST_VERSION(gpu_gl43_depth_mipmaps, 43) {
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    std::vector<float> depth(16, 0.25f);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32F, 4, 4, 0, GL_DEPTH_COMPONENT, GL_FLOAT, depth.data());
+    glGenerateMipmap(GL_TEXTURE_2D);
+    CHECK_GL();
+    float level2 = 0.0f;
+    glGetTexImage(GL_TEXTURE_2D, 2, GL_DEPTH_COMPONENT, GL_FLOAT, &level2);
+    CHECK(level2 == 0.25f);
+    CHECK_GL();
+    glDeleteTextures(1, &tex);
+}
+
+// Uncompressed data uploaded into BPTC, ETC2 and EAC textures is compressed
+// by the driver, and glGetTexImage decodes it again (GPU decode).
+GPU_TEST_VERSION(gpu_gl43_compress_on_upload, 43) {
+    struct Case { GLenum internal; GLenum format; int components; };
+    const Case cases[] = {{GL_COMPRESSED_RGBA_BPTC_UNORM, GL_RGBA, 4}, {GL_COMPRESSED_RGB8_ETC2, GL_RGB, 3},
+                          {GL_COMPRESSED_RGBA8_ETC2_EAC, GL_RGBA, 4}, {GL_COMPRESSED_R11_EAC, GL_RED, 1},
+                          {GL_COMPRESSED_RGBA_S3TC_DXT5_EXT, GL_RGBA, 4}};
+    const uint8_t solid[4] = {200, 100, 50, 255};
+    for (const Case& c : cases) {
+        GLuint tex = 0;
+        glGenTextures(1, &tex);
+        glBindTexture(GL_TEXTURE_2D, tex);
+        std::vector<uint8_t> texels(16 * static_cast<size_t>(c.components));
+        for (size_t i = 0; i < texels.size(); ++i) texels[i] = solid[i % static_cast<size_t>(c.components)];
+        glTexImage2D(GL_TEXTURE_2D, 0, static_cast<GLint>(c.internal), 4, 4, 0, c.format, GL_UNSIGNED_BYTE, texels.data());
+        CHECK_GL();
+        std::vector<uint8_t> back(64, 0);
+        glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, back.data());
+        CHECK_GL();
+        for (int ch = 0; ch < c.components; ++ch) {
+            const int diff = std::abs(static_cast<int>(back[static_cast<size_t>(ch)]) - solid[ch]);
+            if (diff > 12) std::fprintf(stderr, "  format 0x%x channel %d: %u, expected %u\n", c.internal, ch, back[static_cast<size_t>(ch)], solid[ch]);
+            CHECK(diff <= 12);
+        }
+        glDeleteTextures(1, &tex);
+    }
+}
+
+// BC6H (signed and unsigned float) from float data, decoded back.
+GPU_TEST_VERSION(gpu_gl43_compress_bc6h, 43) {
+    for (GLenum internal : {GL_COMPRESSED_RGB_BPTC_UNSIGNED_FLOAT, GL_COMPRESSED_RGB_BPTC_SIGNED_FLOAT}) {
+        const bool isSigned = internal == GL_COMPRESSED_RGB_BPTC_SIGNED_FLOAT;
+        const float solid[3] = {1.5f, isSigned ? -0.75f : 0.75f, 4.0f};
+        std::vector<float> texels(48);
+        for (size_t i = 0; i < texels.size(); ++i) texels[i] = solid[i % 3];
+        GLuint tex = 0;
+        glGenTextures(1, &tex);
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glTexImage2D(GL_TEXTURE_2D, 0, static_cast<GLint>(internal), 4, 4, 0, GL_RGB, GL_FLOAT, texels.data());
+        std::vector<float> back(48, 0.0f);
+        glGetTexImage(GL_TEXTURE_2D, 0, GL_RGB, GL_FLOAT, back.data());
+        CHECK_GL();
+        for (int ch = 0; ch < 3; ++ch) {
+            const float rel = std::fabs(back[static_cast<size_t>(ch)] - solid[ch]) / std::fabs(solid[ch]);
+            if (rel > 0.02f) std::fprintf(stderr, "  0x%x channel %d: %g, expected %g\n", internal, ch, back[static_cast<size_t>(ch)], solid[ch]);
+            CHECK(rel <= 0.02f);
+        }
+        glDeleteTextures(1, &tex);
+    }
 }

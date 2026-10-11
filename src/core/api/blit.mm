@@ -430,4 +430,42 @@ void BlitFramebuffer(Context& ctx, GLint srcX0, GLint srcY0, GLint srcX1, GLint 
     ctx.markDirty(kDirtyAll);
 }
 
+// glGenerateMipmap of a depth (or depth/stencil) texture: each level is
+// the nearest downsample of the one above, drawn as depth. Metal's mipmap
+// blit takes colour formats only.
+void generateDepthMipmaps(Context& ctx, Texture& tex, int base, int last) {
+    id<MTLTexture> mtl = tex.mtl;
+    const MTLPixelFormat format = mtl.pixelFormat;
+    const bool combined = format == MTLPixelFormatDepth32Float_Stencil8;
+    const NSUInteger slices = mtl.textureType == MTLTextureTypeCube        ? 6
+                              : mtl.textureType == MTLTextureTypeCubeArray ? mtl.arrayLength * 6
+                                                                           : std::max<NSUInteger>(1, mtl.arrayLength);
+    id<MTLRenderPipelineState> pipeline =
+        blitPipeline(@"wmgl_blit_depth_fs", MTLPixelFormatInvalid, format, combined ? format : MTLPixelFormatInvalid, 1);
+    if (!pipeline) return;
+    for (int level = base + 1; level <= last; ++level) {
+        const uint32_t w = std::max<uint32_t>(1, static_cast<uint32_t>(mtl.width) >> level);
+        const uint32_t h = std::max<uint32_t>(1, static_cast<uint32_t>(mtl.height) >> level);
+        const uint32_t pw = std::max<uint32_t>(1, static_cast<uint32_t>(mtl.width) >> (level - 1));
+        const uint32_t ph = std::max<uint32_t>(1, static_cast<uint32_t>(mtl.height) >> (level - 1));
+        for (NSUInteger slice = 0; slice < slices; ++slice) {
+            id<MTLTexture> source = [mtl newTextureViewWithPixelFormat:format
+                                                           textureType:MTLTextureType2D
+                                                                levels:NSMakeRange(static_cast<NSUInteger>(level - 1), 1)
+                                                                slices:NSMakeRange(slice, 1)];
+            RenderTargetDesc target;
+            target.depth = {mtl, static_cast<uint32_t>(level), static_cast<uint32_t>(slice)};
+            if (combined) target.stencil = target.depth;
+            target.width = w;
+            target.height = h;
+            BlitParams params = {{0, 0, static_cast<float>(w), static_cast<float>(h)},
+                                 {0, 0, static_cast<float>(pw), static_cast<float>(ph)},
+                                 {static_cast<float>(pw), static_cast<float>(ph), 0, 0}};
+            drawBlit(ctx, target, pipeline, source, params, Rect{0, 0, static_cast<int>(w), static_cast<int>(h)}, true, false);
+        }
+    }
+    ctx.stream().endEncoder();
+    ctx.markDirty(kDirtyAll);
+}
+
 }  // namespace wmgl::api

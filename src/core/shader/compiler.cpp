@@ -1806,6 +1806,8 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
     auto stageGlsl = [&](Stage stage, std::string& glsl) {
         try {
             spirv_cross::CompilerGLSL glslOut(result.stages[static_cast<int>(stage)].spirv);
+            // Renamed keywords (a sampler named `texture`) keep the program's names (unescapeName).
+            glslOut.illegal_name_prefix = kEscapePrefix;
             spirv_cross::CompilerGLSL::Options options = glslOut.get_common_options();
             options.version = 450;
             options.es = false;
@@ -1849,6 +1851,8 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
         std::string glsl;
         try {
             spirv_cross::CompilerGLSL glslOut(result.stages[static_cast<int>(Stage::Geometry)].spirv);
+            // Renamed keywords (a sampler named `texture`) keep the program's names (unescapeName).
+            glslOut.illegal_name_prefix = kEscapePrefix;
             spirv_cross::CompilerGLSL::Options options = glslOut.get_common_options();
             options.version = 450;
             options.es = false;
@@ -2983,6 +2987,8 @@ namespace {
 bool linkedStageGlsl(const LinkResult& link, Stage stage, std::string& glsl, std::string& log) {
     try {
         spirv_cross::CompilerGLSL glslOut(link.stages[static_cast<int>(stage)].spirv);
+        // Renamed keywords (a sampler named `texture`) keep the program's names (unescapeName).
+        glslOut.illegal_name_prefix = kEscapePrefix;
         spirv_cross::CompilerGLSL::Options options = glslOut.get_common_options();
         options.version = 450;
         options.es = false;

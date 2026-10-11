@@ -398,13 +398,26 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
     case GL_SMOOTH_LINE_WIDTH_GRANULARITY: out = floats({0.125}); return true;
     case GL_POINT_SIZE_RANGE: out = floats({1.0, 511.0}); return true;
     case GL_POINT_SIZE_GRANULARITY: out = floats({0.125}); return true;
-    case GL_NUM_COMPRESSED_TEXTURE_FORMATS: out = ints({caps.bcTextures ? 4 : 0}); return true;
-    case GL_COMPRESSED_TEXTURE_FORMATS:
-        // Generic/RGTC formats are not listed (GL 3.3 excludes formats with restrictions).
-        out = caps.bcTextures ? ints({GL_COMPRESSED_RGB_S3TC_DXT1_EXT, GL_COMPRESSED_RGBA_S3TC_DXT1_EXT,
-                                      GL_COMPRESSED_RGBA_S3TC_DXT3_EXT, GL_COMPRESSED_RGBA_S3TC_DXT5_EXT})
-                              : ints({});
+    case GL_NUM_COMPRESSED_TEXTURE_FORMATS: case GL_COMPRESSED_TEXTURE_FORMATS: {
+        // Generic/RGTC formats are not listed (GL 3.3 excludes formats with restrictions); ETC2/EAC from GL 4.3.
+        std::vector<int64_t> formats;
+        if (caps.bcTextures)
+            formats = {GL_COMPRESSED_RGB_S3TC_DXT1_EXT, GL_COMPRESSED_RGBA_S3TC_DXT1_EXT, GL_COMPRESSED_RGBA_S3TC_DXT3_EXT,
+                       GL_COMPRESSED_RGBA_S3TC_DXT5_EXT};
+        if (ctx.version() >= 43)
+            for (int64_t f : {GL_COMPRESSED_RGB8_ETC2, GL_COMPRESSED_SRGB8_ETC2, GL_COMPRESSED_RGB8_PUNCHTHROUGH_ALPHA1_ETC2,
+                              GL_COMPRESSED_SRGB8_PUNCHTHROUGH_ALPHA1_ETC2, GL_COMPRESSED_RGBA8_ETC2_EAC,
+                              GL_COMPRESSED_SRGB8_ALPHA8_ETC2_EAC, GL_COMPRESSED_R11_EAC, GL_COMPRESSED_SIGNED_R11_EAC,
+                              GL_COMPRESSED_RG11_EAC, GL_COMPRESSED_SIGNED_RG11_EAC})
+                formats.push_back(f);
+        if (pname == GL_NUM_COMPRESSED_TEXTURE_FORMATS) out = ints({static_cast<int64_t>(formats.size())});
+        else {
+            out.kind = Value::Int;
+            out.count = static_cast<int>(formats.size());
+            for (size_t i = 0; i < formats.size(); ++i) out.v[i] = static_cast<double>(formats[i]);
+        }
         return true;
+    }
     case GL_TIMESTAMP: {
         uint64_t cpu = 0, gpu = 0;
         [Device::get().mtl() sampleTimestamps:&cpu gpuTimestamp:&gpu];

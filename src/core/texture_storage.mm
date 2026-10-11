@@ -108,7 +108,52 @@ void initAlphaOne(Context& ctx, id<MTLTexture> texture) {
 
 }  // namespace
 
+namespace {
+
+// A texture view's storage (GL 4.3): a Metal view of its root texture's
+// levels and layers in the view's format, remade when the root's storage
+// changes. Writes through an image unit need write usage on the root.
+bool ensureViewStorage(Context& ctx, Texture& tex) {
+    Texture& root = *tex.viewOf;
+    if (tex.shaderWrite && !root.shaderWrite) {
+        root.shaderWrite = true;
+        root.storageDirty = true;
+    }
+    if (!ensureTextureStorage(ctx, root)) return false;
+    if (tex.mtl && tex.viewSource == root.mtl) {
+        tex.storageDirty = false;
+        return true;
+    }
+    const TextureImage& base = tex.image(0, 0);
+    if (!base.format) return false;
+    const MTLPixelFormat pixelFormat = mtlPixelFormat(base.format->storage);
+    if (pixelFormat == MTLPixelFormatInvalid) return false;
+    const bool threeD = tex.target == GL_TEXTURE_3D;
+    id<MTLTexture> view = [root.mtl newTextureViewWithPixelFormat:pixelFormat
+                                                      textureType:mtlTextureType(tex.target, base.samples)
+                                                           levels:NSMakeRange(tex.viewMinLevel, tex.viewNumLevels)
+                                                           slices:NSMakeRange(threeD ? 0 : tex.viewMinLayer, threeD ? 1 : tex.viewNumLayers)];
+    if (!view) {
+        WMGL_ERR("texture view creation failed (%s)", storageName(base.format->storage));
+        return false;
+    }
+    tex.mtl = view;
+    tex.viewSource = root.mtl;
+    tex.storage = base.format->storage;
+    tex.mtlLevels = static_cast<GLsizei>(tex.viewNumLevels);
+    tex.mtlWidth = base.width;
+    tex.mtlHeight = base.height;
+    tex.mtlDepth = base.depth;
+    tex.mtlSamples = base.samples;
+    tex.storageDirty = false;
+    tex.views.clear();
+    return true;
+}
+
+}  // namespace
+
 bool ensureTextureStorage(Context& ctx, Texture& tex) {
+    if (tex.viewOf) return ensureViewStorage(ctx, tex);
     if (tex.mtl && !tex.storageDirty) return true;
     GLsizei w0 = 0, h0 = 0, d0 = 0, samples = 0;
     const FormatInfo* format = nullptr;

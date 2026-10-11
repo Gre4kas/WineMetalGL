@@ -80,6 +80,7 @@ add_custom_target(wmgl_generated DEPENDS ${WMGL_GEN_OUTPUTS})
 
 # Platform-independent pieces (host-testable): formats, pixel transfer, shader compiler.
 add_library(wmgl_portable STATIC
+    src/core/format/block_encode.cpp
     src/core/format/formats.cpp
     src/core/format/pixel_transfer.cpp
     src/core/format/vertex_decode.cpp
