@@ -272,7 +272,7 @@ void encodeEtc2Rgb(const Block& px, bool punchthrough, uint8_t* out) {
                 for (int c = 0; c < 3; ++c) {
                     const int v = std::clamp(base8[c] + modifier(table, k), 0, 255);
                     const int d = v - unorm(px[i][c], 255);
-                    e += d * d;
+                    e += static_cast<long>(d) * d;
                 }
                 if (best < 0 || e < best) best = e, index[i] = k;
             }
