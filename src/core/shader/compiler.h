@@ -292,6 +292,12 @@ struct LinkResult {
     std::vector<ImageSlotInfo> images;
     std::vector<AtomicCounterBufferInfo> atomicBuffers;
     SubroutineStageInfo subroutines[kStageCount];
+    // Default-block offsets of the hidden built-in uniforms (-1: unused):
+    // gl_DepthRange's near, far and diff, gl_NumSamples (glsl_upgrade.h).
+    struct BuiltinUniforms {
+        int depthRange[3] = {-1, -1, -1};
+        int numSamples = -1;
+    } builtinUniforms;
     std::vector<TransformFeedbackVarying> transformFeedback;
     uint32_t xfbStride[4] = {};      // 32-bit words per captured vertex, per buffer
     int xfbBufferCount = 0;
@@ -331,6 +337,15 @@ std::string fragmentWithLogicOp(const std::string& msl, unsigned op, const Logic
 // [[sample_mask]] output, word 1 of buffer kSlotDriverUniforms (empty if the
 // stage has no output struct or writes the sample mask itself).
 std::string fragmentWithSampleMask(const std::string& msl);
+
+// GL_SAMPLE_SHADING: the fragment function run once per sample (it takes
+// [[sample_id]]) with its interpolated inputs evaluated at the sample.
+std::string fragmentAtSampleRate(const std::string& msl);
+
+// gl_SampleMask has no effect without multisample rasterization (GL 4.6
+// section 14.9.3); Metal applies [[sample_mask]] to single-sample targets
+// too, so this variant writes all ones (empty if the stage writes no mask).
+std::string fragmentIgnoringSampleMask(const std::string& msl);
 
 LinkResult link(const LinkInput& input);
 

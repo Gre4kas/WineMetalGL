@@ -1154,8 +1154,11 @@ void texImageMultisample(Context& ctx, GLenum target, bool proxy, GLsizei sample
     Texture* tex = proxy ? ctx.proxyTextures[textureTargetIndex(target)].get() : boundTexture(ctx, target);
     if (!tex) return ctx.setError(GL_INVALID_OPERATION);
     if (tex->immutable) return ctx.setError(GL_INVALID_OPERATION);
-    // Round up to a sample count Metal supports.
-    GLsizei actual = 1;
+    // Round up to a sample count Metal supports. Metal multisample
+    // textures have at least two samples, so a request for one gets two
+    // (GL allows more samples than requested; GL_TEXTURE_SAMPLES says 2),
+    // and sampler2DMS shaders always read a multisample texture.
+    GLsizei actual = 2;
     while (actual < samples && actual < 64) actual *= 2;  // (larger requests are out of range anyway)
     while (actual < 8 && !caps.sampleCountSupported[actual]) actual *= 2;
     actual = std::min<GLsizei>(actual, static_cast<GLsizei>(caps.maxSamples));
@@ -1205,6 +1208,7 @@ void texStorage(Context& ctx, int dims, GLenum target, GLsizei levels, GLenum in
     if (levels > chain || (base == GL_TEXTURE_RECTANGLE && levels != 1)) return ctx.setError(GL_INVALID_OPERATION);
     if ((base == GL_TEXTURE_CUBE_MAP || base == GL_TEXTURE_CUBE_MAP_ARRAY) && width != height)
         return ctx.setError(GL_INVALID_VALUE);
+    if (base == GL_TEXTURE_CUBE_MAP_ARRAY && depth % 6) return ctx.setError(GL_INVALID_VALUE);
     const GLint maxSize = maxSizeFor(base);
     const bool tooLarge = width > maxSize || (!oneDArray && height > maxSize) || (oneDArray && height > kMaxArrayLayers) ||
                           (base == GL_TEXTURE_3D && depth > maxSize) || (arrays && depth > kMaxArrayLayers);

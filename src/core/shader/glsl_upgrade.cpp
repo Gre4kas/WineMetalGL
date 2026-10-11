@@ -627,4 +627,103 @@ std::string checkReservedWords(const std::string& source) {
     return errors;
 }
 
+std::string lowerBuiltinUniforms(Stage stage, const std::string& source) {
+    const bool fragment = stage == Stage::Fragment;
+    if (source.find("gl_DepthRange") == std::string::npos &&
+        (!fragment || source.find("gl_NumSamples") == std::string::npos))
+        return source;
+    const std::string prefix = kBuiltinUniformPrefix;
+    std::string out;
+    out.reserve(source.size() + 256);
+    bool depthRange = false, numSamples = false, lineStart = true;
+    size_t insertAt = std::string::npos;  // before the first token, outside any #if block
+    int conditionalDepth = 0;
+    size_t conditionalStart = 0;
+    const size_t n = source.size();
+    size_t i = 0;
+    while (i < n) {
+        const char c = source[i];
+        if (c == '\n') {
+            out += c;
+            ++i;
+            lineStart = true;
+            continue;
+        }
+        if (std::isspace(static_cast<unsigned char>(c))) {
+            out += c;
+            ++i;
+            continue;
+        }
+        if (source.compare(i, 2, "//") == 0) {
+            while (i < n && source[i] != '\n') out += source[i++];
+            continue;
+        }
+        if (source.compare(i, 2, "/*") == 0) {
+            const size_t end = source.find("*/", i + 2);
+            const size_t stop = end == std::string::npos ? n : end + 2;
+            out.append(source, i, stop - i);
+            i = stop;
+            continue;
+        }
+        if (c == '#' && lineStart) {
+            size_t lineEnd = i;
+            while (lineEnd < n && source[lineEnd] != '\n') {
+                if (source[lineEnd] == '\\' && lineEnd + 1 < n && source[lineEnd + 1] == '\n') lineEnd += 2;
+                else ++lineEnd;
+            }
+            size_t k = i + 1;
+            while (k < lineEnd && (source[k] == ' ' || source[k] == '\t')) ++k;
+            size_t nameEnd = k;
+            while (nameEnd < lineEnd && isIdent(source[nameEnd])) ++nameEnd;
+            const std::string name = source.substr(k, nameEnd - k);
+            if (name == "if" || name == "ifdef" || name == "ifndef") {
+                if (conditionalDepth++ == 0) conditionalStart = out.size();
+            } else if (name == "endif" && conditionalDepth > 0) {
+                --conditionalDepth;
+            }
+            if (name != "define") {
+                // Other directives are copied; #define bodies are rewritten like code.
+                out.append(source, i, lineEnd - i);
+                i = lineEnd;
+                continue;
+            }
+            out.append(source, i, nameEnd - i);
+            i = nameEnd;
+            lineStart = false;
+            continue;
+        }
+        if (insertAt == std::string::npos && conditionalDepth == 0) insertAt = out.size();
+        if (insertAt == std::string::npos && conditionalDepth > 0) insertAt = conditionalStart;
+        lineStart = false;
+        if (isIdentStart(c)) {
+            size_t end = i;
+            while (end < n && isIdent(source[end])) ++end;
+            const std::string word = source.substr(i, end - i);
+            i = end;
+            if (word == "gl_DepthRange" || word == "gl_DepthRangeParameters") {
+                depthRange = true;
+                out += prefix + word.substr(3);
+            } else if (fragment && word == "gl_NumSamples") {
+                numSamples = true;
+                out += prefix + word.substr(3);
+            } else {
+                out += word;
+            }
+            continue;
+        }
+        out += c;
+        ++i;
+    }
+    std::string decls;
+    if (depthRange)
+        decls += "struct " + prefix + "DepthRangeParameters { float near; float far; float diff; };\n"
+                 "uniform " + prefix + "DepthRangeParameters " + prefix + "DepthRange;\n";
+    if (numSamples) decls += "uniform int " + prefix + "NumSamples;\n";
+    if (decls.empty()) return source;
+    if (insertAt == std::string::npos) insertAt = out.size();
+    const long line = 1 + std::count(out.begin(), out.begin() + static_cast<long>(insertAt), '\n');
+    out.insert(insertAt, decls + "#line " + std::to_string(line) + "\n");
+    return out;
+}
+
 }  // namespace wmgl::shader

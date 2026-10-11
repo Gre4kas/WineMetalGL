@@ -10237,9 +10237,11 @@ void CompilerMSL::emit_glsl_op(uint32_t result_type, uint32_t id, uint32_t eop, 
 		// Like Direct3D, Metal puts the (0, 0) at the upper-left corner, not the center as SPIR-V and GLSL do.
 		// Offset the offset by (1/2 - 1/16), or 0.4375, to compensate for this.
 		// It has to be (1/2 - 1/16) and not 1/2, or several CTS tests subtly break on Intel.
+		// WineMetalGL: Apple GPUs need 1/2 (an offset of gl_SamplePosition - 0.5
+		// must land on the sample, as sample interpolation does).
 		emit_op(result_type, id,
 		        join(to_name(stage_in_var_id), ".", to_member_name(get_stage_in_struct_type(), interface_index),
-		             ".interpolate_at_offset(", to_expression(args[1]), " + 0.4375)", component),
+		             ".interpolate_at_offset(", to_expression(args[1]), " + 0.5)", component),
 		        should_forward(args[0]) && should_forward(args[1]));
 		break;
 	}

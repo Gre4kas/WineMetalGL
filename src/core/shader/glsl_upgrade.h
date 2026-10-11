@@ -66,4 +66,11 @@ std::string unescapeName(std::string name);
 // errors in glslang's log format, or an empty string.
 std::string checkReservedWords(const std::string& source);
 
+// Built-in uniforms (gl_DepthRange, and gl_NumSamples in fragment shaders)
+// exist only in GL-rules parses; the code generator's SPIR-V rules lack
+// them. They become hidden default-block uniforms, kBuiltinUniformPrefix +
+// the name without "gl_", that the draw path fills (applyBuiltinUniforms).
+inline constexpr const char* kBuiltinUniformPrefix = "wmgl_bi_";
+std::string lowerBuiltinUniforms(Stage stage, const std::string& source);
+
 }  // namespace wmgl::shader

@@ -178,6 +178,7 @@ private:
         ~ImageShadowScope() { draw.finishImageShadows(); }
     };
     GLint imageUnit(LinkedProgram& program, size_t index);
+    void applyBuiltinUniforms(Program& program);
     static size_t vertexBufferSlots(LinkedProgram& program);
     void waitForCpuVertexReads(LinkedProgram& program, bool gather);
     const VertexAttrib& attribFor(const VertexArray& vao, int location) const;

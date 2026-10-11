@@ -41,6 +41,9 @@ Local changes to vendored sources (each marked `WineMetalGL:` in the code):
   through a buffer that aliases the texture.
 - SPIRV-Cross `spirv_msl.cpp`, `OpImageWrite`: a write to a `read_write`
   texture is followed by `fence()`, so the invocation's later loads see it.
+- SPIRV-Cross `spirv_msl.cpp`, `InterpolateAtOffset`: the GLSL offset is
+  biased by 1/2 (upstream uses 7/16 for Intel GPUs), so on Apple GPUs an
+  offset of `gl_SamplePosition - 0.5` interpolates exactly at the sample.
 
 The built dylib dynamically links only Apple system frameworks and libraries
 (Metal, Foundation, QuartzCore, CoreFoundation, libc++, libSystem and

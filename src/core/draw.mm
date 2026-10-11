@@ -768,6 +768,28 @@ std::pair<Program*, size_t> DrawState::imageSource(LinkedProgram& program, size_
     return {program.imageOwner[index].first, static_cast<size_t>(program.imageOwner[index].second)};
 }
 
+void DrawState::applyBuiltinUniforms(Program& program) {
+    // gl_DepthRange (viewport 0's) and gl_NumSamples (glsl_upgrade.h).
+    if (!program.linked) return;
+    const shader::LinkResult::BuiltinUniforms& b = program.linked->link.builtinUniforms;
+    auto store = [&](int offset, const void* value) {
+        if (offset < 0 || static_cast<size_t>(offset) + 4 > program.uniformData.size()) return;
+        uint8_t* at = program.uniformData.data() + offset;
+        if (std::memcmp(at, value, 4) == 0) return;
+        std::memcpy(at, value, 4);
+        ++program.uniformVersion;
+    };
+    if (b.depthRange[0] >= 0) {
+        const float n = static_cast<float>(ctx_.state.depthRanges[0][0]), f = static_cast<float>(ctx_.state.depthRanges[0][1]);
+        const float values[3] = {n, f, f - n};
+        for (int i = 0; i < 3; ++i) store(b.depthRange[i], &values[i]);
+    }
+    if (b.numSamples >= 0) {
+        const int32_t samples = std::max<int32_t>(1, lastKey_.sampleCount);
+        store(b.numSamples, &samples);
+    }
+}
+
 GLint DrawState::imageUnit(LinkedProgram& program, size_t index) {
     const auto [owner, ownIndex] = imageSource(program, index);
     return owner && ownIndex < owner->imageUnits.size() ? owner->imageUnits[ownIndex] : 0;
@@ -841,10 +863,12 @@ void DrawState::bindUniforms(id<MTLRenderCommandEncoder> encoder, LinkedProgram&
                 ctx_.state.clipDistanceEnables};
     [encoder setVertexBytes:&driver length:sizeof(driver) atIndex:shader::kSlotDriverUniforms];
     const uint64_t serial = ctx_.stream().serial();
-    // Subroutine selections live in the stage programs' default uniforms.
+    // Subroutine selections and built-in uniforms live in the stage programs' default uniforms.
     for (int s : {static_cast<int>(Stage::Vertex), static_cast<int>(Stage::Fragment)})
-        if (Program* owner = program.link.stages[s].present ? stageProgram(program, s) : nullptr)
+        if (Program* owner = program.link.stages[s].present ? stageProgram(program, s) : nullptr) {
             applySubroutineSelections(ctx_, *owner);
+            applyBuiltinUniforms(*owner);
+        }
     static id<MTLBuffer> zero = [Device::get().mtl() newBufferWithLength:65536 options:MTLResourceStorageModePrivate];
     for (int s : {static_cast<int>(Stage::Vertex), static_cast<int>(Stage::Fragment)}) {
         const shader::StageOutput& stage = program.link.stages[s];
@@ -1142,6 +1166,10 @@ id<MTLRenderCommandEncoder> DrawState::prepare(GLenum mode, MTLPrimitiveType& pr
             sampleMask_ = mask;
         }
     }
+    // GL_SAMPLE_SHADING with more than one sample to shade: per-sample execution.
+    key.sampleShading = st.multisample && st.sampleShading && target.samples > 1 &&
+                        std::ceil(st.minSampleShading * static_cast<float>(target.samples)) > 1.0f;
+    key.ignoreSampleMask = !(st.multisample && target.samples > 1) && program->writesSampleMask();
     key.rasterization = !st.rasterizerDiscard;
     // Metal requires the input topology class when the vertex function
     // writes the layer or viewport index; otherwise it stays unspecified.
@@ -1692,6 +1720,7 @@ void DrawState::bindKernelResources(id<MTLComputeCommandEncoder> encoder, Linked
     if (!owner || !owner->linked) return;
     Program& p = *owner;
     applySubroutineSelections(ctx_, p);
+    applyBuiltinUniforms(p);
     const uint32_t size = (p.linked->link.defaultBlockSize + 15) & ~15u;
     if (usesDefaultUniforms && size) {
         if (p.uniformData.size() < size) p.uniformData.resize(size, 0);

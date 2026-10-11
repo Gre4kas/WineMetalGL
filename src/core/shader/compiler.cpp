@@ -322,6 +322,60 @@ std::string voidFragmentWithSampleMask(const std::string& msl) {
 
 }  // namespace
 
+std::string fragmentAtSampleRate(const std::string& msl) {
+    std::string out = msl;
+    // Interpolated (floating-point, not flat) inputs move to the sample.
+    const size_t start = out.find("struct main0_in\n{");
+    const size_t end = start == std::string::npos ? std::string::npos : out.find("};", start);
+    if (start != std::string::npos && end != std::string::npos) {
+        std::string body = out.substr(start, end - start), moved;
+        std::istringstream lines(body);
+        std::string line;
+        while (std::getline(lines, line)) {
+            const size_t first = line.find_first_not_of(' ');
+            const bool floating = first != std::string::npos &&
+                                  (line.compare(first, 5, "float") == 0 || line.compare(first, 4, "half") == 0);
+            const size_t user = line.find("[[user(");
+            if (floating && user != std::string::npos && line.find(", flat]]") == std::string::npos) {
+                const size_t close = line.find(")", user);
+                const size_t attrEnd = line.find("]]", user);
+                if (close != std::string::npos && attrEnd != std::string::npos) {
+                    const bool noPerspective = line.find("no_perspective", close) < attrEnd;
+                    line = line.substr(0, close + 1) + (noPerspective ? ", sample_no_perspective" : ", sample_perspective") +
+                           line.substr(attrEnd);
+                }
+            }
+            moved += line + "\n";
+        }
+        out.replace(start, end - start, moved);
+    }
+    if (out.find("[[sample_id]]") != std::string::npos) return out;
+    for (const char* signature : {"fragment main0_out main0(", "fragment void main0("}) {
+        const size_t fn = out.find(signature);
+        if (fn == std::string::npos) continue;
+        const size_t open = fn + std::strlen(signature) - 1;
+        const bool noParameters = out[open + 1] == ')';
+        out.insert(open + 1, std::string("uint wmgl_sample_rate [[sample_id]]") + (noParameters ? "" : ", "));
+        return out;
+    }
+    return std::string();
+}
+
+std::string fragmentIgnoringSampleMask(const std::string& msl) {
+    const size_t structAt = msl.find("struct main0_out\n{");
+    const size_t structEnd = structAt == std::string::npos ? std::string::npos : msl.find("};", structAt);
+    const size_t attribute = msl.find(" [[sample_mask]]", structAt);
+    if (structAt == std::string::npos || attribute == std::string::npos || attribute > structEnd) return std::string();
+    const size_t nameStart = msl.rfind(' ', attribute - 1) + 1;
+    const std::string assign = "out." + msl.substr(nameStart, attribute - nameStart) + " = 0xffffffffu; ";
+    std::string out = msl;
+    const size_t fn = out.find("fragment main0_out main0(");
+    if (fn == std::string::npos) return std::string();
+    for (size_t at = out.find("return out;", fn); at != std::string::npos; at = out.find("return out;", at + assign.size() + 11))
+        out.insert(at, assign);
+    return out;
+}
+
 std::string fragmentWithSampleMask(const std::string& msl) {
     const std::string signature = "fragment main0_out main0(", member = "struct main0_out\n{\n";
     const size_t structAt = msl.find(member);
@@ -583,7 +637,8 @@ bool parseForCodegen(Stage stage, const std::string& original, ParsedShader& out
         log += subroutines.log;
         return false;
     }
-    UpgradeResult upgraded = upgradeLegacyGlsl(stage, raiseComputeVersion(stage, subroutines.source), upgrade);
+    UpgradeResult upgraded =
+        upgradeLegacyGlsl(stage, lowerBuiltinUniforms(stage, raiseComputeVersion(stage, subroutines.source)), upgrade);
     if (!upgraded.ok) {
         log += upgraded.log;
         return false;
@@ -1021,7 +1076,7 @@ CompileResult compile(Stage stage, const std::string& original) {
         result.log = subroutines.log;
         return result;
     }
-    const std::string source = raiseComputeVersion(stage, subroutines.source);
+    const std::string source = lowerBuiltinUniforms(stage, raiseComputeVersion(stage, subroutines.source));
     // Status and log come from a plain GL parse, which accepts every GLSL
     // version and profile with GL's own rules.
     const EShLanguage lang = language(stage);
@@ -1831,6 +1886,15 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
         std::vector<int> map(result.uniforms.size(), -1);
         for (size_t i = 0; i < result.uniforms.size(); ++i) {
             const UniformInfo& u = result.uniforms[i];
+            if (u.blockIndex < 0 && u.name.rfind(kBuiltinUniformPrefix, 0) == 0) {
+                // Hidden built-in uniforms (lowerBuiltinUniforms).
+                const std::string name = u.name.substr(std::string(kBuiltinUniformPrefix).size());
+                if (name == "DepthRange.near") result.builtinUniforms.depthRange[0] = static_cast<int>(u.offset);
+                if (name == "DepthRange.far") result.builtinUniforms.depthRange[1] = static_cast<int>(u.offset);
+                if (name == "DepthRange.diff") result.builtinUniforms.depthRange[2] = static_cast<int>(u.offset);
+                if (name == "NumSamples") result.builtinUniforms.numSamples = static_cast<int>(u.offset);
+                continue;
+            }
             if (u.blockIndex < 0 && isSubroutineSelectionUniform(u.name)) {
                 for (int st = 0; st < kStageCount; ++st)
                     for (auto& su : result.subroutines[st].uniforms)
