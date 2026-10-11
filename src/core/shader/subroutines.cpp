@@ -227,7 +227,11 @@ SubroutineLowering lowerSubroutines(Stage stage, const std::string& source) {
             if (auto loc = layout.find("location"); loc != layout.end()) u.location = loc->second;
             uniformDims[u.name] = u.dimensions;
             uniformDecl[u.name] = edits.size();
-            edits.push_back({t[start].begin, t[k].end, "uniform int " + subroutineSelectionUniform(stage, u.name) + dims + ";"});
+            // A local variable of the uniform's name lets the parser check
+            // the name (reserved words, gl_ prefixes) without declaring it.
+            edits.push_back({t[start].begin, t[k].end,
+                             "uniform int " + subroutineSelectionUniform(stage, u.name) + dims + "; void wmgl_sn" + S + "_" +
+                                 u.name + "() { int " + u.name + "; }"});
             out.info.uniforms.push_back(u);
             i = k;
             continue;
@@ -294,7 +298,9 @@ SubroutineLowering lowerSubroutines(Stage stage, const std::string& source) {
         if (types.count(type.name)) error("'" + type.name + "' : subroutine type redefinition");
         types[type.name] = type;
         out.info.types.push_back(type.name);
-        edits.push_back({t[start].begin, t[close + 1].end, blank(t[start].begin, t[close + 1].end)});
+        // The declaration stays as a function prototype, so the parser
+        // still checks the type's name and signature.
+        edits.push_back({t[start].begin, t[i].end, blank(t[start].begin, t[i].end)});
         i = close + 1;
     }
     if (!out.ok) return out;

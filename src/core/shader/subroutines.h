@@ -3,11 +3,14 @@
 // glslang does not implement subroutines, so they are lowered in the GLSL
 // source before it parses the shader:
 //
-//   subroutine vec4 Shade(vec4 c);              (a subroutine type: removed)
+//   subroutine vec4 Shade(vec4 c);              (a subroutine type: stays as a
+//                                                function prototype)
 //   subroutine(Shade) vec4 red(vec4 c) { .. }   (the function stays, without
 //                                                the subroutine qualifier)
 //   subroutine uniform Shade shade;             becomes
-//   uniform int wmgl_su<S>_shade;               (the selected function's index)
+//   uniform int wmgl_su<S>_shade;               (the selected function's index,
+//                                                and a function with a local
+//                                                `shade` so its name is checked)
 //   shade(color)                                becomes
 //   wmgl_sc<S>_shade(color)                     a dispatcher that switches on
 //                                               the index and calls the function
