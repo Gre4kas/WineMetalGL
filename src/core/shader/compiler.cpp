@@ -19,6 +19,7 @@
 #include "core/limits.h"
 #include "core/shader/geometry.h"
 #include "core/shader/spirv_passes.h"
+#include "core/shader/subroutines.h"
 #include "core/shader/transform_feedback.h"
 
 namespace wmgl::shader {
@@ -572,7 +573,12 @@ bool definesMain(const std::string& source) {
 bool parseForCodegen(Stage stage, const std::string& original, ParsedShader& out, std::string& log,
                      const CaptureCode* capture = nullptr, const UpgradeOptions& upgrade = {}) {
     const EShLanguage lang = language(stage);
-    UpgradeResult upgraded = upgradeLegacyGlsl(stage, raiseComputeVersion(stage, original), upgrade);
+    const SubroutineLowering subroutines = lowerSubroutines(stage, original);
+    if (!subroutines.ok) {
+        log += subroutines.log;
+        return false;
+    }
+    UpgradeResult upgraded = upgradeLegacyGlsl(stage, raiseComputeVersion(stage, subroutines.source), upgrade);
     if (!upgraded.ok) {
         log += upgraded.log;
         return false;
@@ -891,7 +897,13 @@ std::string raiseComputeVersion(Stage stage, const std::string& source) {
 CompileResult compile(Stage stage, const std::string& original) {
     initGlslang();
     CompileResult result;
-    const std::string source = raiseComputeVersion(stage, original);
+    // Subroutines are lowered first: glslang does not implement them.
+    const SubroutineLowering subroutines = lowerSubroutines(stage, original);
+    if (!subroutines.ok) {
+        result.log = subroutines.log;
+        return result;
+    }
+    const std::string source = raiseComputeVersion(stage, subroutines.source);
     // Status and log come from a plain GL parse, which accepts every GLSL
     // version and profile with GL's own rules.
     const EShLanguage lang = language(stage);
@@ -1428,6 +1440,70 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
                 result.uniforms.push_back(u);
             }
         }
+    }
+
+    // Shader subroutines (shader/subroutines.h): each stage's functions and
+    // subroutine uniforms, whose selections live in hidden default-block
+    // uniforms that are not part of the GL interface.
+    for (const ShaderSource& shader : input.shaders) {
+        const SubroutineLowering lowered = lowerSubroutines(shader.stage, shader.source);
+        SubroutineStageInfo& info = result.subroutines[static_cast<int>(shader.stage)];
+        for (const std::string& type : lowered.info.types)
+            if (std::find(info.types.begin(), info.types.end(), type) == info.types.end()) info.types.push_back(type);
+        for (const auto& f : lowered.info.functions)
+            if (std::none_of(info.functions.begin(), info.functions.end(), [&](const auto& g) { return g.name == f.name; }))
+                info.functions.push_back(f);
+        for (const auto& u : lowered.info.uniforms)
+            if (std::none_of(info.uniforms.begin(), info.uniforms.end(), [&](const auto& v) { return v.name == u.name; }))
+                info.uniforms.push_back(u);
+    }
+    {
+        std::vector<UniformInfo> kept;
+        std::vector<int> map(result.uniforms.size(), -1);
+        for (size_t i = 0; i < result.uniforms.size(); ++i) {
+            const UniformInfo& u = result.uniforms[i];
+            if (u.blockIndex < 0 && isSubroutineSelectionUniform(u.name)) {
+                for (int st = 0; st < kStageCount; ++st)
+                    for (auto& su : result.subroutines[st].uniforms)
+                        if (arrayBaseName(u.name) == subroutineSelectionUniform(static_cast<Stage>(st), su.name)) {
+                            su.selectionOffset = u.offset;
+                            su.selectionStride = u.arrayStride ? u.arrayStride : 16;
+                        }
+                continue;
+            }
+            map[i] = static_cast<int>(kept.size());
+            kept.push_back(u);
+        }
+        if (kept.size() != result.uniforms.size()) {
+            for (UniformBlockInfo& b : result.blocks)
+                for (int& u : b.activeUniforms) u = map[static_cast<size_t>(u)];
+            for (AtomicCounterBufferInfo& b : result.atomicBuffers)
+                for (int& u : b.activeUniforms) u = map[static_cast<size_t>(u)];
+            for (auto& [name, index] : samplerUniformByName) index = map[static_cast<size_t>(index)];
+            result.uniforms = std::move(kept);
+        }
+    }
+    for (SubroutineStageInfo& info : result.subroutines) {
+        // Only uniforms the stage uses are active; their locations: explicit
+        // ones first, then the lowest free ones.
+        info.uniforms.erase(std::remove_if(info.uniforms.begin(), info.uniforms.end(),
+                                           [](const SubroutineStageInfo::Uniform& u) { return u.selectionOffset < 0; }),
+                            info.uniforms.end());
+        std::set<GLint> usedLocations;
+        for (const auto& u : info.uniforms)
+            for (int e = 0; u.location >= 0 && e < u.elements(); ++e) usedLocations.insert(u.location + e);
+        for (auto& u : info.uniforms) {
+            if (u.location >= 0) continue;
+            GLint location = 0;
+            for (;; ++location) {
+                bool free = true;
+                for (int e = 0; e < u.elements(); ++e) free = free && !usedLocations.count(location + e);
+                if (free) break;
+            }
+            u.location = location;
+            for (int e = 0; e < u.elements(); ++e) usedLocations.insert(location + e);
+        }
+        info.locationCount = usedLocations.empty() ? 0 : *usedLocations.rbegin() + 1;
     }
 
     // Assign default-block and sampler uniform locations (consecutive per element).

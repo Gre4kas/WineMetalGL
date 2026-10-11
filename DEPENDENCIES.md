@@ -17,6 +17,15 @@ Local changes to vendored sources (each marked `WineMetalGL:` in the code):
 - glslang `glslang/MachineIndependent/ParseHelper.cpp`, `fixOffset`: an
   atomic counter whose offset puts it past `gl_MaxAtomicCounterBufferSize` is
   a compile-time error, as GLSL 4.20 requires.
+- glslang `glslang/MachineIndependent/Versions.{h,cpp}`: `GL_ARB_shader_subroutine`
+  is a known extension (and predefined macro); WineMetalGL lowers subroutines
+  before glslang parses a shader (`src/core/shader/subroutines.h`).
+- glslang `glslang/MachineIndependent/ParseHelper.cpp`, `redeclareBuiltinBlock`:
+  `gl_PerVertex` may be redeclared from GLSL 1.50, as desktop drivers allow,
+  instead of only from 4.10 or with `GL_ARB_separate_shader_objects`.
+- glslang `glslang/MachineIndependent/ParseHelper.cpp`, `setLayoutQualifier`:
+  `layout(binding)` is also accepted with `GL_ARB_shader_atomic_counters`,
+  which adds it for atomic counters.
 
 The built dylib dynamically links only Apple system frameworks and libraries
 (Metal, Foundation, QuartzCore, CoreFoundation, libc++, libSystem and

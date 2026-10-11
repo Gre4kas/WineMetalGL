@@ -110,6 +110,11 @@ class ProgramPipeline;
 std::shared_ptr<LinkedProgram> pipelineExecutable(ProgramPipeline& pipeline);
 
 class Context;
+// Subroutine selections (api/subroutine.mm): reset to the defaults (UseProgram,
+// program pipeline changes), and written into `program`'s hidden selection
+// uniforms before a draw.
+void resetSubroutineSelections(Context& ctx);
+void applySubroutineSelections(Context& ctx, Program& program);
 namespace api {
 // Updates the pipeline's VALIDATE_STATUS and info log; true if it can draw.
 bool validateProgramPipeline(ProgramPipeline& pipeline);

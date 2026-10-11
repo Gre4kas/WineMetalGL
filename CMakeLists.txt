@@ -88,6 +88,7 @@ add_library(wmgl_portable STATIC
     src/core/shader/transform_feedback.cpp
     src/core/shader/glsl_upgrade.cpp
     src/core/shader/spirv_passes.cpp
+    src/core/shader/subroutines.cpp
     src/core/util/log.cpp
 )
 add_dependencies(wmgl_portable wmgl_generated)

@@ -5043,7 +5043,8 @@ void TParseContext::redeclareBuiltinBlock(const TSourceLoc& loc, TTypeList& newT
 {
     const char* feature = "built-in block redeclaration";
     profileRequires(loc, EEsProfile, 320, Num_AEP_shader_io_blocks, AEP_shader_io_blocks, feature);
-    profileRequires(loc, ~EEsProfile, 410, E_GL_ARB_separate_shader_objects, feature);
+    // WineMetalGL: desktop drivers accept gl_PerVertex redeclarations from GLSL 1.50 (the CTS relies on it).
+    profileRequires(loc, ~EEsProfile, 150, E_GL_ARB_separate_shader_objects, feature);
 
     if (blockName != "gl_PerVertex" && blockName != "gl_PerFragment" &&
         blockName != "gl_MeshPerVertexNV" && blockName != "gl_MeshPerPrimitiveNV" &&
@@ -6078,7 +6079,9 @@ void TParseContext::setLayoutQualifier(const TSourceLoc& loc, TPublicType& publi
             error(loc, "needs a literal integer", "set", "");
         return;
     } else if (id == "binding") {
-        profileRequires(loc, ~EEsProfile, 420, E_GL_ARB_shading_language_420pack, "binding");
+        // WineMetalGL: GL_ARB_shader_atomic_counters adds layout(binding) for atomic counters.
+        const char* bindingExts[2] = { E_GL_ARB_shading_language_420pack, E_GL_ARB_shader_atomic_counters };
+        profileRequires(loc, ~EEsProfile, 420, 2, bindingExts, "binding");
         profileRequires(loc, EEsProfile, 310, nullptr, "binding");
         if ((unsigned int)value >= TQualifier::layoutBindingEnd)
             error(loc, "binding is too large", id.c_str(), "");

@@ -190,6 +190,35 @@ struct GeometryEmulation {
     StageOutput passthrough;     // vertex: draws the emitted vertices
 };
 
+// Shader subroutines of one stage (GL 4.0; shader/subroutines.h).
+struct SubroutineStageInfo {
+    struct Function {
+        std::string name;
+        std::vector<std::string> types;  // subroutine types it implements
+        GLint index = -1;                // GL subroutine index (layout(index) or assigned)
+    };
+    struct Uniform {
+        std::string name;
+        std::string type;
+        std::vector<int> dimensions;     // array sizes, outermost first (empty: not an array)
+        GLint location = -1;             // first location (layout(location) or assigned)
+        // The hidden int (array) holding the selected function index, in the
+        // default uniform block (-1: not active).
+        GLint selectionOffset = -1, selectionStride = 0;
+        std::vector<GLint> compatible;   // indices of the functions of its type
+        int elements() const {
+            int n = 1;
+            for (int d : dimensions) n *= d;
+            return n;
+        }
+    };
+    std::vector<std::string> types;
+    std::vector<Function> functions;
+    std::vector<Uniform> uniforms;
+    GLint locationCount = 0;             // ACTIVE_SUBROUTINE_UNIFORM_LOCATIONS
+    bool any() const { return !functions.empty() || !uniforms.empty() || !types.empty(); }
+};
+
 struct LinkResult {
     bool ok = false;
     std::string log;
@@ -201,6 +230,7 @@ struct LinkResult {
     std::vector<FragOutputInfo> fragOutputs;
     std::vector<SamplerSlotInfo> samplers;
     std::vector<AtomicCounterBufferInfo> atomicBuffers;
+    SubroutineStageInfo subroutines[kStageCount];
     std::vector<TransformFeedbackVarying> transformFeedback;
     uint32_t xfbStride[4] = {};      // 32-bit words per captured vertex, per buffer
     int xfbBufferCount = 0;

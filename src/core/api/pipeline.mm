@@ -22,6 +22,8 @@ struct StageBit {
 };
 const StageBit kStageBits[] = {
     {GL_VERTEX_SHADER_BIT, Stage::Vertex, GL_VERTEX_SHADER},
+    {GL_TESS_CONTROL_SHADER_BIT, Stage::TessControl, GL_TESS_CONTROL_SHADER},
+    {GL_TESS_EVALUATION_SHADER_BIT, Stage::TessEval, GL_TESS_EVALUATION_SHADER},
     {GL_GEOMETRY_SHADER_BIT, Stage::Geometry, GL_GEOMETRY_SHADER},
     {GL_FRAGMENT_SHADER_BIT, Stage::Fragment, GL_FRAGMENT_SHADER},
     {GL_COMPUTE_SHADER_BIT, Stage::Compute, GL_COMPUTE_SHADER},
@@ -104,6 +106,7 @@ GLboolean IsProgramPipeline(Context& ctx, GLuint pipeline) {
 void BindProgramPipeline(Context& ctx, GLuint pipeline) {
     const TransformFeedback& xfb = *ctx.state.transformFeedback;
     if (xfb.active && !xfb.paused) return ctx.setError(GL_INVALID_OPERATION);
+    resetSubroutineSelections(ctx);
     if (!pipeline) {
         ctx.state.programPipeline.reset();
     } else {
@@ -116,6 +119,7 @@ void BindProgramPipeline(Context& ctx, GLuint pipeline) {
 void UseProgramStages(Context& ctx, GLuint pipeline, GLbitfield stages, GLuint program) {
     GLbitfield known = GL_VERTEX_SHADER_BIT | GL_GEOMETRY_SHADER_BIT | GL_FRAGMENT_SHADER_BIT;
     if (ctx.computeShaders()) known |= GL_COMPUTE_SHADER_BIT;
+    if (ctx.tessellationShaders()) known |= GL_TESS_CONTROL_SHADER_BIT | GL_TESS_EVALUATION_SHADER_BIT;
     if (stages != GL_ALL_SHADER_BITS && (stages & ~known)) return ctx.setError(GL_INVALID_VALUE);
     ProgramPipeline* pp = pipelineOrError(ctx, pipeline);
     if (!pp) return;
@@ -161,7 +165,8 @@ void GetProgramPipelineiv(Context& ctx, GLuint pipeline, GLenum pname, GLint* pa
     case GL_VERTEX_SHADER: *params = stageName(Stage::Vertex); return;
     case GL_GEOMETRY_SHADER: *params = stageName(Stage::Geometry); return;
     case GL_FRAGMENT_SHADER: *params = stageName(Stage::Fragment); return;
-    case GL_TESS_CONTROL_SHADER: case GL_TESS_EVALUATION_SHADER: *params = 0; return;
+    case GL_TESS_CONTROL_SHADER: *params = stageName(Stage::TessControl); return;
+    case GL_TESS_EVALUATION_SHADER: *params = stageName(Stage::TessEval); return;
     case GL_COMPUTE_SHADER:
         if (!ctx.computeShaders()) break;
         *params = stageName(Stage::Compute);

@@ -551,10 +551,20 @@ std::string checkReservedWords(const std::string& source) {
         "iimage2DArray", "uimage1DArray", "uimage2DArray", "image1DShadow", "image2DShadow", "image1DArrayShadow",
         "image2DArrayShadow", "imageBuffer", "iimageBuffer", "uimageBuffer"};
     static const std::set<std::string> before400 = {"double", "dvec2", "dvec3", "dvec4"};
+    // Extensions that make some of them keywords early.
+    auto enables = [&](const char* extension) {
+        for (size_t at = source.find(extension); at != std::string::npos; at = source.find(extension, at + 1)) {
+            const size_t line = source.rfind('\n', at);
+            const size_t start = line == std::string::npos ? 0 : line + 1;
+            const size_t hash = source.find_first_not_of(" \t", start);
+            if (hash != std::string::npos && source.compare(hash, 10, "#extension") == 0) return true;
+        }
+        return false;
+    };
     std::set<std::string> reserved = common;
-    if (version.number < 420) reserved.insert(before420.begin(), before420.end());
-    else reserved.insert("resource");
-    if (version.number < 400) reserved.insert(before400.begin(), before400.end());
+    if (version.number < 420 && !enables("GL_ARB_shader_image_load_store")) reserved.insert(before420.begin(), before420.end());
+    if (version.number >= 420) reserved.insert("resource");
+    if (version.number < 400 && !enables("GL_ARB_gpu_shader_fp64")) reserved.insert(before400.begin(), before400.end());
     std::string errors;
     const size_t n = source.size();
     size_t i = 0;

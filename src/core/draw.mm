@@ -712,6 +712,10 @@ void DrawState::bindUniforms(id<MTLRenderCommandEncoder> encoder, LinkedProgram&
                 ctx_.state.clipDistanceEnables};
     [encoder setVertexBytes:&driver length:sizeof(driver) atIndex:shader::kSlotDriverUniforms];
     const uint64_t serial = ctx_.stream().serial();
+    // Subroutine selections live in the stage programs' default uniforms.
+    for (int s : {static_cast<int>(Stage::Vertex), static_cast<int>(Stage::Fragment)})
+        if (Program* owner = program.link.stages[s].present ? stageProgram(program, s) : nullptr)
+            applySubroutineSelections(ctx_, *owner);
     static id<MTLBuffer> zero = [Device::get().mtl() newBufferWithLength:65536 options:MTLResourceStorageModePrivate];
     for (int s : {static_cast<int>(Stage::Vertex), static_cast<int>(Stage::Fragment)}) {
         const shader::StageOutput& stage = program.link.stages[s];
@@ -1503,6 +1507,7 @@ void DrawState::bindKernelResources(id<MTLComputeCommandEncoder> encoder, Linked
     if (!owner) owner = stageProgram(program, static_cast<int>(Stage::Vertex));
     if (!owner || !owner->linked) return;
     Program& p = *owner;
+    applySubroutineSelections(ctx_, p);
     const uint32_t size = (p.linked->link.defaultBlockSize + 15) & ~15u;
     if (usesDefaultUniforms && size) {
         if (p.uniformData.size() < size) p.uniformData.resize(size, 0);
