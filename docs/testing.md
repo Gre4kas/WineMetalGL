@@ -51,7 +51,7 @@ list. Configurations 5 and 6 repeat the command lines of 1 and 2 (their only
 difference, `useForFirstEGLConfig`, applies to EGL), so they are not run.
 
 ```sh
-for list in gl30 gl31 gl32 gl33 gl40 gl41 gl42; do
+for list in gl30 gl31 gl32 gl33 gl40 gl41 gl42 gl43; do
   for config in 1 2 3 4; do
     python3 scripts/cts/run.py --mustpass $list-main.txt --config $config \
         --wine /path/to/wine --cts /path/to/build-win64/external/openglcts/modules/glcts.exe \
@@ -67,7 +67,17 @@ python3 scripts/docs/generate.py
 `--template` clones an existing WoW64 prefix instead of creating one per
 shard, and `--filter` runs a subset of cases. Each result file records the
 commit; run from a tree without uncommitted changes, or the source gate
-rejects the evidence. Run times from the committed results:
+rejects the evidence.
+
+A list's baselines stay at the release that last ran it in full. When a later
+release changes what its non-Pass cases do (a newer context version, a fixed
+entry point), those cases are run again: every case that is not Pass in any of
+the list's 8 baselines, with `--caselist`, in the same configuration and runner,
+into `tests/cts/recheck/<list>-cfgN-<runner>.txt`. `generate.py` replaces the
+baseline's results with the recheck's for those cases, refuses a recheck that
+leaves out a non-Pass case, and names the recheck commit next to the totals.
+
+Run times from the committed results:
 
 <!-- BEGIN GENERATED: cts-times (scripts/docs/generate.py) -->
 | Mustpass list | Cases | Under Wine, per run | Natively, per run | All 8 runs |

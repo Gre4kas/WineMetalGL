@@ -5,6 +5,7 @@
 
 Inputs (all tracked):
   tests/cts/baseline/glMN-cfgN-*.txt   KHR-GL30 to KHR-GL43 results (scripts/cts/run.py)
+  tests/cts/recheck/glMN-cfgN-*.txt    later runs of a baseline's non-Pass cases, which replace its results
   tests/cts/notsupported.json          reason for every NotSupported case
   tests/cts/known-failures.json        reasons for failing cases the core does not fix
   tests/games/corpus.json              game corpus manifest
@@ -123,6 +124,24 @@ def load_baselines(suite):
                     meta["seconds"] = int(seconds.group(1))
             elif line.startswith("# cts"):
                 meta["cts"] = line.replace("# cts", "").strip()
+        # A recheck (same list, configuration and runner) reruns the cases that were not Pass at a
+        # later commit; its results replace the baseline's for those cases.
+        recheck = rel("tests", "cts", "recheck", os.path.basename(path))
+        if os.path.exists(recheck):
+            recheck_header, rechecked = cts.load(recheck)
+            unknown = [c for c in rechecked if c not in results]
+            if unknown:
+                raise SystemExit("%s: cases not in %s:\n  %s" % (os.path.relpath(recheck, ROOT), meta["file"],
+                                                                  "\n  ".join(unknown[:10])))
+            not_rechecked = [c for c, status in results.items() if status != "Pass" and c not in rechecked]
+            if not_rechecked:
+                raise SystemExit("%s: non-Pass cases of %s not rechecked:\n  %s" % (
+                    os.path.relpath(recheck, ROOT), meta["file"], "\n  ".join(not_rechecked[:10])))
+            results.update(rechecked)
+            meta["recheck"] = {"file": os.path.relpath(recheck, ROOT), "cases": len(rechecked)}
+            for line in recheck_header:
+                if line.startswith("# commit"):
+                    meta["recheck"]["commit"] = line.split(",")[0].replace("# commit", "").strip()
         out[(meta["config"], meta["runner"])] = (meta, results)
     return out
 
@@ -509,6 +528,8 @@ def render(suites):
     lines = ["## Conformance totals", "",
              "| OpenGL | Conformance % | Features | Unsupported % |", "|---|---:|---|---:|"]
     commits = sorted({meta.get("commit", "?") for b in suites.values() for meta, _ in b.values()})
+    rechecks = sorted({(suite, meta["recheck"].get("commit", "?")) for suite, b in suites.items()
+                       for meta, _ in b.values() if "recheck" in meta})
     for version, adds, suite in VERSIONS:
         if version < "3.0":
             continue
@@ -530,8 +551,14 @@ def render(suites):
               "version's Khronos CTS mustpass list (`KHR-GL30` to `KHR-GL43`), in the worst of its %d runs "
               "(configurations %s of `mustpass.xml`, each under Wine and natively) at commit %s." % (
                   2 * len(CONFIGS), "%d to %d" % (CONFIGS[0], CONFIGS[-1]), ", ".join(commits)),
-              "",
-              "What Unsupported % counts, and why each failing case fails: "
+              ""]
+    if rechecks:
+        packages = [package for suite, package in SUITES if any(s == suite for s, _ in rechecks)]
+        recheck_commits = sorted({c for _, c in rechecks})
+        lines += ["The cases that were not Pass in %s were run again at commit %s, in the same configurations "
+                  "under Wine and natively (`tests/cts/recheck/`); those results replace the baselines' for "
+                  "those cases." % (", ".join("`%s`" % p for p in packages), ", ".join(recheck_commits)), ""]
+    lines += ["What Unsupported % counts, and why each failing case fails: "
               "[Unsupported](docs/unsupported.md#conformance-notes)."]
     lines += ["",
               "OpenGL 1.0 to 2.1 are implemented by WineMetalGL itself, as its compatibility profile: the "
@@ -568,6 +595,8 @@ def main():
     if args.check_provenance:
         # Evidence recorded from a tree with uncommitted changes does not describe a commit.
         recorded = [(meta["file"], meta.get("commit", "")) for b in suites.values() for meta, _ in b.values()]
+        recorded += [(meta["recheck"]["file"], meta["recheck"].get("commit", "")) for b in suites.values()
+                     for meta, _ in b.values() if "recheck" in meta]
         for name in ("results.json", "perf.json"):
             path = rel("tests", "games", name)
             if os.path.exists(path):
