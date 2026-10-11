@@ -68,7 +68,7 @@ WMGL_GPU_FUNCS(WMGL_DECLARE_FUNC)
 namespace gpu {
 
 // A context current on a pbuffer for the lifetime of the fixture, requesting
-// `version` (10 * major + minor); versions above 4.2 go through the
+// `version` (10 * major + minor); versions above 4.3 go through the
 // development override (WINEMETALGL_DEV_MAX_VERSION).
 struct Fixture {
     explicit Fixture(int width = 64, int height = 64, bool core = true, int version = 33);

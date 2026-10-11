@@ -1,4 +1,4 @@
-// GL 4.3 features: shader storage blocks and compute shaders.
+// GL 4.3 features.
 #include <cmath>
 #include <cstdlib>
 #include <string>

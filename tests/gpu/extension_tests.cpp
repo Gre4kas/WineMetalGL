@@ -87,8 +87,9 @@ GPU_TEST(gpu_internalformat_query) {
     GLint max = 0;
     glGetIntegerv(GL_MAX_SAMPLES, &max);
     CHECK_EQ(samples[0], max);  // highest first
-    glGetInternalformativ(GL_TEXTURE_2D, GL_RGBA8, GL_SAMPLES, 8, samples);
-    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_INVALID_ENUM));
+    // GL 4.3 (GL_ARB_internalformat_query2): a single-sample target has no sample counts.
+    glGetInternalformativ(GL_TEXTURE_2D, GL_RGBA8, GL_NUM_SAMPLE_COUNTS, 1, &count);
+    CHECK_EQ(count, 0);
     CHECK_GL();
 }
 

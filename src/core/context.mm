@@ -114,9 +114,9 @@ void Context::initStrings() {
     extensions_.push_back("GL_ARB_ES2_compatibility");
     extensions_.push_back("GL_ARB_texture_storage");
     extensions_.push_back("GL_EXT_texture_storage");  // the same entry points (EXT aliases)
-    // GL_ARB_compute_shader is not advertised: without storage buffers, images
-    // or atomic counters (GL 4.x roadmap, G08) a kernel has no way to write
-    // output, and engines that detect it would skip their working fallback.
+    // GL_ARB_compute_shader is advertised only with GL 4.3 (below): in older
+    // contexts a kernel has no storage buffers to write, and engines that
+    // detect it would skip their working fallback.
     extensions_.push_back("GL_ARB_compressed_texture_pixel_storage");
     extensions_.push_back("GL_ARB_texture_storage_multisample");
     extensions_.push_back("GL_EXT_texture_compression_s3tc");
@@ -153,7 +153,7 @@ void Context::initStrings() {
     for (const char* name : {"GL_KHR_robustness", "GL_ARB_robustness", "GL_ARB_internalformat_query",
                              "GL_ARB_invalidate_subdata", "GL_ARB_copy_image", "GL_NVX_gpu_memory_info", "GL_ATI_meminfo"})
         extensions_.push_back(name);
-    // The extensions GL 4.0, 4.1 and 4.2 made core, in contexts of the
+    // The extensions GL 4.0 to 4.3 made core, in contexts of the
     // version that includes them (their features are gated on the version).
     const int version = config_.major * 10 + config_.minor;
     if (version >= 40)
