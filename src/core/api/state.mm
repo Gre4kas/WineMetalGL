@@ -332,6 +332,19 @@ void ClearColor(Context& ctx, GLfloat r, GLfloat g, GLfloat b, GLfloat a) {
     ctx.state.clearColor[3] = a;
 }
 
+// GL_EXT_texture_integer: the clear colour of integer colour buffers.
+void ClearColorIiEXT(Context& ctx, GLint r, GLint g, GLint b, GLint a) {
+    const GLint v[4] = {r, g, b, a};
+    for (int i = 0; i < 4; ++i) ctx.state.clearColorInteger[i] = v[i];
+    ctx.state.clearColorIntegerSet = true;
+}
+
+void ClearColorIuiEXT(Context& ctx, GLuint r, GLuint g, GLuint b, GLuint a) {
+    const GLuint v[4] = {r, g, b, a};
+    for (int i = 0; i < 4; ++i) ctx.state.clearColorInteger[i] = v[i];
+    ctx.state.clearColorIntegerSet = true;
+}
+
 void ClearDepth(Context& ctx, GLdouble depth) { ctx.state.clearDepth = std::clamp(depth, 0.0, 1.0); }
 void ClearDepthf(Context& ctx, GLfloat depth) { ClearDepth(ctx, depth); }
 void ClearStencil(Context& ctx, GLint s) { ctx.state.clearStencil = s; }

@@ -2388,7 +2388,9 @@ void DrawState::clear(GLbitfield mask) {
             // drivers, the float clear colour is converted to the integer type.
             if (!target.color[i].texture) continue;
             clear.colorMask |= 1u << i;
-            float c[4] = {st.clearColor[0], st.clearColor[1], st.clearColor[2], formats.alphaIsOne[i] ? 1.0f : st.clearColor[3]};
+            double c[4] = {st.clearColor[0], st.clearColor[1], st.clearColor[2], formats.alphaIsOne[i] ? 1.0 : st.clearColor[3]};
+            if (formats.integer[i] && st.clearColorIntegerSet)  // GL_EXT_texture_integer
+                for (int k = 0; k < 4; ++k) c[k] = st.clearColorInteger[k];
             clear.color[i] = MTLClearColorMake(c[0], c[1], c[2], c[3]);
             const auto& m = st.colorMask[i];
             if (!m[0] || !m[1] || !m[2] || (!m[3] && !formats.alphaIsOne[i])) fullMasks = false;

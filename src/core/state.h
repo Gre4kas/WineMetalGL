@@ -167,6 +167,10 @@ struct ContextState {
 
     // Clear values.
     GLfloat clearColor[4] = {0, 0, 0, 0};
+    // GL_EXT_texture_integer: the clear colour of integer buffers, once set
+    // (otherwise they take clearColor, converted).
+    double clearColorInteger[4] = {0, 0, 0, 0};
+    bool clearColorIntegerSet = false;
     GLdouble clearDepth = 1.0;
     GLint clearStencil = 0;
 

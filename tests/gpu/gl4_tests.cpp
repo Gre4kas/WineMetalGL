@@ -629,3 +629,29 @@ void main() {
     glDeleteTextures(2, tex);
     glDeleteProgram(p);
 }
+
+GPU_TEST_VERSION(gpu_gl4_clear_color_integer, 42) {
+    // GL_EXT_texture_integer: glClearColorIuiEXT sets the clear colour of
+    // integer colour buffers.
+    auto clearColorIui = reinterpret_cast<PFN_glClearColorIuiEXT>(wmgl_get_proc_address("glClearColorIuiEXT"));
+    CHECK(clearColorIui != nullptr);
+    GLuint tex = 0, fbo = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA32UI, 4, 4);
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+    clearColorIui(7, 70000, 3, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+    GLuint px[4] = {};
+    glReadPixels(1, 1, 1, 1, GL_RGBA_INTEGER, GL_UNSIGNED_INT, px);
+    CHECK_EQ(px[0], 7u);
+    CHECK_EQ(px[1], 70000u);
+    CHECK_EQ(px[2], 3u);
+    CHECK_EQ(px[3], 1u);
+    CHECK_GL();
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &tex);
+}
