@@ -6657,7 +6657,12 @@ void TParseContext::layoutTypeCheck(const TSourceLoc& loc, const TType& type)
                     }
                 }
             }
-            if (spvVersion.vulkan == 0 && lastBinding >= resources.maxCombinedTextureImageUnits)
+            // WineMetalGL: an image binding names an image unit, so it is
+            // checked against gl_MaxImageUnits, as GLSL 4.20 requires.
+            if (spvVersion.vulkan == 0 && type.getSampler().isImage()) {
+                if (lastBinding >= resources.maxImageUnits)
+                    error(loc, "image binding not less than gl_MaxImageUnits", "binding", type.isArray() ? "(using array)" : "");
+            } else if (spvVersion.vulkan == 0 && lastBinding >= resources.maxCombinedTextureImageUnits)
                 error(loc, "sampler binding not less than gl_MaxCombinedTextureImageUnits", "binding", type.isArray() ? "(using array)" : "");
         }
         if (type.isAtomic() && !spvVersion.vulkanRelaxed) {
@@ -9676,7 +9681,10 @@ void TParseContext::invariantCheck(const TSourceLoc& loc, const TQualifier& qual
 
     bool pipeOut = qualifier.isPipeOutput();
     bool pipeIn = qualifier.isPipeInput();
-    if ((version >= 300 && isEsProfile()) || (!isEsProfile() && version >= 420)) {
+    // WineMetalGL: desktop GLSL 4.20 and later still accept invariant inputs
+    // outside the vertex stage (they match the previous stage's invariant
+    // outputs), as desktop drivers and the GL 4.2 conformance tests expect.
+    if (version >= 300 && isEsProfile()) {
         if (! pipeOut)
             error(loc, "can only apply to an output", "invariant", "");
     } else {

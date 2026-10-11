@@ -1065,6 +1065,32 @@ std::string raiseComputeVersion(Stage stage, const std::string& source) {
     return raised;
 }
 
+// layout(binding) on a uniform block must leave every element of the block
+// within GL_MAX_UNIFORM_BUFFER_BINDINGS (a compile-time error in GLSL).
+// glslang checks opaque bindings itself but has no limit for blocks.
+std::string checkBlockBindings(glslang::TShader& shader) {
+    const glslang::TIntermediate* intermediate = shader.getIntermediate();
+    glslang::TIntermAggregate* root =
+        intermediate && intermediate->getTreeRoot() ? intermediate->getTreeRoot()->getAsAggregate() : nullptr;
+    if (!root) return {};
+    for (TIntermNode* node : root->getSequence()) {
+        glslang::TIntermAggregate* objects = node->getAsAggregate();
+        if (!objects || objects->getOp() != glslang::EOpLinkerObjects) continue;
+        for (TIntermNode* object : objects->getSequence()) {
+            glslang::TIntermSymbol* symbol = object->getAsSymbolNode();
+            if (!symbol) continue;
+            const glslang::TType& type = symbol->getType();
+            const glslang::TQualifier& q = type.getQualifier();
+            if (type.getBasicType() != glslang::EbtBlock || q.storage != glslang::EvqUniform || !q.hasBinding()) continue;
+            const int count = type.isSizedArray() ? type.getCumulativeArraySize() : 1;
+            if (static_cast<int64_t>(q.layoutBinding) + count > wmgl::limits::kMaxUniformBufferBindings)
+                return "ERROR: uniform block '" + unescapeName(type.getTypeName().c_str()) +
+                       "': binding is not less than GL_MAX_UNIFORM_BUFFER_BINDINGS\n";
+        }
+    }
+    return {};
+}
+
 }  // namespace
 
 CompileResult compile(Stage stage, const std::string& original) {
@@ -1102,6 +1128,13 @@ CompileResult compile(Stage stage, const std::string& original) {
                 result.ok = true;
                 result.log = relaxedLog;
             }
+        }
+    }
+    if (result.ok) {
+        const std::string bindings = checkBlockBindings(shader);
+        if (!bindings.empty()) {
+            result.ok = false;
+            result.log += bindings;
         }
     }
     if (result.ok) {
