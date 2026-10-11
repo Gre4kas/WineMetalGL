@@ -1,5 +1,5 @@
 // Tessellation emulation (core/shader/tessellation.h, core/tess/tessellator.h),
-// in GL 4.0 contexts (the development override, gpu::Fixture).
+// in GL 4.x contexts (gpu::Fixture).
 #include <algorithm>
 #include <cmath>
 #include <set>

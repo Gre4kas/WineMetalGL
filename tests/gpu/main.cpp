@@ -53,13 +53,13 @@ Fixture::Fixture(int width, int height, bool core, int version) {
     const int attribs[] = {0x2091 /* MAJOR */, version / 10, 0x2092 /* MINOR */, version % 10, 0x9126 /* PROFILE_MASK */,
                            core ? 1 : 2, 0};
     int error = 0;
-    if (version > 33) {
+    if (version > 42) {
         char value[8];
         std::snprintf(value, sizeof(value), "%d.%d", version / 10, version % 10);
         setenv("WINEMETALGL_DEV_MAX_VERSION", value, 1);
     }
     context = wmgl_context_create(format, nullptr, attribs, &error);
-    if (version > 33) unsetenv("WINEMETALGL_DEV_MAX_VERSION");
+    if (version > 42) unsetenv("WINEMETALGL_DEV_MAX_VERSION");
     ok = surface && context && wmgl_make_current(context, surface, surface);
     if (ok) glViewport(0, 0, width, height);
 }

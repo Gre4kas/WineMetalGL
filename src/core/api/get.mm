@@ -422,6 +422,10 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
     case GL_POLYGON_MODE: out = ints({s.polygonMode, s.polygonModeBack}); return true;
     case GL_POLYGON_OFFSET_FACTOR: out = floats({s.polygonOffsetFactor}); return true;
     case GL_POLYGON_OFFSET_UNITS: out = floats({s.polygonOffsetUnits}); return true;
+    case GL_POLYGON_OFFSET_CLAMP:  // GL_ARB/EXT_polygon_offset_clamp
+        if (!ctx.hasExtension("GL_ARB_polygon_offset_clamp")) return false;
+        out = floats({s.polygonOffsetClamp});
+        return true;
     case GL_LINE_WIDTH: out = floats({s.lineWidth}); return true;
     case GL_POINT_SIZE: out = floats({s.pointSize}); return true;
     case GL_POINT_FADE_THRESHOLD_SIZE: out = floats({s.pointFadeThresholdSize}); return true;

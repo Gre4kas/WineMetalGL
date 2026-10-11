@@ -1,5 +1,4 @@
-// GL 4.0-4.2 features (through the development override, until the
-// version is advertised).
+// GL 4.0-4.2 features.
 #include <string>
 
 #include "gpu.h"

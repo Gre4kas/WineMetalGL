@@ -28,7 +28,7 @@ constexpr int kCoreBit = 0x1, kCompatBit = 0x2;
 constexpr int kLoseContextOnReset = 0x8252;
 
 // The highest version this core implements completely.
-constexpr int kHonestMajor = 3, kHonestMinor = 3;
+constexpr int kHonestMajor = 4, kHonestMinor = 2;
 
 void honestMaxVersion(int& major, int& minor) {
     major = kHonestMajor;
