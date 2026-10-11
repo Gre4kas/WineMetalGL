@@ -39,6 +39,11 @@ constexpr uint32_t kMaxStageSamplers = 16;     // textures/samplers 0..15
 // evaluation vertex function, which has no vertex attributes, reads its
 // domain points, patch records and control block from buffers 18..20.
 constexpr uint32_t kSlotTessVertices = 18, kSlotTessPatches = 19, kSlotTessControl = 20;
+// Atomic counter buffers (GL 4.2): buffers 18..25 of fragment and compute
+// functions (the geometry kernel included), which bind no vertex buffers.
+// Vertex functions have no free slot, so they have none.
+constexpr uint32_t kSlotFirstAtomicCounterBuffer = 18;
+constexpr uint32_t kMaxStageAtomicCounterBuffers = 8;
 
 struct CompileResult {
     bool ok = false;
@@ -73,8 +78,22 @@ struct UniformInfo {
     GLint arrayStride = 0, matrixStride = 0;
     bool rowMajor = false;
     int samplerSlot = -1;      // first program sampler slot (elements are consecutive)
+    int atomicBufferIndex = -1;  // atomic counters: index into LinkResult::atomicBuffers
     uint32_t stageMask = 0;    // stages referencing it
 };
+
+// An active atomic counter buffer (GL 4.2): the counters a program declares
+// with one binding. glslang turns them into members of a storage block named
+// "gl_AtomicCounterBlock_<binding>" at their offsets.
+struct AtomicCounterBufferInfo {
+    GLuint binding = 0;
+    GLint dataSize = 0;               // bytes the counters need
+    std::vector<int> activeUniforms;  // indices into uniforms
+    uint32_t stageMask = 0;
+    int stageSlot[kStageCount] = {-1, -1, -1, -1, -1, -1};  // Metal buffer index per stage
+};
+// The GL binding of an atomic counter storage block name, or -1.
+int atomicCounterBlockBinding(const std::string& blockName);
 
 struct UniformBlockInfo {
     std::string name;          // "Block" or "Block[2]"
@@ -211,6 +230,7 @@ struct LinkResult {
     std::vector<AttribInfo> attribs;
     std::vector<FragOutputInfo> fragOutputs;
     std::vector<SamplerSlotInfo> samplers;
+    std::vector<AtomicCounterBufferInfo> atomicBuffers;
     std::vector<TransformFeedbackVarying> transformFeedback;
     uint32_t xfbStride[4] = {};      // 32-bit words per captured vertex, per buffer
     int xfbBufferCount = 0;

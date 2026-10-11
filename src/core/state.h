@@ -173,8 +173,11 @@ struct ContextState {
     RefPtr<Buffer> arrayBuffer, copyReadBuffer, copyWriteBuffer, pixelPackBuffer, pixelUnpackBuffer,
         textureBuffer, uniformBuffer, transformFeedbackBuffer, drawIndirectBuffer, dispatchIndirectBuffer,
         shaderStorageBuffer, atomicCounterBuffer, queryBuffer;
-    static constexpr int kMaxUniformBufferBindings = 36;  // = limits::kMaxUniformBufferBindings
+    static constexpr int kMaxUniformBufferBindings = 72;  // = limits::kMaxUniformBufferBindings
     std::array<IndexedBufferBinding, kMaxUniformBufferBindings> uniformBufferBindings;
+    // GL 4.2 atomic counter buffer bindings.
+    static constexpr int kMaxAtomicCounterBufferBindings = 8;  // = limits::kMaxAtomicCounterBufferBindings
+    std::array<IndexedBufferBinding, kMaxAtomicCounterBufferBindings> atomicCounterBufferBindings;
     static constexpr int kMaxTextureUnits = 80;
     std::array<TextureUnit, kMaxTextureUnits> textureUnits;
     GLuint activeTexture = 0;

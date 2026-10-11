@@ -132,6 +132,9 @@ private:
     // Depth/stencil, dynamic state, scissor, uniforms and textures for a draw.
     void bindDrawState(id<MTLRenderCommandEncoder> encoder, LinkedProgram& program);
     void uniformBlockBuffer(LinkedProgram& program, size_t block, __strong id<MTLBuffer>& buffer, NSUInteger& offset);
+    // The buffer bound to atomic counter buffer `index`'s binding point (a
+    // scratch buffer when none is), marked as written by the draw.
+    void atomicCounterBuffer(LinkedProgram& program, size_t index, __strong id<MTLBuffer>& buffer, NSUInteger& offset);
     // The program object whose state feeds `stage` (pipelines: the stage's
     // program), and the owner and own index of a uniform block or sampler.
     Program* stageProgram(LinkedProgram& program, int stage);

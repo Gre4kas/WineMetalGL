@@ -72,6 +72,10 @@ public:
     id<MTLBlitCommandEncoder> blit();
     id<MTLComputeCommandEncoder> compute();
     void endEncoder();
+    // glMemoryBarrier: orders shader writes to buffers and textures before
+    // later shader accesses in the open render or compute encoder (Metal
+    // tracks hazards between encoders itself).
+    void memoryBarrier();
 
     // Commits the command buffer; returns its serial (0 if nothing was recorded).
     uint64_t flush();

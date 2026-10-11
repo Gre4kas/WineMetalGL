@@ -7007,6 +7007,9 @@ void TParseContext::fixOffset(const TSourceLoc& loc, TSymbol& symbol)
             int repeated = intermediate.addUsedOffsets(qualifier.layoutBinding, offset, numOffsets);
             if (repeated >= 0)
                 error(loc, "atomic counters sharing the same offset:", "offset", "%d", repeated);
+            // WineMetalGL: GLSL 4.20 makes a counter past gl_MaxAtomicCounterBufferSize a compile-time error.
+            if (offset + numOffsets > resources.maxAtomicCounterBufferSize)
+                error(loc, "atomic counter offset exceeds gl_MaxAtomicCounterBufferSize:", "offset", "%d", offset);
 
             // Bump the default offset
             atomicUintOffsets[qualifier.layoutBinding] = offset + numOffsets;

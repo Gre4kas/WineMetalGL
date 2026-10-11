@@ -221,6 +221,30 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
         if (ctx.version() < 42) return false;
         out = ints({8});
         return true;
+    // GL 4.2 atomic counters (limits.h); vertex and tessellation stages have none.
+    case GL_ATOMIC_COUNTER_BUFFER_BINDING: case GL_MAX_ATOMIC_COUNTER_BUFFER_BINDINGS: case GL_MAX_ATOMIC_COUNTER_BUFFER_SIZE:
+    case GL_MAX_VERTEX_ATOMIC_COUNTER_BUFFERS: case GL_MAX_TESS_CONTROL_ATOMIC_COUNTER_BUFFERS:
+    case GL_MAX_TESS_EVALUATION_ATOMIC_COUNTER_BUFFERS: case GL_MAX_GEOMETRY_ATOMIC_COUNTER_BUFFERS:
+    case GL_MAX_FRAGMENT_ATOMIC_COUNTER_BUFFERS: case GL_MAX_COMBINED_ATOMIC_COUNTER_BUFFERS:
+    case GL_MAX_VERTEX_ATOMIC_COUNTERS: case GL_MAX_TESS_CONTROL_ATOMIC_COUNTERS: case GL_MAX_TESS_EVALUATION_ATOMIC_COUNTERS:
+    case GL_MAX_GEOMETRY_ATOMIC_COUNTERS: case GL_MAX_FRAGMENT_ATOMIC_COUNTERS: case GL_MAX_COMBINED_ATOMIC_COUNTERS:
+        if (!ctx.atomicCounters()) return false;
+        switch (pname) {
+        case GL_ATOMIC_COUNTER_BUFFER_BINDING: out = ints({nameOf(s.atomicCounterBuffer)}); break;
+        case GL_MAX_ATOMIC_COUNTER_BUFFER_BINDINGS: out = ints({kMaxAtomicCounterBufferBindings}); break;
+        case GL_MAX_ATOMIC_COUNTER_BUFFER_SIZE: out = ints({kMaxAtomicCounterBufferSize}); break;
+        case GL_MAX_VERTEX_ATOMIC_COUNTER_BUFFERS: case GL_MAX_TESS_CONTROL_ATOMIC_COUNTER_BUFFERS:
+        case GL_MAX_TESS_EVALUATION_ATOMIC_COUNTER_BUFFERS: case GL_MAX_VERTEX_ATOMIC_COUNTERS:
+        case GL_MAX_TESS_CONTROL_ATOMIC_COUNTERS: case GL_MAX_TESS_EVALUATION_ATOMIC_COUNTERS:
+            out = ints({0});
+            break;
+        case GL_MAX_GEOMETRY_ATOMIC_COUNTER_BUFFERS: case GL_MAX_FRAGMENT_ATOMIC_COUNTER_BUFFERS:
+        case GL_MAX_COMBINED_ATOMIC_COUNTER_BUFFERS:
+            out = ints({kMaxStageAtomicCounterBuffers});
+            break;
+        default: out = ints({kMaxStageAtomicCounters}); break;
+        }
+        return true;
     case GL_MAX_GEOMETRY_SHADER_INVOCATIONS:
         if (ctx.version() < 40 && !ctx.hasExtension("GL_ARB_gpu_shader5")) return false;
         out = ints({32});
@@ -588,6 +612,15 @@ bool getIndexed(Context& ctx, GLenum pname, GLuint index, Value& out, bool& badI
             out = bools({((s.scissorTests >> index) & 1) != 0});
         }
         return true;
+    case GL_ATOMIC_COUNTER_BUFFER_BINDING: case GL_ATOMIC_COUNTER_BUFFER_START: case GL_ATOMIC_COUNTER_BUFFER_SIZE: {
+        if (!ctx.atomicCounters()) return false;
+        if (index >= static_cast<GLuint>(ContextState::kMaxAtomicCounterBufferBindings)) { badIndex = true; return true; }
+        const IndexedBufferBinding& b = s.atomicCounterBufferBindings[index];
+        out = pname == GL_ATOMIC_COUNTER_BUFFER_BINDING ? ints({nameOf(b.buffer)})
+              : pname == GL_ATOMIC_COUNTER_BUFFER_START ? int64v(b.offset)
+                                                        : int64v(b.size);
+        return true;
+    }
     case GL_SAMPLE_MASK_VALUE:
         if (index >= 1) { badIndex = true; return true; }
         out = uints({s.sampleMaskValue});

@@ -16,6 +16,7 @@
 #include <sstream>
 
 #include "core/shader/glsl_upgrade.h"
+#include "core/limits.h"
 #include "core/shader/geometry.h"
 #include "core/shader/tessellation.h"
 #include "core/shader/spirv_passes.h"
@@ -27,6 +28,43 @@ namespace {
 constexpr const char* kDefaultBlockName = "wmgl_DefaultUniforms";
 constexpr int kDefaultBlockBinding = 1000;
 constexpr unsigned kNoLocation = 0xFFF;  // glslang's TQualifier::layoutLocationEnd
+
+// GLSL built-in constants (gl_Max*): glslang's defaults, with the limits
+// the core reports through glGet (core/limits.h).
+const TBuiltInResource* resources() {
+    static const TBuiltInResource r = [] {
+        TBuiltInResource x = *GetDefaultResources();
+        namespace L = wmgl::limits;
+        x.maxVertexAttribs = L::kMaxVertexAttribs;
+        x.maxDrawBuffers = L::kMaxDrawBuffers;
+        x.maxTextureImageUnits = x.maxVertexTextureImageUnits = x.maxGeometryTextureImageUnits = L::kMaxTextureUnitsPerStage;
+        x.maxTessControlTextureImageUnits = x.maxTessEvaluationTextureImageUnits = L::kMaxTextureUnitsPerStage;
+        x.maxCombinedTextureImageUnits = L::kMaxCombinedTextureUnits;
+        x.maxVaryingComponents = 64;
+        x.maxVaryingVectors = 16;
+        x.maxImageUnits = L::kMaxImageUnits;
+        x.maxCombinedImageUnitsAndFragmentOutputs = x.maxCombinedShaderOutputResources = L::kMaxCombinedImageUnitsAndFragmentOutputs;
+        x.maxImageSamples = 0;
+        x.maxVertexImageUniforms = x.maxTessControlImageUniforms = x.maxTessEvaluationImageUniforms = 0;
+        x.maxGeometryImageUniforms = x.maxFragmentImageUniforms = x.maxComputeImageUniforms = L::kMaxImageUniformsPerStage;
+        x.maxCombinedImageUniforms = L::kMaxCombinedImageUniforms;
+        x.maxVertexAtomicCounters = x.maxTessControlAtomicCounters = x.maxTessEvaluationAtomicCounters = 0;
+        x.maxGeometryAtomicCounters = x.maxFragmentAtomicCounters = x.maxComputeAtomicCounters = L::kMaxStageAtomicCounters;
+        x.maxCombinedAtomicCounters = L::kMaxStageAtomicCounters;
+        x.maxVertexAtomicCounterBuffers = x.maxTessControlAtomicCounterBuffers = x.maxTessEvaluationAtomicCounterBuffers = 0;
+        x.maxGeometryAtomicCounterBuffers = x.maxFragmentAtomicCounterBuffers = x.maxComputeAtomicCounterBuffers =
+            L::kMaxStageAtomicCounterBuffers;
+        x.maxCombinedAtomicCounterBuffers = L::kMaxStageAtomicCounterBuffers;
+        x.maxAtomicCounterBindings = L::kMaxAtomicCounterBufferBindings;
+        x.maxAtomicCounterBufferSize = L::kMaxAtomicCounterBufferSize;
+        x.maxViewports = L::kMaxViewports;
+        x.maxPatchVertices = L::kMaxPatchVertices;
+        x.maxTessGenLevel = L::kMaxTessGenLevel;
+        x.maxSamples = 4;
+        return x;
+    }();
+    return &r;
+}
 
 void initGlslang() {
     static std::once_flag once;
@@ -561,7 +599,7 @@ bool parseForCodegen(Stage stage, const std::string& original, ParsedShader& out
     configure(*out.shader, lang);
     // Validity was decided by compile()'s GL-rules parse; codegen tolerates
     // what desktop drivers accept (e.g. 'defined' produced by macro expansion).
-    if (!out.shader->parse(GetDefaultResources(), 140, ENoProfile, false, false,
+    if (!out.shader->parse(resources(), 140, ENoProfile, false, false,
                            static_cast<EShMessages>(kMessages | EShMsgRelaxedErrors))) {
         log += unescapeName(cleanLog(out.shader->getInfoLog(), out.shader->getInfoDebugLog()));
         return false;
@@ -769,6 +807,16 @@ void expandMember(const spirv_cross::Compiler& compiler, const spirv_cross::SPIR
 
 // ------------------------------------------------------------- helpers
 
+int atomicCounterBlockBinding(const std::string& blockName) {
+    // SPIRV-Cross prefixes reserved gl_ names when it writes GLSL (geometry kernels).
+    static const std::string kName = "gl_AtomicCounterBlock_", kFixup = "_RESERVED_IDENTIFIER_FIXUP_";
+    std::string name = blockName.rfind(kFixup, 0) == 0 ? blockName.substr(kFixup.size()) : blockName;
+    if (name.rfind(kName, 0) != 0 || name.size() == kName.size()) return -1;
+    const std::string digits = name.substr(kName.size());
+    if (digits.find_first_not_of("0123456789") != std::string::npos) return -1;
+    return std::atoi(digits.c_str());
+}
+
 int glTypeComponents(GLenum type) {
     switch (type) {
     case GL_FLOAT: case GL_INT: case GL_UNSIGNED_INT: case GL_BOOL: case GL_DOUBLE: return 1;
@@ -854,7 +902,7 @@ CompileResult compile(Stage stage, const std::string& original) {
     shader.setEnvInput(glslang::EShSourceGlsl, lang, glslang::EShClientNone, 0);
     shader.setEnvClient(glslang::EShClientNone, glslang::EShTargetClientVersion(0));
     shader.setEnvTarget(glslang::EShTargetNone, glslang::EShTargetLanguageVersion(0));
-    result.ok = shader.parse(GetDefaultResources(), 110, ENoProfile, false, false, EShMsgDefault);
+    result.ok = shader.parse(resources(), 110, ENoProfile, false, false, EShMsgDefault);
     result.log = cleanLog(shader.getInfoLog(), shader.getInfoDebugLog());
     if (!result.ok && result.log.find("cannot use in preprocessor expression when expanded from macros") != std::string::npos) {
         // 'defined' produced by macro expansion is undefined behaviour in GLSL;
@@ -864,7 +912,7 @@ CompileResult compile(Stage stage, const std::string& original) {
         relaxed.setEnvInput(glslang::EShSourceGlsl, lang, glslang::EShClientNone, 0);
         relaxed.setEnvClient(glslang::EShClientNone, glslang::EShTargetClientVersion(0));
         relaxed.setEnvTarget(glslang::EShTargetNone, glslang::EShTargetLanguageVersion(0));
-        if (relaxed.parse(GetDefaultResources(), 110, ENoProfile, false, false, EShMsgRelaxedErrors)) {
+        if (relaxed.parse(resources(), 110, ENoProfile, false, false, EShMsgRelaxedErrors)) {
             const std::string relaxedLog = cleanLog(relaxed.getInfoLog(), relaxed.getInfoDebugLog());
             if (relaxedLog.find("ERROR") == std::string::npos) {
                 result.ok = true;
@@ -994,6 +1042,8 @@ static void hideFixedFunctionBlock(LinkResult& r) {
     for (UniformInfo& u : uniforms)
         if (u.blockIndex >= 0) u.blockIndex = blockMap[static_cast<size_t>(u.blockIndex)];
     for (UniformBlockInfo& b : blocks)
+        for (int& u : b.activeUniforms) u = uniformMap[static_cast<size_t>(u)];
+    for (AtomicCounterBufferInfo& b : r.atomicBuffers)
         for (int& u : b.activeUniforms) u = uniformMap[static_cast<size_t>(u)];
     for (auto& location : r.locations) location.first = uniformMap[static_cast<size_t>(location.first)];
     r.blocks = std::move(blocks);
@@ -1432,13 +1482,53 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
                 result.uniforms[it->second].stageMask |= 1u << s;
             }
         }
+        // Atomic counters (GL 4.2): the storage blocks glslang made of them.
+        for (const auto& ssbo : resources.storage_buffers) {
+            const int binding = atomicCounterBlockBinding(compiler.get_name(ssbo.base_type_id));
+            if (binding < 0) continue;
+            auto buffer = std::find_if(result.atomicBuffers.begin(), result.atomicBuffers.end(),
+                                       [&](const AtomicCounterBufferInfo& b) { return b.binding == static_cast<GLuint>(binding); });
+            if (buffer == result.atomicBuffers.end()) {
+                AtomicCounterBufferInfo info;
+                info.binding = static_cast<GLuint>(binding);
+                result.atomicBuffers.push_back(info);
+                buffer = result.atomicBuffers.end() - 1;
+            }
+            const int bufferIndex = static_cast<int>(buffer - result.atomicBuffers.begin());
+            buffer->stageMask |= 1u << s;
+            const spirv_cross::SPIRType& type = compiler.get_type(ssbo.base_type_id);
+            for (uint32_t m = 0; m < type.member_types.size(); ++m) {
+                const spirv_cross::SPIRType& memberType = compiler.get_type(type.member_types[m]);
+                const std::string name = unescapeName(compiler.get_member_name(type.self, m));
+                const uint32_t offset = compiler.type_struct_member_offset(type, m);
+                const uint32_t count = memberType.array.empty() ? 1 : std::max(1u, memberType.array.back());
+                buffer->dataSize = std::max<GLint>(buffer->dataSize, static_cast<GLint>(offset + 4 * count));
+                const std::string glName = memberType.array.empty() ? name : name + "[0]";
+                auto it = std::find_if(result.uniforms.begin(), result.uniforms.end(),
+                                       [&](const UniformInfo& u) { return u.name == glName && u.atomicBufferIndex >= 0; });
+                if (it != result.uniforms.end()) {
+                    it->stageMask |= 1u << s;
+                    continue;
+                }
+                UniformInfo u;
+                u.name = glName;
+                u.type = GL_UNSIGNED_INT_ATOMIC_COUNTER;
+                u.size = static_cast<GLint>(count);
+                u.offset = static_cast<GLint>(offset);
+                u.arrayStride = memberType.array.empty() ? 0 : 4;
+                u.atomicBufferIndex = bufferIndex;
+                u.stageMask = 1u << s;
+                buffer->activeUniforms.push_back(static_cast<int>(result.uniforms.size()));
+                result.uniforms.push_back(u);
+            }
+        }
     }
 
     // Assign default-block and sampler uniform locations (consecutive per element).
     GLint nextLocation = 0;
     for (size_t i = 0; i < result.uniforms.size(); ++i) {
         UniformInfo& u = result.uniforms[i];
-        if (u.blockIndex >= 0) continue;
+        if (u.blockIndex >= 0 || u.atomicBufferIndex >= 0) continue;  // atomic counters have no location
         u.location = nextLocation;
         for (GLint e = 0; e < u.size; ++e) result.locations.emplace_back(static_cast<int>(i), e);
         nextLocation += u.size;
@@ -1610,6 +1700,7 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
                 {"wmgl_TcsControl", kSlotFirstXfbBuffer + 2}, {"wmgl_TesVertices", kSlotTessVertices},
                 {"wmgl_TesPatches", kSlotTessPatches}, {"wmgl_TesControl", kSlotTessControl},
             };
+            uint32_t nextAtomicSlot = kSlotFirstAtomicCounterBuffer;
             for (const auto& ssbo : resources.storage_buffers) {
                 const std::string blockName = msl.get_name(ssbo.base_type_id);
                 spirv_cross::MSLResourceBinding b;
@@ -1617,9 +1708,22 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
                 msl.set_decoration(ssbo.id, spv::DecorationBinding, uniqueBinding++);
                 b.desc_set = msl.get_decoration(ssbo.id, spv::DecorationDescriptorSet);
                 b.binding = msl.get_decoration(ssbo.id, spv::DecorationBinding);
+                const int counterBinding = atomicCounterBlockBinding(blockName);
                 if (auto internal = kInternalBuffers.find(blockName); internal != kInternalBuffers.end()) b.msl_buffer = internal->second;
                 else if (blockName.rfind("wmgl_XfbData", 0) == 0) b.msl_buffer = kSlotFirstXfbBuffer + std::stoul(blockName.substr(12));
-                else {
+                else if (counterBinding >= 0) {
+                    if (s != static_cast<int>(Stage::Fragment) && s != static_cast<int>(Stage::Compute)) {
+                        result.log += "error: atomic counters are not supported in this shader stage\n";
+                        return result;
+                    }
+                    if (nextAtomicSlot >= kSlotFirstAtomicCounterBuffer + kMaxStageAtomicCounterBuffers) {
+                        result.log += "error: too many atomic counter buffers in one stage\n";
+                        return result;
+                    }
+                    b.msl_buffer = nextAtomicSlot++;
+                    for (AtomicCounterBufferInfo& buffer : result.atomicBuffers)
+                        if (buffer.binding == static_cast<GLuint>(counterBinding)) buffer.stageSlot[s] = static_cast<int>(b.msl_buffer);
+                } else {
                     result.log += "error: shader storage blocks are not supported\n";
                     return result;
                 }
@@ -1723,6 +1827,9 @@ void copyStageSlots(const LinkResult& source, int from, LinkResult& result, int 
     for (UniformBlockInfo& block : result.blocks)
         for (const UniformBlockInfo& other : source.blocks)
             if (other.name == block.name) block.stageSlot[to] = other.stageSlot[from];
+    for (AtomicCounterBufferInfo& buffer : result.atomicBuffers)
+        for (const AtomicCounterBufferInfo& other : source.atomicBuffers)
+            if (other.binding == buffer.binding) buffer.stageSlot[to] = other.stageSlot[from];
     for (const UniformInfo& u : result.uniforms) {
         if (u.samplerSlot < 0) continue;
         for (const UniformInfo& other : source.uniforms)

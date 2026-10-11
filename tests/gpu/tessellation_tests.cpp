@@ -1,5 +1,5 @@
-// Tessellation emulation (core/shader/tessellation.h, core/tess/tessellator.h).
-// GL 4.x contexts: gpu_gl4_* tests run with the development override (main.cpp).
+// Tessellation emulation (core/shader/tessellation.h, core/tess/tessellator.h),
+// in GL 4.0 contexts (the development override, gpu::Fixture).
 #include <algorithm>
 #include <cmath>
 #include <set>
@@ -107,7 +107,16 @@ int milli(float x) { return static_cast<int>(std::lround(x * 1000.0f)); }
 
 }  // namespace
 
-GPU_TEST(gpu_gl4_tess_triangles_default_levels_point_mode) {
+#define TESS_TEST(name)                                     \
+    static void name##_body();                              \
+    TEST(name) {                                            \
+        gpu::Fixture fixture_(64, 64, true, 40);            \
+        CHECK(fixture_.ok);                                 \
+        if (fixture_.ok) name##_body();                     \
+    }                                                       \
+    static void name##_body()
+
+TESS_TEST(gpu_tess_triangles_default_levels_point_mode) {
     // No control shader: the default levels (2) apply. A triangle with every
     // level 2 has 7 distinct vertices: corners, edge midpoints and the centre.
     const char* tes = R"(#version 400 core
@@ -132,7 +141,7 @@ void main() { coord = gl_TessCoord; gl_Position = vec4(0.0); })";
     glDeleteProgram(p);
 }
 
-GPU_TEST(gpu_gl4_tess_quads_grid) {
+TESS_TEST(gpu_tess_quads_grid) {
     // Levels 2 everywhere: a 3x3 grid of domain points.
     const char* tcs = R"(#version 400 core
 layout(vertices = 1) out;
@@ -156,7 +165,7 @@ void main() { coord = gl_TessCoord.xy; gl_Position = vec4(0.0); })";
     glDeleteProgram(p);
 }
 
-GPU_TEST(gpu_gl4_tess_isolines) {
+TESS_TEST(gpu_tess_isolines) {
     // outer[0] = 2 lines (v = 0, 1/2; v = 1 is not generated) of outer[1] = 3 segments.
     const char* tcs = R"(#version 400 core
 layout(vertices = 1) out;
@@ -183,7 +192,7 @@ void main() { coord = gl_TessCoord.xy; gl_Position = vec4(0.0); })";
     glDeleteProgram(p);
 }
 
-GPU_TEST(gpu_gl4_tess_fractional_odd_spacing) {
+TESS_TEST(gpu_tess_fractional_odd_spacing) {
     // An isoline at level 2.5, fractional odd: three segments, the two
     // outer ones equal and shorter than the middle one, placed symmetrically.
     const char* tcs = R"(#version 400 core
@@ -206,7 +215,7 @@ void main() { u = gl_TessCoord.x; gl_Position = vec4(0.0); })";
     glDeleteProgram(p);
 }
 
-GPU_TEST(gpu_gl4_tess_control_barrier_and_patch_outputs) {
+TESS_TEST(gpu_tess_control_barrier_and_patch_outputs) {
     // Each invocation writes its output, then (after barrier()) invocation 0
     // sums every invocation's output into a per-patch output.
     const char* tcs = R"(#version 400 core
@@ -246,7 +255,7 @@ void main() { result = vec3(sum, value[2], verticesIn); gl_Position = vec4(0.0);
     glDeleteProgram(p);
 }
 
-GPU_TEST(gpu_gl4_tess_geometry_after_evaluation) {
+TESS_TEST(gpu_tess_geometry_after_evaluation) {
     // Tessellated points feed a geometry shader that emits two points each.
     const char* tes = R"(#version 400 core
 layout(triangles, point_mode) in;
@@ -281,7 +290,7 @@ void main() {
     glDeleteProgram(p);
 }
 
-GPU_TEST(gpu_gl4_tess_render_quad_with_culling) {
+TESS_TEST(gpu_tess_render_quad_with_culling) {
     // A quad patch tessellated and rendered over the viewport; with back faces
     // culled, a counter-clockwise domain must stay visible.
     const char* vs = R"(#version 400 core
@@ -327,7 +336,7 @@ in vec4 color; out vec4 o; void main() { o = color; })";
     glDeleteProgram(p);
 }
 
-GPU_TEST(gpu_gl4_tess_primitives_generated) {
+TESS_TEST(gpu_tess_primitives_generated) {
     // Every outer and inner level 1: one triangle per patch.
     const char* tes = R"(#version 400 core
 layout(triangles) in;
@@ -353,7 +362,7 @@ out vec4 o; void main() { o = vec4(1.0); })";
     glDeleteProgram(p);
 }
 
-GPU_TEST(gpu_gl4_tess_validation_and_queries) {
+TESS_TEST(gpu_tess_validation_and_queries) {
     const char* tcs = R"(#version 400 core
 layout(vertices = 3) out;
 void main() { gl_TessLevelOuter[0] = 1.0; })";

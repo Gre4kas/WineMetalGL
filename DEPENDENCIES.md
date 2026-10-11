@@ -18,6 +18,9 @@ Local changes to vendored sources (each marked `WineMetalGL:` in the code):
 - glslang `glslang/MachineIndependent/linkValidate.cpp`, `isIoResizeArray`:
   per-patch tessellation evaluation inputs (`patch in`) are not arrayed per
   vertex, so `patch` arrays match their control-stage outputs at link time.
+- glslang `glslang/MachineIndependent/ParseHelper.cpp`, `fixOffset`: an
+  atomic counter whose offset puts it past `gl_MaxAtomicCounterBufferSize` is
+  a compile-time error, as GLSL 4.20 requires.
 
 The built dylib dynamically links only Apple system frameworks and libraries
 (Metal, Foundation, QuartzCore, CoreFoundation, libc++, libSystem and
