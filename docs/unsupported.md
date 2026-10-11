@@ -80,6 +80,14 @@ logged once.
 | Imaging subset (colour tables, convolution, histogram, colour matrix) | 1.2 | `GL_INVALID_OPERATION`; `GL_ARB_imaging` is not advertised | Optional in the specification: it exists only when `GL_ARB_imaging` is advertised | Large, for almost no use |
 | Colour-index mode | 1.0 | Unreachable | Wine's macOS driver offers only RGBA pixel formats, so no program can create a colour-index context | Nothing worth doing |
 
+## Conformance notes
+
+<!-- BEGIN GENERATED: totals-notes (scripts/docs/generate.py) -->
+**Unsupported %** (README conformance totals): cases the CTS reports NotSupported because WineMetalGL does not offer what they test (an extension it does not advertise or a newer GL version), over the cases any implementation can run. Contexts stop at OpenGL 4.2, so later versions are 100%; some of their features are available as extensions ([OpenGL 4.x](#opengl-4x)).
+
+Failing cases: `KHR-GL30.api.coverage`, `KHR-GL33.shaders.negative.non_precision_qualifiers_in_struct_members`, `KHR-GL33.transform_feedback2.transform_feedback2_states`, `KHR-GL40.internalformat.renderbuffer.rgb9_e5`, `KHR-GL40.shader_subroutine.name_getters`, `KHR-GL40.shaders.negative.non_precision_qualifiers_in_struct_members`, `KHR-GL40.transform_feedback2.transform_feedback2_states`, `KHR-GL41.internalformat.renderbuffer.rgb9_e5`, `KHR-GL41.shader_subroutine.name_getters`, `KHR-GL41.shaders.negative.non_precision_qualifiers_in_struct_members`, `KHR-GL41.transform_feedback2.transform_feedback2_states`, `KHR-GL42.internalformat.renderbuffer.rgb9_e5`, `KHR-GL42.map_buffer_alignment.functional`, `KHR-GL42.shader_subroutine.name_getters`, `KHR-GL42.shaders.negative.non_precision_qualifiers_in_struct_members`, `KHR-GL42.transform_feedback2.transform_feedback2_states`. [Conformance results](conformance.md) gives the reason for each.
+<!-- END GENERATED: totals-notes -->
+
 ## CTS cases reported NotSupported
 
 <!-- BEGIN GENERATED: notsupported (scripts/docs/generate.py) -->
