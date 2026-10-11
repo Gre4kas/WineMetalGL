@@ -100,14 +100,24 @@ shader::LogicOpTarget logicOpTarget(MTLPixelFormat format) {
 
 bool logicOpApplies(MTLPixelFormat format) { return logicOpTarget(format).kind != 0; }
 
-bool LinkedProgram::writesSampleMask() {
+int LinkedProgram::outputFlags() const {
+    int flags = outputFlags_.load(std::memory_order_relaxed);
+    if (flags >= 0) return flags;
+    const std::string& vertex = drawingVertexMsl();
+    flags = (vertex.find("[[viewport_array_index]]") != std::string::npos ? kWritesViewport : 0) |
+            (vertex.find("[[render_target_array_index]]") != std::string::npos ? kWritesLayer : 0);
     if (pipeline) {
         const auto& fs = stageExecutable[static_cast<int>(shader::Stage::Fragment)];
-        return fs && fs->writesSampleMask();
+        if (fs && fs->writesSampleMask()) flags |= kWritesSampleMask;
+    } else {
+        const shader::StageOutput& output = link.stages[static_cast<int>(shader::Stage::Fragment)];
+        if (output.present && output.msl.find("[[sample_mask]]") != std::string::npos) flags |= kWritesSampleMask;
     }
-    const shader::StageOutput& output = link.stages[static_cast<int>(shader::Stage::Fragment)];
-    return output.present && output.msl.find("[[sample_mask]]") != std::string::npos;
+    outputFlags_.store(flags, std::memory_order_relaxed);
+    return flags;
 }
+
+bool LinkedProgram::writesSampleMask() { return (outputFlags() & kWritesSampleMask) != 0; }
 
 id<MTLFunction> LinkedProgram::fragmentVariant(bool sampleMask, unsigned logicOp, const uint16_t colorFormats[8],
                                                bool sampleRate, bool ignoreSampleMask) {

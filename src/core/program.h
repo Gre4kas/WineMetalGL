@@ -84,13 +84,9 @@ struct LinkedProgram {
 
     // Whether the drawing vertex function writes gl_ViewportIndex (with a
     // geometry shader, its pass-through).
-    bool writesViewportIndex() const { return drawingVertexMsl().find("[[viewport_array_index]]") != std::string::npos; }
+    bool writesViewportIndex() const { return (outputFlags() & kWritesViewport) != 0; }
     // ... or gl_Layer: Metal then needs the pipeline's input topology class.
-    bool writesLayerOrViewport() const {
-        const std::string& msl = drawingVertexMsl();
-        return msl.find("[[viewport_array_index]]") != std::string::npos ||
-               msl.find("[[render_target_array_index]]") != std::string::npos;
-    }
+    bool writesLayerOrViewport() const { return (outputFlags() & (kWritesViewport | kWritesLayer)) != 0; }
     const std::string& drawingVertexMsl() const {
         return link.geometry.active ? link.geometry.passthrough.msl : stage(shader::Stage::Vertex).msl;
     }
@@ -101,6 +97,11 @@ struct LinkedProgram {
 private:
     std::mutex mutex_;
     std::atomic<int> readsVertexId_{-1};
+    // What the drawing vertex and fragment functions write, found once in
+    // their MSL (draws ask on every call): kWrites* bits.
+    enum : int { kWritesViewport = 1, kWritesLayer = 2, kWritesSampleMask = 4 };
+    mutable std::atomic<int> outputFlags_{-1};
+    int outputFlags() const;
     id<MTLFunction> functions_[shader::kStageCount] = {};
     bool failed_[shader::kStageCount] = {};
     id<MTLFunction> vertexNoRaster_ = nil;
