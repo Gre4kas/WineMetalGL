@@ -188,6 +188,7 @@ tests/cts/baseline/gl33-cfg3-native.txt
 tests/cts/baseline/gl33-cfg3-wine.txt
 tests/cts/baseline/gl33-cfg4-native.txt
 tests/cts/baseline/gl33-cfg4-wine.txt
+tests/cts/baseline/gl42-cfg1-native.txt
 tests/cts/known-failures.json
 tests/cts/native/build.sh
 tests/cts/native/README.md
@@ -255,6 +256,7 @@ tests/wine/opengl_gl33_instanced.c
 tests/wine/opengl_gl33_metal.c
 tests/wine/opengl_gl33_resources.c
 tests/wine/opengl_gl33_texture.c
+tests/wine/opengl_gl42.c
 tests/wine/opengl_glsl110.c
 tests/wine/opengl_glsl120.c
 tests/wine/opengl_image_formats.c
