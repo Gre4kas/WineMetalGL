@@ -245,6 +245,10 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
         default: out = ints({kMaxStageAtomicCounters}); break;
         }
         return true;
+    case GL_MAX_SUBROUTINES: case GL_MAX_SUBROUTINE_UNIFORM_LOCATIONS:
+        if (ctx.version() < 40 && !ctx.hasExtension("GL_ARB_shader_subroutine")) return false;
+        out = ints({pname == GL_MAX_SUBROUTINES ? 256 : 1024});
+        return true;
     case GL_MAX_GEOMETRY_SHADER_INVOCATIONS:
         if (ctx.version() < 40 && !ctx.hasExtension("GL_ARB_gpu_shader5")) return false;
         out = ints({32});

@@ -538,6 +538,7 @@ void UseProgram(Context& ctx, GLuint program) {
         if (!p->linkStatus) return ctx.setError(GL_INVALID_OPERATION);
         next = RefPtr<Program>(p);
     }
+    resetSubroutineSelections(ctx);
     RefPtr<Program> previous = ctx.state.program;
     if (previous == next) return;
     if (next) ++next->useCount;

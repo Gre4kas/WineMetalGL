@@ -110,6 +110,7 @@ GLboolean IsProgramPipeline(Context& ctx, GLuint pipeline) {
 void BindProgramPipeline(Context& ctx, GLuint pipeline) {
     const TransformFeedback& xfb = *ctx.state.transformFeedback;
     if (xfb.active && !xfb.paused) return ctx.setError(GL_INVALID_OPERATION);
+    resetSubroutineSelections(ctx);
     if (!pipeline) {
         ctx.state.programPipeline.reset();
     } else {

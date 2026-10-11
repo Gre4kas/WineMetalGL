@@ -103,6 +103,15 @@ public:
     // Sample shading: GL 4.0 or GL_ARB_sample_shading.
     bool sampleShading() const { return version() >= 40 || hasExtension("GL_ARB_sample_shading"); }
 
+    // glUniformSubroutinesuiv selections per stage (api/subroutine.mm), for
+    // the executable they were made with; reset by UseProgram and pipeline
+    // changes (resetSubroutineSelections).
+    struct SubroutineSelection {
+        uint64_t programUid = 0;
+        std::vector<GLuint> indices;  // by subroutine uniform location
+    };
+    std::array<SubroutineSelection, 6> subroutineSelections;
+
     // Occlusion-query slot of the current pass (see core/query.h).
     struct {
         uint64_t pass = 0, epoch = 0;
