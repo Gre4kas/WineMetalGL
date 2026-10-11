@@ -1,5 +1,7 @@
 // GL 4.0-4.2 features (through the development override, until the
 // version is advertised).
+#include <string>
+
 #include "gpu.h"
 
 namespace {
@@ -405,4 +407,124 @@ void main() {
     glDeleteProgram(p);
     glDeleteTextures(1, &tex2d);
     glDeleteTextures(1, &tex3d);
+}
+
+GPU_TEST_VERSION(gpu_gl4_image_buffer_load, 42) {
+    // imageLoad from a buffer texture bound to an image unit.
+    const float values[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+    GLuint buffer = 0, tex = 0;
+    glGenBuffers(1, &buffer);
+    glBindBuffer(GL_TEXTURE_BUFFER, buffer);
+    glBufferData(GL_TEXTURE_BUFFER, sizeof(values), values, GL_STATIC_DRAW);
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_BUFFER, tex);
+    glTexBuffer(GL_TEXTURE_BUFFER, GL_RGBA32F, buffer);
+    glBindImageTexture(3, tex, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA32F);
+    const char* fs = R"(#version 420 core
+layout(rgba32f, binding = 3) readonly uniform imageBuffer g_image_buffer;
+out vec4 o;
+void main() { o = imageLoad(g_image_buffer, 1) == vec4(5, 6, 7, 8) ? vec4(0, 1, 0, 1) : vec4(1, 0, 0, 1); })";
+    GLuint p = gpu::program(kQuadVs, fs);
+    glUseProgram(p);
+    GLuint vao = gpu::quad();
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    CHECK_GL();
+    const uint8_t green[4] = {0, 255, 0, 255};
+    CHECK(gpu::near(gpu::readRGBA8(8, 8, 1, 1).data(), green));
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
+    glDeleteTextures(1, &tex);
+    glDeleteBuffers(1, &buffer);
+}
+
+GPU_TEST_VERSION(gpu_gl4_image_buffer_load_formats, 42) {
+    // Buffer images of 16 texels read at every fragment's x, with float,
+    // int and uint formats, one after the other.
+    struct Case { GLenum format; const char* type; const char* prefix; };
+    const Case cases[] = {{GL_RGBA32F, "rgba32f", ""}, {GL_RGBA32I, "rgba32i", "i"}, {GL_RGBA32UI, "rgba32ui", "u"}};
+    for (const Case& c : cases) {
+        const int32_t values[64] = {1, 10, 200, 3000, 1, 10, 200, 3000, 1, 10, 200, 3000, 1, 10, 200, 3000,
+                                    1, 10, 200, 3000, 1, 10, 200, 3000, 1, 10, 200, 3000, 1, 10, 200, 3000,
+                                    1, 10, 200, 3000, 1, 10, 200, 3000, 1, 10, 200, 3000, 1, 10, 200, 3000,
+                                    1, 10, 200, 3000, 1, 10, 200, 3000, 1, 10, 200, 3000, 1, 10, 200, 3000};
+        float floats[64];
+        for (int i = 0; i < 64; ++i) floats[i] = static_cast<float>(values[i]);
+        GLuint buffer = 0, tex = 0;
+        glGenBuffers(1, &buffer);
+        glBindBuffer(GL_TEXTURE_BUFFER, buffer);
+        glBufferData(GL_TEXTURE_BUFFER, sizeof(values), c.format == GL_RGBA32F ? static_cast<const void*>(floats) : values,
+                     GL_DYNAMIC_DRAW);
+        glBindBuffer(GL_TEXTURE_BUFFER, 0);
+        glGenTextures(1, &tex);
+        glBindTexture(GL_TEXTURE_BUFFER, tex);
+        glTexBuffer(GL_TEXTURE_BUFFER, c.format, buffer);
+        glBindTexture(GL_TEXTURE_BUFFER, 0);
+        glBindImageTexture(4, tex, 0, GL_FALSE, 0, GL_READ_ONLY, c.format);
+        std::string fs = std::string("#version 420 core\nlayout(") + c.type + ") readonly uniform " + c.prefix +
+                         "imageBuffer g_image_buffer;\nout vec4 o;\nvoid main() {\n  " + c.prefix +
+                         "vec4 v = imageLoad(g_image_buffer, int(gl_FragCoord.x));\n  o = v == " + c.prefix +
+                         "vec4(1, 10, 200, 3000) ? vec4(0, 1, 0, 1) : vec4(1, 0, 0, 1);\n}\n";
+        GLuint p = gpu::program(kQuadVs, fs.c_str());
+        glUseProgram(p);
+        glUniform1i(glGetUniformLocation(p, "g_image_buffer"), 4);
+        GLuint vao = gpu::quad();
+        glViewport(0, 0, 16, 16);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        glViewport(0, 0, 64, 64);
+        CHECK_GL();
+        const uint8_t green[4] = {0, 255, 0, 255};
+        const std::vector<uint8_t> pixels = gpu::readRGBA8(0, 0, 16, 16);
+        bool all = true;
+        for (int i = 0; i < 256; ++i) all = all && pixels[static_cast<size_t>(i) * 4 + 1] == 255 && pixels[static_cast<size_t>(i) * 4] == 0;
+        if (!all) std::fprintf(stderr, "  format %s failed\n", c.type);
+        CHECK(all);
+        (void)green;
+        glDeleteVertexArrays(1, &vao);
+        glDeleteProgram(p);
+        glDeleteTextures(1, &tex);
+        glDeleteBuffers(1, &buffer);
+    }
+}
+
+GPU_TEST_VERSION(gpu_gl4_image_cube_array_layers, 42) {
+    // imageLoad of every layer-face of a cube map array (two cubes).
+    std::vector<float> data(4 * 4 * 12 * 4);
+    for (int layer = 0; layer < 12; ++layer)
+        for (int i = 0; i < 16; ++i)
+            for (int c = 0; c < 4; ++c) data[static_cast<size_t>((layer * 16 + i) * 4 + c)] = static_cast<float>(layer + 1);
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_CUBE_MAP_ARRAY, tex);
+    glTexImage3D(GL_TEXTURE_CUBE_MAP_ARRAY, 0, GL_RGBA32F, 4, 4, 12, 0, GL_RGBA, GL_FLOAT, data.data());
+    glTexParameteri(GL_TEXTURE_CUBE_MAP_ARRAY, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    {
+        std::vector<float> back(data.size());
+        glGetTexImage(GL_TEXTURE_CUBE_MAP_ARRAY, 0, GL_RGBA, GL_FLOAT, back.data());
+        int wrong = -1;
+        for (size_t i = 0; i < back.size() && wrong < 0; ++i)
+            if (back[i] != data[i]) wrong = static_cast<int>(i / 64);
+        if (wrong >= 0) std::fprintf(stderr, "  stored layer-face %d differs\n", wrong);
+        CHECK(wrong < 0);
+    }
+    glBindImageTexture(0, tex, 0, GL_TRUE, 0, GL_READ_ONLY, GL_RGBA32F);
+    const char* fs = R"(#version 420 core
+layout(rgba32f, binding = 0) readonly uniform imageCubeArray g_image;
+out vec4 o;
+void main() {
+    int bad = 0;
+    for (int layer = 0; layer < 12; ++layer)
+        if (imageLoad(g_image, ivec3(1, 1, layer)) != vec4(float(layer + 1))) bad |= 1 << layer;
+    o = vec4(float(bad & 255) / 255.0, float(bad >> 8) / 255.0, 0.0, 1.0);
+})";
+    GLuint p = gpu::program(kQuadVs, fs);
+    glUseProgram(p);
+    GLuint vao = gpu::quad();
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    CHECK_GL();
+    const std::vector<uint8_t> pixel = gpu::readRGBA8(8, 8, 1, 1);
+    if (pixel[0] || pixel[1]) std::fprintf(stderr, "  bad layers mask: 0x%x\n", pixel[0] | (pixel[1] << 8));
+    CHECK(pixel[0] == 0 && pixel[1] == 0);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
+    glDeleteTextures(1, &tex);
 }

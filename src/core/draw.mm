@@ -767,6 +767,7 @@ id<MTLTexture> DrawState::imageBinding(LinkedProgram& program, size_t index) {
         const ImageUnit& u = ctx_.state.imageUnits[unit];
         view = imageView(ctx_, u, slot.type, slot.format);
         if (view && u.texture) u.texture->lastUseSerial = ctx_.stream().serial();
+        if (!view && u.texture) WMGL_TRACE("image unit %d: no view for image type 0x%x, format 0x%x", unit, slot.type, slot.format);
     }
     return view ? view : dummyImage(slot.type);
 }

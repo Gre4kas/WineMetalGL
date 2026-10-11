@@ -160,14 +160,20 @@ bool ensureTextureStorage(Context& ctx, Texture& tex) {
     if (tex.mtl && tex.storage == format->storage && tex.mtl.textureType == texture.textureType &&
         tex.mtl.sampleCount == texture.sampleCount) {
         id<MTLBlitCommandEncoder> blit = ctx.stream().blit();
-        const NSUInteger slices = tex.mtl.textureType == MTLTextureTypeCube ? 6 : tex.mtl.arrayLength;
+        // Slices are faces for cube maps and cube map arrays.
+        auto sliceCount = [](id<MTLTexture> t) {
+            return t.textureType == MTLTextureTypeCube ? NSUInteger{6}
+                   : t.textureType == MTLTextureTypeCubeArray ? t.arrayLength * 6
+                                                              : t.arrayLength;
+        };
+        const NSUInteger slices = sliceCount(tex.mtl);
         for (NSUInteger level = 0; level < std::min<NSUInteger>(tex.mtl.mipmapLevelCount, texture.mipmapLevelCount); ++level) {
             const NSUInteger ow = std::max<NSUInteger>(1, tex.mtl.width >> level), oh = std::max<NSUInteger>(1, tex.mtl.height >> level);
             const NSUInteger nw = std::max<NSUInteger>(1, texture.width >> level), nh = std::max<NSUInteger>(1, texture.height >> level);
             const NSUInteger od = tex.mtl.textureType == MTLTextureType3D ? std::max<NSUInteger>(1, tex.mtl.depth >> level) : 1;
             const NSUInteger nd = texture.textureType == MTLTextureType3D ? std::max<NSUInteger>(1, texture.depth >> level) : 1;
             if (ow != nw || oh != nh || od != nd) continue;
-            const NSUInteger newSlices = texture.textureType == MTLTextureTypeCube ? 6 : texture.arrayLength;
+            const NSUInteger newSlices = sliceCount(texture);
             for (NSUInteger slice = 0; slice < std::min(slices, newSlices); ++slice)
                 [blit copyFromTexture:tex.mtl sourceSlice:slice sourceLevel:level sourceOrigin:MTLOriginMake(0, 0, 0)
                            sourceSize:MTLSizeMake(ow, oh, od) toTexture:texture destinationSlice:slice
