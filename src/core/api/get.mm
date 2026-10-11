@@ -212,6 +212,11 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
     case GL_MAX_GEOMETRY_OUTPUT_COMPONENTS: out = ints({128}); return true;
     case GL_MAX_FRAGMENT_INPUT_COMPONENTS: out = ints({128}); return true;
     case GL_MAX_GEOMETRY_OUTPUT_VERTICES: out = ints({256}); return true;
+    // Primitive restart is treated as disabled for GL_PATCHES (GL 4.3 section 10.3.5).
+    case GL_PRIMITIVE_RESTART_FOR_PATCHES_SUPPORTED:
+        if (!ctx.tessellationShaders()) return false;
+        out = bools({false});
+        return true;
     case GL_MAX_IMAGE_UNITS:  // placeholder until image units exist (api/image_units_stub.mm)
         if (ctx.version() < 42) return false;
         out = ints({8});

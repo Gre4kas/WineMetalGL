@@ -125,6 +125,8 @@ src/core/shader/geometry.cpp
 src/core/shader/geometry.h
 src/core/shader/glsl_upgrade.cpp
 src/core/shader/glsl_upgrade.h
+src/core/shader/tessellation.cpp
+src/core/shader/tessellation.h
 src/core/shader/transform_feedback.cpp
 src/core/shader/transform_feedback.h
 src/core/share_group.h

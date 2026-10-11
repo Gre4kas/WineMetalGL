@@ -177,6 +177,71 @@ id<MTLComputePipelineState> LinkedProgram::computePipeline() {
     return compute_;
 }
 
+id<MTLComputePipelineState> LinkedProgram::tessControlKernel() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (tessKernel_ || tessKernelFailed_) return tessKernel_;
+    if (link.tess.active && link.tess.hasControl)
+        tessKernel_ = computePipelineFor(link.tess.control, static_cast<int>(shader::Stage::TessControl));
+    tessKernelFailed_ = tessKernel_ == nil;
+    return tessKernel_;
+}
+
+std::shared_ptr<LinkedProgram> LinkedProgram::tessEvaluation() {
+    using shader::Stage;
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (tessEvaluation_ || !link.tess.active || !link.tess.evaluation) return tessEvaluation_;
+    const shader::LinkResult& e = *link.tess.evaluation;
+    auto out = std::make_shared<LinkedProgram>();
+    out->uid = nextLinkedProgramId();
+    shader::LinkResult& l = out->link;
+    l.ok = true;
+    l.stages[static_cast<int>(Stage::Vertex)] = e.stages[static_cast<int>(Stage::Vertex)];
+    l.stages[static_cast<int>(Stage::Fragment)] = link.stages[static_cast<int>(Stage::Fragment)];
+    l.geometry = e.geometry;
+    l.geometryInputType = e.geometryInputType;
+    l.geometryOutputType = e.geometryOutputType;
+    l.geometryVerticesOut = e.geometryVerticesOut;
+    l.transformFeedback = e.transformFeedback;
+    std::copy(std::begin(e.xfbStride), std::end(e.xfbStride), std::begin(l.xfbStride));
+    l.xfbBufferCount = e.xfbBufferCount;
+    l.xfbVertexCapture = e.xfbVertexCapture;
+    l.fragOutputs = link.fragOutputs;
+    l.uniforms = link.uniforms;
+    l.locations = link.locations;
+    l.defaultBlockSize = link.defaultBlockSize;
+    l.fixedFunctionBlock = link.fixedFunctionBlock;
+    // This program's blocks and samplers, bound in the evaluation executable's
+    // vertex and compute (geometry kernel) stages where it uses them.
+    const int vs = static_cast<int>(Stage::Vertex), fs = static_cast<int>(Stage::Fragment), cs = static_cast<int>(Stage::Compute);
+    l.blocks = link.blocks;
+    for (shader::UniformBlockInfo& b : l.blocks) {
+        for (int s = 0; s < shader::kStageCount; ++s)
+            if (s != fs) b.stageSlot[s] = -1;
+        for (const shader::UniformBlockInfo& other : e.blocks)
+            if (other.name == b.name) {
+                b.stageSlot[vs] = other.stageSlot[vs];
+                b.stageSlot[cs] = other.stageSlot[cs];
+            }
+    }
+    l.samplers = link.samplers;
+    for (shader::SamplerSlotInfo& slot : l.samplers)
+        for (int s = 0; s < shader::kStageCount; ++s)
+            if (s != fs) slot.stageTexture[s] = -1;
+    for (const shader::UniformInfo& u : link.uniforms) {
+        if (u.samplerSlot < 0) continue;
+        for (const shader::UniformInfo& other : e.uniforms)
+            if (other.name == u.name && other.samplerSlot >= 0)
+                for (GLint i = 0; i < std::min(u.size, other.size); ++i) {
+                    shader::SamplerSlotInfo& slot = l.samplers[static_cast<size_t>(u.samplerSlot + i)];
+                    const shader::SamplerSlotInfo& from = e.samplers[static_cast<size_t>(other.samplerSlot + i)];
+                    slot.stageTexture[vs] = from.stageTexture[vs];
+                    slot.stageTexture[cs] = from.stageTexture[cs];
+                }
+    }
+    tessEvaluation_ = out;
+    return out;
+}
+
 std::shared_ptr<LinkedProgram> pipelineExecutable(ProgramPipeline& pp) {
     using shader::Stage;
     constexpr int kStages = shader::kStageCount;

@@ -77,4 +77,10 @@ struct GeometrySources {
 // `capture` is the layout of the captured vertex-shader outputs.
 GeometrySources geometrySources(const GeometryShaderInfo& info, const LinkResult& capture);
 
+// GLSL helpers shared with the tessellation emulation: the GL type of a GLSL
+// type name (0 if unsupported), and an expression loading a value of `type`
+// from 32-bit words buffer[base + i].
+GLenum glslTypeFromName(const std::string& type);
+std::string glslLoadValue(const std::string& type, GLenum glType, const std::string& buffer, const std::string& base);
+
 }  // namespace wmgl::shader

@@ -12,6 +12,7 @@
 
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -33,6 +34,11 @@ constexpr uint32_t kSlotFirstVertexBuffer = 18;  // buffers 18..29: vertex buffe
 constexpr uint32_t kMaxVertexBufferSlots = 12;
 constexpr uint32_t kSlotXfbControl = 30;       // buffer 30: transform feedback capture control
 constexpr uint32_t kMaxStageSamplers = 16;     // textures/samplers 0..15
+// Tessellation emulation (tessellation.h): the control kernel reads the
+// captured vertices and writes patch records through buffers 14..16; the
+// evaluation vertex function, which has no vertex attributes, reads its
+// domain points, patch records and control block from buffers 18..20.
+constexpr uint32_t kSlotTessVertices = 18, kSlotTessPatches = 19, kSlotTessControl = 20;
 
 struct CompileResult {
     bool ok = false;
@@ -170,6 +176,30 @@ struct GeometryEmulation {
     StageOutput passthrough;     // vertex: draws the emitted vertices
 };
 
+struct LinkResult;
+
+// Tessellation emulation (see tessellation.h). The program's vertex stage is
+// replaced by its capture variant (one record of `inputStride` words per
+// patch vertex); the control kernel uses the program's uniform block and
+// sampler slots recorded for Stage::TessControl.
+struct TessellationEmulation {
+    bool active = false;
+    bool hasControl = false;
+    GLint verticesOut = 0;          // control: layout(vertices = N)
+    GLenum mode = GL_TRIANGLES;     // GL_TRIANGLES, GL_QUADS or GL_ISOLINES
+    GLenum spacing = GL_EQUAL;      // GL_EQUAL, GL_FRACTIONAL_EVEN or GL_FRACTIONAL_ODD
+    GLenum order = GL_CCW;
+    bool pointMode = false;
+    uint32_t inputStride = 0;       // 32-bit words per captured vertex
+    uint32_t vertexWords = 0;       // control: words per output vertex record
+    uint32_t patchWords = 0;        // control: words of the patch section (levels first)
+    StageOutput control;            // compute: one threadgroup per patch
+    // The evaluation stage as a vertex shader, linked with the geometry
+    // shader (if any) and the transform feedback varyings.
+    std::shared_ptr<LinkResult> evaluation;
+    uint32_t recordWords() const { return static_cast<uint32_t>(verticesOut) * vertexWords + patchWords; }
+};
+
 struct LinkResult {
     bool ok = false;
     std::string log;
@@ -190,6 +220,7 @@ struct LinkResult {
     GLenum geometryInputType = 0, geometryOutputType = 0;
     GLint geometryVerticesOut = 0, geometryInvocations = 1;
     GeometryEmulation geometry;
+    TessellationEmulation tess;
     uint32_t computeLocalSize[3] = {1, 1, 1};  // compute programs: COMPUTE_WORK_GROUP_SIZE
     // The wmgl_FixedFunction block (lowered legacy built-in uniforms), or -1.
     // It and its members come last and are hidden from the GL interface.

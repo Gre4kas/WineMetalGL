@@ -5,6 +5,7 @@
 #import <Metal/Metal.h>
 
 #include <atomic>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -49,6 +50,13 @@ struct LinkedProgram {
     id<MTLComputePipelineState> geometryKernel();
     // Compute programs.
     id<MTLComputePipelineState> computePipeline();
+    // Tessellation emulation (link.tess): the control kernel, and the
+    // executable that runs the evaluation stage (as its vertex stage, with
+    // the geometry emulation and transform feedback capture) and this
+    // program's fragment stage. Its uniform blocks and samplers are this
+    // program's, in the same order, so the draw binds the program's state.
+    id<MTLComputePipelineState> tessControlKernel();
+    std::shared_ptr<LinkedProgram> tessEvaluation();
 
     // Whether the vertex function reads gl_VertexID (draws then keep GL's
     // vertex numbering; see DrawState::issue).
@@ -77,6 +85,9 @@ private:
     bool passthroughFailed_ = false, kernelFailed_ = false;
     id<MTLComputePipelineState> compute_ = nil;
     bool computeFailed_ = false;
+    id<MTLComputePipelineState> tessKernel_ = nil;
+    bool tessKernelFailed_ = false;
+    std::shared_ptr<LinkedProgram> tessEvaluation_;
 };
 
 uint64_t nextLinkedProgramId();
