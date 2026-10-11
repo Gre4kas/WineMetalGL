@@ -226,6 +226,7 @@ tests/games/build-demos.sh
 tests/games/corpus.json
 tests/games/demos/legacy.c
 tests/games/demos/scene33.c
+tests/games/demos/scene4x.c
 tests/games/perf.json
 tests/games/README.md
 tests/games/results.json
