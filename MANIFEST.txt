@@ -241,6 +241,7 @@ tests/gpu/fp64_tests.cpp
 tests/gpu/framebuffer_tests.cpp
 tests/gpu/geometry_tests.cpp
 tests/gpu/gl4_tests.cpp
+tests/gpu/gl43_tests.cpp
 tests/gpu/gpu.h
 tests/gpu/main.cpp
 tests/gpu/pipeline_tests.cpp

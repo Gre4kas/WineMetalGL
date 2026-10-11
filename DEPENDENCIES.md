@@ -56,6 +56,11 @@ Local changes to vendored sources (each marked `WineMetalGL:` in the code):
   std140/std430 block whose non-last member is an array sized only by its
   largest constant index gets its member offsets recomputed once that size is
   known (they were assigned when the block was declared).
+- glslang `glslang/MachineIndependent/ParseHelper.cpp` and
+  `localintermediate.h`, `vkRelaxedRemapUniformVariable`: every global
+  uniform declared with `layout(location)` is recorded with the number of
+  locations it spans (`getExplicitUniformLocations`), for the linker's GL 4.3
+  uniform location assignment; the Vulkan rules drop the qualifier.
 - glslang `glslang/MachineIndependent/ParseHelper.cpp`,
   `vkRelaxedRemapUniformVariable`: an unsized uniform array takes its size
   from its initializer before the Vulkan rules drop the initializer (the
@@ -67,6 +72,9 @@ Local changes to vendored sources (each marked `WineMetalGL:` in the code):
   storage no longer becomes `volatile` (only `volatile` does): Metal has no
   element access on volatile matrices, and MSL's barriers and atomics give
   GL's coherent visibility.
+- SPIRV-Cross `spirv_msl.cpp`, `add_composite_variable_to_interface_block`:
+  a one-dimensional array of matrices (`in mat2x3 d[2]`) is flattened into one
+  input or output per column instead of being rejected.
 - SPIRV-Cross `spirv_glsl.cpp`, `to_function_name` and `to_function_args`:
   GLSL has no `textureLod` for rectangle textures and their `texelFetch`
   takes no level, so a level-0 sample (glslang's `texture()` outside fragment

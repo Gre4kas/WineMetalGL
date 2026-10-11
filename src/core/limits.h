@@ -33,6 +33,7 @@ constexpr GLint kMaxAtomicCounterBufferSize = 16384;
 constexpr GLint kMaxShaderStorageBufferBindings = 16, kMaxStageStorageBlocks = 16, kMaxCombinedStorageBlocks = 48;
 constexpr GLint kMaxShaderStorageBlockSize = 1 << 27, kShaderStorageBufferOffsetAlignment = 16;
 constexpr GLint kMaxCombinedShaderOutputResources = kMaxCombinedStorageBlocks + kMaxImageUnits + kMaxDrawBuffers;
+constexpr GLint kMaxUniformLocations = 1024;  // GL 4.3 explicit uniform locations
 constexpr GLint kMaxViewports = 16, kMaxGeometryShaderInvocations = 32;
 constexpr GLfloat kMaxTextureLodBias = 15.0f, kMaxAnisotropy = 16.0f;
 

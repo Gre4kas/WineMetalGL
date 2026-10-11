@@ -7475,9 +7475,30 @@ void TParseContext::coopMatTypeParametersCheck(const TSourceLoc& loc, const TPub
     }
 }
 
+// WineMetalGL: the uniform locations a GL uniform of `type` spans (one per
+// element of every basic-type member; GL 4.3 section 7.6.1).
+static int wmglUniformLocationCount(const TType& type)
+{
+    int count = type.isSizedArray() ? type.getCumulativeArraySize() : 1;
+    if (type.isStruct()) {
+        int members = 0;
+        for (const TTypeLoc& member : *type.getStruct())
+            members += wmglUniformLocationCount(*member.type);
+        count *= members;
+    }
+    return count;
+}
+
 bool TParseContext::vkRelaxedRemapUniformVariable(const TSourceLoc& loc, TString& identifier, const TPublicType& publicType,
     TArraySizes*, TIntermTyped* initializer, TType& type)
 {
+    // WineMetalGL: GL's explicit uniform locations (GL 4.3), kept for the
+    // linker, which assigns uniform locations itself.
+    if (!parsingBuiltins && !symbolTable.atBuiltInLevel() && symbolTable.atGlobalLevel() &&
+        type.getQualifier().storage == EvqUniform && type.getQualifier().hasLocation() && type.getBasicType() != EbtBlock)
+        intermediate.addExplicitUniformLocation(identifier.c_str(), static_cast<int>(type.getQualifier().layoutLocation),
+                                                wmglUniformLocationCount(type));
+
     vkRelaxedRemapUniformMembers(loc, publicType, type, identifier);
 
     if (parsingBuiltins || symbolTable.atBuiltInLevel() || !symbolTable.atGlobalLevel() ||

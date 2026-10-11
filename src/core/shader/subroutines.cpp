@@ -178,7 +178,7 @@ SubroutineLowering lowerSubroutines(Stage stage, const std::string& source) {
         if (open == 0 || t[open - 1].text != "layout") return at;
         for (size_t k = open + 1; k + 2 < at; ++k)
             if (t[k].kind == Token::Ident && t[k + 1].text == "=" && t[k + 2].kind == Token::Number)
-                values[t[k].text] = std::atoi(t[k + 2].text.c_str());
+                values[t[k].text] = static_cast<int>(std::strtol(t[k + 2].text.c_str(), nullptr, 0));  // 10, 0xa, 012
         return open - 1;
     };
     int depth = 0;
@@ -212,7 +212,7 @@ SubroutineLowering lowerSubroutines(Stage stage, const std::string& source) {
                     error("'" + u.name + "' : subroutine uniform arrays need a constant size");
                     break;
                 }
-                u.dimensions.push_back(std::atoi(t[k + 1].text.c_str()));
+                u.dimensions.push_back(static_cast<int>(std::strtol(t[k + 1].text.c_str(), nullptr, 0)));
                 dims += "[" + t[k + 1].text + "]";
                 k = close + 1;
             }
@@ -339,11 +339,26 @@ SubroutineLowering lowerSubroutines(Stage stage, const std::string& source) {
     }
     if (!out.ok) return out;
     // Function indices: layout(index) first, then the lowest free ones.
+    // Limits: GL_MAX_SUBROUTINES and GL_MAX_SUBROUTINE_UNIFORM_LOCATIONS.
+    constexpr int kMaxSubroutines = 256, kMaxSubroutineUniformLocations = 1024;
+    if (out.info.functions.size() > static_cast<size_t>(kMaxSubroutines)) error("too many subroutine functions (GL_MAX_SUBROUTINES)");
     std::set<GLint> used;
     for (const auto& f : out.info.functions) {
         if (f.index < 0) continue;
+        if (f.index >= kMaxSubroutines) error("'" + f.name + "' : subroutine index is not less than GL_MAX_SUBROUTINES");
         if (!used.insert(f.index).second) error("'" + f.name + "' : subroutine index already used");
     }
+    std::set<GLint> usedLocations;
+    int locationCount = 0;
+    for (const auto& u : out.info.uniforms) {
+        locationCount += u.elements();
+        if (u.location < 0) continue;
+        if (u.location + u.elements() > kMaxSubroutineUniformLocations)
+            error("'" + u.name + "' : subroutine uniform location is not less than GL_MAX_SUBROUTINE_UNIFORM_LOCATIONS");
+        for (int e = 0; e < u.elements(); ++e)
+            if (!usedLocations.insert(u.location + e).second) error("'" + u.name + "' : subroutine uniform location already used");
+    }
+    if (locationCount > kMaxSubroutineUniformLocations) error("too many subroutine uniform locations");
     GLint next = 0;
     for (auto& f : out.info.functions) {
         if (f.index >= 0) continue;

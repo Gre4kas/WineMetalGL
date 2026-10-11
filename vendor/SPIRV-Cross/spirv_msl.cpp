@@ -2625,12 +2625,20 @@ void CompilerMSL::add_composite_variable_to_interface_block(StorageClass storage
 	if (add_component_variable_to_interface_block(storage, ib_var_ref, var, var_type, meta))
 		return;
 
+	// WineMetalGL: a one-dimensional array of matrices is flattened into one
+	// member per column, element i being var[i / columns][i % columns].
+	uint32_t matrix_columns = 0;
 	if (is_matrix(var_type))
 	{
 		if (is_array(var_type))
-			SPIRV_CROSS_THROW("MSL cannot emit arrays-of-matrices in input and output variables.");
-
-		elem_cnt = var_type.columns;
+		{
+			if (var_type.array.size() != 1)
+				SPIRV_CROSS_THROW("MSL cannot emit arrays-of-arrays in input and output variables.");
+			matrix_columns = var_type.columns;
+			elem_cnt = to_array_size_literal(var_type) * var_type.columns;
+		}
+		else
+			elem_cnt = var_type.columns;
 	}
 	else if (is_array(var_type))
 	{
@@ -2689,6 +2697,7 @@ void CompilerMSL::add_composite_variable_to_interface_block(StorageClass storage
 	{
 		// Add a reference to the variable type to the interface struct.
 		uint32_t ib_mbr_idx = uint32_t(ib_type.member_types.size());
+		const string elem_ref = matrix_columns ? join("[", i / matrix_columns, "][", i % matrix_columns, "]") : join("[", i, "]");
 
 		uint32_t target_components = 0;
 		bool padded_output = false;
@@ -2792,11 +2801,11 @@ void CompilerMSL::add_composite_variable_to_interface_block(StorageClass storage
 							lerp_call = join(".interpolate_at_sample(", to_expression(builtin_sample_id_id), ")");
 						else
 							lerp_call = ".interpolate_at_center()";
-						statement(to_name(var.self), "[", i, "] = ", ib_var_ref, ".", mbr_name, lerp_call, ";");
+						statement(to_name(var.self), elem_ref, " = ", ib_var_ref, ".", mbr_name, lerp_call, ";");
 					}
 					else
 					{
-						statement(to_name(var.self), "[", i, "] = ", ib_var_ref, ".", mbr_name, ";");
+						statement(to_name(var.self), elem_ref, " = ", ib_var_ref, ".", mbr_name, ";");
 					}
 				});
 				break;
@@ -2808,14 +2817,14 @@ void CompilerMSL::add_composite_variable_to_interface_block(StorageClass storage
 						auto &padded_type = this->get<SPIRType>(type_id);
 						statement(
 						    ib_var_ref, ".", mbr_name, " = ",
-						    remap_swizzle(padded_type, usable_type->vecsize, join(to_name(var.self), "[", i, "]")),
+						    remap_swizzle(padded_type, usable_type->vecsize, join(to_name(var.self), elem_ref)),
 						    ";");
 					}
 					else if (flatten_from_ib_var)
 						statement(ib_var_ref, ".", mbr_name, " = ", ib_var_ref, ".", flatten_from_ib_mbr_name, "[", i,
 						          "];");
 					else
-						statement(ib_var_ref, ".", mbr_name, " = ", to_name(var.self), "[", i, "];");
+						statement(ib_var_ref, ".", mbr_name, " = ", to_name(var.self), elem_ref, ";");
 				});
 				break;
 

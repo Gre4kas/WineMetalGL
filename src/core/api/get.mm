@@ -176,6 +176,10 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
         default: out = ints({ctx.imageLoadStore() ? kMaxImageUniformsPerStage : 0}); break;  // GL_MAX_COMPUTE_IMAGE_UNIFORMS
         }
         return true;
+    case GL_MAX_UNIFORM_LOCATIONS:
+        if (ctx.version() < 43 && !ctx.hasExtension("GL_ARB_explicit_uniform_location")) return false;
+        out = ints({kMaxUniformLocations});
+        return true;
     // GL 4.3 shader storage blocks (limits.h): vertex, fragment and compute stages.
     case GL_SHADER_STORAGE_BUFFER_BINDING: case GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS: case GL_MAX_SHADER_STORAGE_BLOCK_SIZE:
     case GL_SHADER_STORAGE_BUFFER_OFFSET_ALIGNMENT: case GL_MAX_VERTEX_SHADER_STORAGE_BLOCKS:

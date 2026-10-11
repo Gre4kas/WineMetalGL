@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cstring>
 #include <string>
+#include <vector>
 
 #include "core/context.h"
 #include "core/program.h"
@@ -127,15 +128,28 @@ GLint GetSubroutineUniformLocation(Context& ctx, GLuint program, GLenum shaderty
     if (!info || !name) return -1;
     const std::string n = name;
     for (const SubroutineStageInfo::Uniform& u : info->uniforms) {
-        if (n == u.name || (!u.dimensions.empty() && n == u.name + "[0]")) return u.location;
-        // An element of a one-dimensional array: "name[i]".
-        if (u.dimensions.size() == 1 && n.size() > u.name.size() + 2 && n.compare(0, u.name.size(), u.name) == 0 &&
-            n[u.name.size()] == '[' && n.back() == ']') {
-            const std::string digits = n.substr(u.name.size() + 1, n.size() - u.name.size() - 2);
-            if (digits.empty() || digits.find_first_not_of("0123456789") != std::string::npos) continue;
-            const int element = std::atoi(digits.c_str());
-            if (element < u.dimensions[0]) return u.location + element;
+        if (n == u.name) return u.location;
+        if (n.compare(0, u.name.size(), u.name) != 0 || u.dimensions.empty()) continue;
+        // An element "name[i][j]..." (row-major over the dimensions); omitted
+        // trailing subscripts are 0 ("name", "name[1]" of a 2D array).
+        size_t at = u.name.size();
+        int element = 0;
+        bool ok = true;
+        for (size_t d = 0; d < u.dimensions.size(); ++d) {
+            int index = 0;
+            if (at < n.size()) {
+                const size_t close = n.find(']', at);
+                if (n[at] != '[' || close == std::string::npos) { ok = false; break; }
+                const std::string digits = n.substr(at + 1, close - at - 1);
+                if (digits.empty() || digits.find_first_not_of("0123456789") != std::string::npos ||
+                    (digits.size() > 1 && digits[0] == '0')) { ok = false; break; }
+                index = std::atoi(digits.c_str());
+                at = close + 1;
+            }
+            if (index >= u.dimensions[d]) { ok = false; break; }
+            element = element * u.dimensions[d] + index;
         }
+        if (ok && at == n.size()) return u.location + element;
     }
     return -1;
 }
@@ -225,8 +239,14 @@ void UniformSubroutinesuiv(Context& ctx, GLenum shadertype, GLsizei count, const
     const SubroutineStageInfo& info = p->linked->link.subroutines[static_cast<int>(stage)];
     if (count != info.locationCount || count < 0) return ctx.setError(GL_INVALID_VALUE);
     // Indices must name active subroutines (INVALID_VALUE) compatible with
-    // the uniform at their location (INVALID_OPERATION).
+    // the uniform at their location (INVALID_OPERATION). Locations that no
+    // active uniform uses (explicit locations leave gaps) are ignored.
+    std::vector<bool> active(static_cast<size_t>(count), false);
+    for (const SubroutineStageInfo::Uniform& u : info.uniforms)
+        for (int e = 0; e < u.elements(); ++e)
+            if (u.location + e < count) active[static_cast<size_t>(u.location + e)] = true;
     for (GLsizei i = 0; i < count; ++i) {
+        if (!active[static_cast<size_t>(i)]) continue;
         const bool known = std::any_of(info.functions.begin(), info.functions.end(),
                                        [&](const SubroutineStageInfo::Function& f) { return static_cast<GLuint>(f.index) == indices[i]; });
         if (!known) return ctx.setError(GL_INVALID_VALUE);

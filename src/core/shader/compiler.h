@@ -172,6 +172,18 @@ struct FragOutputInfo {
     GLint size = 1;
 };
 
+// An active input of a program's first stage or output of its last
+// (GL 4.3 GL_PROGRAM_INPUT / GL_PROGRAM_OUTPUT), built-ins included.
+struct InterfaceVariableInfo {
+    std::string name;            // "a[0]" for arrays, "Block.member" for block members
+    GLenum type = 0;
+    GLint size = 1;
+    GLint location = -1;         // -1: a built-in
+    GLint locationIndex = -1;    // fragment outputs: layout(index)
+    bool perPatch = false;
+    uint32_t stageMask = 0;
+};
+
 // One image uniform element (GL 4.2): the unit it reads comes from the
 // program's image unit values.
 struct ImageSlotInfo {
@@ -335,6 +347,7 @@ struct LinkResult {
     std::vector<ImageSlotInfo> images;
     std::vector<AtomicCounterBufferInfo> atomicBuffers;
     std::vector<StorageBlockInfo> storageBlocks;
+    std::vector<InterfaceVariableInfo> programInputs, programOutputs;
     std::vector<BufferVariableInfo> bufferVariables;
     SubroutineStageInfo subroutines[kStageCount];
     // Default-block offsets of the hidden built-in uniforms (-1: unused):

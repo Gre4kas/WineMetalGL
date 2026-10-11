@@ -160,6 +160,7 @@ TypeInfo typeInfo(GLenum type) {
 const shader::UniformInfo* uniformAt(Program& p, GLint location, int& element) {
     if (!p.linked || location < 0 || static_cast<size_t>(location) >= p.linked->link.locations.size()) return nullptr;
     const auto& [index, e] = p.linked->link.locations[static_cast<size_t>(location)];
+    if (index < 0) return nullptr;  // a gap between explicit locations
     element = e;
     return &p.linked->link.uniforms[static_cast<size_t>(index)];
 }
