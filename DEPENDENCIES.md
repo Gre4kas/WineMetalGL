@@ -39,6 +39,8 @@ Local changes to vendored sources (each marked `WineMetalGL:` in the code):
 - SPIRV-Cross `spirv_msl.{hpp,cpp}`: an MSL option, `native_texture_atomics`,
   emits image atomics as MSL 3.1 texture atomics instead of emulating them
   through a buffer that aliases the texture.
+- SPIRV-Cross `spirv_msl.cpp`, `OpImageWrite`: a write to a `read_write`
+  texture is followed by `fence()`, so the invocation's later loads see it.
 
 The built dylib dynamically links only Apple system frameworks and libraries
 (Metal, Foundation, QuartzCore, CoreFoundation, libc++, libSystem and

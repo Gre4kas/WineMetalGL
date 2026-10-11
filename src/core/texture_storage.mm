@@ -609,6 +609,39 @@ id<MTLTexture> dummyImage(GLenum imageType) {
     return texture;
 }
 
+namespace {
+
+constexpr uint64_t kShadowTag = 0x4000000000000000ull;
+
+uint64_t shadowKey(MTLPixelFormat format, NSUInteger level, NSUInteger slice) {
+    return kShadowTag | (static_cast<uint64_t>(format) << 40) | (static_cast<uint64_t>(level & 0xff) << 24) |
+           (static_cast<uint64_t>(slice & 0xfff) << 12);
+}
+
+// The slice of a 3D texture a non-layered (or 2D) image binding reads.
+bool shadowSlice(const Texture& tex, const ImageUnit& unit, NSUInteger& level, NSUInteger& slice) {
+    if (!tex.mtl || tex.mtl.textureType != MTLTextureType3D || unit.level < 0 || unit.layer < 0) return false;
+    level = static_cast<NSUInteger>(unit.level);
+    slice = unit.layered ? 0 : static_cast<NSUInteger>(unit.layer);
+    return level < tex.mtl.mipmapLevelCount && slice < std::max<NSUInteger>(1, tex.mtl.depth >> level);
+}
+
+id<MTLTexture> findView(const Texture& tex, uint64_t key) {
+    for (const Texture::View& v : tex.views)
+        if (v.key == key) return v.view;
+    return nil;
+}
+
+}  // namespace
+
+bool imageSliceShadow(const ImageUnit& unit, GLenum imageType, ImageSliceShadow& out) {
+    const Texture* tex = unit.texture.get();
+    if (!tex || imageShape(imageType) != ImageShape::Plane || !shadowSlice(*tex, unit, out.level, out.slice)) return false;
+    out.texture = tex->mtl;
+    out.shadow = findView(*tex, shadowKey(tex->mtl.pixelFormat, out.level, out.slice));
+    return out.shadow != nil;
+}
+
 id<MTLTexture> imageView(Context& ctx, const ImageUnit& unit, GLenum imageType, GLenum shaderFormat) {
     Texture* tex = unit.texture.get();
     const FormatInfo* format = formatInfo(shaderFormat ? shaderFormat : unit.format);
@@ -659,6 +692,33 @@ id<MTLTexture> imageView(Context& ctx, const ImageUnit& unit, GLenum imageType, 
     NSUInteger first = 0, count = 1;
     switch (shape) {
     case ImageShape::Plane:
+        if (type == MTLTextureType3D) {
+            // A slice of a 3D texture: its 2D shadow (imageSliceShadow).
+            NSUInteger level = 0, slice = 0;
+            if (!shadowSlice(*tex, unit, level, slice)) return nil;
+            const uint64_t key = shadowKey(tex->mtl.pixelFormat, level, slice);
+            id<MTLTexture> shadow = findView(*tex, key);
+            if (!shadow) {
+                MTLTextureDescriptor* desc = [MTLTextureDescriptor new];
+                desc.textureType = MTLTextureType2D;
+                desc.pixelFormat = tex->mtl.pixelFormat;
+                desc.width = std::max<NSUInteger>(1, tex->mtl.width >> level);
+                desc.height = std::max<NSUInteger>(1, tex->mtl.height >> level);
+                desc.storageMode = MTLStorageModePrivate;
+                desc.usage = tex->mtl.usage | MTLTextureUsagePixelFormatView;
+                shadow = [Device::get().mtl() newTextureWithDescriptor:desc];
+                if (!shadow) return nil;
+                tex->views.push_back({key, shadow});
+            }
+            if (pixelFormat == tex->mtl.pixelFormat) return shadow;
+            const uint64_t viewKey = shadowKey(pixelFormat, level, slice) | 1;
+            id<MTLTexture> view = findView(*tex, viewKey);
+            if (!view) {
+                view = [shadow newTextureViewWithPixelFormat:pixelFormat];
+                if (view) tex->views.push_back({viewKey, view});
+            }
+            return view;
+        }
         // One layer of an array, cube or cube array (a layered binding
         // of such a texture to a 2D image reads layer 0).
         if (type != MTLTextureType2D && !arrayed) return nil;

@@ -8791,6 +8791,23 @@ void CompilerMSL::emit_instruction(const Instruction &instruction)
 			expr += ")";
 		statement(expr, ";");
 
+		// WineMetalGL: a thread reads its own writes to a read_write texture
+		// only after a fence (GLSL image stores are visible to the invocation's
+		// later loads in program order).
+		{
+			auto *fence_var = p_var;
+			if (fence_var && fence_var->basevariable)
+				fence_var = maybe_get<SPIRVariable>(fence_var->basevariable);
+			const auto access = img_type.image.access;
+			bool read_write = access == AccessQualifierReadWrite;
+			if (access != AccessQualifierReadOnly && access != AccessQualifierWriteOnly &&
+			    access != AccessQualifierReadWrite && fence_var &&
+			    !has_decoration(fence_var->self, DecorationNonReadable))
+				read_write = true;
+			if (read_write)
+				statement(to_expression(img_id), ".fence();");
+		}
+
 		if (p_var && variable_storage_is_aliased(*p_var))
 			flush_all_aliased_variables();
 

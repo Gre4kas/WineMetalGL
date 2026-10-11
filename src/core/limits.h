@@ -26,6 +26,7 @@ constexpr GLint kMaxPatchVertices = 32, kMaxTessGenLevel = 64;
 constexpr GLint kMaxImageUnits = 8, kMaxImageUniformsPerStage = 8, kMaxCombinedImageUniforms = 48;
 constexpr GLint kMaxCombinedImageUnitsAndFragmentOutputs = 16;
 constexpr GLint kMaxAtomicCounterBufferBindings = 8, kMaxStageAtomicCounterBuffers = 8, kMaxStageAtomicCounters = 8;
+constexpr GLint kMaxVertexAtomicCounterBuffers = 1;
 constexpr GLint kMaxAtomicCounterBufferSize = 16384;
 constexpr GLint kMaxViewports = 16, kMaxGeometryShaderInvocations = 32;
 constexpr GLfloat kMaxTextureLodBias = 15.0f, kMaxAnisotropy = 16.0f;

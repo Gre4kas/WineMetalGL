@@ -1242,9 +1242,9 @@ void unbindTextureEverywhere(Context& ctx, Texture* tex) {
     for (TextureUnit& unit : ctx.state.textureUnits)
         for (int i = 0; i < kTexTargetCount; ++i)
             if (unit.bound[i].get() == tex) unit.bound[i] = ctx.defaultTextures[i];
-    // A deleted texture's image units are unbound (texture 0).
+    // A deleted texture's image units return to their default state.
     for (ImageUnit& unit : ctx.state.imageUnits)
-        if (unit.texture.get() == tex) unit.texture.reset();
+        if (unit.texture.get() == tex) unit = ImageUnit{};
     for (Framebuffer* fb : {ctx.state.drawFramebuffer.get(), ctx.state.readFramebuffer.get()}) {
         if (!fb) continue;
         bool changed = false;

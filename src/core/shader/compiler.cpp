@@ -51,10 +51,12 @@ const TBuiltInResource* resources() {
         x.maxVertexImageUniforms = x.maxTessControlImageUniforms = x.maxTessEvaluationImageUniforms = L::kMaxImageUniformsPerStage;
         x.maxGeometryImageUniforms = x.maxFragmentImageUniforms = x.maxComputeImageUniforms = L::kMaxImageUniformsPerStage;
         x.maxCombinedImageUniforms = L::kMaxCombinedImageUniforms;
-        x.maxVertexAtomicCounters = x.maxTessControlAtomicCounters = x.maxTessEvaluationAtomicCounters = 0;
-        x.maxGeometryAtomicCounters = x.maxFragmentAtomicCounters = x.maxComputeAtomicCounters = L::kMaxStageAtomicCounters;
+        x.maxTessControlAtomicCounters = x.maxTessEvaluationAtomicCounters = 0;
+        x.maxVertexAtomicCounters = x.maxGeometryAtomicCounters = x.maxFragmentAtomicCounters = x.maxComputeAtomicCounters =
+            L::kMaxStageAtomicCounters;
         x.maxCombinedAtomicCounters = L::kMaxStageAtomicCounters;
-        x.maxVertexAtomicCounterBuffers = x.maxTessControlAtomicCounterBuffers = x.maxTessEvaluationAtomicCounterBuffers = 0;
+        x.maxTessControlAtomicCounterBuffers = x.maxTessEvaluationAtomicCounterBuffers = 0;
+        x.maxVertexAtomicCounterBuffers = L::kMaxVertexAtomicCounterBuffers;
         x.maxGeometryAtomicCounterBuffers = x.maxFragmentAtomicCounterBuffers = x.maxComputeAtomicCounterBuffers =
             L::kMaxStageAtomicCounterBuffers;
         x.maxCombinedAtomicCounterBuffers = L::kMaxStageAtomicCounterBuffers;
@@ -2074,11 +2076,15 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
                 if (auto internal = kInternalBuffers.find(blockName); internal != kInternalBuffers.end()) b.msl_buffer = internal->second;
                 else if (blockName.rfind("wmgl_XfbData", 0) == 0) b.msl_buffer = kSlotFirstXfbBuffer + std::stoul(blockName.substr(12));
                 else if (counterBinding >= 0) {
-                    if (s != static_cast<int>(Stage::Fragment) && s != static_cast<int>(Stage::Compute)) {
+                    const bool vertexStage = s == static_cast<int>(Stage::Vertex);
+                    if (!vertexStage && s != static_cast<int>(Stage::Fragment) && s != static_cast<int>(Stage::Compute)) {
                         result.log += "error: atomic counters are not supported in this shader stage\n";
                         return result;
                     }
-                    if (nextAtomicSlot >= kSlotFirstAtomicCounterBuffer + kMaxStageAtomicCounterBuffers) {
+                    const uint32_t slotEnd = vertexStage ? kSlotVertexAtomicCounterBuffer + kMaxVertexAtomicCounterBuffers
+                                                         : kSlotFirstAtomicCounterBuffer + kMaxStageAtomicCounterBuffers;
+                    if (vertexStage && nextAtomicSlot < kSlotVertexAtomicCounterBuffer) nextAtomicSlot = kSlotVertexAtomicCounterBuffer;
+                    if (nextAtomicSlot >= slotEnd) {
                         result.log += "error: too many atomic counter buffers in one stage\n";
                         return result;
                     }

@@ -229,8 +229,8 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
         case GL_ATOMIC_COUNTER_BUFFER_BINDING: out = ints({nameOf(s.atomicCounterBuffer)}); break;
         case GL_MAX_ATOMIC_COUNTER_BUFFER_BINDINGS: out = ints({kMaxAtomicCounterBufferBindings}); break;
         case GL_MAX_ATOMIC_COUNTER_BUFFER_SIZE: out = ints({kMaxAtomicCounterBufferSize}); break;
-        case GL_MAX_VERTEX_ATOMIC_COUNTER_BUFFERS: case GL_MAX_TESS_CONTROL_ATOMIC_COUNTER_BUFFERS:
-        case GL_MAX_TESS_EVALUATION_ATOMIC_COUNTER_BUFFERS: case GL_MAX_VERTEX_ATOMIC_COUNTERS:
+        case GL_MAX_VERTEX_ATOMIC_COUNTER_BUFFERS: out = ints({kMaxVertexAtomicCounterBuffers}); break;
+        case GL_MAX_TESS_CONTROL_ATOMIC_COUNTER_BUFFERS: case GL_MAX_TESS_EVALUATION_ATOMIC_COUNTER_BUFFERS:
         case GL_MAX_TESS_CONTROL_ATOMIC_COUNTERS: case GL_MAX_TESS_EVALUATION_ATOMIC_COUNTERS:
             out = ints({0});
             break;

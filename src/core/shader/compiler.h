@@ -41,8 +41,11 @@ constexpr uint32_t kMaxStageSamplers = 16;     // textures/samplers 0..15
 constexpr uint32_t kSlotTessVertices = 18, kSlotTessPatches = 19, kSlotTessControl = 20;
 // Atomic counter buffers (GL 4.2): buffers 18..25 of fragment and compute
 // functions (the geometry kernel included), which bind no vertex buffers.
-// Vertex functions have no free slot, so they have none.
+// A vertex function's one counter buffer takes the last vertex buffer slot
+// (29), leaving its program 11 vertex buffers (vertexBufferSlots()).
 constexpr uint32_t kSlotFirstAtomicCounterBuffer = 18;
+constexpr uint32_t kSlotVertexAtomicCounterBuffer = kSlotFirstVertexBuffer + kMaxVertexBufferSlots - 1;
+constexpr uint32_t kMaxVertexAtomicCounterBuffers = 1;
 // Image uniforms (GL 4.2 image load/store): textures 16..23 of every stage.
 constexpr uint32_t kSlotFirstImage = 16;
 constexpr uint32_t kMaxStageImages = 8;
