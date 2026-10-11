@@ -222,6 +222,7 @@ tests/gpu/query_tests.cpp
 tests/gpu/raster_tests.cpp
 tests/gpu/review_tests.cpp
 tests/gpu/separate_shader_tests.cpp
+tests/gpu/stream_tests.cpp
 tests/gpu/tessellation_tests.cpp
 tests/gpu/texture_tests.cpp
 tests/gpu/transform_feedback_tests.cpp
