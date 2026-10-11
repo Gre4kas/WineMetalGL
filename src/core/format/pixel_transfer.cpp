@@ -667,6 +667,19 @@ bool transferCompatible(GLenum format, GLenum type, const FormatInfo& info) {
 
 // -------------------------------------------------------------- bulk
 
+namespace {
+
+// Packed client types whose bits are the storage format's: transferred
+// unchanged, since decoding and re-encoding would canonicalize them (RGB9E5
+// has several encodings of one value; glCopyImageSubData and readback must
+// see the bits that were uploaded).
+bool rawTransfer(GLenum format, GLenum type, Storage storage) {
+    return (storage == Storage::RGB9E5Float && format == GL_RGB && type == GL_UNSIGNED_INT_5_9_9_9_REV) ||
+           (storage == Storage::RG11B10Float && format == GL_RGB && type == GL_UNSIGNED_INT_10F_11F_11F_REV);
+}
+
+}  // namespace
+
 void unpackPixels(const void* src, GLenum format, GLenum type, int width, int height, int depth,
                   const PixelStoreParams& ps, const FormatInfo& info, void* out) {
     const TransferLayout l = transferLayout(format, type, width, height, depth, ps);
@@ -677,10 +690,17 @@ void unpackPixels(const void* src, GLenum format, GLenum type, int width, int he
     const auto* base = static_cast<const uint8_t*>(src) + l.skipBytes;
     const bool swap = ps.swapBytes && typeBytes(type) > 1;
     Texel t;
+    const bool raw = rawTransfer(format, type, info.storage) && l.groupBytes == texelBytes;
     for (int z = 0; z < depth; ++z)
         for (int y = 0; y < height; ++y) {
             const uint8_t* row = base + static_cast<size_t>(z) * l.imageStride + static_cast<size_t>(y) * l.rowStride;
             for (int x = 0; x < width; ++x) {
+                if (raw) {
+                    const uint32_t v = static_cast<uint32_t>(readWord(row + static_cast<size_t>(x) * l.groupBytes, 4, swap));
+                    std::memcpy(dst, &v, 4);
+                    dst += texelBytes;
+                    continue;
+                }
                 readGroup(row + static_cast<size_t>(x) * l.groupBytes, format, type, integerDest, swap, t);
                 if (format == GL_ALPHA || format == GL_ALPHA_INTEGER) {
                     // An ALPHA group fills only alpha; colour channels read as zero.
@@ -709,10 +729,18 @@ void packPixels(const void* storage, const FormatInfo& info, int width, int heig
     auto* base = static_cast<uint8_t*>(out) + l.skipBytes;
     const bool swap = ps.swapBytes && typeBytes(type) > 1;
     Texel t;
+    const bool raw = rawTransfer(format, type, info.storage) && l.groupBytes == texelBytes;
     for (int z = 0; z < depth; ++z)
         for (int y = 0; y < height; ++y) {
             uint8_t* row = base + static_cast<size_t>(z) * l.imageStride + static_cast<size_t>(y) * l.rowStride;
             for (int x = 0; x < width; ++x) {
+                if (raw) {
+                    uint32_t v;
+                    std::memcpy(&v, src, 4);
+                    writeWord(row + static_cast<size_t>(x) * l.groupBytes, v, 4, swap);
+                    src += texelBytes;
+                    continue;
+                }
                 decodeStorage(info.storage, src, t);
                 src += texelBytes;
                 storedToRgba(info, t);

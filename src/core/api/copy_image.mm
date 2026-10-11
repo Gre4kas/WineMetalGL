@@ -50,6 +50,15 @@ bool resolveImage(Context& ctx, GLuint name, GLenum target, GLint level, Image& 
     if (target == GL_TEXTURE_CUBE_MAP)
         for (int f = 1; f < 6; ++f)
             if (!tex->image(f, level).defined()) return ctx.setError(GL_INVALID_OPERATION), false;
+    // The texture must be mipmap complete (GL 4.3 section 18.3.3) for its
+    // level range and whether its minification filter uses mipmaps; the
+    // filters' compatibility with the format (integer textures) does not
+    // apply to copies.
+    SamplerParams params = tex->sampler;
+    const bool mipmapped = params.minFilter != GL_NEAREST && params.minFilter != GL_LINEAR;
+    params.minFilter = mipmapped ? GL_NEAREST_MIPMAP_NEAREST : GL_NEAREST;
+    params.magFilter = GL_NEAREST;
+    if (!textureComplete(ctx, *tex, &params)) return ctx.setError(GL_INVALID_OPERATION), false;
     // Every face (cube maps) or the level itself must fit the storage's mip chain.
     for (int f = 0; f < (target == GL_TEXTURE_CUBE_MAP ? 6 : 1); ++f)
         if (!imageHasStorage(ctx, *tex, f, level)) return ctx.setError(GL_INVALID_OPERATION), false;
