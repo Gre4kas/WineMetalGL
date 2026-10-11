@@ -8,14 +8,12 @@
 namespace wmgl {
 
 int devMaxVersion() {
-    static const int version = [] {
-        const char* value = std::getenv("WINEMETALGL_DEV_MAX_VERSION");
-        int major = 0, minor = 0;
-        if (!value || std::sscanf(value, "%d.%d", &major, &minor) != 2) return 0;
-        if (major != 4 || minor < 0 || minor > 6) return 0;
-        return major * 10 + minor;
-    }();
-    return version;
+    // Read at every context creation (the GPU tests set it per context).
+    const char* value = std::getenv("WINEMETALGL_DEV_MAX_VERSION");
+    int major = 0, minor = 0;
+    if (!value || std::sscanf(value, "%d.%d", &major, &minor) != 2) return 0;
+    if (major != 4 || minor < 0 || minor > 6) return 0;
+    return major * 10 + minor;
 }
 
 const std::string& rendererString() {

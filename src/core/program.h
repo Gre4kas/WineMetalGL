@@ -46,6 +46,11 @@ struct LinkedProgram {
     // Geometry shader emulation (link.geometry): the drawing vertex function
     // and the geometry kernel.
     id<MTLFunction> geometryPassthrough();
+    // The drawing vertex function (with a geometry shader, its pass-through)
+    // without the [[point_size]] output, which Metal rejects in pipelines
+    // with a line or triangle input topology (set for gl_Layer and
+    // gl_ViewportIndex writers).
+    id<MTLFunction> vertexWithoutPointSize(bool geometryPass);
     id<MTLComputePipelineState> geometryKernel();
     // Compute programs.
     id<MTLComputePipelineState> computePipeline();
@@ -61,6 +66,19 @@ struct LinkedProgram {
         return value != 0;
     }
 
+    // Whether the drawing vertex function writes gl_ViewportIndex (with a
+    // geometry shader, its pass-through).
+    bool writesViewportIndex() const { return drawingVertexMsl().find("[[viewport_array_index]]") != std::string::npos; }
+    // ... or gl_Layer: Metal then needs the pipeline's input topology class.
+    bool writesLayerOrViewport() const {
+        const std::string& msl = drawingVertexMsl();
+        return msl.find("[[viewport_array_index]]") != std::string::npos ||
+               msl.find("[[render_target_array_index]]") != std::string::npos;
+    }
+    const std::string& drawingVertexMsl() const {
+        return link.geometry.active ? link.geometry.passthrough.msl : stage(shader::Stage::Vertex).msl;
+    }
+
     bool hasStage(shader::Stage stage) const { return link.stages[static_cast<int>(stage)].present; }
     const shader::StageOutput& stage(shader::Stage stage) const { return link.stages[static_cast<int>(stage)]; }
 
@@ -73,6 +91,8 @@ private:
     bool vertexNoRasterFailed_ = false;
     std::unordered_map<std::string, id<MTLFunction>> fragmentVariants_;  // nil entries: failed
     id<MTLFunction> passthrough_ = nil;
+    id<MTLFunction> noPointSize_[2] = {};
+    bool noPointSizeFailed_[2] = {};
     id<MTLComputePipelineState> kernel_ = nil;
     bool passthroughFailed_ = false, kernelFailed_ = false;
     id<MTLComputePipelineState> compute_ = nil;

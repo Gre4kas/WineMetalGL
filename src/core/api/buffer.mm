@@ -120,6 +120,8 @@ void DeleteBuffers(Context& ctx, GLsizei n, const GLuint* buffers) {
             if (a.buffer == buffer) a.buffer.reset();
         for (IndexedBufferBinding& b : s.uniformBufferBindings)
             if (b.buffer == buffer) b = IndexedBufferBinding();
+        for (IndexedBufferBinding& b : s.atomicCounterBufferBindings)
+            if (b.buffer == buffer) b = IndexedBufferBinding();
         for (auto& b : s.transformFeedback->buffers)
             if (b.buffer == buffer) b = TransformFeedback::Binding();
         ctx.markDirty(kDirtyVertexInput | kDirtyUniformBuffers);
@@ -142,17 +144,31 @@ void BindBuffer(Context& ctx, GLenum target, GLuint name) {
     ctx.markDirty(kDirtyVertexInput);
 }
 
+namespace {
+
+bool indexedTarget(Context& ctx, GLenum target) {
+    return target == GL_UNIFORM_BUFFER || target == GL_TRANSFORM_FEEDBACK_BUFFER ||
+           (target == GL_ATOMIC_COUNTER_BUFFER && ctx.atomicCounters());
+}
+
+}  // namespace
+
 void BindBufferRange(Context& ctx, GLenum target, GLuint index, GLuint name, GLintptr offset, GLsizeiptr size) {
-    if (target != GL_UNIFORM_BUFFER && target != GL_TRANSFORM_FEEDBACK_BUFFER) return ctx.setError(GL_INVALID_ENUM);
+    if (!indexedTarget(ctx, target)) return ctx.setError(GL_INVALID_ENUM);
     if (name) {
         if (size <= 0 || offset < 0) return ctx.setError(GL_INVALID_VALUE);
         if (target == GL_UNIFORM_BUFFER && offset % 256) return ctx.setError(GL_INVALID_VALUE);
         if (target == GL_TRANSFORM_FEEDBACK_BUFFER && (offset % 4 || size % 4)) return ctx.setError(GL_INVALID_VALUE);
+        if (target == GL_ATOMIC_COUNTER_BUFFER && offset % 4) return ctx.setError(GL_INVALID_VALUE);
     }
     bool ok;
     RefPtr<Buffer> buffer = bufferForBind(ctx, name, ok);
     if (!ok) return;
-    if (target == GL_UNIFORM_BUFFER) {
+    if (target == GL_ATOMIC_COUNTER_BUFFER) {
+        if (index >= ContextState::kMaxAtomicCounterBufferBindings) return ctx.setError(GL_INVALID_VALUE);
+        ctx.state.atomicCounterBufferBindings[index] = {buffer, offset, size};
+        ctx.state.atomicCounterBuffer = buffer;
+    } else if (target == GL_UNIFORM_BUFFER) {
         if (index >= ContextState::kMaxUniformBufferBindings) return ctx.setError(GL_INVALID_VALUE);
         ctx.state.uniformBufferBindings[index] = {buffer, offset, size};
         ctx.state.uniformBuffer = buffer;
@@ -167,11 +183,15 @@ void BindBufferRange(Context& ctx, GLenum target, GLuint index, GLuint name, GLi
 }
 
 void BindBufferBase(Context& ctx, GLenum target, GLuint index, GLuint name) {
-    if (target != GL_UNIFORM_BUFFER && target != GL_TRANSFORM_FEEDBACK_BUFFER) return ctx.setError(GL_INVALID_ENUM);
+    if (!indexedTarget(ctx, target)) return ctx.setError(GL_INVALID_ENUM);
     bool ok;
     RefPtr<Buffer> buffer = bufferForBind(ctx, name, ok);
     if (!ok) return;
-    if (target == GL_UNIFORM_BUFFER) {
+    if (target == GL_ATOMIC_COUNTER_BUFFER) {
+        if (index >= ContextState::kMaxAtomicCounterBufferBindings) return ctx.setError(GL_INVALID_VALUE);
+        ctx.state.atomicCounterBufferBindings[index] = {buffer, 0, 0};
+        ctx.state.atomicCounterBuffer = buffer;
+    } else if (target == GL_UNIFORM_BUFFER) {
         if (index >= ContextState::kMaxUniformBufferBindings) return ctx.setError(GL_INVALID_VALUE);
         ctx.state.uniformBufferBindings[index] = {buffer, 0, 0};
         ctx.state.uniformBuffer = buffer;
@@ -429,6 +449,13 @@ void GetBufferPointerv(Context& ctx, GLenum target, GLenum pname, void** params)
     Buffer* buffer = boundBuffer(ctx, target);
     if (!buffer || !params) return;
     *params = buffer->mapped ? buffer->mapPointer : nullptr;
+}
+
+// GL 4.2 / GL_ARB_shader_image_load_store.
+void MemoryBarrier(Context& ctx, GLbitfield barriers) {
+    if (ctx.version() < 42 && !ctx.hasExtension("GL_ARB_shader_image_load_store")) return ctx.unimplemented("glMemoryBarrier");
+    if (barriers != GL_ALL_BARRIER_BITS && (barriers & ~0xffefu)) return ctx.setError(GL_INVALID_VALUE);
+    ctx.stream().memoryBarrier();
 }
 
 }  // namespace wmgl::api

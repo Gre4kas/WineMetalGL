@@ -234,10 +234,7 @@ bool parseGeometryGlsl(const std::string& glsl, GeometryShaderInfo& info, std::s
                         else if (part == "lines_adjacency") info.inputType = GL_LINES_ADJACENCY, inputTyped = true;
                         else if (part == "triangles") info.inputType = GL_TRIANGLES, inputTyped = true;
                         else if (part == "triangles_adjacency") info.inputType = GL_TRIANGLES_ADJACENCY, inputTyped = true;
-                        else if (part.compare(0, 11, "invocations") == 0 && std::atoi(part.c_str() + part.find('=') + 1) > 1) {
-                            log += "error: geometry shader instancing (invocations) is not supported\n";
-                            return false;
-                        }
+                        else if (part.compare(0, 11, "invocations") == 0) info.invocations = std::max(1, std::atoi(part.c_str() + part.find('=') + 1));
                     } else {
                         if (part == "points") info.outputType = GL_POINTS, outputTyped = true;
                         else if (part == "line_strip") info.outputType = GL_LINE_STRIP, outputTyped = true;
@@ -321,6 +318,7 @@ bool parseGeometryGlsl(const std::string& glsl, GeometryShaderInfo& info, std::s
     functions = renameGlIn(functions, info);
     info.writesPointSize = functions.find("gl_PointSize") != std::string::npos;
     info.writesLayer = functions.find("gl_Layer") != std::string::npos;
+    info.writesViewportIndex = functions.find("gl_ViewportIndex") != std::string::npos;
     info.writesPrimitiveId = functions.find("gl_PrimitiveID") != std::string::npos &&
                              replaceWord(functions, "gl_PrimitiveIDIn", "").find("gl_PrimitiveID") != std::string::npos;
     if (functions.find("gl_ClipDistance") != std::string::npos && !info.outputClipDistances) info.outputClipDistances = 8;
@@ -328,7 +326,8 @@ bool parseGeometryGlsl(const std::string& glsl, GeometryShaderInfo& info, std::s
     const std::pair<const char*, const char*> renames[] = {
         {"gl_PrimitiveIDIn", "wmgl_primitive_id_in"}, {"gl_PrimitiveID", "wmgl_out_primitive_id"},
         {"gl_Position", "wmgl_out_position"}, {"gl_PointSize", "wmgl_out_pointsize"},
-        {"gl_ClipDistance", "wmgl_out_clipdistance"}, {"gl_Layer", "wmgl_out_layer"}, {"gl_InvocationID", "0"},
+        {"gl_ClipDistance", "wmgl_out_clipdistance"}, {"gl_Layer", "wmgl_out_layer"},
+        {"gl_ViewportIndex", "wmgl_out_viewport"}, {"gl_InvocationID", "wmgl_invocation_id"},
         {"EmitVertex", "wmgl_EmitVertex"}, {"EndPrimitive", "wmgl_EndPrimitive"},
     };
     for (const auto& [from, to] : renames) functions = replaceWord(functions, from, to);
@@ -382,6 +381,7 @@ GeometrySources geometrySources(const GeometryShaderInfo& info, const LinkResult
     if (info.writesPointSize) addVar("gl_PointSize", "wmgl_out_pointsize", GL_FLOAT, "float", 0);
     if (info.outputClipDistances) addVar("gl_ClipDistance", "wmgl_out_clipdistance", GL_FLOAT, "float", info.outputClipDistances);
     if (info.writesLayer) addVar("gl_Layer", "wmgl_out_layer", GL_INT, "int", 0);
+    if (info.writesViewportIndex) addVar("gl_ViewportIndex", "wmgl_out_viewport", GL_INT, "int", 0);
     for (const GeometryVar& v : info.outputs)
         addVar(v.member.empty() ? v.name : v.blockName + "." + v.member, v.member.empty() ? v.name : v.name + "." + v.member,
                v.type, v.glslType, v.arraySize);
@@ -424,7 +424,8 @@ GeometrySources geometrySources(const GeometryShaderInfo& info, const LinkResult
     if (info.readsPointSize) c += "float wmgl_in_pointsize[" + std::to_string(n) + "];\n";
     if (info.readsClipDistance)
         c += "float wmgl_in_clipdistance[" + std::to_string(n) + "][" + std::to_string(info.inputClipDistances) + "];\n";
-    c += "vec4 wmgl_out_position;\nfloat wmgl_out_pointsize;\nint wmgl_out_layer;\nint wmgl_out_primitive_id;\nint wmgl_primitive_id_in;\n";
+    c += "vec4 wmgl_out_position;\nfloat wmgl_out_pointsize;\nint wmgl_out_layer;\nint wmgl_out_viewport;\nint wmgl_out_primitive_id;\n"
+         "int wmgl_primitive_id_in;\nint wmgl_invocation_id;\n";
     if (info.outputClipDistances) c += "float wmgl_out_clipdistance[" + std::to_string(info.outputClipDistances) + "];\n";
     c += "buffer wmgl_GsInput { uint wmgl_gs_in[]; };\n"
          "buffer wmgl_GsOutput { uint wmgl_gs_out[]; };\n"
@@ -448,12 +449,19 @@ GeometrySources geometrySources(const GeometryShaderInfo& info, const LinkResult
              "        wmgl_gs_indices[wmgl_gs_thread * " + region + "u + wmgl_gs_cursor++] = 0xFFFFFFFFu;\n";
     c += "}\n";
     c += info.functions;
+    // One thread per (input primitive, invocation); its output slots and
+    // index region are per thread, so invocations of a primitive emit in
+    // invocation order.
+    const std::string invocations = std::to_string(info.invocations);
     c += "void main() {\n"
          "    wmgl_gs_thread = gl_GlobalInvocationID.x;\n"
-         "    if (wmgl_gs_thread >= wmgl_gs_prim_count) return;\n"
+         "    if (wmgl_gs_thread >= wmgl_gs_prim_count * " + invocations + "u) return;\n"
+         "    uint wmgl_gs_prim = wmgl_gs_thread / " + invocations + "u;\n"
+         "    wmgl_invocation_id = int(wmgl_gs_thread % " + invocations + "u);\n"
+         "    wmgl_out_viewport = 0;\n    wmgl_out_layer = 0;\n"
          "    wmgl_gs_emitted = 0u;\n    wmgl_gs_cursor = 0u;\n"
          "    for (uint wmgl_j = 0u; wmgl_j < " + std::to_string(n) + "u; ++wmgl_j) {\n"
-         "        uint wmgl_b = (wmgl_gs_thread * " + std::to_string(n) + "u + wmgl_j) * " + inStride + "u;\n";
+         "        uint wmgl_b = (wmgl_gs_prim * " + std::to_string(n) + "u + wmgl_j) * " + inStride + "u;\n";
     if (const TransformFeedbackVarying* p = captured("gl_Position"))
         c += "        wmgl_in_position[wmgl_j] = " + loadValue("vec4", GL_FLOAT_VEC4, "wmgl_gs_in", "wmgl_b + " + std::to_string(p->offset) + "u") + ";\n";
     if (const TransformFeedbackVarying* p = info.readsPointSize ? captured("gl_PointSize") : nullptr)
@@ -479,7 +487,7 @@ GeometrySources geometrySources(const GeometryShaderInfo& info, const LinkResult
                  ";\n";
     }
     c += "    }\n"
-         "    wmgl_primitive_id_in = int(wmgl_gs_prim_base + wmgl_gs_thread % wmgl_gs_prims_per_instance);\n"
+         "    wmgl_primitive_id_in = int(wmgl_gs_prim_base + wmgl_gs_prim % wmgl_gs_prims_per_instance);\n"
          "    wmgl_gs_main();\n";
     c += "    for (; wmgl_gs_cursor < " + region + "u; ++wmgl_gs_cursor) wmgl_gs_indices[wmgl_gs_thread * " + region +
          "u + wmgl_gs_cursor] = 0xFFFFFFFFu;\n";
@@ -496,7 +504,7 @@ GeometrySources geometrySources(const GeometryShaderInfo& info, const LinkResult
     // ---- pass-through vertex shader
     std::string& p = out.passthrough;
     p += "#version 450\n";
-    if (info.writesLayer) p += "#extension GL_ARB_shader_viewport_layer_array : require\n";
+    if (info.writesLayer || info.writesViewportIndex) p += "#extension GL_ARB_shader_viewport_layer_array : require\n";
     p += "buffer wmgl_GsVertices { uint wmgl_gs_v[]; };\n";
     std::map<std::string, bool> declared;
     for (const GeometryVar& v : info.outputs) {
@@ -511,6 +519,7 @@ GeometrySources geometrySources(const GeometryShaderInfo& info, const LinkResult
         if (target == "wmgl_out_position") target = "gl_Position";
         else if (target == "wmgl_out_pointsize") target = "gl_PointSize";
         else if (target == "wmgl_out_layer") target = "gl_Layer";
+        else if (target == "wmgl_out_viewport") target = "gl_ViewportIndex";
         else if (target.rfind("wmgl_out_clipdistance", 0) == 0) target = "gl_ClipDistance" + target.substr(21);
         p += "    " + target + " = " + loadValue(f.glslType, f.type, "wmgl_gs_v", "wmgl_b + " + std::to_string(f.offset) + "u") + ";\n";
     }

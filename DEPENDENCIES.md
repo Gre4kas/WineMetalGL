@@ -20,6 +20,9 @@ Local changes to vendored sources (each marked `WineMetalGL:` in the code):
   says, not of a vector of the matrix's component type; double matrices with
   two rows otherwise fail the layout check when geometry shaders are
   translated to GLSL. Float layouts are unchanged.
+- glslang `glslang/MachineIndependent/ParseHelper.cpp`, `fixOffset`: an
+  atomic counter whose offset puts it past `gl_MaxAtomicCounterBufferSize` is
+  a compile-time error, as GLSL 4.20 requires.
 
 The built dylib dynamically links only Apple system frameworks and libraries
 (Metal, Foundation, QuartzCore, CoreFoundation, libc++, libSystem and

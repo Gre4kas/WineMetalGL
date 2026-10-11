@@ -41,7 +41,7 @@ GLenum stageToGL(Stage stage) {
 namespace api {
 namespace {
 
-constexpr GLint kMaxCombinedTextureUnits = 48;
+constexpr GLint kMaxCombinedTextureUnits = limits::kMaxCombinedTextureUnits;
 
 void copyString(const std::string& s, GLsizei bufSize, GLsizei* length, GLchar* out) {
     if (bufSize <= 0 || !out) {
@@ -771,6 +771,10 @@ void GetProgramiv(Context& ctx, GLuint program, GLenum pname, GLint* params) {
     case GL_ACTIVE_UNIFORMS: *params = link ? static_cast<GLint>(link->visibleUniformCount()) : 0; return;
     case GL_ACTIVE_UNIFORM_MAX_LENGTH: *params = link ? maxLength(link->uniforms, link->visibleUniformCount()) : 0; return;
     case GL_ACTIVE_UNIFORM_BLOCKS: *params = link ? static_cast<GLint>(link->visibleBlockCount()) : 0; return;
+    case GL_ACTIVE_ATOMIC_COUNTER_BUFFERS:
+        if (!ctx.atomicCounters()) break;
+        *params = link ? static_cast<GLint>(link->atomicBuffers.size()) : 0;
+        return;
     case GL_ACTIVE_UNIFORM_BLOCK_MAX_NAME_LENGTH: *params = link ? maxLength(link->blocks, link->visibleBlockCount()) : 0; return;
     case GL_TRANSFORM_FEEDBACK_BUFFER_MODE: *params = static_cast<GLint>(p->transformFeedbackMode); return;
     case GL_TRANSFORM_FEEDBACK_VARYINGS: *params = link ? static_cast<GLint>(link->transformFeedback.size()) : 0; return;
@@ -780,6 +784,11 @@ void GetProgramiv(Context& ctx, GLuint program, GLenum pname, GLint* params) {
         *params = pname == GL_GEOMETRY_VERTICES_OUT ? link->geometryVerticesOut
                   : pname == GL_GEOMETRY_INPUT_TYPE ? static_cast<GLint>(link->geometryInputType)
                                                     : static_cast<GLint>(link->geometryOutputType);
+        return;
+    case GL_GEOMETRY_SHADER_INVOCATIONS:
+        if (ctx.version() < 40 && !ctx.hasExtension("GL_ARB_gpu_shader5")) break;
+        if (!link || !link->stages[static_cast<int>(shader::Stage::Geometry)].present) return ctx.setError(GL_INVALID_OPERATION);
+        *params = link->geometryInvocations;
         return;
     case GL_COMPUTE_WORK_GROUP_SIZE:
         if (!ctx.computeShaders()) break;
@@ -894,18 +903,53 @@ void GetActiveUniformsiv(Context& ctx, GLuint program, GLsizei count, const GLui
         case GL_UNIFORM_SIZE: params[i] = u.size; break;
         case GL_UNIFORM_NAME_LENGTH: params[i] = static_cast<GLint>(u.name.size() + 1); break;
         case GL_UNIFORM_BLOCK_INDEX: params[i] = u.blockIndex; break;
-        case GL_UNIFORM_OFFSET: params[i] = u.blockIndex >= 0 ? u.offset : -1; break;
+        // Block members and atomic counters (GL 4.2) have offsets and strides.
+        case GL_UNIFORM_OFFSET: params[i] = u.blockIndex >= 0 || u.atomicBufferIndex >= 0 ? u.offset : -1; break;
         case GL_UNIFORM_ARRAY_STRIDE: {
             // Arrays (named "x[0]") report their stride even with one element.
             const bool array = !u.name.empty() && u.name.back() == ']';
-            params[i] = u.blockIndex >= 0 ? (array ? u.arrayStride : 0) : -1;
+            params[i] = u.blockIndex >= 0 ? (array ? u.arrayStride : 0) : u.atomicBufferIndex >= 0 ? (array ? 4 : 0) : -1;
             break;
         }
-        case GL_UNIFORM_MATRIX_STRIDE: params[i] = u.blockIndex >= 0 ? u.matrixStride : -1; break;
+        case GL_UNIFORM_ATOMIC_COUNTER_BUFFER_INDEX:
+            if (!ctx.atomicCounters()) return ctx.setError(GL_INVALID_ENUM);
+            params[i] = u.atomicBufferIndex;
+            break;
+        case GL_UNIFORM_MATRIX_STRIDE: params[i] = u.blockIndex >= 0 ? u.matrixStride : u.atomicBufferIndex >= 0 ? 0 : -1; break;
         case GL_UNIFORM_IS_ROW_MAJOR: params[i] = u.blockIndex >= 0 && u.rowMajor; break;
         default: return ctx.setError(GL_INVALID_ENUM);
         }
     }
+}
+
+// GL 4.2 / GL_ARB_shader_atomic_counters.
+void GetActiveAtomicCounterBufferiv(Context& ctx, GLuint program, GLuint bufferIndex, GLenum pname, GLint* params) {
+    if (!ctx.atomicCounters()) return ctx.unimplemented("glGetActiveAtomicCounterBufferiv");
+    Program* p = programOrError(ctx, program);
+    if (!p) return;
+    const shader::LinkResult* link = p->linked && p->linkStatus ? &p->linked->link : nullptr;
+    if (!link || bufferIndex >= link->atomicBuffers.size()) return ctx.setError(GL_INVALID_VALUE);
+    const shader::AtomicCounterBufferInfo& b = link->atomicBuffers[bufferIndex];
+    auto referenced = [&](shader::Stage stage) { return (b.stageMask >> static_cast<int>(stage)) & 1 ? 1 : 0; };
+    switch (pname) {
+    case GL_ATOMIC_COUNTER_BUFFER_BINDING: *params = static_cast<GLint>(b.binding); return;
+    case GL_ATOMIC_COUNTER_BUFFER_DATA_SIZE: *params = b.dataSize; return;
+    case GL_ATOMIC_COUNTER_BUFFER_ACTIVE_ATOMIC_COUNTERS: *params = static_cast<GLint>(b.activeUniforms.size()); return;
+    case GL_ATOMIC_COUNTER_BUFFER_ACTIVE_ATOMIC_COUNTER_INDICES:
+        for (size_t i = 0; i < b.activeUniforms.size(); ++i) params[i] = b.activeUniforms[i];
+        return;
+    case GL_ATOMIC_COUNTER_BUFFER_REFERENCED_BY_VERTEX_SHADER: *params = referenced(shader::Stage::Vertex); return;
+    case GL_ATOMIC_COUNTER_BUFFER_REFERENCED_BY_TESS_CONTROL_SHADER: *params = referenced(shader::Stage::TessControl); return;
+    case GL_ATOMIC_COUNTER_BUFFER_REFERENCED_BY_TESS_EVALUATION_SHADER: *params = referenced(shader::Stage::TessEval); return;
+    case GL_ATOMIC_COUNTER_BUFFER_REFERENCED_BY_GEOMETRY_SHADER: *params = referenced(shader::Stage::Geometry); return;
+    case GL_ATOMIC_COUNTER_BUFFER_REFERENCED_BY_FRAGMENT_SHADER: *params = referenced(shader::Stage::Fragment); return;
+    case GL_ATOMIC_COUNTER_BUFFER_REFERENCED_BY_COMPUTE_SHADER:
+        if (!ctx.computeShaders()) break;
+        *params = referenced(shader::Stage::Compute);
+        return;
+    default: break;
+    }
+    ctx.setError(GL_INVALID_ENUM);
 }
 
 void GetUniformIndices(Context& ctx, GLuint program, GLsizei count, const GLchar* const* names, GLuint* indices) {

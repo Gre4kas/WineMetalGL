@@ -90,10 +90,14 @@ GLenum textureTargetEnum(int index);
 
 struct ContextState {
     // Rasterization and fragment operations.
-    GLint viewport[4] = {0, 0, 0, 0};
-    GLdouble depthRange[2] = {0.0, 1.0};
-    bool scissorTest = false;
-    GLint scissor[4] = {0, 0, 0, 0};
+    // Viewports, depth ranges and scissor rectangles: GL 4.1 viewport
+    // arrays, index 0 being the non-indexed state. Viewports are floats
+    // (glViewportIndexedf); the scissor test is enabled per index.
+    static constexpr int kMaxViewports = 16;
+    GLfloat viewports[kMaxViewports][4] = {};
+    GLdouble depthRanges[kMaxViewports][2] = {};
+    uint32_t scissorTests = 0;  // bit per viewport index
+    GLint scissors[kMaxViewports][4] = {};
     bool cullFace = false;
     GLenum cullFaceMode = GL_BACK;
     GLenum frontFace = GL_CCW;
@@ -169,8 +173,11 @@ struct ContextState {
     RefPtr<Buffer> arrayBuffer, copyReadBuffer, copyWriteBuffer, pixelPackBuffer, pixelUnpackBuffer,
         textureBuffer, uniformBuffer, transformFeedbackBuffer, drawIndirectBuffer, dispatchIndirectBuffer,
         shaderStorageBuffer, atomicCounterBuffer, queryBuffer;
-    static constexpr int kMaxUniformBufferBindings = 36;  // = limits::kMaxUniformBufferBindings
+    static constexpr int kMaxUniformBufferBindings = 72;  // = limits::kMaxUniformBufferBindings
     std::array<IndexedBufferBinding, kMaxUniformBufferBindings> uniformBufferBindings;
+    // GL 4.2 atomic counter buffer bindings.
+    static constexpr int kMaxAtomicCounterBufferBindings = 8;  // = limits::kMaxAtomicCounterBufferBindings
+    std::array<IndexedBufferBinding, kMaxAtomicCounterBufferBindings> atomicCounterBufferBindings;
     static constexpr int kMaxTextureUnits = 80;
     std::array<TextureUnit, kMaxTextureUnits> textureUnits;
     GLuint activeTexture = 0;
@@ -216,6 +223,7 @@ struct ContextState {
 
     ContextState() {
         static_assert(kInternalAttribEnd == VertexArray::kAttribSlots, "conventional attribute slots");
+        for (auto& range : depthRanges) range[1] = 1.0;
         for (auto& mask : colorMask) mask = {true, true, true, true};
         // Initial current values (GL 3.3 compatibility table 6.5).
         genericAttribs[kConvColor].value = {{1, 1, 1, 1}};

@@ -98,6 +98,8 @@ public:
     bool computeShaders() const { return version() >= 43 || hasExtension("GL_ARB_compute_shader"); }
     // Tessellation shaders: GL 4.0 or GL_ARB_tessellation_shader.
     bool tessellationShaders() const { return version() >= 40 || hasExtension("GL_ARB_tessellation_shader"); }
+    // Atomic counters: GL 4.2 or GL_ARB_shader_atomic_counters.
+    bool atomicCounters() const { return version() >= 42 || hasExtension("GL_ARB_shader_atomic_counters"); }
     // Sample shading: GL 4.0 or GL_ARB_sample_shading.
     bool sampleShading() const { return version() >= 40 || hasExtension("GL_ARB_sample_shading"); }
 
@@ -141,7 +143,7 @@ public:
     struct FixedFunctionBlockCache {
         uint64_t version = 0, generation = 0;
         float pointSize = -1, fade = -1, lineWidth = -1;
-        GLint viewport[4] = {};
+        GLfloat viewport[4] = {};
         std::vector<uint8_t> data;
         // The matrices the block's matrix section was computed from.
         bool matricesValid = false;

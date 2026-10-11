@@ -19,9 +19,10 @@
 // and uniform blocks and samplers keep their names.
 //
 // Transform feedback and PRIMITIVES_GENERATED read the emitted primitives
-// back on the CPU after the draw (DrawState::drawGeometry). Not emulated:
-// instanced geometry shaders (GL 4.0 invocations) and a gl_PrimitiveID
-// written for the fragment stage (the fragment stage sees Metal's).
+// back on the CPU after the draw (DrawState::drawGeometry). An instanced
+// geometry shader (GL 4.0 invocations) runs one thread per input primitive
+// and invocation, in that order. Not emulated: a gl_PrimitiveID written for
+// the fragment stage (the fragment stage sees Metal's).
 #pragma once
 
 #include <string>
@@ -48,11 +49,12 @@ struct GeometryShaderInfo {
     GLenum outputType = 0;    // GL_POINTS, GL_LINE_STRIP, GL_TRIANGLE_STRIP
     int verticesIn = 0;
     int maxVertices = 0;
+    int invocations = 1;      // GL 4.0 instancing: layout(invocations = N)
     std::vector<GeometryVar> inputs;   // user inputs (each an array of verticesIn elements)
     std::vector<GeometryVar> outputs;  // user outputs
     bool readsPointSize = false, readsClipDistance = false;
     int inputClipDistances = 0;
-    bool writesPointSize = false, writesLayer = false, writesPrimitiveId = false;
+    bool writesPointSize = false, writesLayer = false, writesPrimitiveId = false, writesViewportIndex = false;
     int outputClipDistances = 0;
     std::string globals;      // other global declarations (uniforms, constants, structs)
     std::string functions;    // function definitions, built-ins renamed

@@ -230,8 +230,10 @@ void Context::bindSurfaces(Surface* draw, Surface* read) {
     readSurface_ = read;
     if (!everMadeCurrent && draw) {
         // The first MakeCurrent sets the viewport and scissor to the surface size.
-        state.viewport[2] = state.scissor[2] = draw->width();
-        state.viewport[3] = state.scissor[3] = draw->height();
+        for (int i = 0; i < ContextState::kMaxViewports; ++i) {
+            state.viewports[i][2] = static_cast<GLfloat>(state.scissors[i][2] = draw->width());
+            state.viewports[i][3] = static_cast<GLfloat>(state.scissors[i][3] = draw->height());
+        }
         everMadeCurrent = true;
     }
     markDirty(kDirtyFramebuffer | kDirtyViewport | kDirtyScissor);
@@ -274,7 +276,7 @@ RefPtr<Buffer>* Context::bufferBinding(GLenum target) {
         if (target == GL_DRAW_INDIRECT_BUFFER) return &state.drawIndirectBuffer;
     if (computeShaders() && target == GL_DISPATCH_INDIRECT_BUFFER) return &state.dispatchIndirectBuffer;
     if (version() >= 43 && target == GL_SHADER_STORAGE_BUFFER) return &state.shaderStorageBuffer;
-    if (version() >= 42 && target == GL_ATOMIC_COUNTER_BUFFER) return &state.atomicCounterBuffer;
+    if (atomicCounters() && target == GL_ATOMIC_COUNTER_BUFFER) return &state.atomicCounterBuffer;
     if (version() >= 44 && target == GL_QUERY_BUFFER) return &state.queryBuffer;
     return nullptr;
 }

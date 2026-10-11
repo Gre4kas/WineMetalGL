@@ -219,4 +219,13 @@ void CommandStream::waitFor(uint64_t serial) {
     queue_.wait(serial);
 }
 
+void CommandStream::memoryBarrier() {
+    if (render_) {
+        const MTLRenderStages stages = MTLRenderStageVertex | MTLRenderStageFragment;
+        [render_ memoryBarrierWithScope:MTLBarrierScopeBuffers | MTLBarrierScopeTextures afterStages:stages beforeStages:stages];
+    } else if (compute_) {
+        [compute_ memoryBarrierWithScope:MTLBarrierScopeBuffers | MTLBarrierScopeTextures];
+    }
+}
+
 }  // namespace wmgl

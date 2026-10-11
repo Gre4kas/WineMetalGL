@@ -535,16 +535,26 @@ std::string unescapeName(std::string name) {
 
 std::string checkReservedWords(const std::string& source) {
     const GlslVersion version = parseGlslVersion(source);
-    if (version.es || version.number < 130 || version.number >= 400) return "";
-    static const std::set<std::string> reserved = {
+    if (version.es || version.number < 130 || version.number >= 440) return "";
+    // The reserved words of each GLSL version's spec (section 3.6) that
+    // glslang accepts as identifiers. GLSL 4.00 makes the double types
+    // keywords; 4.20 makes the image types and volatile keywords and
+    // reserves resource; 4.40 frees packed and row_major.
+    static const std::set<std::string> common = {
         "common", "partition", "active", "asm", "class", "union", "enum", "typedef", "template", "this", "packed",
-        "goto", "inline", "noinline", "volatile", "public", "static", "extern", "external", "interface", "long",
-        "short", "double", "half", "fixed", "unsigned", "superp", "input", "output", "hvec2", "hvec3", "hvec4",
-        "dvec2", "dvec3", "dvec4", "fvec2", "fvec3", "fvec4", "sampler3DRect", "filter", "image1D", "image2D",
-        "image3D", "imageCube", "iimage1D", "iimage2D", "iimage3D", "iimageCube", "uimage1D", "uimage2D", "uimage3D",
-        "uimageCube", "image1DArray", "image2DArray", "iimage1DArray", "iimage2DArray", "uimage1DArray",
-        "uimage2DArray", "image1DShadow", "image2DShadow", "image1DArrayShadow", "image2DArrayShadow", "imageBuffer",
-        "iimageBuffer", "uimageBuffer", "sizeof", "cast", "namespace", "using", "row_major"};
+        "goto", "inline", "noinline", "public", "static", "extern", "external", "interface", "long", "short", "half",
+        "fixed", "unsigned", "superp", "input", "output", "hvec2", "hvec3", "hvec4", "fvec2", "fvec3", "fvec4",
+        "sampler3DRect", "filter", "sizeof", "cast", "namespace", "using", "row_major"};
+    static const std::set<std::string> before420 = {
+        "volatile", "image1D", "image2D", "image3D", "imageCube", "iimage1D", "iimage2D", "iimage3D", "iimageCube",
+        "uimage1D", "uimage2D", "uimage3D", "uimageCube", "image1DArray", "image2DArray", "iimage1DArray",
+        "iimage2DArray", "uimage1DArray", "uimage2DArray", "image1DShadow", "image2DShadow", "image1DArrayShadow",
+        "image2DArrayShadow", "imageBuffer", "iimageBuffer", "uimageBuffer"};
+    static const std::set<std::string> before400 = {"double", "dvec2", "dvec3", "dvec4"};
+    std::set<std::string> reserved = common;
+    if (version.number < 420) reserved.insert(before420.begin(), before420.end());
+    else reserved.insert("resource");
+    if (version.number < 400) reserved.insert(before400.begin(), before400.end());
     std::string errors;
     const size_t n = source.size();
     size_t i = 0;
