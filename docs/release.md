@@ -15,7 +15,8 @@ OUTPUT/
                    win32u.so, opengl32.so
     guest/i386/    opengl32.dll
     guest/x86_64/  opengl32.dll
-  evidence/        CTS baselines, corpus results and frame times of the commit
+  evidence/        CTS baselines and their rechecks (cts/recheck), corpus results
+                   and frame times of the commit
   docs/            conformance.md, unsupported.md, testing.md, building.md,
                    performance.md, games.md, api-coverage.json, release.md
   LICENSE, LICENSES/  LGPL-3.0-or-later, the GPL-3.0 it builds on, third-party licenses

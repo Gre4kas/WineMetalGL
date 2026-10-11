@@ -69,6 +69,11 @@ for doc in unsupported testing building performance; do
 done
 # The evidence the generated documents were built from.
 cp "$project_root"/tests/cts/baseline/*.txt "$output/evidence/cts/"
+# Later runs of the baselines' non-Pass cases, which the totals include.
+if [ -d "$project_root/tests/cts/recheck" ]; then
+    mkdir -p "$output/evidence/cts/recheck"
+    cp "$project_root"/tests/cts/recheck/*.txt "$output/evidence/cts/recheck/"
+fi
 cp "$project_root/tests/cts/notsupported.json" "$output/evidence/cts/notsupported.json"
 cp "$project_root/tests/cts/known-failures.json" "$output/evidence/cts/known-failures.json"
 cp "$project_root/tests/games/corpus.json" "$project_root/tests/games/results.json" "$output/evidence/games/"
