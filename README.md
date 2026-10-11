@@ -42,18 +42,10 @@ Dead Cells (Requires OpenGL 3.2+) running under MetalSharp Wine-11.17 Using Wine
 
 **Conformance %**: passing cases over applicable cases (cases that are not NotSupported) of the version's Khronos CTS mustpass list (`KHR-GL30` to `KHR-GL42`), in the worst of its 8 runs (configurations 1 to 4 of `mustpass.xml`, each under Wine and natively) at commit 14eaa75, 851476e.
 
-**Unsupported %**: cases the CTS reports NotSupported because WineMetalGL does not offer what they test (an extension it does not advertise or a newer GL version), over the cases any implementation can run. Contexts stop at OpenGL 4.2, so 4.3 and later are 100%; some of their features are available as extensions ([Unsupported](docs/unsupported.md#opengl-4x)).
-
-Failing cases: `KHR-GL30.api.coverage`, `KHR-GL33.shaders.negative.non_precision_qualifiers_in_struct_members`, `KHR-GL33.transform_feedback2.transform_feedback2_states`, `KHR-GL40.internalformat.renderbuffer.rgb9_e5`, `KHR-GL40.shader_subroutine.name_getters`, `KHR-GL40.shaders.negative.non_precision_qualifiers_in_struct_members`, `KHR-GL40.transform_feedback2.transform_feedback2_states`, `KHR-GL41.internalformat.renderbuffer.rgb9_e5`, `KHR-GL41.shader_subroutine.name_getters`, `KHR-GL41.shaders.negative.non_precision_qualifiers_in_struct_members`, `KHR-GL41.transform_feedback2.transform_feedback2_states`, `KHR-GL42.internalformat.renderbuffer.rgb9_e5`, `KHR-GL42.map_buffer_alignment.functional`, `KHR-GL42.shader_subroutine.name_getters`, `KHR-GL42.shaders.negative.non_precision_qualifiers_in_struct_members`, `KHR-GL42.transform_feedback2.transform_feedback2_states`. [Conformance results](docs/conformance.md) gives the reason for each.
+What Unsupported % counts, and why each failing case fails: [Unsupported](docs/unsupported.md#conformance-notes).
 
 OpenGL 1.0 to 2.1 are implemented by WineMetalGL itself, as its compatibility profile: the fixed-function pipeline, immediate mode, display lists and legacy GLSL, alongside every 3.x feature. No public Khronos suite measures them; the Wine fixtures, GPU tests and game corpus exercise them, and [Unsupported](docs/unsupported.md#compatibility-profile-opengl-10-to-21) lists what is not implemented.
 <!-- END GENERATED: totals -->
-
-Earlier releases published conformance numbers that depended on code which
-recognised Khronos CTS shaders and produced their expected output. That code
-and the implementation built around it have been removed, a gate keeps it out
-(`scripts/check-forbidden-identifiers.sh`), and every number above is
-generated from a committed result file.
 
 ## Docs
 
@@ -61,8 +53,9 @@ generated from a committed result file.
   OpenGL version, configuration and runner, with the reason for each failing
   case.
 - [Unsupported](docs/unsupported.md): what WineMetalGL does not support and
-  why: OpenGL 4.x, the gaps in the compatibility profile, and every case the
-  CTS reports NotSupported.
+  why: OpenGL 4.3 and later, the gaps in the compatibility profile, what the
+  Unsupported % counts, the failing CTS cases, and every case the CTS reports
+  NotSupported.
 - [Test suite](docs/testing.md): each test suite, how to run it, and roughly
   how long it takes.
 - [Build it yourself](docs/building.md): building the core and a Wine 11.17

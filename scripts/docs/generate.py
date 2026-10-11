@@ -531,23 +531,29 @@ def render(suites):
               "(configurations %s of `mustpass.xml`, each under Wine and natively) at commit %s." % (
                   2 * len(CONFIGS), "%d to %d" % (CONFIGS[0], CONFIGS[-1]), ", ".join(commits)),
               "",
-              "**Unsupported %**: cases the CTS reports NotSupported because WineMetalGL does not offer what they "
-              "test (an extension it does not advertise or a newer GL version), over the cases any implementation "
-              "can run. Contexts stop at OpenGL 4.2, so 4.3 and later are 100%; some of their features are "
-              "available as extensions ([Unsupported](docs/unsupported.md#opengl-4x))."]
-    failing = [(suite, case, f) for suite, _ in SUITES for case, f in sorted(failures.get(suite, {}).items())]
-    if failing:
-        explained = all(f["reason"] for _, case, f in failing)
-        lines += ["", "Failing cases: %s. %s" % (
-            ", ".join("`%s`" % case for _, case, _ in failing),
-            "[Conformance results](docs/conformance.md) gives the reason for each." if explained else
-            "[Conformance results](docs/conformance.md) lists them; some are not yet explained.")]
+              "What Unsupported % counts, and why each failing case fails: "
+              "[Unsupported](docs/unsupported.md#conformance-notes)."]
     lines += ["",
               "OpenGL 1.0 to 2.1 are implemented by WineMetalGL itself, as its compatibility profile: the "
               "fixed-function pipeline, immediate mode, display lists and legacy GLSL, alongside every 3.x feature. "
               "No public Khronos suite measures them; the Wine fixtures, GPU tests and game corpus exercise them, and "
               "[Unsupported](docs/unsupported.md#compatibility-profile-opengl-10-to-21) lists what is not implemented."]
     blocks[("README.md", "totals")] = "\n".join(lines)
+
+    # ---- docs/unsupported.md: what the README totals' Unsupported % counts, and the failing cases.
+    notes = ["**Unsupported %** (README conformance totals): cases the CTS reports NotSupported because "
+             "WineMetalGL does not offer what they test (an extension it does not advertise or a newer GL "
+             "version), over the cases any implementation can run. Contexts stop at OpenGL " + MAX_VERSION +
+             ", so later versions are 100%; some of their features are available as extensions "
+             "([OpenGL 4.x](#opengl-4x))."]
+    failing = [(suite, case, f) for suite, _ in SUITES for case, f in sorted(failures.get(suite, {}).items())]
+    if failing:
+        explained = all(f["reason"] for _, case, f in failing)
+        notes += ["", "Failing cases: %s. %s" % (
+            ", ".join("`%s`" % case for _, case, _ in failing),
+            "[Conformance results](conformance.md) gives the reason for each." if explained else
+            "[Conformance results](conformance.md) lists them; some are not yet explained.")]
+    blocks[("docs/unsupported.md", "totals-notes")] = "\n".join(notes)
     return {"docs/conformance.md": conformance, "docs/api-coverage.json": coverage, "docs/games.md": games_md,
             "docs/performance.md": performance}, blocks
 
