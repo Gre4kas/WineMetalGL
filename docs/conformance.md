@@ -59,14 +59,14 @@ Command lines: `scripts/cts/run.py --mustpass gl32-main.txt --config N` reads th
 
 | Config | Runner | Pass | Fail | NotSupported | InternalError | Crash | Timeout | Missing | Other | Cases | Applicable passing | Time | Commit | File |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|
-| 1 | native | 9276 | 1 | 608 | 0 | 1 | 0 | 0 | 0 | 9886 | 99.97% | 5.2 min | 851476e | `tests/cts/baseline/gl33-cfg1-native.txt` |
-| 1 | wine | 9276 | 1 | 608 | 0 | 0 | 1 | 0 | 0 | 9886 | 99.97% | 9.0 min | 851476e | `tests/cts/baseline/gl33-cfg1-wine.txt` |
-| 2 | native | 9276 | 1 | 608 | 0 | 1 | 0 | 0 | 0 | 9886 | 99.97% | 5.1 min | 851476e | `tests/cts/baseline/gl33-cfg2-native.txt` |
-| 2 | wine | 9276 | 1 | 608 | 0 | 0 | 1 | 0 | 0 | 9886 | 99.97% | 9.9 min | 851476e | `tests/cts/baseline/gl33-cfg2-wine.txt` |
-| 3 | native | 9276 | 1 | 608 | 0 | 1 | 0 | 0 | 0 | 9886 | 99.97% | 5.2 min | 851476e | `tests/cts/baseline/gl33-cfg3-native.txt` |
-| 3 | wine | 9276 | 1 | 608 | 0 | 0 | 1 | 0 | 0 | 9886 | 99.97% | 10.2 min | 851476e | `tests/cts/baseline/gl33-cfg3-wine.txt` |
-| 4 | native | 9276 | 1 | 608 | 0 | 1 | 0 | 0 | 0 | 9886 | 99.97% | 5.2 min | 851476e | `tests/cts/baseline/gl33-cfg4-native.txt` |
-| 4 | wine | 9276 | 1 | 608 | 0 | 0 | 1 | 0 | 0 | 9886 | 99.97% | 11.0 min | 851476e | `tests/cts/baseline/gl33-cfg4-wine.txt` |
+| 1 | native | 9277 | 0 | 608 | 0 | 1 | 0 | 0 | 0 | 9886 | 99.98% | 5.2 min | 851476e | `tests/cts/baseline/gl33-cfg1-native.txt` |
+| 1 | wine | 9277 | 0 | 608 | 0 | 0 | 1 | 0 | 0 | 9886 | 99.98% | 9.0 min | 851476e | `tests/cts/baseline/gl33-cfg1-wine.txt` |
+| 2 | native | 9277 | 0 | 608 | 0 | 1 | 0 | 0 | 0 | 9886 | 99.98% | 5.1 min | 851476e | `tests/cts/baseline/gl33-cfg2-native.txt` |
+| 2 | wine | 9277 | 0 | 608 | 0 | 0 | 1 | 0 | 0 | 9886 | 99.98% | 9.9 min | 851476e | `tests/cts/baseline/gl33-cfg2-wine.txt` |
+| 3 | native | 9277 | 0 | 608 | 0 | 1 | 0 | 0 | 0 | 9886 | 99.98% | 5.2 min | 851476e | `tests/cts/baseline/gl33-cfg3-native.txt` |
+| 3 | wine | 9277 | 0 | 608 | 0 | 0 | 1 | 0 | 0 | 9886 | 99.98% | 10.2 min | 851476e | `tests/cts/baseline/gl33-cfg3-wine.txt` |
+| 4 | native | 9277 | 0 | 608 | 0 | 1 | 0 | 0 | 0 | 9886 | 99.98% | 5.2 min | 851476e | `tests/cts/baseline/gl33-cfg4-native.txt` |
+| 4 | wine | 9277 | 0 | 608 | 0 | 0 | 1 | 0 | 0 | 9886 | 99.98% | 11.0 min | 851476e | `tests/cts/baseline/gl33-cfg4-wine.txt` |
 
 Command lines: `scripts/cts/run.py --mustpass gl33-main.txt --config N` reads them from `mustpass.xml`. CTS build: dEQP Core 1942832354c96f0de379f491519734256fbd4f9d.
 
@@ -74,23 +74,22 @@ Cases that neither pass nor are NotSupported:
 
 | Case | Runs | Reason |
 |---|---|---|
-| `KHR-GL33.shaders.negative.non_precision_qualifiers_in_struct_members` | Fail natively in configurations 1, 2, 3, 4; Fail under Wine in configurations 1, 2, 3, 4 | The case compiles compute shaders on every desktop GL version without checking for GL 4.3 or `GL_ARB_compute_shader` (glcShaderNegativeTests.cpp, ShaderNonPrecisionQualifiersStructCase). WineMetalGL does not expose compute shaders below GL 4.3, so `glCreateShader(GL_COMPUTE_SHADER)` generates `GL_INVALID_ENUM`, as the specification requires for an unsupported shader type. |
 | `KHR-GL33.transform_feedback2.transform_feedback2_states` | Crash natively in configurations 1, 2, 3, 4; Timeout under Wine in configurations 1, 2, 3, 4 | The case calls `glGetTransformFeedbacki64_v` (GL 4.5, `GL_ARB_direct_state_access`) without checking for it (glcTransformFeedbackTests.cpp). The CTS loads that entry point only for GL 4.5 contexts or when the extension is advertised, so in a GL 4.2 context it calls a null function pointer and the process crashes. WineMetalGL implements the query (the KHR-GL45 copy of the case passes under the development override). |
 
-Against the legacy implementation: `tests/cts/baseline/gl33-cfg1-oldcore.txt` is the last result of the legacy (removed) implementation, configuration 1: 5783 Pass. The core passes 3494 cases it failed and fails 1 cases it passed.
+Against the legacy implementation: `tests/cts/baseline/gl33-cfg1-oldcore.txt` is the last result of the legacy (removed) implementation, configuration 1: 5783 Pass. The core passes 3494 cases it failed and fails 0 cases it passed.
 
 ## KHR-GL40
 
 | Config | Runner | Pass | Fail | NotSupported | InternalError | Crash | Timeout | Missing | Other | Cases | Applicable passing | Time | Commit | File |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|
-| 1 | native | 10177 | 2 | 1681 | 0 | 2 | 0 | 0 | 0 | 11862 | 99.96% | 4.2 min | 851476e | `tests/cts/baseline/gl40-cfg1-native.txt` |
-| 1 | wine | 10177 | 2 | 1681 | 0 | 0 | 2 | 0 | 0 | 11862 | 99.96% | 10.6 min | 851476e | `tests/cts/baseline/gl40-cfg1-wine.txt` |
-| 2 | native | 10177 | 2 | 1681 | 0 | 2 | 0 | 0 | 0 | 11862 | 99.96% | 4.2 min | 851476e | `tests/cts/baseline/gl40-cfg2-native.txt` |
-| 2 | wine | 10177 | 2 | 1681 | 0 | 0 | 2 | 0 | 0 | 11862 | 99.96% | 9.4 min | 851476e | `tests/cts/baseline/gl40-cfg2-wine.txt` |
-| 3 | native | 10177 | 2 | 1681 | 0 | 2 | 0 | 0 | 0 | 11862 | 99.96% | 4.2 min | 851476e | `tests/cts/baseline/gl40-cfg3-native.txt` |
-| 3 | wine | 10177 | 2 | 1681 | 0 | 0 | 2 | 0 | 0 | 11862 | 99.96% | 10.8 min | 851476e | `tests/cts/baseline/gl40-cfg3-wine.txt` |
-| 4 | native | 10177 | 2 | 1681 | 0 | 2 | 0 | 0 | 0 | 11862 | 99.96% | 4.2 min | 851476e | `tests/cts/baseline/gl40-cfg4-native.txt` |
-| 4 | wine | 10177 | 2 | 1681 | 0 | 0 | 2 | 0 | 0 | 11862 | 99.96% | 11.0 min | 851476e | `tests/cts/baseline/gl40-cfg4-wine.txt` |
+| 1 | native | 10184 | 1 | 1676 | 0 | 1 | 0 | 0 | 0 | 11862 | 99.98% | 4.2 min | 851476e | `tests/cts/baseline/gl40-cfg1-native.txt` |
+| 1 | wine | 10184 | 1 | 1676 | 0 | 0 | 1 | 0 | 0 | 11862 | 99.98% | 10.6 min | 851476e | `tests/cts/baseline/gl40-cfg1-wine.txt` |
+| 2 | native | 10184 | 1 | 1676 | 0 | 1 | 0 | 0 | 0 | 11862 | 99.98% | 4.2 min | 851476e | `tests/cts/baseline/gl40-cfg2-native.txt` |
+| 2 | wine | 10184 | 1 | 1676 | 0 | 0 | 1 | 0 | 0 | 11862 | 99.98% | 9.4 min | 851476e | `tests/cts/baseline/gl40-cfg2-wine.txt` |
+| 3 | native | 10184 | 1 | 1676 | 0 | 1 | 0 | 0 | 0 | 11862 | 99.98% | 4.2 min | 851476e | `tests/cts/baseline/gl40-cfg3-native.txt` |
+| 3 | wine | 10184 | 1 | 1676 | 0 | 0 | 1 | 0 | 0 | 11862 | 99.98% | 10.8 min | 851476e | `tests/cts/baseline/gl40-cfg3-wine.txt` |
+| 4 | native | 10184 | 1 | 1676 | 0 | 1 | 0 | 0 | 0 | 11862 | 99.98% | 4.2 min | 851476e | `tests/cts/baseline/gl40-cfg4-native.txt` |
+| 4 | wine | 10184 | 1 | 1676 | 0 | 0 | 1 | 0 | 0 | 11862 | 99.98% | 11.0 min | 851476e | `tests/cts/baseline/gl40-cfg4-wine.txt` |
 
 Command lines: `scripts/cts/run.py --mustpass gl40-main.txt --config N` reads them from `mustpass.xml`. CTS build: dEQP Core 1942832354c96f0de379f491519734256fbd4f9d.
 
@@ -99,22 +98,20 @@ Cases that neither pass nor are NotSupported:
 | Case | Runs | Reason |
 |---|---|---|
 | `KHR-GL40.internalformat.renderbuffer.rgb9_e5` | Fail natively in configurations 1, 2, 3, 4; Fail under Wine in configurations 1, 2, 3, 4 | The case expects `glRenderbufferStorage(GL_RGB9_E5)` to succeed (glcInternalformatTests.cpp, RenderbufferCase::createAndAttachRenderBuffer). GL 4.2 section 4.4.2.1 requires `GL_INVALID_ENUM` for an internal format that is not color-, depth- or stencil-renderable, and table 3.12 does not list `GL_RGB9_E5` as color-renderable. |
-| `KHR-GL40.shader_subroutine.name_getters` | Crash natively in configurations 1, 2, 3, 4; Timeout under Wine in configurations 1, 2, 3, 4 | The case calls `glGetProgramInterfaceiv` (GL 4.3, `GL_ARB_program_interface_query`) without checking for it (gl4cShaderSubroutineTests.cpp, APITest2::verifyGLGetActiveSubroutineNameFunctionality). The CTS loads that entry point only for GL 4.3 contexts or when the extension is advertised, so in a GL 4.2 context it calls a null function pointer and the process crashes. |
-| `KHR-GL40.shaders.negative.non_precision_qualifiers_in_struct_members` | Fail natively in configurations 1, 2, 3, 4; Fail under Wine in configurations 1, 2, 3, 4 | The case compiles compute shaders on every desktop GL version without checking for GL 4.3 or `GL_ARB_compute_shader` (glcShaderNegativeTests.cpp, ShaderNonPrecisionQualifiersStructCase). WineMetalGL does not expose compute shaders below GL 4.3, so `glCreateShader(GL_COMPUTE_SHADER)` generates `GL_INVALID_ENUM`, as the specification requires for an unsupported shader type. |
 | `KHR-GL40.transform_feedback2.transform_feedback2_states` | Crash natively in configurations 1, 2, 3, 4; Timeout under Wine in configurations 1, 2, 3, 4 | The case calls `glGetTransformFeedbacki64_v` (GL 4.5, `GL_ARB_direct_state_access`) without checking for it (glcTransformFeedbackTests.cpp). The CTS loads that entry point only for GL 4.5 contexts or when the extension is advertised, so in a GL 4.2 context it calls a null function pointer and the process crashes. WineMetalGL implements the query (the KHR-GL45 copy of the case passes under the development override). |
 
 ## KHR-GL41
 
 | Config | Runner | Pass | Fail | NotSupported | InternalError | Crash | Timeout | Missing | Other | Cases | Applicable passing | Time | Commit | File |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|
-| 1 | native | 10199 | 2 | 1680 | 0 | 2 | 0 | 0 | 0 | 11883 | 99.96% | 4.2 min | 851476e | `tests/cts/baseline/gl41-cfg1-native.txt` |
-| 1 | wine | 10199 | 2 | 1680 | 0 | 0 | 2 | 0 | 0 | 11883 | 99.96% | 8.9 min | 851476e | `tests/cts/baseline/gl41-cfg1-wine.txt` |
-| 2 | native | 10199 | 2 | 1680 | 0 | 2 | 0 | 0 | 0 | 11883 | 99.96% | 4.2 min | 851476e | `tests/cts/baseline/gl41-cfg2-native.txt` |
-| 2 | wine | 10199 | 2 | 1680 | 0 | 0 | 2 | 0 | 0 | 11883 | 99.96% | 9.3 min | 851476e | `tests/cts/baseline/gl41-cfg2-wine.txt` |
-| 3 | native | 10199 | 2 | 1680 | 0 | 2 | 0 | 0 | 0 | 11883 | 99.96% | 4.2 min | 851476e | `tests/cts/baseline/gl41-cfg3-native.txt` |
-| 3 | wine | 10199 | 2 | 1680 | 0 | 0 | 2 | 0 | 0 | 11883 | 99.96% | 10.2 min | 851476e | `tests/cts/baseline/gl41-cfg3-wine.txt` |
-| 4 | native | 10199 | 2 | 1680 | 0 | 2 | 0 | 0 | 0 | 11883 | 99.96% | 4.2 min | 851476e | `tests/cts/baseline/gl41-cfg4-native.txt` |
-| 4 | wine | 10199 | 2 | 1680 | 0 | 0 | 2 | 0 | 0 | 11883 | 99.96% | 10.8 min | 851476e | `tests/cts/baseline/gl41-cfg4-wine.txt` |
+| 1 | native | 10206 | 1 | 1675 | 0 | 1 | 0 | 0 | 0 | 11883 | 99.98% | 4.2 min | 851476e | `tests/cts/baseline/gl41-cfg1-native.txt` |
+| 1 | wine | 10206 | 1 | 1675 | 0 | 0 | 1 | 0 | 0 | 11883 | 99.98% | 8.9 min | 851476e | `tests/cts/baseline/gl41-cfg1-wine.txt` |
+| 2 | native | 10206 | 1 | 1675 | 0 | 1 | 0 | 0 | 0 | 11883 | 99.98% | 4.2 min | 851476e | `tests/cts/baseline/gl41-cfg2-native.txt` |
+| 2 | wine | 10206 | 1 | 1675 | 0 | 0 | 1 | 0 | 0 | 11883 | 99.98% | 9.3 min | 851476e | `tests/cts/baseline/gl41-cfg2-wine.txt` |
+| 3 | native | 10206 | 1 | 1675 | 0 | 1 | 0 | 0 | 0 | 11883 | 99.98% | 4.2 min | 851476e | `tests/cts/baseline/gl41-cfg3-native.txt` |
+| 3 | wine | 10206 | 1 | 1675 | 0 | 0 | 1 | 0 | 0 | 11883 | 99.98% | 10.2 min | 851476e | `tests/cts/baseline/gl41-cfg3-wine.txt` |
+| 4 | native | 10206 | 1 | 1675 | 0 | 1 | 0 | 0 | 0 | 11883 | 99.98% | 4.2 min | 851476e | `tests/cts/baseline/gl41-cfg4-native.txt` |
+| 4 | wine | 10206 | 1 | 1675 | 0 | 0 | 1 | 0 | 0 | 11883 | 99.98% | 10.8 min | 851476e | `tests/cts/baseline/gl41-cfg4-wine.txt` |
 
 Command lines: `scripts/cts/run.py --mustpass gl41-main.txt --config N` reads them from `mustpass.xml`. CTS build: dEQP Core 1942832354c96f0de379f491519734256fbd4f9d.
 
@@ -123,22 +120,20 @@ Cases that neither pass nor are NotSupported:
 | Case | Runs | Reason |
 |---|---|---|
 | `KHR-GL41.internalformat.renderbuffer.rgb9_e5` | Fail natively in configurations 1, 2, 3, 4; Fail under Wine in configurations 1, 2, 3, 4 | The case expects `glRenderbufferStorage(GL_RGB9_E5)` to succeed (glcInternalformatTests.cpp, RenderbufferCase::createAndAttachRenderBuffer). GL 4.2 section 4.4.2.1 requires `GL_INVALID_ENUM` for an internal format that is not color-, depth- or stencil-renderable, and table 3.12 does not list `GL_RGB9_E5` as color-renderable. |
-| `KHR-GL41.shader_subroutine.name_getters` | Crash natively in configurations 1, 2, 3, 4; Timeout under Wine in configurations 1, 2, 3, 4 | The case calls `glGetProgramInterfaceiv` (GL 4.3, `GL_ARB_program_interface_query`) without checking for it (gl4cShaderSubroutineTests.cpp, APITest2::verifyGLGetActiveSubroutineNameFunctionality). The CTS loads that entry point only for GL 4.3 contexts or when the extension is advertised, so in a GL 4.2 context it calls a null function pointer and the process crashes. |
-| `KHR-GL41.shaders.negative.non_precision_qualifiers_in_struct_members` | Fail natively in configurations 1, 2, 3, 4; Fail under Wine in configurations 1, 2, 3, 4 | The case compiles compute shaders on every desktop GL version without checking for GL 4.3 or `GL_ARB_compute_shader` (glcShaderNegativeTests.cpp, ShaderNonPrecisionQualifiersStructCase). WineMetalGL does not expose compute shaders below GL 4.3, so `glCreateShader(GL_COMPUTE_SHADER)` generates `GL_INVALID_ENUM`, as the specification requires for an unsupported shader type. |
 | `KHR-GL41.transform_feedback2.transform_feedback2_states` | Crash natively in configurations 1, 2, 3, 4; Timeout under Wine in configurations 1, 2, 3, 4 | The case calls `glGetTransformFeedbacki64_v` (GL 4.5, `GL_ARB_direct_state_access`) without checking for it (glcTransformFeedbackTests.cpp). The CTS loads that entry point only for GL 4.5 contexts or when the extension is advertised, so in a GL 4.2 context it calls a null function pointer and the process crashes. WineMetalGL implements the query (the KHR-GL45 copy of the case passes under the development override). |
 
 ## KHR-GL42
 
 | Config | Runner | Pass | Fail | NotSupported | InternalError | Crash | Timeout | Missing | Other | Cases | Applicable passing | Time | Commit | File |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|
-| 1 | native | 10624 | 3 | 1676 | 0 | 2 | 0 | 0 | 0 | 12305 | 99.95% | 4.5 min | 851476e | `tests/cts/baseline/gl42-cfg1-native.txt` |
-| 1 | wine | 10624 | 3 | 1676 | 0 | 0 | 2 | 0 | 0 | 12305 | 99.95% | 11.1 min | 851476e | `tests/cts/baseline/gl42-cfg1-wine.txt` |
-| 2 | native | 10624 | 3 | 1676 | 0 | 2 | 0 | 0 | 0 | 12305 | 99.95% | 4.3 min | 851476e | `tests/cts/baseline/gl42-cfg2-native.txt` |
-| 2 | wine | 10624 | 3 | 1676 | 0 | 0 | 2 | 0 | 0 | 12305 | 99.95% | 10.0 min | 851476e | `tests/cts/baseline/gl42-cfg2-wine.txt` |
-| 3 | native | 10624 | 3 | 1676 | 0 | 2 | 0 | 0 | 0 | 12305 | 99.95% | 4.3 min | 851476e | `tests/cts/baseline/gl42-cfg3-native.txt` |
-| 3 | wine | 10624 | 3 | 1676 | 0 | 0 | 2 | 0 | 0 | 12305 | 99.95% | 11.3 min | 851476e | `tests/cts/baseline/gl42-cfg3-wine.txt` |
-| 4 | native | 10624 | 3 | 1676 | 0 | 2 | 0 | 0 | 0 | 12305 | 99.95% | 4.4 min | 851476e | `tests/cts/baseline/gl42-cfg4-native.txt` |
-| 4 | wine | 10624 | 3 | 1676 | 0 | 0 | 2 | 0 | 0 | 12305 | 99.95% | 10.7 min | 851476e | `tests/cts/baseline/gl42-cfg4-wine.txt` |
+| 1 | native | 10638 | 3 | 1663 | 0 | 1 | 0 | 0 | 0 | 12305 | 99.96% | 4.5 min | 851476e | `tests/cts/baseline/gl42-cfg1-native.txt` |
+| 1 | wine | 10638 | 3 | 1663 | 0 | 0 | 1 | 0 | 0 | 12305 | 99.96% | 11.1 min | 851476e | `tests/cts/baseline/gl42-cfg1-wine.txt` |
+| 2 | native | 10638 | 3 | 1663 | 0 | 1 | 0 | 0 | 0 | 12305 | 99.96% | 4.3 min | 851476e | `tests/cts/baseline/gl42-cfg2-native.txt` |
+| 2 | wine | 10638 | 3 | 1663 | 0 | 0 | 1 | 0 | 0 | 12305 | 99.96% | 10.0 min | 851476e | `tests/cts/baseline/gl42-cfg2-wine.txt` |
+| 3 | native | 10638 | 3 | 1663 | 0 | 1 | 0 | 0 | 0 | 12305 | 99.96% | 4.3 min | 851476e | `tests/cts/baseline/gl42-cfg3-native.txt` |
+| 3 | wine | 10638 | 3 | 1663 | 0 | 0 | 1 | 0 | 0 | 12305 | 99.96% | 11.3 min | 851476e | `tests/cts/baseline/gl42-cfg3-wine.txt` |
+| 4 | native | 10638 | 3 | 1663 | 0 | 1 | 0 | 0 | 0 | 12305 | 99.96% | 4.4 min | 851476e | `tests/cts/baseline/gl42-cfg4-native.txt` |
+| 4 | wine | 10638 | 3 | 1663 | 0 | 0 | 1 | 0 | 0 | 12305 | 99.96% | 10.7 min | 851476e | `tests/cts/baseline/gl42-cfg4-wine.txt` |
 
 Command lines: `scripts/cts/run.py --mustpass gl42-main.txt --config N` reads them from `mustpass.xml`. CTS build: dEQP Core 1942832354c96f0de379f491519734256fbd4f9d.
 
@@ -148,8 +143,7 @@ Cases that neither pass nor are NotSupported:
 |---|---|---|
 | `KHR-GL42.internalformat.renderbuffer.rgb9_e5` | Fail natively in configurations 1, 2, 3, 4; Fail under Wine in configurations 1, 2, 3, 4 | The case expects `glRenderbufferStorage(GL_RGB9_E5)` to succeed (glcInternalformatTests.cpp, RenderbufferCase::createAndAttachRenderBuffer). GL 4.2 section 4.4.2.1 requires `GL_INVALID_ENUM` for an internal format that is not color-, depth- or stencil-renderable, and table 3.12 does not list `GL_RGB9_E5` as color-renderable. |
 | `KHR-GL42.map_buffer_alignment.functional` | Fail natively in configurations 1, 2, 3, 4; Fail under Wine in configurations 1, 2, 3, 4 | The case checks only for `GL_ARB_buffer_storage` (gl4cMapBufferAlignmentTests.cpp, Functional::init) and then binds and sizes buffers for `GL_DISPATCH_INDIRECT_BUFFER`, `GL_SHADER_STORAGE_BUFFER` (GL 4.3) and `GL_QUERY_BUFFER` (GL 4.4) and queries `GL_MAX_SHADER_STORAGE_BLOCK_SIZE`. `GL_ARB_buffer_storage` does not add those targets, so a GL 4.2 context generates `GL_INVALID_ENUM` for them, as the specification requires; a GL 4.3 context still does for `GL_QUERY_BUFFER`. |
-| `KHR-GL42.shader_subroutine.name_getters` | Crash natively in configurations 1, 2, 3, 4; Timeout under Wine in configurations 1, 2, 3, 4 | The case calls `glGetProgramInterfaceiv` (GL 4.3, `GL_ARB_program_interface_query`) without checking for it (gl4cShaderSubroutineTests.cpp, APITest2::verifyGLGetActiveSubroutineNameFunctionality). The CTS loads that entry point only for GL 4.3 contexts or when the extension is advertised, so in a GL 4.2 context it calls a null function pointer and the process crashes. |
-| `KHR-GL42.shaders.negative.non_precision_qualifiers_in_struct_members` | Fail natively in configurations 1, 2, 3, 4; Fail under Wine in configurations 1, 2, 3, 4 | The case compiles compute shaders on every desktop GL version without checking for GL 4.3 or `GL_ARB_compute_shader` (glcShaderNegativeTests.cpp, ShaderNonPrecisionQualifiersStructCase). WineMetalGL does not expose compute shaders below GL 4.3, so `glCreateShader(GL_COMPUTE_SHADER)` generates `GL_INVALID_ENUM`, as the specification requires for an unsupported shader type. |
+| `KHR-GL42.texture_view.view_sampling` | Fail natively in configurations 1, 2, 3, 4; Fail under Wine in configurations 1, 2, 3, 4 | The case sets the view's filtering with `glTexParameteri` on the parent's target (gl4cTextureViewTests.cpp, TextureViewTestViewSampling::initTextureObject), so a cube-map or cube-map-array view of a parent with another target keeps `GL_LINEAR` magnification, and the fragment stage samples next to a face edge. It expects non-seamless per-face filtering (`GL_TEXTURE_CUBE_MAP_SEAMLESS` is disabled). Metal always filters cube maps seamlessly, blending the neighbouring face. Every other view, target and stage of the case passes. |
 | `KHR-GL42.transform_feedback2.transform_feedback2_states` | Crash natively in configurations 1, 2, 3, 4; Timeout under Wine in configurations 1, 2, 3, 4 | The case calls `glGetTransformFeedbacki64_v` (GL 4.5, `GL_ARB_direct_state_access`) without checking for it (glcTransformFeedbackTests.cpp). The CTS loads that entry point only for GL 4.5 contexts or when the extension is advertised, so in a GL 4.2 context it calls a null function pointer and the process crashes. WineMetalGL implements the query (the KHR-GL45 copy of the case passes under the development override). |
 
 ## KHR-GL43
