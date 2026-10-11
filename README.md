@@ -16,6 +16,15 @@ implements the GL state machine, resources and draws on Metal. Wine reaches
 it through the small driver ABI in `include/winemetalgl/driver.h`.
 
 <!-- BEGIN GENERATED: totals (scripts/docs/generate.py) -->
+
+## Proof Of Concept
+
+Dead Cells running under MetalSharp Wine-11.17 Using WineMetalGL; 
+
+<img width="1920" height="1082" alt="image" src="https://github.com/user-attachments/assets/dcf456b7-3b7f-48c6-b57e-cfd68794ada2" />
+
+
+
 ## Conformance totals
 
 | OpenGL | Conformance % | Features | Unsupported % |
