@@ -199,6 +199,18 @@ void setGenericU(Context& ctx, GLuint index, GLuint x, GLuint y, GLuint z, GLuin
     setGenericInteger<GLuint>(ctx, index, x, y, z, w, GL_UNSIGNED_INT);
 }
 
+// GL_ARB_vertex_attrib_64bit: the current value of a 64-bit input.
+void setGenericL(Context& ctx, GLuint index, GLdouble x, GLdouble y, GLdouble z, GLdouble w) {
+    if (!checkIndex(ctx, index)) return;
+    ContextState::GenericAttrib& g = ctx.state.genericAttribs[index];
+    g.d[0] = x;
+    g.d[1] = y;
+    g.d[2] = z;
+    g.d[3] = w;
+    g.type = GL_DOUBLE;
+    ctx.markDirty(kDirtyVertexInput);
+}
+
 float norm(GLbyte v) { return std::max(-1.0f, v / 127.0f); }
 float norm(GLubyte v) { return v / 255.0f; }
 float norm(GLshort v) { return std::max(-1.0f, v / 32767.0f); }
@@ -273,6 +285,15 @@ void VertexAttribI4uiv(Context& ctx, GLuint i, const GLuint* v) { if (v) setGene
 void VertexAttribI4ubv(Context& ctx, GLuint i, const GLubyte* v) { if (v) setGenericU(ctx, i, v[0], v[1], v[2], v[3]); }
 void VertexAttribI4usv(Context& ctx, GLuint i, const GLushort* v) { if (v) setGenericU(ctx, i, v[0], v[1], v[2], v[3]); }
 
+void VertexAttribL1d(Context& ctx, GLuint i, GLdouble x) { setGenericL(ctx, i, x, 0, 0, 1); }
+void VertexAttribL2d(Context& ctx, GLuint i, GLdouble x, GLdouble y) { setGenericL(ctx, i, x, y, 0, 1); }
+void VertexAttribL3d(Context& ctx, GLuint i, GLdouble x, GLdouble y, GLdouble z) { setGenericL(ctx, i, x, y, z, 1); }
+void VertexAttribL4d(Context& ctx, GLuint i, GLdouble x, GLdouble y, GLdouble z, GLdouble w) { setGenericL(ctx, i, x, y, z, w); }
+void VertexAttribL1dv(Context& ctx, GLuint i, const GLdouble* v) { if (v) setGenericL(ctx, i, v[0], 0, 0, 1); }
+void VertexAttribL2dv(Context& ctx, GLuint i, const GLdouble* v) { if (v) setGenericL(ctx, i, v[0], v[1], 0, 1); }
+void VertexAttribL3dv(Context& ctx, GLuint i, const GLdouble* v) { if (v) setGenericL(ctx, i, v[0], v[1], v[2], 1); }
+void VertexAttribL4dv(Context& ctx, GLuint i, const GLdouble* v) { if (v) setGenericL(ctx, i, v[0], v[1], v[2], v[3]); }
+
 // --- queries
 
 namespace {
@@ -284,7 +305,9 @@ void getVertexAttrib(Context& ctx, GLuint index, GLenum pname, T* params) {
         if (!checkIndex(ctx, index)) return;
         const auto& g = ctx.state.genericAttribs[index];
         for (int c = 0; c < 4; ++c) {
-            if constexpr (std::is_floating_point_v<T>) {
+            if (g.type == GL_DOUBLE) {
+                params[c] = static_cast<T>(g.d[c]);
+            } else if constexpr (std::is_floating_point_v<T>) {
                 params[c] = g.type == GL_INT ? static_cast<T>(g.value.i[c])
                             : g.type == GL_UNSIGNED_INT ? static_cast<T>(g.value.u[c])
                                                         : static_cast<T>(g.value.f[c]);
@@ -316,6 +339,7 @@ void getVertexAttrib(Context& ctx, GLuint index, GLenum pname, T* params) {
 void GetVertexAttribfv(Context& ctx, GLuint index, GLenum pname, GLfloat* params) { getVertexAttrib(ctx, index, pname, params); }
 void GetVertexAttribdv(Context& ctx, GLuint index, GLenum pname, GLdouble* params) { getVertexAttrib(ctx, index, pname, params); }
 void GetVertexAttribiv(Context& ctx, GLuint index, GLenum pname, GLint* params) { getVertexAttrib(ctx, index, pname, params); }
+void GetVertexAttribLdv(Context& ctx, GLuint index, GLenum pname, GLdouble* params) { getVertexAttrib(ctx, index, pname, params); }
 
 void GetVertexAttribIiv(Context& ctx, GLuint index, GLenum pname, GLint* params) {
     if (pname == GL_CURRENT_VERTEX_ATTRIB && params && checkIndex(ctx, index)) {

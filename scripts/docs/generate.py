@@ -261,7 +261,8 @@ def implemented_commands():
         names.update("glProgramUniformMatrix" + m.group(1) + "dv" for m in double_matrix.finditer(text))
         for prefix in ("glUniform", "glProgramUniform"):
             names.update(prefix + m.group(1) for m in uniform_v.finditer(text))
-            names.update(prefix + "Matrix" + m.group(1) + "fv" for m in uniform_matrix.finditer(text))
+            for suffix in ("fv", "dv"):
+                names.update(prefix + "Matrix" + m.group(1) + suffix for m in uniform_matrix.finditer(text))
     return names
 
 

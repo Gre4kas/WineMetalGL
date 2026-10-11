@@ -200,7 +200,9 @@ struct ContextState {
             GLint i[4];
             GLuint u[4];
         } value = {{0, 0, 0, 1}};
-        GLenum type = GL_FLOAT;  // GL_FLOAT, GL_INT, GL_UNSIGNED_INT
+        GLenum type = GL_FLOAT;  // GL_FLOAT, GL_INT, GL_UNSIGNED_INT, GL_DOUBLE (glVertexAttribL*)
+        // The value of 64-bit inputs (GL_ARB_vertex_attrib_64bit), set by glVertexAttribL*.
+        GLdouble d[4] = {0, 0, 0, 1};
     };
     // Generic attributes, then the conventional current values (current
     // colour, normal, texture coordinates, ...; compat/fixed_state.h).
