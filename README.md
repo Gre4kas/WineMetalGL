@@ -19,7 +19,7 @@ it through the small driver ABI in `include/winemetalgl/driver.h`.
 
 ## Proof Of Concept
 
-Dead Cells running under MetalSharp Wine-11.17 Using WineMetalGL; 
+Dead Cells (Requires OpenGL 3.2+) running under MetalSharp Wine-11.17 Using WineMetalGL; 
 
 <img width="1920" height="1082" alt="image" src="https://github.com/user-attachments/assets/dcf456b7-3b7f-48c6-b57e-cfd68794ada2" />
 
