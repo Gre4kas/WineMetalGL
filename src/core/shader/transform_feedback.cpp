@@ -5,6 +5,8 @@
 namespace wmgl::shader {
 namespace {
 
+constexpr int TransformFeedbackBufferLimit = 4;  // GL_MAX_TRANSFORM_FEEDBACK_BUFFERS
+
 bool parseName(const std::string& varying, std::string& base, int& index) {
     index = -1;
     const size_t open = varying.find('[');
@@ -32,30 +34,37 @@ GLenum scalarKind(GLenum type) {
 
 std::vector<std::string> captureWords(const std::string& e, GLenum type) {
     const GLenum kind = scalarKind(type);
-    auto convert = [&](const std::string& x) {
-        return kind == GL_FLOAT ? "floatBitsToUint(" + x + ")" : kind == GL_INT ? "uint(" + x + ")" : x;
-    };
+    const bool isDouble = glTypeIsDouble(type);
     std::vector<std::string> words;
+    // A double is captured as two words, low word first (unpackDouble2x32).
+    auto add = [&](const std::string& x) {
+        if (isDouble) {
+            words.push_back("unpackDouble2x32(" + x + ").x");
+            words.push_back("unpackDouble2x32(" + x + ").y");
+        } else {
+            words.push_back(kind == GL_FLOAT ? "floatBitsToUint(" + x + ")" : kind == GL_INT ? "uint(" + x + ")" : x);
+        }
+    };
     int columns = 1, rows = glTypeComponents(type);
     switch (type) {
-    case GL_FLOAT_MAT2: columns = 2; rows = 2; break;
-    case GL_FLOAT_MAT2x3: columns = 2; rows = 3; break;
-    case GL_FLOAT_MAT2x4: columns = 2; rows = 4; break;
-    case GL_FLOAT_MAT3: columns = 3; rows = 3; break;
-    case GL_FLOAT_MAT3x2: columns = 3; rows = 2; break;
-    case GL_FLOAT_MAT3x4: columns = 3; rows = 4; break;
-    case GL_FLOAT_MAT4: columns = 4; rows = 4; break;
-    case GL_FLOAT_MAT4x2: columns = 4; rows = 2; break;
-    case GL_FLOAT_MAT4x3: columns = 4; rows = 3; break;
+    case GL_FLOAT_MAT2: case GL_DOUBLE_MAT2: columns = 2; rows = 2; break;
+    case GL_FLOAT_MAT2x3: case GL_DOUBLE_MAT2x3: columns = 2; rows = 3; break;
+    case GL_FLOAT_MAT2x4: case GL_DOUBLE_MAT2x4: columns = 2; rows = 4; break;
+    case GL_FLOAT_MAT3: case GL_DOUBLE_MAT3: columns = 3; rows = 3; break;
+    case GL_FLOAT_MAT3x2: case GL_DOUBLE_MAT3x2: columns = 3; rows = 2; break;
+    case GL_FLOAT_MAT3x4: case GL_DOUBLE_MAT3x4: columns = 3; rows = 4; break;
+    case GL_FLOAT_MAT4: case GL_DOUBLE_MAT4: columns = 4; rows = 4; break;
+    case GL_FLOAT_MAT4x2: case GL_DOUBLE_MAT4x2: columns = 4; rows = 2; break;
+    case GL_FLOAT_MAT4x3: case GL_DOUBLE_MAT4x3: columns = 4; rows = 3; break;
     default: break;
     }
     if (columns > 1) {
         for (int c = 0; c < columns; ++c)
-            for (int r = 0; r < rows; ++r) words.push_back(convert(e + "[" + std::to_string(c) + "][" + std::to_string(r) + "]"));
+            for (int r = 0; r < rows; ++r) add(e + "[" + std::to_string(c) + "][" + std::to_string(r) + "]");
     } else if (rows == 1) {
-        words.push_back(convert(e));
+        add(e);
     } else {
-        for (int c = 0; c < rows; ++c) words.push_back(convert(e + "[" + std::to_string(c) + "]"));
+        for (int c = 0; c < rows; ++c) add(e + "[" + std::to_string(c) + "]");
     }
     return words;
 }
@@ -69,8 +78,39 @@ bool layoutTransformFeedback(const std::vector<std::string>& varyings, GLenum mo
         return false;
     }
     std::set<std::string> seen;
-    uint32_t interleavedWords = 0;
+    uint32_t interleavedWords = 0, totalWords = 0;
+    int buffer = 0;  // interleaved: the buffer being filled (gl_NextBuffer advances it)
     for (const std::string& varying : varyings) {
+        // GL_ARB_transform_feedback3: gl_SkipComponents1-4 leaves components
+        // of the buffer unwritten, gl_NextBuffer moves to the next buffer.
+        const bool skip = varying.size() == 18 && varying.compare(0, 17, "gl_SkipComponents") == 0 && varying[17] >= '1' &&
+                          varying[17] <= '4';
+        if (skip || varying == "gl_NextBuffer") {
+            if (separate) {
+                log += "error: '" + varying + "' is only valid with GL_INTERLEAVED_ATTRIBS\n";
+                return false;
+            }
+            TransformFeedbackVarying v;
+            v.name = varying;
+            v.type = GL_NONE;
+            v.size = skip ? varying[17] - '0' : 0;
+            v.components = 0;
+            v.buffer = buffer;
+            v.offset = interleavedWords;
+            if (skip) {
+                interleavedWords += static_cast<uint32_t>(v.size);
+                totalWords += static_cast<uint32_t>(v.size);
+            } else {
+                result.xfbStride[buffer] = interleavedWords;
+                if (++buffer >= TransformFeedbackBufferLimit) {
+                    log += "error: too many transform feedback buffers\n";
+                    return false;
+                }
+                interleavedWords = 0;
+            }
+            result.transformFeedback.push_back(v);
+            continue;
+        }
         if (!seen.insert(varying).second) {
             log += "error: transform feedback varying '" + varying + "' is specified more than once\n";
             return false;
@@ -96,8 +136,9 @@ bool layoutTransformFeedback(const std::vector<std::string>& varyings, GLenum mo
         v.name = varying;
         v.type = out->type;
         v.size = index >= 0 || out->arraySize == 0 ? 1 : out->arraySize;
-        v.components = glTypeComponents(out->type) * v.size;
+        v.components = glTypeWords(out->type) * v.size;
         v.array = index < 0 && out->arraySize > 0;
+        v.source = out->qualified.empty() ? base : out->qualified;
         const std::string access = out->expression.empty() ? base : out->expression;
         v.expression = index >= 0 ? access + "[" + std::to_string(index) + "]" : access;
         if (separate) {
@@ -109,20 +150,21 @@ bool layoutTransformFeedback(const std::vector<std::string>& varyings, GLenum mo
             v.offset = 0;
             result.xfbStride[v.buffer] = static_cast<uint32_t>(v.components);
         } else {
-            v.buffer = 0;
+            v.buffer = buffer;
             v.offset = interleavedWords;
             interleavedWords += static_cast<uint32_t>(v.components);
+            totalWords += static_cast<uint32_t>(v.components);
         }
         result.transformFeedback.push_back(v);
     }
     if (!separate) {
-        if (interleavedWords > maxInterleavedComponents) {
+        if (totalWords > maxInterleavedComponents) {
             log += "error: transform feedback varyings exceed MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS\n";
             return false;
         }
-        result.xfbStride[0] = interleavedWords;
+        result.xfbStride[buffer] = interleavedWords;
     }
-    result.xfbBufferCount = varyings.empty() ? 0 : separate ? static_cast<int>(varyings.size()) : 1;
+    result.xfbBufferCount = varyings.empty() ? 0 : separate ? static_cast<int>(varyings.size()) : buffer + 1;
     return true;
 }
 
@@ -155,6 +197,7 @@ CaptureCode vertexCaptureCode(const LinkResult& layout, int glslVersion) {
         e += "            uint wmgl_xfb_p" + std::to_string(b) + " = wmgl_xfb_base[" + std::to_string(b) + "] + wmgl_xfb_v * wmgl_xfb_stride[" +
              std::to_string(b) + "];\n";
     for (const TransformFeedbackVarying& v : layout.transformFeedback) {
+        if (v.type == GL_NONE) continue;  // gl_SkipComponents / gl_NextBuffer
         uint32_t word = v.offset;
         for (int element = 0; element < v.size; ++element) {
             const std::string expr = v.array ? v.expression + "[" + std::to_string(element) + "]" : v.expression;

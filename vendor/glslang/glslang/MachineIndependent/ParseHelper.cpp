@@ -5043,7 +5043,8 @@ void TParseContext::redeclareBuiltinBlock(const TSourceLoc& loc, TTypeList& newT
 {
     const char* feature = "built-in block redeclaration";
     profileRequires(loc, EEsProfile, 320, Num_AEP_shader_io_blocks, AEP_shader_io_blocks, feature);
-    profileRequires(loc, ~EEsProfile, 410, E_GL_ARB_separate_shader_objects, feature);
+    // WineMetalGL: desktop drivers accept gl_PerVertex redeclarations from GLSL 1.50 (the CTS relies on it).
+    profileRequires(loc, ~EEsProfile, 150, E_GL_ARB_separate_shader_objects, feature);
 
     if (blockName != "gl_PerVertex" && blockName != "gl_PerFragment" &&
         blockName != "gl_MeshPerVertexNV" && blockName != "gl_MeshPerPrimitiveNV" &&
@@ -6078,7 +6079,9 @@ void TParseContext::setLayoutQualifier(const TSourceLoc& loc, TPublicType& publi
             error(loc, "needs a literal integer", "set", "");
         return;
     } else if (id == "binding") {
-        profileRequires(loc, ~EEsProfile, 420, E_GL_ARB_shading_language_420pack, "binding");
+        // WineMetalGL: GL_ARB_shader_atomic_counters adds layout(binding) for atomic counters.
+        const char* bindingExts[2] = { E_GL_ARB_shading_language_420pack, E_GL_ARB_shader_atomic_counters };
+        profileRequires(loc, ~EEsProfile, 420, 2, bindingExts, "binding");
         profileRequires(loc, EEsProfile, 310, nullptr, "binding");
         if ((unsigned int)value >= TQualifier::layoutBindingEnd)
             error(loc, "binding is too large", id.c_str(), "");
@@ -6654,7 +6657,12 @@ void TParseContext::layoutTypeCheck(const TSourceLoc& loc, const TType& type)
                     }
                 }
             }
-            if (spvVersion.vulkan == 0 && lastBinding >= resources.maxCombinedTextureImageUnits)
+            // WineMetalGL: an image binding names an image unit, so it is
+            // checked against gl_MaxImageUnits, as GLSL 4.20 requires.
+            if (spvVersion.vulkan == 0 && type.getSampler().isImage()) {
+                if (lastBinding >= resources.maxImageUnits)
+                    error(loc, "image binding not less than gl_MaxImageUnits", "binding", type.isArray() ? "(using array)" : "");
+            } else if (spvVersion.vulkan == 0 && lastBinding >= resources.maxCombinedTextureImageUnits)
                 error(loc, "sampler binding not less than gl_MaxCombinedTextureImageUnits", "binding", type.isArray() ? "(using array)" : "");
         }
         if (type.isAtomic() && !spvVersion.vulkanRelaxed) {
@@ -7007,6 +7015,9 @@ void TParseContext::fixOffset(const TSourceLoc& loc, TSymbol& symbol)
             int repeated = intermediate.addUsedOffsets(qualifier.layoutBinding, offset, numOffsets);
             if (repeated >= 0)
                 error(loc, "atomic counters sharing the same offset:", "offset", "%d", repeated);
+            // WineMetalGL: GLSL 4.20 makes a counter past gl_MaxAtomicCounterBufferSize a compile-time error.
+            if (offset + numOffsets > resources.maxAtomicCounterBufferSize)
+                error(loc, "atomic counter offset exceeds gl_MaxAtomicCounterBufferSize:", "offset", "%d", offset);
 
             // Bump the default offset
             atomicUintOffsets[qualifier.layoutBinding] = offset + numOffsets;
@@ -9670,7 +9681,10 @@ void TParseContext::invariantCheck(const TSourceLoc& loc, const TQualifier& qual
 
     bool pipeOut = qualifier.isPipeOutput();
     bool pipeIn = qualifier.isPipeInput();
-    if ((version >= 300 && isEsProfile()) || (!isEsProfile() && version >= 420)) {
+    // WineMetalGL: desktop GLSL 4.20 and later still accept invariant inputs
+    // outside the vertex stage (they match the previous stage's invariant
+    // outputs), as desktop drivers and the GL 4.2 conformance tests expect.
+    if (version >= 300 && isEsProfile()) {
         if (! pipeOut)
             error(loc, "can only apply to an output", "invariant", "");
     } else {

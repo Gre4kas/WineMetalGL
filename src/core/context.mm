@@ -10,6 +10,7 @@
 #include "core/metal/device.h"
 #include "core/program.h"
 #include "core/util/log.h"
+#include "core/util/version.h"
 
 namespace wmgl {
 namespace {
@@ -79,7 +80,8 @@ void Context::initStrings() {
     std::snprintf(buffer, sizeof(buffer), "%d.%d.0 WineMetalGL %s", config_.major, config_.minor,
                   config_.coreProfile ? "Core Profile" : "Compatibility Profile");
     versionString_ = buffer;
-    glslVersionString_ = config_.major > 3 || (config_.major == 3 && config_.minor >= 3) ? "3.30"
+    glslVersionString_ = config_.major >= 4                                                ? "4." + std::to_string(config_.minor) + "0"
+                         : config_.major == 3 && config_.minor >= 3                       ? "3.30"
                          : config_.major == 3 && config_.minor == 2                       ? "1.50"
                          : config_.major == 3 && config_.minor == 1                       ? "1.40"
                          : config_.major == 3                                             ? "1.30"
@@ -135,6 +137,11 @@ void Context::initStrings() {
                              "GL_ARB_half_float_vertex", "GL_ARB_texture_buffer_object", "GL_ARB_framebuffer_sRGB",
                              "GL_EXT_framebuffer_sRGB", "GL_EXT_texture_sRGB", "GL_ARB_map_buffer_alignment"})
         extensions_.push_back(name);
+    // Texture format extensions core GL 3.0 subsumes, which format queries
+    // (and the CTS internalformat cases) test for in core contexts too.
+    for (const char* name : {"GL_ARB_depth_texture", "GL_ARB_texture_float", "GL_EXT_texture_shared_exponent",
+                             "GL_EXT_texture_integer"})
+        if (!hasExtension(name)) extensions_.push_back(name);
     extensions_.push_back("GL_ARB_draw_buffers_blend");
     extensions_.push_back("GL_ARB_base_instance");
     extensions_.push_back("GL_ARB_clip_control");
@@ -146,6 +153,30 @@ void Context::initStrings() {
     for (const char* name : {"GL_KHR_robustness", "GL_ARB_robustness", "GL_ARB_internalformat_query",
                              "GL_ARB_invalidate_subdata", "GL_ARB_copy_image", "GL_NVX_gpu_memory_info", "GL_ATI_meminfo"})
         extensions_.push_back(name);
+    // The extensions GL 4.0, 4.1 and 4.2 made core, in contexts of the
+    // version that includes them (their features are gated on the version).
+    const int version = config_.major * 10 + config_.minor;
+    if (version >= 40)
+        for (const char* name :
+             {"GL_ARB_draw_indirect", "GL_ARB_gpu_shader5", "GL_ARB_gpu_shader_fp64", "GL_ARB_sample_shading",
+              "GL_ARB_shader_subroutine", "GL_ARB_tessellation_shader", "GL_ARB_texture_buffer_object_rgb32",
+              "GL_ARB_texture_cube_map_array", "GL_ARB_texture_gather", "GL_ARB_texture_query_lod",
+              "GL_ARB_transform_feedback2", "GL_ARB_transform_feedback3"})
+            extensions_.push_back(name);
+    if (version >= 41)
+        for (const char* name : {"GL_ARB_shader_precision", "GL_ARB_vertex_attrib_64bit", "GL_ARB_viewport_array"})
+            extensions_.push_back(name);
+    if (version >= 42)
+        for (const char* name :
+             {"GL_ARB_conservative_depth", "GL_ARB_shader_atomic_counters", "GL_ARB_shader_image_load_store",
+              "GL_ARB_shading_language_420pack", "GL_ARB_shading_language_packing", "GL_ARB_texture_compression_bptc",
+              "GL_ARB_transform_feedback_instanced"})
+            extensions_.push_back(name);
+    // Later extensions the core implements, in 4.x contexts: wined3d reads
+    // EXT_shader_integer_mix and polygon_offset_clamp for its feature level.
+    if (version >= 40)
+        for (const char* name : {"GL_EXT_shader_integer_mix", "GL_ARB_polygon_offset_clamp", "GL_EXT_polygon_offset_clamp"})
+            extensions_.push_back(name);
     extensionString_.clear();
     for (const std::string& ext : extensions_) {
         if (!extensionString_.empty()) extensionString_ += ' ';
@@ -211,8 +242,10 @@ void Context::bindSurfaces(Surface* draw, Surface* read) {
     readSurface_ = read;
     if (!everMadeCurrent && draw) {
         // The first MakeCurrent sets the viewport and scissor to the surface size.
-        state.viewport[2] = state.scissor[2] = draw->width();
-        state.viewport[3] = state.scissor[3] = draw->height();
+        for (int i = 0; i < ContextState::kMaxViewports; ++i) {
+            state.viewports[i][2] = static_cast<GLfloat>(state.scissors[i][2] = draw->width());
+            state.viewports[i][3] = static_cast<GLfloat>(state.scissors[i][3] = draw->height());
+        }
         everMadeCurrent = true;
     }
     markDirty(kDirtyFramebuffer | kDirtyViewport | kDirtyScissor);
@@ -255,7 +288,7 @@ RefPtr<Buffer>* Context::bufferBinding(GLenum target) {
         if (target == GL_DRAW_INDIRECT_BUFFER) return &state.drawIndirectBuffer;
     if (computeShaders() && target == GL_DISPATCH_INDIRECT_BUFFER) return &state.dispatchIndirectBuffer;
     if (version() >= 43 && target == GL_SHADER_STORAGE_BUFFER) return &state.shaderStorageBuffer;
-    if (version() >= 42 && target == GL_ATOMIC_COUNTER_BUFFER) return &state.atomicCounterBuffer;
+    if (atomicCounters() && target == GL_ATOMIC_COUNTER_BUFFER) return &state.atomicCounterBuffer;
     if (version() >= 44 && target == GL_QUERY_BUFFER) return &state.queryBuffer;
     return nullptr;
 }

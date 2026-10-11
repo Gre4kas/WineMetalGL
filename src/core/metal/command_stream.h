@@ -72,6 +72,15 @@ public:
     id<MTLBlitCommandEncoder> blit();
     id<MTLComputeCommandEncoder> compute();
     void endEncoder();
+    // glMemoryBarrier: orders shader writes to buffers and textures before
+    // later shader accesses: ends an open render pass, or a barrier in the
+    // open compute encoder.
+    void memoryBarrier();
+    // The open render or compute encoder writes through images or atomic
+    // counters. Metal's hazard tracking does not order those writes (texture
+    // atomics in particular) before later encoders, so the encoder updates a
+    // fence when it ends and every later encoder waits for it.
+    void noteShaderWrites() { shaderWrites_ = true; }
 
     // Commits the command buffer; returns its serial (0 if nothing was recorded).
     uint64_t flush();
@@ -119,6 +128,11 @@ private:
     bool drawsInPass_ = false;
     uint64_t passGeneration_ = 0;
     bool visibilityWanted_ = false, passVisibility_ = false;
+    // noteShaderWrites: set while the open encoder writes through images;
+    // fenced once such an encoder ended (later encoders wait for writesFence_).
+    bool shaderWrites_ = false, fenced_ = false;
+    id<MTLFence> writesFence_ = nil;
+    void waitForShaderWrites(id<MTLCommandEncoder> encoder, bool render);
     id<MTLBuffer> visibility_ = nil;
     NSUInteger visibilityUsed_ = 0;
 };

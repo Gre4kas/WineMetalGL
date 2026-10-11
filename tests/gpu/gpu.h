@@ -47,7 +47,15 @@
     X(glPushDebugGroup) X(glPopDebugGroup) X(glObjectLabel) X(glGetObjectLabel)                     \
     X(glCreateShaderProgramv) X(glGenProgramPipelines) X(glBindProgramPipeline) X(glUseProgramStages)             \
     X(glProgramUniform4f) X(glGetProgramPipelineiv) X(glValidateProgramPipeline) X(glDeleteProgramPipelines)      \
-    X(glActiveShaderProgram) X(glProgramParameteri)
+    X(glActiveShaderProgram) X(glProgramParameteri) WMGL_GPU_FUNCS_GL4(X)
+
+// GL 4.0-4.2 entry points (gl4_tests.cpp).
+#define WMGL_GPU_FUNCS_GL4(X)                                                                                \
+    X(glDrawArraysIndirect) X(glDrawElementsIndirect) X(glViewportIndexedf) X(glScissorIndexed)             \
+    X(glGetFloati_v) X(glFramebufferTexture) X(glGenTransformFeedbacks) X(glBindTransformFeedback)          \
+    X(glDeleteTransformFeedbacks) X(glPauseTransformFeedback) X(glResumeTransformFeedback)                  \
+    X(glDrawTransformFeedback) X(glPatchParameteri) X(glGetActiveAtomicCounterBufferiv) X(glMemoryBarrier)           \
+    X(glBindImageTexture) X(glTexStorage2D) X(glUniform1iv) X(glDrawElementsInstancedBaseVertex)
 
 #define WMGL_DECLARE_FUNC(name) extern PFN_##name name;
 WMGL_GPU_FUNCS(WMGL_DECLARE_FUNC)
@@ -55,9 +63,11 @@ WMGL_GPU_FUNCS(WMGL_DECLARE_FUNC)
 
 namespace gpu {
 
-// A 3.3 core context current on a pbuffer for the lifetime of the fixture.
+// A context current on a pbuffer for the lifetime of the fixture, requesting
+// `version` (10 * major + minor); versions above 4.2 go through the
+// development override (WINEMETALGL_DEV_MAX_VERSION).
 struct Fixture {
-    explicit Fixture(int width = 64, int height = 64, bool core = true);
+    explicit Fixture(int width = 64, int height = 64, bool core = true, int version = 33);
     ~Fixture();
     bool ok = false;
     wmgl_context* context = nullptr;
@@ -75,6 +85,15 @@ bool near(const uint8_t* got, const uint8_t want[4], int tolerance = 1);
 }  // namespace gpu
 
 #define CHECK_GL() CHECK_EQ(glGetError(), static_cast<GLenum>(GL_NO_ERROR))
+// A test with a GL 4.x context (`version` = 10 * major + minor).
+#define GPU_TEST_VERSION(name, version)            \
+    static void name##_body();                     \
+    TEST(name) {                                   \
+        gpu::Fixture fixture_(64, 64, true, version); \
+        CHECK(fixture_.ok);                        \
+        if (fixture_.ok) name##_body();            \
+    }                                              \
+    static void name##_body()
 #define GPU_TEST(name)                     \
     static void name##_body();             \
     TEST(name) {                           \

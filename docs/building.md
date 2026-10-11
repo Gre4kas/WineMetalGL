@@ -108,7 +108,7 @@ OpenGL.
 | `WINEMETALGL_STATS=1` | Log per-frame statistics |
 | `WINEMETALGL_VENDOR`, `WINEMETALGL_RENDERER` | Replace the `GL_VENDOR` and `GL_RENDERER` strings, for games that refuse unknown vendors |
 
-Some programs' OpenGL loaders need entry points of GL versions above 3.3,
+Some programs' OpenGL loaders need entry points of GL versions above 4.2,
 which Windows drivers return whatever the context's version. Wine returns them
 to programs that opt in through the registry of their prefix:
 
@@ -117,4 +117,4 @@ HKCU\Software\Wine\AppDefaults\<app.exe>\OpenGL    LaterEntryPoints = "Y"
 ```
 
 Dead Cells (`deadcells_gl.exe`) needs it. Calling one of these functions
-raises `GL_INVALID_OPERATION`, since 3.3 contexts do not offer them.
+raises `GL_INVALID_OPERATION`, since 4.2 contexts do not offer them.

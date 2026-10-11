@@ -8,12 +8,18 @@ The results in `docs/` were recorded with MetalSharp's Wine 11.17, which the
 x86_64 release's prebuilt Wine modules are built from. Other Wine versions may
 need a small rebase when Wine's OpenGL driver interface changes.
 
-- `0001-opengl-wgl-fixes.patch`: four Wine OpenGL fixes.
+- `0001-opengl-wgl-fixes.patch`: six Wine OpenGL fixes.
   - `win32u` indexes the parsed extension list correctly for drivers without
     `GL_NUM_EXTENSIONS`.
   - `wglChoosePixelFormatARB` keeps window requests within the on-screen
     pixel formats.
   - `glDeleteSync(0)` is ignored instead of raising `GL_INVALID_VALUE`.
+  - Deleting object 0 (`glDeleteProgram(0)` and the other deletes that go
+    through Wine's object names) passes 0 to the driver instead of -1, so it
+    stays silently ignored.
+  - `glGetBooleanv`, `glGetBooleani_v` and `glGetBooleanIndexedvEXT` of a
+    binding (`GL_IMAGE_BINDING_NAME`, ...) return the driver's `GL_TRUE`
+    instead of translating it as an object name.
   - `wglGetProcAddress` can return entry points of GL versions above the
     context's, as Windows drivers do, for applications that opt in with
     `HKCU\Software\Wine\AppDefaults\<app.exe>\OpenGL`

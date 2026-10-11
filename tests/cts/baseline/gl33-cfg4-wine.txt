@@ -1,7 +1,7 @@
 # mustpass gl33-main.txt config 4: --deqp-screen-rotation=unspecified --deqp-surface-width=-1 --deqp-surface-height=64 --deqp-base-seed=3 --deqp-gl-config-name=rgba8888d24s8 --deqp-surface-type=fbo --deqp-watchdog=disable
-# commit 14eaa75, path winemetalgl, 9886 cases, 747 s
+# commit 851476e, path winemetalgl, 9886 cases, 661 s
 # cts dEQP Core 1942832354c96f0de379f491519734256fbd4f9d
-# totals Fail=1 NotSupported=620 Pass=9265
+# totals Fail=1 NotSupported=608 Pass=9276 Timeout=1
 KHR-GL33.CommonBugs.CommonBug_GetProgramivActiveUniformBlockMaxNameLength Pass
 KHR-GL33.CommonBugs.CommonBug_InputVariablesCannotBeModified Pass
 KHR-GL33.CommonBugs.CommonBug_InvalidUseCasesForAllNotFuncsAndExclMarkOp Pass
@@ -259,9 +259,9 @@ KHR-GL33.framebuffer_blit.multisampled_to_singlesampled_blit_depth_config_test P
 KHR-GL33.framebuffer_blit.scissor_blit Pass
 KHR-GL33.get_uniform_tests.get_uniform Pass
 KHR-GL33.glsl_noperspective.functionaltest Pass
-KHR-GL33.gpu_shader5_gl.float_encoding NotSupported
-KHR-GL33.gpu_shader5_gl.function_overloading NotSupported
-KHR-GL33.gpu_shader5_gl.implicit_conversions NotSupported
+KHR-GL33.gpu_shader5_gl.float_encoding Pass
+KHR-GL33.gpu_shader5_gl.function_overloading Pass
+KHR-GL33.gpu_shader5_gl.implicit_conversions Pass
 KHR-GL33.info.extensions Pass
 KHR-GL33.info.render_target Pass
 KHR-GL33.info.renderer Pass
@@ -7412,12 +7412,12 @@ KHR-GL33.shaders.preprocessor.undefined_identifiers.not_used_in_eval_1_fragment 
 KHR-GL33.shaders.preprocessor.undefined_identifiers.not_used_in_eval_1_vertex Pass
 KHR-GL33.shaders.preprocessor.undefined_identifiers.not_used_in_eval_2_fragment Pass
 KHR-GL33.shaders.preprocessor.undefined_identifiers.not_used_in_eval_2_vertex Pass
-KHR-GL33.shaders.shader_integer_mix.define NotSupported
-KHR-GL33.shaders.shader_integer_mix.mix-bvec4 NotSupported
-KHR-GL33.shaders.shader_integer_mix.mix-ivec4 NotSupported
-KHR-GL33.shaders.shader_integer_mix.mix-uvec4 NotSupported
+KHR-GL33.shaders.shader_integer_mix.define Pass
+KHR-GL33.shaders.shader_integer_mix.mix-bvec4 Pass
+KHR-GL33.shaders.shader_integer_mix.mix-ivec4 Pass
+KHR-GL33.shaders.shader_integer_mix.mix-uvec4 Pass
 KHR-GL33.shaders.shader_integer_mix.prototypes NotSupported
-KHR-GL33.shaders.shader_integer_mix.prototypes-extension NotSupported
+KHR-GL33.shaders.shader_integer_mix.prototypes-extension Pass
 KHR-GL33.shaders.shader_integer_mix.prototypes-negative Pass
 KHR-GL33.shaders.struct.local.array_member_dynamic_index_fragment Pass
 KHR-GL33.shaders.struct.local.array_member_dynamic_index_vertex Pass
@@ -9871,10 +9871,10 @@ KHR-GL33.transform_feedback.query_geometry_interleaved_test Pass
 KHR-GL33.transform_feedback.query_geometry_separate_test Pass
 KHR-GL33.transform_feedback.query_vertex_interleaved_test Pass
 KHR-GL33.transform_feedback.query_vertex_separate_test Pass
-KHR-GL33.transform_feedback2.transform_feedback2_states NotSupported
-KHR-GL33.transform_feedback3.multiple_streams NotSupported
-KHR-GL33.transform_feedback3.skip_components NotSupported
-KHR-GL33.transform_feedback3.skip_multiple_buffers NotSupported
+KHR-GL33.transform_feedback2.transform_feedback2_states Timeout
+KHR-GL33.transform_feedback3.multiple_streams Pass
+KHR-GL33.transform_feedback3.skip_components Pass
+KHR-GL33.transform_feedback3.skip_multiple_buffers Pass
 KHR-GL33.transform_feedback_overflow_query_ARB.advanced-single-stream-interleaved-attribs NotSupported
 KHR-GL33.transform_feedback_overflow_query_ARB.advanced-single-stream-separate-attribs NotSupported
 KHR-GL33.transform_feedback_overflow_query_ARB.basic-single-stream-interleaved-attribs NotSupported

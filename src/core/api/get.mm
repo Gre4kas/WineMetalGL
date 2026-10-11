@@ -112,6 +112,7 @@ int textureBindingTarget(GLenum pname) {
     case GL_TEXTURE_BINDING_BUFFER: return kTexBuffer;
     case GL_TEXTURE_BINDING_2D_MULTISAMPLE: return kTex2DMultisample;
     case GL_TEXTURE_BINDING_2D_MULTISAMPLE_ARRAY: return kTex2DMultisampleArray;
+    case GL_TEXTURE_BINDING_CUBE_MAP_ARRAY: return kTexCubeMapArray;
     default: return -1;
     }
 }
@@ -135,6 +136,11 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
         out = ints({ctx.isCore() ? GL_CONTEXT_CORE_PROFILE_BIT : GL_CONTEXT_COMPATIBILITY_PROFILE_BIT});
         return true;
     case GL_NUM_EXTENSIONS: out = ints({static_cast<int64_t>(ctx.extensions().size())}); return true;
+    case GL_NUM_SHADING_LANGUAGE_VERSIONS:
+        // The glGetStringi(GL_SHADING_LANGUAGE_VERSION) list (api/state.mm).
+        if (ctx.version() < 43) return false;
+        out = ints({ctx.version() - 43 + 11});
+        return true;
     case GL_RESET_NOTIFICATION_STRATEGY: out = ints({ctx.config().resetNotification}); return true;
     case 0x90F3:  // GL_CONTEXT_ROBUST_ACCESS (GL_KHR_robustness)
         out = bools({ctx.config().robustAccess});
@@ -207,6 +213,91 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
     case GL_MAX_GEOMETRY_OUTPUT_COMPONENTS: out = ints({128}); return true;
     case GL_MAX_FRAGMENT_INPUT_COMPONENTS: out = ints({128}); return true;
     case GL_MAX_GEOMETRY_OUTPUT_VERTICES: out = ints({256}); return true;
+    // Primitive restart is treated as disabled for GL_PATCHES (GL 4.3 section 10.3.5).
+    case GL_PRIMITIVE_RESTART_FOR_PATCHES_SUPPORTED:
+        if (!ctx.tessellationShaders()) return false;
+        out = bools({false});
+        return true;
+    // GL 4.2 atomic counters (limits.h); vertex and tessellation stages have none.
+    case GL_ATOMIC_COUNTER_BUFFER_BINDING: case GL_MAX_ATOMIC_COUNTER_BUFFER_BINDINGS: case GL_MAX_ATOMIC_COUNTER_BUFFER_SIZE:
+    case GL_MAX_VERTEX_ATOMIC_COUNTER_BUFFERS: case GL_MAX_TESS_CONTROL_ATOMIC_COUNTER_BUFFERS:
+    case GL_MAX_TESS_EVALUATION_ATOMIC_COUNTER_BUFFERS: case GL_MAX_GEOMETRY_ATOMIC_COUNTER_BUFFERS:
+    case GL_MAX_FRAGMENT_ATOMIC_COUNTER_BUFFERS: case GL_MAX_COMBINED_ATOMIC_COUNTER_BUFFERS:
+    case GL_MAX_VERTEX_ATOMIC_COUNTERS: case GL_MAX_TESS_CONTROL_ATOMIC_COUNTERS: case GL_MAX_TESS_EVALUATION_ATOMIC_COUNTERS:
+    case GL_MAX_GEOMETRY_ATOMIC_COUNTERS: case GL_MAX_FRAGMENT_ATOMIC_COUNTERS: case GL_MAX_COMBINED_ATOMIC_COUNTERS:
+        if (!ctx.atomicCounters()) return false;
+        switch (pname) {
+        case GL_ATOMIC_COUNTER_BUFFER_BINDING: out = ints({nameOf(s.atomicCounterBuffer)}); break;
+        case GL_MAX_ATOMIC_COUNTER_BUFFER_BINDINGS: out = ints({kMaxAtomicCounterBufferBindings}); break;
+        case GL_MAX_ATOMIC_COUNTER_BUFFER_SIZE: out = ints({kMaxAtomicCounterBufferSize}); break;
+        case GL_MAX_VERTEX_ATOMIC_COUNTER_BUFFERS: out = ints({kMaxVertexAtomicCounterBuffers}); break;
+        case GL_MAX_TESS_CONTROL_ATOMIC_COUNTER_BUFFERS: case GL_MAX_TESS_EVALUATION_ATOMIC_COUNTER_BUFFERS:
+        case GL_MAX_TESS_CONTROL_ATOMIC_COUNTERS: case GL_MAX_TESS_EVALUATION_ATOMIC_COUNTERS:
+            out = ints({0});
+            break;
+        case GL_MAX_GEOMETRY_ATOMIC_COUNTER_BUFFERS: case GL_MAX_FRAGMENT_ATOMIC_COUNTER_BUFFERS:
+        case GL_MAX_COMBINED_ATOMIC_COUNTER_BUFFERS:
+            out = ints({kMaxStageAtomicCounterBuffers});
+            break;
+        default: out = ints({kMaxStageAtomicCounters}); break;
+        }
+        return true;
+    // GL 4.2 image load/store (limits.h): every stage has image uniforms.
+    case GL_MAX_IMAGE_UNITS: case GL_MAX_COMBINED_IMAGE_UNITS_AND_FRAGMENT_OUTPUTS: case GL_MAX_IMAGE_SAMPLES:
+    case GL_MAX_VERTEX_IMAGE_UNIFORMS: case GL_MAX_TESS_CONTROL_IMAGE_UNIFORMS: case GL_MAX_TESS_EVALUATION_IMAGE_UNIFORMS:
+    case GL_MAX_GEOMETRY_IMAGE_UNIFORMS: case GL_MAX_FRAGMENT_IMAGE_UNIFORMS: case GL_MAX_COMBINED_IMAGE_UNIFORMS:
+        if (!ctx.imageLoadStore()) return false;
+        out = ints({pname == GL_MAX_IMAGE_UNITS ? kMaxImageUnits
+                    : pname == GL_MAX_COMBINED_IMAGE_UNITS_AND_FRAGMENT_OUTPUTS ? kMaxCombinedImageUnitsAndFragmentOutputs
+                    : pname == GL_MAX_IMAGE_SAMPLES ? 0  // multisample images: Metal cannot write them
+                    : pname == GL_MAX_COMBINED_IMAGE_UNIFORMS ? kMaxCombinedImageUniforms
+                                                               : kMaxImageUniformsPerStage});
+        return true;
+    case GL_MAX_SUBROUTINES: case GL_MAX_SUBROUTINE_UNIFORM_LOCATIONS:
+        if (ctx.version() < 40 && !ctx.hasExtension("GL_ARB_shader_subroutine")) return false;
+        out = ints({pname == GL_MAX_SUBROUTINES ? 256 : 1024});
+        return true;
+    case GL_MAX_GEOMETRY_SHADER_INVOCATIONS:
+        if (ctx.version() < 40 && !ctx.hasExtension("GL_ARB_gpu_shader5")) return false;
+        out = ints({32});
+        return true;
+    // --- tessellation (GL 4.0)
+    case GL_PATCH_VERTICES: case GL_PATCH_DEFAULT_OUTER_LEVEL: case GL_PATCH_DEFAULT_INNER_LEVEL:
+    case GL_MAX_PATCH_VERTICES: case GL_MAX_TESS_GEN_LEVEL: case GL_MAX_TESS_CONTROL_UNIFORM_COMPONENTS:
+    case GL_MAX_TESS_EVALUATION_UNIFORM_COMPONENTS: case GL_MAX_TESS_CONTROL_TEXTURE_IMAGE_UNITS:
+    case GL_MAX_TESS_EVALUATION_TEXTURE_IMAGE_UNITS: case GL_MAX_TESS_CONTROL_OUTPUT_COMPONENTS:
+    case GL_MAX_TESS_PATCH_COMPONENTS: case GL_MAX_TESS_CONTROL_TOTAL_OUTPUT_COMPONENTS:
+    case GL_MAX_TESS_EVALUATION_OUTPUT_COMPONENTS: case GL_MAX_TESS_CONTROL_INPUT_COMPONENTS:
+    case GL_MAX_TESS_EVALUATION_INPUT_COMPONENTS: case GL_MAX_TESS_CONTROL_UNIFORM_BLOCKS:
+    case GL_MAX_TESS_EVALUATION_UNIFORM_BLOCKS: case GL_MAX_COMBINED_TESS_CONTROL_UNIFORM_COMPONENTS:
+    case GL_MAX_COMBINED_TESS_EVALUATION_UNIFORM_COMPONENTS:
+        if (!ctx.tessellationShaders()) return false;
+        switch (pname) {
+        case GL_PATCH_VERTICES: out = ints({s.patchVertices}); break;
+        case GL_PATCH_DEFAULT_OUTER_LEVEL:
+            out = floats({s.patchDefaultOuterLevel[0], s.patchDefaultOuterLevel[1], s.patchDefaultOuterLevel[2],
+                          s.patchDefaultOuterLevel[3]});
+            break;
+        case GL_PATCH_DEFAULT_INNER_LEVEL: out = floats({s.patchDefaultInnerLevel[0], s.patchDefaultInnerLevel[1]}); break;
+        case GL_MAX_PATCH_VERTICES: out = ints({kMaxPatchVertices}); break;
+        case GL_MAX_TESS_GEN_LEVEL: out = ints({kMaxTessGenLevel}); break;
+        case GL_MAX_TESS_CONTROL_UNIFORM_COMPONENTS: case GL_MAX_TESS_EVALUATION_UNIFORM_COMPONENTS:
+            out = ints({kMaxDefaultUniformComponents});
+            break;
+        case GL_MAX_TESS_CONTROL_TEXTURE_IMAGE_UNITS: case GL_MAX_TESS_EVALUATION_TEXTURE_IMAGE_UNITS:
+            out = ints({kMaxTextureUnitsPerStage});
+            break;
+        case GL_MAX_TESS_PATCH_COMPONENTS: out = ints({120}); break;
+        case GL_MAX_TESS_CONTROL_TOTAL_OUTPUT_COMPONENTS: out = ints({4096}); break;
+        case GL_MAX_TESS_CONTROL_UNIFORM_BLOCKS: case GL_MAX_TESS_EVALUATION_UNIFORM_BLOCKS:
+            out = ints({kMaxUniformBlocksPerStage});
+            break;
+        case GL_MAX_COMBINED_TESS_CONTROL_UNIFORM_COMPONENTS: case GL_MAX_COMBINED_TESS_EVALUATION_UNIFORM_COMPONENTS:
+            out = ints({kMaxDefaultUniformComponents + static_cast<int64_t>(kMaxUniformBlocksPerStage) * kMaxUniformBlockSize / 4});
+            break;
+        default: out = ints({128}); break;  // input and output components
+        }
+        return true;
     case GL_MAX_GEOMETRY_TOTAL_OUTPUT_COMPONENTS: out = ints({1024}); return true;
     case GL_MAX_VERTEX_UNIFORM_BLOCKS: case GL_MAX_GEOMETRY_UNIFORM_BLOCKS: case GL_MAX_FRAGMENT_UNIFORM_BLOCKS:
         out = ints({kMaxUniformBlocksPerStage});
@@ -250,6 +341,12 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
     case GL_SUBPIXEL_BITS: out = ints({8}); return true;
     case GL_MAX_PROGRAM_TEXEL_OFFSET: out = ints({7}); return true;
     case GL_MIN_PROGRAM_TEXEL_OFFSET: out = ints({-8}); return true;
+    // GL 4.0 / GL_ARB_texture_gather: Metal's gather offsets span -8..7.
+    case GL_MIN_PROGRAM_TEXTURE_GATHER_OFFSET: case GL_MAX_PROGRAM_TEXTURE_GATHER_OFFSET:
+    case GL_MAX_PROGRAM_TEXTURE_GATHER_COMPONENTS_ARB:
+        if (ctx.version() < 40 && !ctx.hasExtension("GL_ARB_texture_gather")) return false;
+        out = ints({pname == GL_MIN_PROGRAM_TEXTURE_GATHER_OFFSET ? -8 : pname == GL_MAX_PROGRAM_TEXTURE_GATHER_OFFSET ? 7 : 4});
+        return true;
     // Wide lines are drawn by the compatibility profile's fixed-function programs only.
     case GL_ALIASED_LINE_WIDTH_RANGE:
         out = floats({1.0, ctx.isCompat() ? static_cast<double>(compat::kMaxLineWidth) : 1.0});
@@ -273,9 +370,22 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
     }
     case GL_MAX_TEXTURE_MAX_ANISOTROPY: out = floats({16.0}); return true;
     // --- rasterization and fragment state
-    case GL_VIEWPORT: out = ints({s.viewport[0], s.viewport[1], s.viewport[2], s.viewport[3]}); return true;
-    case GL_DEPTH_RANGE: out = floats({s.depthRange[0], s.depthRange[1]}, Value::NormFloat); return true;
-    case GL_SCISSOR_BOX: out = ints({s.scissor[0], s.scissor[1], s.scissor[2], s.scissor[3]}); return true;
+    case GL_VIEWPORT: out = floats({s.viewports[0][0], s.viewports[0][1], s.viewports[0][2], s.viewports[0][3]}); return true;
+    // GL 4.1 viewport arrays.
+    case GL_MAX_VIEWPORTS: case GL_VIEWPORT_SUBPIXEL_BITS: case GL_VIEWPORT_BOUNDS_RANGE: case GL_LAYER_PROVOKING_VERTEX:
+    case GL_VIEWPORT_INDEX_PROVOKING_VERTEX:
+        if (ctx.version() < 41 && !ctx.hasExtension("GL_ARB_viewport_array")) return false;
+        switch (pname) {
+        case GL_MAX_VIEWPORTS: out = ints({ContextState::kMaxViewports}); break;
+        case GL_VIEWPORT_SUBPIXEL_BITS: out = ints({8}); break;
+        case GL_VIEWPORT_BOUNDS_RANGE: out = floats({-32768.0, 32767.0}); break;
+        // Metal takes the layer and viewport of a primitive from one of its
+        // vertices without specifying which.
+        default: out = ints({GL_UNDEFINED_VERTEX}); break;
+        }
+        return true;
+    case GL_DEPTH_RANGE: out = floats({s.depthRanges[0][0], s.depthRanges[0][1]}, Value::NormFloat); return true;
+    case GL_SCISSOR_BOX: out = ints({s.scissors[0][0], s.scissors[0][1], s.scissors[0][2], s.scissors[0][3]}); return true;
     case GL_COLOR_CLEAR_VALUE:
         out = floats({s.clearColor[0], s.clearColor[1], s.clearColor[2], s.clearColor[3]}, Value::NormFloat);
         return true;
@@ -312,6 +422,10 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
     case GL_POLYGON_MODE: out = ints({s.polygonMode, s.polygonModeBack}); return true;
     case GL_POLYGON_OFFSET_FACTOR: out = floats({s.polygonOffsetFactor}); return true;
     case GL_POLYGON_OFFSET_UNITS: out = floats({s.polygonOffsetUnits}); return true;
+    case GL_POLYGON_OFFSET_CLAMP:  // GL_ARB/EXT_polygon_offset_clamp
+        if (!ctx.hasExtension("GL_ARB_polygon_offset_clamp")) return false;
+        out = floats({s.polygonOffsetClamp});
+        return true;
     case GL_LINE_WIDTH: out = floats({s.lineWidth}); return true;
     case GL_POINT_SIZE: out = floats({s.pointSize}); return true;
     case GL_POINT_FADE_THRESHOLD_SIZE: out = floats({s.pointFadeThresholdSize}); return true;
@@ -353,6 +467,10 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
     case GL_ARRAY_BUFFER_BINDING: out = ints({nameOf(s.arrayBuffer)}); return true;
     case GL_ELEMENT_ARRAY_BUFFER_BINDING: out = ints({nameOf(s.vertexArray->elementBuffer)}); return true;
     case GL_COPY_READ_BUFFER_BINDING: out = ints({nameOf(s.copyReadBuffer)}); return true;
+    case GL_DRAW_INDIRECT_BUFFER_BINDING:
+        if (ctx.version() < 40 && !ctx.hasExtension("GL_ARB_draw_indirect")) return false;
+        out = ints({nameOf(s.drawIndirectBuffer)});
+        return true;
     case GL_COPY_WRITE_BUFFER_BINDING: out = ints({nameOf(s.copyWriteBuffer)}); return true;
     case GL_PIXEL_PACK_BUFFER_BINDING: out = ints({nameOf(s.pixelPackBuffer)}); return true;
     case GL_PIXEL_UNPACK_BUFFER_BINDING: out = ints({nameOf(s.pixelUnpackBuffer)}); return true;
@@ -364,6 +482,10 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
     case GL_READ_FRAMEBUFFER_BINDING: out = ints({s.readFramebuffer ? s.readFramebuffer->name : 0}); return true;
     case GL_RENDERBUFFER_BINDING: out = ints({s.renderbuffer ? s.renderbuffer->name : 0}); return true;
     case GL_CURRENT_PROGRAM: out = ints({s.program ? s.program->name : 0}); return true;
+    case GL_PROGRAM_PIPELINE_BINDING:
+        if (ctx.version() < 41 && !ctx.hasExtension("GL_ARB_separate_shader_objects")) return false;
+        out = ints({s.programPipeline ? s.programPipeline->name : 0});
+        return true;
     case GL_ACTIVE_TEXTURE: out = ints({GL_TEXTURE0 + static_cast<int64_t>(s.activeTexture)}); return true;
     case GL_SAMPLER_BINDING: {
         const auto& unit = s.textureUnits[s.activeTexture];
@@ -373,6 +495,25 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
     case GL_TRANSFORM_FEEDBACK_BINDING:
         if (ctx.version() < 40) return false;
         out = ints({s.transformFeedback->name});
+        return true;
+    case GL_TRANSFORM_FEEDBACK_BUFFER_ACTIVE: case GL_TRANSFORM_FEEDBACK_BUFFER_PAUSED:
+        if (ctx.version() < 40) return false;
+        out = bools({pname == GL_TRANSFORM_FEEDBACK_BUFFER_ACTIVE ? s.transformFeedback->active : s.transformFeedback->paused});
+        return true;
+    case GL_MIN_SAMPLE_SHADING_VALUE:
+        if (!ctx.sampleShading()) return false;
+        out = floats({s.minSampleShading});
+        return true;
+    // GL 4.0 interpolateAtOffset: offsets in [-0.5, 0.5 - 1/16], in sixteenths.
+    case GL_MIN_FRAGMENT_INTERPOLATION_OFFSET: case GL_MAX_FRAGMENT_INTERPOLATION_OFFSET:
+    case GL_FRAGMENT_INTERPOLATION_OFFSET_BITS:
+        if (ctx.version() < 40) return false;
+        if (pname == GL_FRAGMENT_INTERPOLATION_OFFSET_BITS) out = ints({4});
+        else out = floats({pname == GL_MIN_FRAGMENT_INTERPOLATION_OFFSET ? -0.5f : 0.4375f});
+        return true;
+    case GL_MAX_TRANSFORM_FEEDBACK_BUFFERS: case GL_MAX_VERTEX_STREAMS:
+        if (ctx.version() < 40) return false;
+        out = ints({4});
         return true;
     case GL_DRAW_BUFFER: case GL_DRAW_BUFFER0:
         out = ints({s.drawFramebuffer ? s.drawFramebuffer->drawBuffers[0] : s.defaultDrawBuffer});
@@ -424,7 +565,7 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
         }
     }
     const int target = textureBindingTarget(pname);
-    if (target >= 0) {
+    if (target >= 0 && (target != kTexCubeMapArray || ctx.version() >= 40)) {
         const RefPtr<Texture>& t = s.textureUnits[s.activeTexture].bound[target];
         out = ints({t ? t->name : 0});
         return true;
@@ -481,6 +622,45 @@ bool getIndexed(Context& ctx, GLenum pname, GLuint index, Value& out, bool& badI
         out = ints({pname == GL_BLEND_SRC_RGB ? b.srcRGB : pname == GL_BLEND_DST_RGB ? b.dstRGB
                     : pname == GL_BLEND_SRC_ALPHA ? b.srcAlpha : pname == GL_BLEND_DST_ALPHA ? b.dstAlpha
                     : pname == GL_BLEND_EQUATION_RGB ? b.equationRGB : b.equationAlpha});
+        return true;
+    }
+    case GL_VIEWPORT: case GL_DEPTH_RANGE: case GL_SCISSOR_BOX: case GL_SCISSOR_TEST:
+        if (ctx.version() < 41 && !ctx.hasExtension("GL_ARB_viewport_array")) return false;
+        if (index >= static_cast<GLuint>(ContextState::kMaxViewports)) { badIndex = true; return true; }
+        if (pname == GL_VIEWPORT) {
+            const GLfloat* v = s.viewports[index];
+            out = floats({v[0], v[1], v[2], v[3]});
+        } else if (pname == GL_DEPTH_RANGE) {
+            out = floats({s.depthRanges[index][0], s.depthRanges[index][1]}, Value::NormFloat);
+        } else if (pname == GL_SCISSOR_BOX) {
+            const GLint* b = s.scissors[index];
+            out = ints({b[0], b[1], b[2], b[3]});
+        } else {
+            out = bools({((s.scissorTests >> index) & 1) != 0});
+        }
+        return true;
+    case GL_IMAGE_BINDING_NAME: case GL_IMAGE_BINDING_LEVEL: case GL_IMAGE_BINDING_LAYERED: case GL_IMAGE_BINDING_LAYER:
+    case GL_IMAGE_BINDING_ACCESS: case GL_IMAGE_BINDING_FORMAT: {
+        if (!ctx.imageLoadStore()) return false;
+        if (index >= static_cast<GLuint>(ContextState::kMaxImageUnits)) { badIndex = true; return true; }
+        const ImageUnit& u = s.imageUnits[index];
+        switch (pname) {
+        case GL_IMAGE_BINDING_NAME: out = ints({u.texture ? u.texture->name : 0}); break;
+        case GL_IMAGE_BINDING_LEVEL: out = ints({u.level}); break;
+        case GL_IMAGE_BINDING_LAYERED: out = bools({u.layered}); break;
+        case GL_IMAGE_BINDING_LAYER: out = ints({u.layer}); break;
+        case GL_IMAGE_BINDING_ACCESS: out = ints({u.access}); break;
+        default: out = ints({u.format}); break;
+        }
+        return true;
+    }
+    case GL_ATOMIC_COUNTER_BUFFER_BINDING: case GL_ATOMIC_COUNTER_BUFFER_START: case GL_ATOMIC_COUNTER_BUFFER_SIZE: {
+        if (!ctx.atomicCounters()) return false;
+        if (index >= static_cast<GLuint>(ContextState::kMaxAtomicCounterBufferBindings)) { badIndex = true; return true; }
+        const IndexedBufferBinding& b = s.atomicCounterBufferBindings[index];
+        out = pname == GL_ATOMIC_COUNTER_BUFFER_BINDING ? ints({nameOf(b.buffer)})
+              : pname == GL_ATOMIC_COUNTER_BUFFER_START ? int64v(b.offset)
+                                                        : int64v(b.size);
         return true;
     }
     case GL_SAMPLE_MASK_VALUE:

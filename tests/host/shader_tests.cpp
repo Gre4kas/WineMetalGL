@@ -176,7 +176,7 @@ TEST(shader_transform_feedback_vertex_capture) {
     }
     const std::string& msl = r.stages[static_cast<int>(Stage::Vertex)].msl;
     CHECK(msl.find("[[buffer(30)]]") != std::string::npos);
-    CHECK(msl.find("[[buffer(14)]]") != std::string::npos);
+    CHECK(msl.find("[[buffer(16)]]") != std::string::npos);
 
     in.transformFeedbackMode = GL_SEPARATE_ATTRIBS;
     in.transformFeedbackVaryings = {"a", "c"};  // c is 3 components: allowed separately
@@ -234,7 +234,7 @@ TEST(shader_geometry_emulation) {
     const UniformInfo* tex = findUniform(r, "tex");
     CHECK(tex && tex->samplerSlot >= 0 && r.samplers[tex->samplerSlot].stageTexture[static_cast<int>(Stage::Compute)] == 0);
     CHECK(findUniform(r, "scale") != nullptr);
-    CHECK(r.stages[static_cast<int>(Stage::Vertex)].mslNoRaster.find("[[buffer(14)]]") != std::string::npos);
+    CHECK(r.stages[static_cast<int>(Stage::Vertex)].mslNoRaster.find("[[buffer(16)]]") != std::string::npos);
 }
 
 TEST(shader_fragment_point_coord_and_flat) {
@@ -390,4 +390,48 @@ TEST(shader_separable_block_varyings_match_by_block_name) {
     if (!g.ok) std::fprintf(stderr, "%s\n", g.log.c_str());
     CHECK(g.ok && g.geometry.active);
     CHECK(g.ok && locations(g.geometry.passthrough.msl) == locations(f.stages[static_cast<int>(Stage::Fragment)].msl));
+}
+
+TEST(shader_glsl420_pack_rules) {
+    // invariant inputs outside the vertex stage, in any qualifier order.
+    CHECK(compile(Stage::Fragment, "#version 420\nhighp in layout(location = 1) smooth invariant vec4 v;\n"
+                                   "out vec4 o; void main() { o = v; }\n").ok);
+    CHECK(!compile(Stage::Vertex, "#version 420\ninvariant in vec4 v; void main() { gl_Position = v; }\n").ok);
+    // Image bindings name image units; block bindings stay below GL_MAX_UNIFORM_BUFFER_BINDINGS.
+    CHECK(compile(Stage::Fragment, "#version 420\nlayout(binding = 7, rgba8) readonly uniform image2D i;\n"
+                                   "out vec4 o; void main() { o = imageLoad(i, ivec2(0)); }\n").ok);
+    CHECK(!compile(Stage::Fragment, "#version 420\nlayout(binding = 8, rgba8) readonly uniform image2D i;\n"
+                                    "out vec4 o; void main() { o = imageLoad(i, ivec2(0)); }\n").ok);
+    CHECK(compile(Stage::Fragment, "#version 420\nlayout(std140, binding = 70) uniform B { vec4 a; } b[2];\n"
+                                   "out vec4 o; void main() { o = b[1].a; }\n").ok);
+    CHECK(!compile(Stage::Fragment, "#version 420\nlayout(std140, binding = 70) uniform B { vec4 a; } b[3];\n"
+                                    "out vec4 o; void main() { o = b[2].a; }\n").ok);
+}
+
+TEST(shader_fourteen_uniform_blocks_per_stage) {
+    LinkInput in;
+    in.shaders.push_back({Stage::Vertex, "#version 420\nlayout(std140, binding = 2) uniform G { vec4 a; } g[14];\n"
+                                         "void main() { vec4 s = vec4(0); for (int i = 0; i < 14; ++i) s += g[i].a;\n"
+                                         "gl_Position = s; }\n"});
+    in.shaders.push_back({Stage::Fragment, "#version 420\nout vec4 o; void main() { o = vec4(1); }\n"});
+    LinkResult r = link(in);
+    if (!r.ok) std::fprintf(stderr, "%s\n", r.log.c_str());
+    CHECK(r.ok && r.blocks.size() == 14);
+    if (r.blocks.size() == 14) CHECK_EQ(r.blocks[13].stageSlot[0], static_cast<int>(kSlotFirstUniformBlock + 13));
+}
+
+TEST(shader_rectangle_texture_outside_fragment_stages) {
+    // Translated back to GLSL for the tessellation control kernel, which has no textureLod for rectangles.
+    LinkInput in;
+    in.shaders.push_back({Stage::Vertex, "#version 420\nout vec4 v; void main() { v = vec4(1); gl_Position = vec4(0); }\n"});
+    in.shaders.push_back({Stage::TessControl, "#version 420\nlayout(vertices = 1) out; in vec4 v[]; out vec4 c[];\n"
+                                              "uniform sampler2DRect r;\n"
+                                              "void main() { c[gl_InvocationID] = v[gl_InvocationID] + texture(r, vec2(0)) +\n"
+                                              "texelFetch(r, ivec2(0)); gl_TessLevelOuter[0] = gl_TessLevelOuter[1] = 1.0; }\n"});
+    in.shaders.push_back({Stage::TessEval, "#version 420\nlayout(isolines, point_mode) in; in vec4 c[]; out vec4 e;\n"
+                                           "void main() { e = c[0]; gl_Position = vec4(0); }\n"});
+    in.shaders.push_back({Stage::Fragment, "#version 420\nin vec4 e; out vec4 o; void main() { o = e; }\n"});
+    LinkResult r = link(in);
+    if (!r.ok) std::fprintf(stderr, "%s\n", r.log.c_str());
+    CHECK(r.ok);
 }

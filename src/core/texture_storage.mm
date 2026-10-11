@@ -121,9 +121,14 @@ bool ensureTextureStorage(Context& ctx, Texture& tex) {
                                                                            : fullMipCount(w0, tex.target == GL_TEXTURE_1D || tex.target == GL_TEXTURE_1D_ARRAY ? 1 : h0,
                                                                                           tex.target == GL_TEXTURE_3D ? d0 : 1);
     levels = std::min<GLsizei>(levels, Texture::kMaxLevels);
+    // Image units (GL 4.2) write textures from shaders; 32-bit integer
+    // formats also take texture atomics.
+    const bool atomics = pixelFormat == MTLPixelFormatR32Uint || pixelFormat == MTLPixelFormatR32Sint;
+    const MTLTextureUsage writeUsage =
+        tex.shaderWrite && !format->compressed ? MTLTextureUsageShaderWrite | (atomics ? MTLTextureUsageShaderAtomic : 0) : 0;
     // Reuse the existing storage if it already has this shape.
     if (tex.mtl && tex.storage == format->storage && tex.mtlWidth == w0 && tex.mtlHeight == h0 && tex.mtlDepth == d0 &&
-        tex.mtlSamples == samples && tex.mtlLevels >= levels) {
+        tex.mtlSamples == samples && tex.mtlLevels >= levels && (tex.mtl.usage & writeUsage) == writeUsage) {
         tex.storageDirty = false;
         return true;
     }
@@ -141,7 +146,7 @@ bool ensureTextureStorage(Context& ctx, Texture& tex) {
     desc.mipmapLevelCount = static_cast<NSUInteger>(levels);
     desc.sampleCount = static_cast<NSUInteger>(std::max(1, samples));
     desc.storageMode = MTLStorageModePrivate;
-    desc.usage = MTLTextureUsageShaderRead | MTLTextureUsagePixelFormatView;
+    desc.usage = MTLTextureUsageShaderRead | MTLTextureUsagePixelFormatView | writeUsage;
     if ((format->colorRenderable || format->isDepthOrStencil() || format->storedAlphaIsOne) && !format->compressed)
         desc.usage |= MTLTextureUsageRenderTarget;
     (void)cube;
@@ -155,14 +160,20 @@ bool ensureTextureStorage(Context& ctx, Texture& tex) {
     if (tex.mtl && tex.storage == format->storage && tex.mtl.textureType == texture.textureType &&
         tex.mtl.sampleCount == texture.sampleCount) {
         id<MTLBlitCommandEncoder> blit = ctx.stream().blit();
-        const NSUInteger slices = tex.mtl.textureType == MTLTextureTypeCube ? 6 : tex.mtl.arrayLength;
+        // Slices are faces for cube maps and cube map arrays.
+        auto sliceCount = [](id<MTLTexture> t) {
+            return t.textureType == MTLTextureTypeCube ? NSUInteger{6}
+                   : t.textureType == MTLTextureTypeCubeArray ? t.arrayLength * 6
+                                                              : t.arrayLength;
+        };
+        const NSUInteger slices = sliceCount(tex.mtl);
         for (NSUInteger level = 0; level < std::min<NSUInteger>(tex.mtl.mipmapLevelCount, texture.mipmapLevelCount); ++level) {
             const NSUInteger ow = std::max<NSUInteger>(1, tex.mtl.width >> level), oh = std::max<NSUInteger>(1, tex.mtl.height >> level);
             const NSUInteger nw = std::max<NSUInteger>(1, texture.width >> level), nh = std::max<NSUInteger>(1, texture.height >> level);
             const NSUInteger od = tex.mtl.textureType == MTLTextureType3D ? std::max<NSUInteger>(1, tex.mtl.depth >> level) : 1;
             const NSUInteger nd = texture.textureType == MTLTextureType3D ? std::max<NSUInteger>(1, texture.depth >> level) : 1;
             if (ow != nw || oh != nh || od != nd) continue;
-            const NSUInteger newSlices = texture.textureType == MTLTextureTypeCube ? 6 : texture.arrayLength;
+            const NSUInteger newSlices = sliceCount(texture);
             for (NSUInteger slice = 0; slice < std::min(slices, newSlices); ++slice)
                 [blit copyFromTexture:tex.mtl sourceSlice:slice sourceLevel:level sourceOrigin:MTLOriginMake(0, 0, 0)
                            sourceSize:MTLSizeMake(ow, oh, od) toTexture:texture destinationSlice:slice
@@ -530,6 +541,248 @@ void uploadTexels(Context& ctx, Texture& tex, int face, int level, int x, int y,
                destinationOrigin:MTLOriginMake(x, y, 0)];
     }
     ++tex.version;
+}
+
+// ------------------------------------------------------------ image units
+
+namespace {
+
+enum class ImageShape { Plane, Array, Volume, Buffer, Multisample };
+
+// How the shader declares an image type: the MSL texture type it expects
+// (1D images are 2D textures and cube images 2D arrays, as the compiler
+// emits them) and its component kind.
+ImageShape imageShape(GLenum type) {
+    switch (type) {
+    case GL_IMAGE_1D: case GL_IMAGE_2D: case GL_IMAGE_2D_RECT: case GL_INT_IMAGE_1D: case GL_INT_IMAGE_2D:
+    case GL_INT_IMAGE_2D_RECT: case GL_UNSIGNED_INT_IMAGE_1D: case GL_UNSIGNED_INT_IMAGE_2D: case GL_UNSIGNED_INT_IMAGE_2D_RECT:
+        return ImageShape::Plane;
+    case GL_IMAGE_3D: case GL_INT_IMAGE_3D: case GL_UNSIGNED_INT_IMAGE_3D: return ImageShape::Volume;
+    case GL_IMAGE_BUFFER: case GL_INT_IMAGE_BUFFER: case GL_UNSIGNED_INT_IMAGE_BUFFER: return ImageShape::Buffer;
+    case GL_IMAGE_2D_MULTISAMPLE: case GL_IMAGE_2D_MULTISAMPLE_ARRAY: case GL_INT_IMAGE_2D_MULTISAMPLE:
+    case GL_INT_IMAGE_2D_MULTISAMPLE_ARRAY: case GL_UNSIGNED_INT_IMAGE_2D_MULTISAMPLE:
+    case GL_UNSIGNED_INT_IMAGE_2D_MULTISAMPLE_ARRAY:
+        return ImageShape::Multisample;
+    default: return ImageShape::Array;  // 1D/2D arrays, cubes and cube arrays
+    }
+}
+
+char imageKind(GLenum type) {
+    if (type >= GL_INT_IMAGE_1D && type <= GL_INT_IMAGE_2D_MULTISAMPLE_ARRAY) return 'i';
+    if (type >= GL_UNSIGNED_INT_IMAGE_1D && type <= GL_UNSIGNED_INT_IMAGE_2D_MULTISAMPLE_ARRAY) return 'u';
+    return 'f';
+}
+
+}  // namespace
+
+id<MTLTexture> dummyImage(GLenum imageType) {
+    static std::mutex mutex;
+    static std::unordered_map<GLenum, id<MTLTexture>> cache;
+    std::lock_guard<std::mutex> lock(mutex);
+    if (auto it = cache.find(imageType); it != cache.end()) return it->second;
+    const char kind = imageKind(imageType);
+    const MTLPixelFormat format = kind == 'i' ? MTLPixelFormatR32Sint : kind == 'u' ? MTLPixelFormatR32Uint : MTLPixelFormatRGBA32Float;
+    const MTLTextureUsage usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite | (kind == 'f' ? 0 : MTLTextureUsageShaderAtomic);
+    id<MTLTexture> texture = nil;
+    const ImageShape shape = imageShape(imageType);
+    if (shape == ImageShape::Buffer) {
+        id<MTLBuffer> storage = [Device::get().mtl() newBufferWithLength:256 options:MTLResourceStorageModePrivate];
+        MTLTextureDescriptor* desc = [MTLTextureDescriptor textureBufferDescriptorWithPixelFormat:format
+                                                                                            width:1
+                                                                                  resourceOptions:MTLResourceStorageModePrivate
+                                                                                            usage:usage];
+        texture = [storage newTextureWithDescriptor:desc offset:0 bytesPerRow:256];
+    } else {
+        MTLTextureDescriptor* desc = [MTLTextureDescriptor new];
+        desc.textureType = shape == ImageShape::Volume ? MTLTextureType3D
+                           : shape == ImageShape::Array ? MTLTextureType2DArray
+                           : shape == ImageShape::Multisample ? MTLTextureType2DMultisample
+                                                              : MTLTextureType2D;
+        if (shape == ImageShape::Multisample) desc.sampleCount = 4;
+        desc.pixelFormat = format;
+        desc.width = desc.height = 1;
+        desc.storageMode = MTLStorageModePrivate;
+        desc.usage = shape == ImageShape::Multisample ? MTLTextureUsageShaderRead : usage;
+        texture = [Device::get().mtl() newTextureWithDescriptor:desc];
+    }
+    cache[imageType] = texture;
+    return texture;
+}
+
+namespace {
+
+constexpr uint64_t kShadowTag = 0x4000000000000000ull;
+
+id<MTLTexture> findView(const Texture& tex, uint64_t key) {
+    for (const Texture::View& v : tex.views)
+        if (v.key == key) return v.view;
+    return nil;
+}
+
+// A shadow texture (ImageShadow) of `type` and `format` for `slices` slices
+// (or `planes` depth planes) of tex.mtl's `level`.
+id<MTLTexture> shadowTexture(Texture& tex, MTLTextureType type, MTLPixelFormat format, NSUInteger level,
+                             NSUInteger firstSlice, NSUInteger slices, NSUInteger firstPlane, NSUInteger planes,
+                             ImageShadow* out) {
+    const uint64_t key = kShadowTag | (static_cast<uint64_t>(format) << 40) | (static_cast<uint64_t>(type) << 32) |
+                         (static_cast<uint64_t>(level & 0xff) << 24) |
+                         (static_cast<uint64_t>((firstSlice + firstPlane) & 0xfff) << 12) |
+                         static_cast<uint64_t>((slices * planes) & 0xfff);
+    const NSUInteger width = std::max<NSUInteger>(1, tex.mtl.width >> level);
+    const NSUInteger height = std::max<NSUInteger>(1, tex.mtl.height >> level);
+    id<MTLTexture> shadow = findView(tex, key);
+    if (!shadow) {
+        const bool atomics = format == MTLPixelFormatR32Uint || format == MTLPixelFormatR32Sint;
+        MTLTextureDescriptor* desc = [MTLTextureDescriptor new];
+        desc.textureType = type;
+        desc.pixelFormat = format;
+        desc.width = width;
+        desc.height = height;
+        desc.depth = type == MTLTextureType3D ? planes : 1;
+        desc.arrayLength = type == MTLTextureType2DArray ? slices : 1;
+        desc.storageMode = MTLStorageModePrivate;
+        desc.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite | (atomics ? MTLTextureUsageShaderAtomic : 0);
+        shadow = [Device::get().mtl() newTextureWithDescriptor:desc];
+        if (!shadow) return nil;
+        tex.views.push_back({key, shadow});
+    }
+    if (out) {
+        out->texture = tex.mtl;
+        out->shadow = shadow;
+        out->level = level;
+        out->firstSlice = firstSlice;
+        out->slices = slices;
+        out->firstPlane = firstPlane;
+        out->planes = planes;
+        out->width = width;
+        out->height = height;
+        out->texelBytes = storageBytes(tex.storage);
+    }
+    return shadow;
+}
+
+}  // namespace
+
+void copyImageShadow(Context& ctx, const ImageShadow& s, bool toShadow) {
+    // Through a buffer: the shadow's format may differ from the texture's
+    // (same texel size), which texture-to-texture copies do not allow.
+    const NSUInteger row = s.width * s.texelBytes, image = row * s.height;
+    id<MTLBuffer> staging = [Device::get().mtl() newBufferWithLength:std::max<NSUInteger>(1, image * s.planes * s.slices)
+                                                            options:MTLResourceStorageModePrivate];
+    if (!staging) return;
+    id<MTLBlitCommandEncoder> blit = ctx.stream().blit();
+    const MTLSize size = MTLSizeMake(s.width, s.height, s.planes);
+    for (NSUInteger i = 0; i < s.slices; ++i) {
+        const NSUInteger offset = image * s.planes * i;
+        id<MTLTexture> from = toShadow ? s.texture : s.shadow, to = toShadow ? s.shadow : s.texture;
+        const NSUInteger fromSlice = toShadow ? s.firstSlice + i : i, toSlice = toShadow ? i : s.firstSlice + i;
+        const NSUInteger fromLevel = toShadow ? s.level : 0, toLevel = toShadow ? 0 : s.level;
+        const MTLOrigin fromOrigin = MTLOriginMake(0, 0, toShadow ? s.firstPlane : 0);
+        const MTLOrigin toOrigin = MTLOriginMake(0, 0, toShadow ? 0 : s.firstPlane);
+        [blit copyFromTexture:from sourceSlice:fromSlice sourceLevel:fromLevel sourceOrigin:fromOrigin sourceSize:size
+                     toBuffer:staging destinationOffset:offset destinationBytesPerRow:row destinationBytesPerImage:image];
+        [blit copyFromBuffer:staging sourceOffset:offset sourceBytesPerRow:row sourceBytesPerImage:image sourceSize:size
+                   toTexture:to destinationSlice:toSlice destinationLevel:toLevel destinationOrigin:toOrigin];
+    }
+}
+
+id<MTLTexture> imageView(Context& ctx, const ImageUnit& unit, GLenum imageType, GLenum shaderFormat,
+                         ImageShadow* shadow) {
+    if (shadow) shadow->shadow = nil;
+    Texture* tex = unit.texture.get();
+    const FormatInfo* format = formatInfo(shaderFormat ? shaderFormat : unit.format);
+    if (!tex || !format) return nil;
+    const ImageShape shape = imageShape(imageType);
+    const MTLPixelFormat pixelFormat = mtlPixelFormat(format->storage);
+    if (pixelFormat == MTLPixelFormatInvalid || shape == ImageShape::Multisample) return nil;
+    const uint64_t viewTag = 0x8000000000000000ull;
+    if (tex->target == GL_TEXTURE_BUFFER) {
+        // A buffer image: a writable texture view of the buffer's data.
+        Buffer* buffer = tex->buffer.get();
+        if (shape != ImageShape::Buffer || !buffer || !buffer->mtl) return nil;
+        const uint64_t key = viewTag | (static_cast<uint64_t>(pixelFormat) << 40) | (reinterpret_cast<uint64_t>((__bridge void*)buffer->mtl) & 0xffffffffffull);
+        for (const Texture::View& v : tex->views)
+            if (v.key == key) return v.view;
+        const size_t texel = storageBytes(format->storage);
+        const size_t offset = static_cast<size_t>(tex->bufferOffset);
+        const size_t available = buffer->mtl.length > offset ? buffer->mtl.length - offset : 0;
+        const size_t requested = tex->bufferSize < 0 ? static_cast<size_t>(buffer->size) - offset : static_cast<size_t>(tex->bufferSize);
+        const size_t alignment = [Device::get().mtl() minimumLinearTextureAlignmentForPixelFormat:pixelFormat];
+        NSUInteger width = static_cast<NSUInteger>(std::min<size_t>(std::min(requested, available) / texel, 1u << 27));
+        auto rowBytes = [&](NSUInteger w) { return (w * texel + alignment - 1) / alignment * alignment; };
+        while (width > 0 && rowBytes(width) > available) --width;
+        if (width == 0 || offset % alignment) return nil;
+        const bool atomics = pixelFormat == MTLPixelFormatR32Uint || pixelFormat == MTLPixelFormatR32Sint;
+        MTLTextureDescriptor* desc = [MTLTextureDescriptor
+            textureBufferDescriptorWithPixelFormat:pixelFormat
+                                             width:width
+                                   resourceOptions:buffer->mtl.resourceOptions
+                                             usage:MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite |
+                                                   (atomics ? MTLTextureUsageShaderAtomic : 0)];
+        id<MTLTexture> view = [buffer->mtl newTextureWithDescriptor:desc offset:offset bytesPerRow:rowBytes(width)];
+        if (view) tex->views.push_back({key, view});
+        buffer->lastUseSerial = buffer->lastWriteSerial = ctx.stream().serial();
+        ++buffer->version;
+        return view;
+    }
+    if (!ensureTextureStorage(ctx, *tex) || !tex->mtl || !(tex->mtl.usage & MTLTextureUsageShaderWrite)) return nil;
+    if (unit.level >= tex->mtlLevels) return nil;
+    // Image formats reinterpret a texture of the same texel size (GL 4.2
+    // IMAGE_FORMAT_COMPATIBILITY_BY_SIZE).
+    if (storageBytes(format->storage) != storageBytes(tex->storage) || format->compressed) return nil;
+    const MTLTextureType type = tex->mtl.textureType;
+    const NSUInteger slices = type == MTLTextureTypeCube ? 6 : type == MTLTextureTypeCubeArray ? tex->mtl.arrayLength * 6
+                                                                                                 : tex->mtl.arrayLength;
+    const bool arrayed = type == MTLTextureType2DArray || type == MTLTextureTypeCube || type == MTLTextureTypeCubeArray;
+    MTLTextureType viewType;
+    NSUInteger first = 0, count = 1;
+    switch (shape) {
+    case ImageShape::Plane:
+        if (type == MTLTextureType3D) {
+            // A slice of a 3D texture: a 2D shadow (ImageShadow).
+            const NSUInteger level = static_cast<NSUInteger>(unit.level);
+            const NSUInteger plane = unit.layered ? 0 : static_cast<NSUInteger>(unit.layer);
+            if (unit.layer < 0 || plane >= std::max<NSUInteger>(1, tex->mtl.depth >> level)) return nil;
+            return shadowTexture(*tex, MTLTextureType2D, pixelFormat, level, 0, 1, plane, 1, shadow);
+        }
+        // One layer of an array, cube or cube array (a layered binding
+        // of such a texture to a 2D image reads layer 0).
+        if (type != MTLTextureType2D && !arrayed) return nil;
+        viewType = MTLTextureType2D;
+        first = arrayed && !unit.layered ? static_cast<NSUInteger>(unit.layer) : 0;
+        if (first >= std::max<NSUInteger>(1, slices)) return nil;
+        break;
+    case ImageShape::Array:
+        if (!arrayed) return nil;
+        viewType = MTLTextureType2DArray;
+        first = unit.layered ? 0 : static_cast<NSUInteger>(unit.layer);
+        count = unit.layered ? slices : 1;
+        if (first + count > slices) return nil;
+        break;
+    case ImageShape::Volume:
+        if (type != MTLTextureType3D) return nil;
+        viewType = MTLTextureType3D;
+        break;
+    default: return nil;
+    }
+    // Texture atomics on another 32-bit format: an R32 shadow (ImageShadow).
+    if ((pixelFormat == MTLPixelFormatR32Uint || pixelFormat == MTLPixelFormatR32Sint) &&
+        !(tex->mtl.usage & MTLTextureUsageShaderAtomic)) {
+        const NSUInteger level = static_cast<NSUInteger>(unit.level);
+        const NSUInteger planes = viewType == MTLTextureType3D ? std::max<NSUInteger>(1, tex->mtl.depth >> level) : 1;
+        return shadowTexture(*tex, viewType, pixelFormat, level, first, count, 0, planes, shadow);
+    }
+    const uint64_t key = viewTag | (static_cast<uint64_t>(pixelFormat) << 40) | (static_cast<uint64_t>(viewType) << 32) |
+                         (static_cast<uint64_t>(unit.level & 0xff) << 24) | (static_cast<uint64_t>(first & 0xfff) << 12) |
+                         static_cast<uint64_t>(count & 0xfff);
+    for (const Texture::View& v : tex->views)
+        if (v.key == key) return v.view;
+    id<MTLTexture> view = [tex->mtl newTextureViewWithPixelFormat:pixelFormat
+                                                      textureType:viewType
+                                                           levels:NSMakeRange(static_cast<NSUInteger>(unit.level), 1)
+                                                           slices:NSMakeRange(first, count)];
+    if (view) tex->views.push_back({key, view});
+    return view;
 }
 
 }  // namespace wmgl

@@ -4,6 +4,7 @@
 #import <Metal/Metal.h>
 
 #include <array>
+#include <memory>
 #include <cstdint>
 #include <vector>
 
@@ -12,6 +13,9 @@
 #include "core/metal/command_stream.h"
 #include "core/metal/pipeline_cache.h"
 #include "core/metal/transient.h"
+#include "core/shader/compiler.h"
+#include "core/texture_storage.h"
+#include "core/tess/tessellator.h"
 
 namespace wmgl {
 
@@ -111,9 +115,15 @@ private:
     // Fixed-function wide lines (compat/fixed_function.h): `vertices` (one
     // restart-free line stream) drawn as two triangles per segment.
     void drawWideLines(GLenum mode, const std::vector<uint32_t>& vertices, GLsizei instances);
+    // Draws `vertices` (vertex numbers in draw order, one restart-free
+    // segment) as GL_PATCHES through the tessellation emulation
+    // (shader/tessellation.h).
+    void drawPatches(const std::vector<uint32_t>& vertices, GLsizei instances);
     // Uniforms, uniform blocks and samplers of a compute function (the
-    // Stage::Compute slots: a compute program or the geometry kernel).
-    void bindKernelResources(id<MTLComputeCommandEncoder> encoder, LinkedProgram& program, bool usesDefaultUniforms);
+    // `stage` slots: Stage::Compute for a compute program or the geometry
+    // kernel, Stage::TessControl for the tessellation control kernel).
+    void bindKernelResources(id<MTLComputeCommandEncoder> encoder, LinkedProgram& program, bool usesDefaultUniforms,
+                             int stage = static_cast<int>(shader::Stage::Compute));
     void bindCaptureDefaults(id<MTLRenderCommandEncoder> encoder, LinkedProgram& program);
     // Whether a draw must list its primitives with the provoking vertex first
     // (LAST_VERTEX_CONVENTION and flat fragment inputs).
@@ -123,11 +133,17 @@ private:
     // Depth/stencil, dynamic state, scissor, uniforms and textures for a draw.
     void bindDrawState(id<MTLRenderCommandEncoder> encoder, LinkedProgram& program);
     void uniformBlockBuffer(LinkedProgram& program, size_t block, __strong id<MTLBuffer>& buffer, NSUInteger& offset);
+    // The buffer bound to atomic counter buffer `index`'s binding point (a
+    // scratch buffer when none is), marked as written by the draw.
+    void atomicCounterBuffer(LinkedProgram& program, size_t index, __strong id<MTLBuffer>& buffer, NSUInteger& offset);
     // The program object whose state feeds `stage` (pipelines: the stage's
     // program), and the owner and own index of a uniform block or sampler.
     Program* stageProgram(LinkedProgram& program, int stage);
     std::pair<Program*, size_t> blockSource(LinkedProgram& program, size_t block);
     std::pair<Program*, size_t> samplerSource(LinkedProgram& program, size_t index);
+    std::pair<Program*, size_t> imageSource(LinkedProgram& program, size_t index);
+    // The view image slot `index` reads (GL 4.2), or a dummy image.
+    id<MTLTexture> imageBinding(LinkedProgram& program, size_t index);
     void samplerBinding(LinkedProgram& program, size_t index, __strong id<MTLTexture>& view,
                         __strong id<MTLSamplerState>& sampler);
     // How a draw's vertex inputs are fed (planVertexInputs): read directly
@@ -146,6 +162,23 @@ private:
         std::vector<DirectGroup> groups;
     };
     void planVertexInputs(LinkedProgram& program, bool gather, VertexInputPlan& plan) const;
+    // Image bindings with a shadow texture (core::ImageShadow) for the draw
+    // in progress: copied in by prepareSamplerStorage, back when the draw ends.
+    struct PendingShadow {
+        ImageShadow shadow;
+        bool write = false;
+    };
+    std::vector<PendingShadow> imageShadows_;
+    void prepareImageShadows(LinkedProgram& program);
+    void finishImageShadows();
+    struct ImageShadowScope {
+        DrawState& draw;
+        explicit ImageShadowScope(DrawState& d) : draw(d) {}
+        ~ImageShadowScope() { draw.finishImageShadows(); }
+    };
+    GLint imageUnit(LinkedProgram& program, size_t index);
+    void applyBuiltinUniforms(Program& program);
+    static size_t vertexBufferSlots(LinkedProgram& program);
     void waitForCpuVertexReads(LinkedProgram& program, bool gather);
     const VertexAttrib& attribFor(const VertexArray& vao, int location) const;
     void bindUniforms(id<MTLRenderCommandEncoder> encoder, LinkedProgram& program);
@@ -163,6 +196,16 @@ private:
     // GL sample mask the current draw's fragment function writes (~0: none; prepare()).
     uint32_t sampleMask_ = ~0u;
     std::shared_ptr<LinkedProgram> current_;  // keeps a pipeline executable alive during a draw
+    // The executable draws use while a tessellated draw runs its evaluation
+    // stage (null otherwise), and the buffers its vertex function reads
+    // (shader::kSlotTessVertices, kSlotTessPatches, kSlotTessControl).
+    LinkedProgram* override_ = nullptr;
+    struct {
+        bool active = false;
+        id<MTLBuffer> buffers[3] = {};
+        NSUInteger offsets[3] = {};
+    } tessInputs_;
+    std::unique_ptr<tess::Tessellator> tessellator_;
     // Fixed-function program of the current draw (owned by the share group's cache).
     Program* ownerProgram();
     GLenum drawMode_ = GL_TRIANGLES;
@@ -178,7 +221,7 @@ private:
     } ffBlock_;
     PipelineKey lastKey_{};
     TargetFormats lastFormats_{};
-    MTLScissorRect lastScissor_{};
+    MTLScissorRect lastScissors_[16] = {};  // ContextState::kMaxViewports
 };
 
 }  // namespace wmgl

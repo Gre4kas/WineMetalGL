@@ -96,6 +96,23 @@ public:
     bool hasExtension(const char* name) const;
     // Compute shaders: GL 4.3 or GL_ARB_compute_shader.
     bool computeShaders() const { return version() >= 43 || hasExtension("GL_ARB_compute_shader"); }
+    // Tessellation shaders: GL 4.0 or GL_ARB_tessellation_shader.
+    bool tessellationShaders() const { return version() >= 40 || hasExtension("GL_ARB_tessellation_shader"); }
+    // Image load/store: GL 4.2 or GL_ARB_shader_image_load_store.
+    bool imageLoadStore() const { return version() >= 42 || hasExtension("GL_ARB_shader_image_load_store"); }
+    // Atomic counters: GL 4.2 or GL_ARB_shader_atomic_counters.
+    bool atomicCounters() const { return version() >= 42 || hasExtension("GL_ARB_shader_atomic_counters"); }
+    // Sample shading: GL 4.0 or GL_ARB_sample_shading.
+    bool sampleShading() const { return version() >= 40 || hasExtension("GL_ARB_sample_shading"); }
+
+    // glUniformSubroutinesuiv selections per stage (api/subroutine.mm), for
+    // the executable they were made with; reset by UseProgram and pipeline
+    // changes (resetSubroutineSelections).
+    struct SubroutineSelection {
+        uint64_t programUid = 0;
+        std::vector<GLuint> indices;  // by subroutine uniform location
+    };
+    std::array<SubroutineSelection, 6> subroutineSelections;
 
     // Occlusion-query slot of the current pass (see core/query.h).
     struct {
@@ -137,7 +154,7 @@ public:
     struct FixedFunctionBlockCache {
         uint64_t version = 0, generation = 0;
         float pointSize = -1, fade = -1, lineWidth = -1;
-        GLint viewport[4] = {};
+        GLfloat viewport[4] = {};
         std::vector<uint8_t> data;
         // The matrices the block's matrix section was computed from.
         bool matricesValid = false;

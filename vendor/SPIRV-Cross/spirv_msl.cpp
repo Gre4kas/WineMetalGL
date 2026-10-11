@@ -1877,7 +1877,8 @@ void CompilerMSL::extract_global_variables_from_function(uint32_t func_id, std::
 				// When using the pointer, we need to know which variable it is actually loaded from.
 				uint32_t base_id = ops[2];
 				auto *var = maybe_get_backing_variable(base_id);
-				if (var && atomic_image_vars.count(var->self))
+				// WineMetalGL: native texture atomics use the image itself.
+				if (var && (atomic_image_vars.count(var->self) || msl_options.native_texture_atomics))
 				{
 					if (global_var_ids.find(base_id) != global_var_ids.end())
 						added_arg_ids.insert(base_id);
@@ -8714,6 +8715,8 @@ void CompilerMSL::emit_instruction(const Instruction &instruction)
 		{
 			uint32_t result_type = ops[0];
 			uint32_t id = ops[1];
+			if (msl_options.native_texture_atomics) // WineMetalGL
+				native_texel_pointers[id] = { ops[2], ops[3] };
 			auto &e =
 			    set<SPIRExpression>(id, join(to_expression(ops[2]), ", ", to_expression(ops[3])), result_type, true);
 
@@ -8787,6 +8790,23 @@ void CompilerMSL::emit_instruction(const Instruction &instruction)
 		if (needs_frag_discard_checks())
 			expr += ")";
 		statement(expr, ";");
+
+		// WineMetalGL: a thread reads its own writes to a read_write texture
+		// only after a fence (GLSL image stores are visible to the invocation's
+		// later loads in program order).
+		{
+			auto *fence_var = p_var;
+			if (fence_var && fence_var->basevariable)
+				fence_var = maybe_get<SPIRVariable>(fence_var->basevariable);
+			const auto access = img_type.image.access;
+			bool read_write = access == AccessQualifierReadWrite;
+			if (access != AccessQualifierReadOnly && access != AccessQualifierWriteOnly &&
+			    access != AccessQualifierReadWrite && fence_var &&
+			    !has_decoration(fence_var->self, DecorationNonReadable))
+				read_write = true;
+			if (read_write)
+				statement(to_expression(img_id), ".fence();");
+		}
 
 		if (p_var && variable_storage_is_aliased(*p_var))
 			flush_all_aliased_variables();
@@ -9712,6 +9732,17 @@ void CompilerMSL::emit_atomic_func_op(uint32_t result_type, uint32_t result_id, 
 {
 	string exp;
 
+	// WineMetalGL: image atomics as MSL texture atomics.
+	if (msl_options.native_texture_atomics && native_texel_pointers.count(obj))
+	{
+		(void)mem_order_1;
+		(void)mem_order_2;
+		(void)has_mem_order_2;
+		(void)op1_is_pointer;
+		if (emit_native_texture_atomic(result_type, result_id, op, obj, op1, op1_is_literal, op2))
+			return;
+	}
+
 	auto &type = get_pointee_type(expression_type(obj));
 	auto expected_type = type.basetype;
 	if (opcode == OpAtomicUMax || opcode == OpAtomicUMin)
@@ -9889,6 +9920,90 @@ void CompilerMSL::emit_atomic_func_op(uint32_t result_type, uint32_t result_id, 
 	}
 
 	flush_all_atomic_capable_variables();
+}
+
+// WineMetalGL: an atomic through a texel pointer as an MSL 3.1 texture atomic.
+bool CompilerMSL::emit_native_texture_atomic(uint32_t result_type, uint32_t result_id, const char *op, uint32_t obj,
+                                             uint32_t op1, bool op1_is_literal, uint32_t op2)
+{
+	const auto &pointer = native_texel_pointers[obj];
+	const uint32_t img = pointer.first;
+	auto &img_type = expression_type(img);
+	if (img_type.basetype != SPIRType::Image)
+		return false;
+	// Texture atomics need read_write access: images only used atomically
+	// would otherwise be declared read-only.
+	if (auto *p_var = maybe_get_backing_variable(img))
+	{
+		if (has_decoration(p_var->self, DecorationNonWritable) || has_decoration(p_var->self, DecorationNonReadable))
+		{
+			unset_decoration(p_var->self, DecorationNonWritable);
+			unset_decoration(p_var->self, DecorationNonReadable);
+			force_recompile();
+		}
+	}
+	const auto &value_type = get<SPIRType>(img_type.image.type);
+	const string scalar = type_to_glsl(value_type);
+	const string vec4 = scalar + "4";
+	const string tex = to_expression(img);
+	const string c = to_enclosed_unpacked_expression(pointer.second);
+	string coord;
+	switch (img_type.image.dim)
+	{
+	case Dim1D:
+		// 1D textures may be declared as 2D ones (texture_1D_as_2D): row 0.
+		if (msl_options.texture_1D_as_2D)
+			coord = img_type.image.arrayed ? join("uint2(uint(", c, ".x), 0u), uint(", c, ".y)") : join("uint2(uint(", c, "), 0u)");
+		else
+			coord = img_type.image.arrayed ? join("uint(", c, ".x), uint(", c, ".y)") : join("uint(", c, ")");
+		break;
+	case Dim2D:
+		coord = img_type.image.arrayed ? join("uint2(", c, ".xy), uint(", c, ".z)") : join("uint2(", c, ")");
+		break;
+	case Dim3D:
+		coord = join("uint3(", c, ")");
+		break;
+	case DimBuffer:
+		coord = join("uint(", c, ")");
+		break;
+	default:
+		return false;
+	}
+	string method = op;
+	const string suffix = "_explicit";
+	if (method.size() > suffix.size() && method.compare(method.size() - suffix.size(), suffix.size(), suffix) == 0)
+		method.resize(method.size() - suffix.size());
+	auto value = [&](uint32_t id, bool literal) {
+		return literal ? join(scalar, "(", id, ")") : join(scalar, "(", to_unpacked_expression(id), ")");
+	};
+	if (method == "atomic_store")
+	{
+		statement(tex, ".atomic_store(", vec4, "(", value(op1, false), "), ", coord, ");");
+	}
+	else if (method == "atomic_load")
+	{
+		emit_op(result_type, result_id, join(tex, ".atomic_load(", coord, ").x"), false);
+	}
+	else if (method == "atomic_compare_exchange_weak")
+	{
+		// op1: comparator, op2: new value. The weak form can fail spuriously:
+		// retry while the texel still holds the comparator.
+		emit_uninitialized_temporary_expression(result_type, result_id);
+		const string expected = join("_", result_id, "_expected");
+		begin_scope();
+		statement(vec4, " ", expected, " = ", vec4, "(", value(op1, false), ");");
+		statement("while (!", tex, ".atomic_compare_exchange_weak(", coord, ", &", expected, ", ", vec4, "(",
+		          value(op2, false), ")) && ", expected, ".x == ", value(op1, false), ")");
+		statement("    ", expected, " = ", vec4, "(", value(op1, false), ");");
+		statement(to_name(result_id), " = ", expected, ".x;");
+		end_scope();
+	}
+	else
+	{
+		emit_op(result_type, result_id, join(tex, ".", method, "(", coord, ", ", value(op1, op1_is_literal), ").x"), false);
+	}
+	flush_all_atomic_capable_variables();
+	return true;
 }
 
 // Metal only supports relaxed memory order for now
@@ -10122,9 +10237,11 @@ void CompilerMSL::emit_glsl_op(uint32_t result_type, uint32_t id, uint32_t eop, 
 		// Like Direct3D, Metal puts the (0, 0) at the upper-left corner, not the center as SPIR-V and GLSL do.
 		// Offset the offset by (1/2 - 1/16), or 0.4375, to compensate for this.
 		// It has to be (1/2 - 1/16) and not 1/2, or several CTS tests subtly break on Intel.
+		// WineMetalGL: Apple GPUs need 1/2 (an offset of gl_SamplePosition - 0.5
+		// must land on the sample, as sample interpolation does).
 		emit_op(result_type, id,
 		        join(to_name(stage_in_var_id), ".", to_member_name(get_stage_in_struct_type(), interface_index),
-		             ".interpolate_at_offset(", to_expression(args[1]), " + 0.4375)", component),
+		             ".interpolate_at_offset(", to_expression(args[1]), " + 0.5)", component),
 		        should_forward(args[0]) && should_forward(args[1]));
 		break;
 	}
@@ -16423,7 +16540,8 @@ bool CompilerMSL::OpCodePreprocessor::handle(Op opcode, const uint32_t *args, ui
 		if (it != image_pointers.end())
 		{
 			uses_image_write = true;
-			compiler.atomic_image_vars.insert(it->second);
+			if (!compiler.msl_options.native_texture_atomics) // WineMetalGL
+				compiler.atomic_image_vars.insert(it->second);
 		}
 		else
 			check_resource_write(args[2]);
@@ -16436,7 +16554,8 @@ bool CompilerMSL::OpCodePreprocessor::handle(Op opcode, const uint32_t *args, ui
 		auto it = image_pointers.find(args[0]);
 		if (it != image_pointers.end())
 		{
-			compiler.atomic_image_vars.insert(it->second);
+			if (!compiler.msl_options.native_texture_atomics) // WineMetalGL
+				compiler.atomic_image_vars.insert(it->second);
 			uses_image_write = true;
 		}
 		else
@@ -16450,7 +16569,8 @@ bool CompilerMSL::OpCodePreprocessor::handle(Op opcode, const uint32_t *args, ui
 		auto it = image_pointers.find(args[2]);
 		if (it != image_pointers.end())
 		{
-			compiler.atomic_image_vars.insert(it->second);
+			if (!compiler.msl_options.native_texture_atomics) // WineMetalGL
+				compiler.atomic_image_vars.insert(it->second);
 		}
 		break;
 	}

@@ -76,6 +76,36 @@
    "reference": "scene33-core-30"
   },
   {
+   "name": "scene4x-core41",
+   "tier": "A",
+   "kind": "demo",
+   "binary": "demos/scene4x.exe",
+   "args": [
+    "--frames",
+    "60",
+    "--profile",
+    "core41"
+   ],
+   "tolerance": 0.005,
+   "notes": "GL 4.1 core forward-compatible: tessellated terrain (control and evaluation shaders) from an indirect draw, a double-precision wave height, a geometry shader with two invocations writing gl_ViewportIndex into a two-viewport array, subroutine shading, RGBA16F + depth target, tonemap pass."
+  },
+  {
+   "name": "scene4x-core42",
+   "tier": "B",
+   "kind": "demo",
+   "binary": "demos/scene4x.exe",
+   "args": [
+    "--frames",
+    "60",
+    "--profile",
+    "core42"
+   ],
+   "reference": "scene4x-core41",
+   "tolerance": 0.005,
+   "apple": false,
+   "notes": "The same frame from a 4.2 core context, tonemapped through image stores counted by an atomic counter (GL 4.2, beyond Apple's OpenGL) and displayed by a second pass."
+  },
+  {
    "name": "legacy-gl21",
    "tier": "C",
    "kind": "demo",

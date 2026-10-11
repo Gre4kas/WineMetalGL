@@ -37,6 +37,8 @@ struct PipelineKey {
     uint8_t alphaToCoverage;
     uint8_t alphaToOne;
     uint8_t sampleMask;     // fragment function writes the GL sample mask (LinkedProgram::fragmentVariant)
+    uint8_t sampleShading;  // fragment function runs per sample (GL_SAMPLE_SHADING)
+    uint8_t ignoreSampleMask;  // single-sample rasterization: gl_SampleMask writes are ignored
     uint8_t logicOp;        // GL logical operation + 1 the fragment function applies (0: none)
     uint8_t rasterization;
     uint8_t topologyClass;  // MTLPrimitiveTopologyClass

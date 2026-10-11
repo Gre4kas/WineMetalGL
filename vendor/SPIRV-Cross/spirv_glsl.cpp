@@ -1600,8 +1600,10 @@ uint32_t CompilerGLSL::type_to_packed_alignment(const SPIRType &type, const Bits
 		// vectors.
 		if (flags.get(DecorationColMajor) && type.columns > 1)
 		{
+			// WineMetalGL: std140 rounds a column's alignment up to that of
+			// a (float) vec4, 16 bytes, so dmat2 columns stay 16 (was 4 * base).
 			if (packing_is_vec4_padded(packing))
-				return 4 * base_alignment;
+				return max<uint32_t>(16u, (type.vecsize == 2 ? 2 : 4) * base_alignment);
 			else if (type.vecsize == 3)
 				return 4 * base_alignment;
 			else
@@ -1613,8 +1615,9 @@ uint32_t CompilerGLSL::type_to_packed_alignment(const SPIRType &type, const Bits
 		// Rule 7.
 		if (flags.get(DecorationRowMajor) && type.vecsize > 1)
 		{
+			// WineMetalGL: as for columns above.
 			if (packing_is_vec4_padded(packing))
-				return 4 * base_alignment;
+				return max<uint32_t>(16u, (type.columns == 2 ? 2 : 4) * base_alignment);
 			else if (type.columns == 3)
 				return 4 * base_alignment;
 			else
@@ -1707,8 +1710,9 @@ uint32_t CompilerGLSL::type_to_packed_size(const SPIRType &type, const Bitset &f
 
 			if (flags.get(DecorationColMajor) && type.columns > 1)
 			{
+				// WineMetalGL: see type_to_packed_alignment.
 				if (packing_is_vec4_padded(packing))
-					size = type.columns * 4 * base_alignment;
+					size = type.columns * max<uint32_t>(16u, (type.vecsize == 2 ? 2 : 4) * base_alignment);
 				else if (type.vecsize == 3)
 					size = type.columns * 4 * base_alignment;
 				else
@@ -1718,7 +1722,7 @@ uint32_t CompilerGLSL::type_to_packed_size(const SPIRType &type, const Bitset &f
 			if (flags.get(DecorationRowMajor) && type.vecsize > 1)
 			{
 				if (packing_is_vec4_padded(packing))
-					size = type.vecsize * 4 * base_alignment;
+					size = type.vecsize * max<uint32_t>(16u, (type.columns == 2 ? 2 : 4) * base_alignment);
 				else if (type.columns == 3)
 					size = type.vecsize * 4 * base_alignment;
 				else
@@ -7900,7 +7904,11 @@ string CompilerGLSL::to_function_name(const TextureFunctionNameArguments &args)
 			fname += "Proj";
 		if (args.has_grad || workaround_lod_array_shadow_as_grad)
 			fname += "Grad";
-		if (args.lod != 0 && !workaround_lod_array_shadow_as_grad)
+		// WineMetalGL: rectangle textures have one level and GLSL has no
+		// textureLod for them; glslang samples them at an explicit level 0
+		// outside fragment shaders, which is written as texture().
+		bool rect_level_zero = imgtype.image.dim == DimRect && args.lod && expression_is_constant_null(args.lod);
+		if (args.lod != 0 && !workaround_lod_array_shadow_as_grad && !rect_level_zero)
 			fname += "Lod";
 	}
 
@@ -8137,7 +8145,11 @@ string CompilerGLSL::to_function_args(const TextureFunctionArguments &args, bool
 		farg_str += to_expression(args.grad_y);
 	}
 
-	if (args.lod)
+	// WineMetalGL: see to_function_name; texelFetch on a rectangle texture
+	// takes no level either.
+	bool rect_level_zero =
+	    imgtype.image.dim == DimRect && (args.base.is_fetch || (args.lod && expression_is_constant_null(args.lod)));
+	if (args.lod && !rect_level_zero)
 	{
 		if (workaround_lod_array_shadow_as_grad)
 		{
@@ -8160,7 +8172,7 @@ string CompilerGLSL::to_function_args(const TextureFunctionArguments &args, bool
 				farg_str += to_expression(args.lod);
 		}
 	}
-	else if (args.base.is_fetch && imgtype.image.dim != DimBuffer && !imgtype.image.ms)
+	else if (args.base.is_fetch && imgtype.image.dim != DimBuffer && !imgtype.image.ms && !rect_level_zero)
 	{
 		// Lod argument is optional in OpImageFetch, but we require a LOD value, pick 0 as the default.
 		farg_str += ", 0";

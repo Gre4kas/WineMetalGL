@@ -46,7 +46,7 @@ released with two archives:
 - `winemetalgl-<version>-arm64-core.tar.gz`: `scripts/stage-arm64-core.sh
   OUTPUT`, the arm64 core with the driver ABI header and `patches/wine`, for a
   native arm64 Wine built with the patches. Its evidence is the native
-  KHR-GL30 to KHR-GL33 runs (the core built for the build machine); it has not
+  KHR-GL30 to KHR-GL42 runs (the core built for the build machine); it has not
   yet run inside an arm64 Wine.
 
 The two cores are not interchangeable: `winemac.so` loads the core of its own

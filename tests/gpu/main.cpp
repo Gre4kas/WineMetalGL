@@ -44,15 +44,22 @@ bool loadFunctions() {
 
 }  // namespace
 
-Fixture::Fixture(int width, int height, bool core) {
+Fixture::Fixture(int width, int height, bool core, int version) {
     static const bool initialized = wmgl_initialize(WMGL_DRIVER_ABI_VERSION) == 0 && loadFunctions();
     if (!initialized) return;
     const int format = pickFormat();
     if (!format) return;
     surface = wmgl_surface_create_pbuffer(format, width, height);
-    const int attribs[] = {0x2091 /* MAJOR */, 3, 0x2092 /* MINOR */, 3, 0x9126 /* PROFILE_MASK */, core ? 1 : 2, 0};
+    const int attribs[] = {0x2091 /* MAJOR */, version / 10, 0x2092 /* MINOR */, version % 10, 0x9126 /* PROFILE_MASK */,
+                           core ? 1 : 2, 0};
     int error = 0;
+    if (version > 42) {
+        char value[8];
+        std::snprintf(value, sizeof(value), "%d.%d", version / 10, version % 10);
+        setenv("WINEMETALGL_DEV_MAX_VERSION", value, 1);
+    }
     context = wmgl_context_create(format, nullptr, attribs, &error);
+    if (version > 42) unsetenv("WINEMETALGL_DEV_MAX_VERSION");
     ok = surface && context && wmgl_make_current(context, surface, surface);
     if (ok) glViewport(0, 0, width, height);
 }

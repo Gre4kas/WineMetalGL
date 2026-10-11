@@ -5,28 +5,50 @@ that fail, are in [Conformance results](conformance.md).
 
 ## OpenGL 4.x
 
-Contexts stop at OpenGL 3.3: `wglCreateContextAttribsARB` refuses a request
-for 4.0 or newer with `ERROR_INVALID_VERSION_ARB`, as it does for any version
-an implementation does not offer. Some 4.x features are available in 3.3
-contexts as the extensions that were promoted into each version:
+Contexts stop at OpenGL 4.2: `wglCreateContextAttribsARB` refuses a request
+for 4.3 or newer with `ERROR_INVALID_VERSION_ARB`, as it does for any version
+an implementation does not offer. Some features of later versions are
+available in 4.2 contexts as the extensions that were promoted into each
+version:
 
 <!-- BEGIN GENERATED: gl4 (scripts/docs/generate.py) -->
 | Version | Features | Promoted extensions advertised | Not advertised |
 |---|---|---|---|
-| 4.0 | Tessellation, GLSL 4.00, double precision, indirect draws, per-sample shading | `GL_ARB_draw_buffers_blend` (1 of 13) | `GL_ARB_draw_indirect`, `GL_ARB_gpu_shader5`, `GL_ARB_gpu_shader_fp64`, `GL_ARB_sample_shading`, `GL_ARB_shader_subroutine`, `GL_ARB_tessellation_shader`, `GL_ARB_texture_buffer_object_rgb32`, `GL_ARB_texture_cube_map_array`, `GL_ARB_texture_gather`, `GL_ARB_texture_query_lod`, `GL_ARB_transform_feedback2`, `GL_ARB_transform_feedback3` |
-| 4.1 | Separate shader objects, program binaries, viewport arrays, 64-bit attributes | `GL_ARB_ES2_compatibility`, `GL_ARB_get_program_binary`, `GL_ARB_separate_shader_objects` (3 of 6) | `GL_ARB_shader_precision`, `GL_ARB_vertex_attrib_64bit`, `GL_ARB_viewport_array` |
-| 4.2 | Image load/store, atomic counters, immutable texture storage | `GL_ARB_base_instance`, `GL_ARB_compressed_texture_pixel_storage`, `GL_ARB_internalformat_query`, `GL_ARB_map_buffer_alignment`, `GL_ARB_texture_storage` (5 of 11) | `GL_ARB_conservative_depth`, `GL_ARB_shader_atomic_counters`, `GL_ARB_shader_image_load_store`, `GL_ARB_shading_language_420pack`, `GL_ARB_shading_language_packing`, `GL_ARB_transform_feedback_instanced` |
+| 4.0 | Tessellation, GLSL 4.00, double precision, indirect draws, per-sample shading | `GL_ARB_draw_buffers_blend`, `GL_ARB_draw_indirect`, `GL_ARB_gpu_shader5`, `GL_ARB_gpu_shader_fp64`, `GL_ARB_sample_shading`, `GL_ARB_shader_subroutine`, `GL_ARB_tessellation_shader`, `GL_ARB_texture_buffer_object_rgb32`, `GL_ARB_texture_cube_map_array`, `GL_ARB_texture_gather`, `GL_ARB_texture_query_lod`, `GL_ARB_transform_feedback2`, `GL_ARB_transform_feedback3` (13 of 13) | none |
+| 4.1 | Separate shader objects, program binaries, viewport arrays, 64-bit attributes | `GL_ARB_ES2_compatibility`, `GL_ARB_get_program_binary`, `GL_ARB_separate_shader_objects`, `GL_ARB_shader_precision`, `GL_ARB_vertex_attrib_64bit`, `GL_ARB_viewport_array` (6 of 6) | none |
+| 4.2 | Image load/store, atomic counters, immutable texture storage | `GL_ARB_base_instance`, `GL_ARB_compressed_texture_pixel_storage`, `GL_ARB_conservative_depth`, `GL_ARB_internalformat_query`, `GL_ARB_map_buffer_alignment`, `GL_ARB_shader_atomic_counters`, `GL_ARB_shader_image_load_store`, `GL_ARB_shading_language_420pack`, `GL_ARB_shading_language_packing`, `GL_ARB_texture_compression_bptc`, `GL_ARB_texture_storage`, `GL_ARB_transform_feedback_instanced` (12 of 12) | none |
 | 4.3 | Compute shaders, shader storage buffers, debug output, texture views | `GL_ARB_copy_image`, `GL_ARB_invalidate_subdata`, `GL_ARB_texture_storage_multisample`, `GL_KHR_debug` (4 of 22) | `GL_ARB_arrays_of_arrays`, `GL_ARB_clear_buffer_object`, `GL_ARB_compute_shader`, `GL_ARB_ES3_compatibility`, `GL_ARB_explicit_uniform_location`, `GL_ARB_fragment_layer_viewport`, `GL_ARB_framebuffer_no_attachments`, `GL_ARB_internalformat_query2`, `GL_ARB_multi_draw_indirect`, `GL_ARB_program_interface_query`, `GL_ARB_robust_buffer_access_behavior`, `GL_ARB_shader_image_size`, `GL_ARB_shader_storage_buffer_object`, `GL_ARB_stencil_texturing`, `GL_ARB_texture_buffer_range`, `GL_ARB_texture_query_levels`, `GL_ARB_texture_view`, `GL_ARB_vertex_attrib_binding` |
 | 4.4 | Buffer storage, multi-bind, texture clears, enhanced layouts | `GL_ARB_buffer_storage` (1 of 8) | `GL_ARB_clear_texture`, `GL_ARB_enhanced_layouts`, `GL_ARB_multi_bind`, `GL_ARB_query_buffer_object`, `GL_ARB_texture_mirror_clamp_to_edge`, `GL_ARB_texture_stencil8`, `GL_ARB_vertex_type_10f_11f_11f_rev` |
 | 4.5 | Direct state access, clip control, robustness, cull distances | `GL_ARB_clip_control`, `GL_KHR_robustness` (2 of 11) | `GL_ARB_conditional_render_inverted`, `GL_ARB_cull_distance`, `GL_ARB_derivative_control`, `GL_ARB_direct_state_access`, `GL_ARB_ES3_1_compatibility`, `GL_ARB_get_texture_sub_image`, `GL_ARB_shader_texture_image_samples`, `GL_ARB_texture_barrier`, `GL_KHR_context_flush_control` |
-| 4.6 | SPIR-V shaders, anisotropic filtering, indirect draw counts | `GL_ARB_texture_filter_anisotropic` (1 of 11) | `GL_ARB_gl_spirv`, `GL_ARB_indirect_parameters`, `GL_ARB_pipeline_statistics_query`, `GL_ARB_polygon_offset_clamp`, `GL_ARB_shader_atomic_counter_ops`, `GL_ARB_shader_draw_parameters`, `GL_ARB_shader_group_vote`, `GL_ARB_spirv_extensions`, `GL_ARB_transform_feedback_overflow_query`, `GL_KHR_no_error` |
+| 4.6 | SPIR-V shaders, anisotropic filtering, indirect draw counts | `GL_ARB_polygon_offset_clamp`, `GL_ARB_texture_filter_anisotropic` (2 of 11) | `GL_ARB_gl_spirv`, `GL_ARB_indirect_parameters`, `GL_ARB_pipeline_statistics_query`, `GL_ARB_shader_atomic_counter_ops`, `GL_ARB_shader_draw_parameters`, `GL_ARB_shader_group_vote`, `GL_ARB_spirv_extensions`, `GL_ARB_transform_feedback_overflow_query`, `GL_KHR_no_error` |
 <!-- END GENERATED: gl4 -->
 
 `GL_ARB_compute_shader` is not advertised even though the core runs compute
-kernels internally (geometry shader and transform feedback emulation):
-without storage buffers, images or atomic counters a compute shader has no
-way to write output, and engines that detect the extension would skip their
-working fallback.
+kernels internally (geometry shader, tessellation control and transform
+feedback emulation): compute shaders come with GL 4.3 and its shader storage
+buffers, which are the next milestone.
+
+### Double precision
+
+Metal has no 64-bit floating-point type, so doubles (`GL_ARB_gpu_shader_fp64`,
+`GL_ARB_vertex_attrib_64bit`) run in software: shaders keep the bit patterns in
+64-bit integers and call an IEEE 754 binary64 library
+(`src/core/shader/fp64.h`). Addition, subtraction, multiplication, division,
+square root and every conversion are correctly rounded (to nearest, ties to
+even), with subnormals, infinities and NaNs. Where results can differ from a
+GPU with hardware doubles:
+
+- `fma()` rounds twice (a multiply, then an add). GLSL allows this outside
+  `precise` expressions; a `precise` fused multiply-add is not exact either.
+- A double literal in the subnormal range (below about 2.2e-308) compiles to
+  zero, because the shader compiler (glslang) flushes such literals.
+  Subnormal values computed at run time or read from buffers, attributes and
+  uniforms are kept.
+- A NaN result is the first NaN operand made quiet, or the default NaN; other
+  payload propagation rules do not apply.
+
+Only shaders that declare doubles pay for this: each double operation is a
+library call several times slower than a float operation.
 
 ## Compatibility profile (OpenGL 1.0 to 2.1)
 
@@ -63,22 +85,31 @@ logged once.
 <!-- BEGIN GENERATED: notsupported (scripts/docs/generate.py) -->
 Every NotSupported case in a committed result matches one entry of `tests/cts/notsupported.json`. `extension` and `version` cases test something WineMetalGL does not offer; `test-design` cases are skipped by the test itself on every implementation.
 
-| Pattern | Kind | KHR-GL30 | KHR-GL31 | KHR-GL32 | KHR-GL33 | Reason |
-|---|---|---:|---:|---:|---:|---|
-| `KHR-GL3?.cull_distance.*` | extension | 0 | 0 | 0 | 218 | GL_ARB_cull_distance is not advertised. |
-| `KHR-GL3?.ext_texture_shadow_lod.*` | extension | 15 | 15 | 15 | 15 | GL_EXT_texture_shadow_lod is not advertised. |
-| `KHR-GL3?.transform_feedback_overflow_query_ARB.*` | extension | 0 | 0 | 13 | 13 | GL_ARB_transform_feedback_overflow_query is not advertised. |
-| `KHR-GL3?.pipeline_statistics_query_tests_ARB.*` | extension | 0 | 0 | 0 | 10 | GL_ARB_pipeline_statistics_query is not advertised. |
-| `KHR-GL3?.texture_filter_minmax_tests.*` | extension | 0 | 0 | 0 | 5 | GL_ARB_texture_filter_minmax is not advertised. |
-| `KHR-GL3?.transform_feedback2.*` | extension | 1 | 1 | 1 | 1 | GL_ARB_transform_feedback2 is not advertised. |
-| `KHR-GL3?.transform_feedback3.*` | extension | 3 | 3 | 3 | 3 | GL_ARB_transform_feedback3 is not advertised. |
-| `KHR-GL3?.gpu_shader5_gl.*` | extension | 0 | 0 | 3 | 3 | GL_ARB_gpu_shader5 is not advertised. |
-| `KHR-GL3?.shaders.shader_integer_mix.*` | extension | 0 | 0 | 0 | 6 | GL_EXT_shader_integer_mix is not advertised. |
-| `KHR-GL3?.pixelstoragemodes.compressedteximage*.rgba_astc_*` | extension | 0 | 0 | 0 | 80 | ASTC formats need GL_KHR_texture_compression_astc_ldr, which is not advertised. |
-| `KHR-GL3?.packed_depth_stencil.stencil_texturing.*` | version | 0 | 0 | 2 | 2 | Stencil texturing needs GL 4.3 (GL_ARB_stencil_texturing is not advertised). |
-| `KHR-GL3?.CommonBugs.CommonBug_PerVertexValidation` | version | 0 | 1 | 1 | 1 | The case runs only on OpenGL 4.1 or newer contexts. |
-| `KHR-GL33.texture_swizzle.*` | test-design | 0 | 0 | 0 | 263 | The case pairs a texture target with an access routine or format that the test marks invalid (gl3cTextureSwizzleTests.cpp isTargetSuppByAccess/isTargetSuppByFormat, or a format whose m_minimum_gl_context is above 3.3), so it reports NotSupported on every implementation. |
-| `KHR-GL3[012].frag_coord_conventions.multisample` | extension | 1 | 1 | 1 | 0 | Below a GL 3.3 context the case needs GL_ARB_sample_shading (glcFragCoordConventionsTests.cpp), which is not advertised; KHR-GL33 runs it. |
-| `KHR-GL31.clip_distance.*` | test-design | 0 | 3 | 0 | 0 | KHR-GL31 creates a forward-compatible 3.1 context, and glu::contextSupports (gluRenderContext.cpp) matches a forward-compatible context only against its exact version, so the case's check for a GL 3.0 context fails (glcClipDistance.cpp); KHR-GL30, KHR-GL32 and KHR-GL33 run it. |
-| `KHR-GL31.texture_lod_bias.texture_lod_bias_all` | test-design | 0 | 1 | 0 | 0 | KHR-GL31 creates a forward-compatible 3.1 context, and glu::contextSupports (gluRenderContext.cpp) matches a forward-compatible context only against its exact version, so the case's check for a GL 3.0 context fails (glcTextureLodBiasTests.cpp); KHR-GL30, KHR-GL32 and KHR-GL33 run it. |
+| Pattern | Kind | KHR-GL30 | KHR-GL31 | KHR-GL32 | KHR-GL33 | KHR-GL40 | KHR-GL41 | KHR-GL42 | Reason |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---|
+| `KHR-GL4?.fragment_shading_rate.*` | extension | 0 | 0 | 0 | 0 | 1067 | 1067 | 1067 | GL_EXT_fragment_shading_rate is not advertised. |
+| `KHR-GL4?.texture_view.*` | extension | 0 | 0 | 0 | 0 | 0 | 0 | 7 | GL_ARB_texture_view (GL 4.3) is not advertised. |
+| `KHR-GL4?.texture_barrier_ARB.*` | extension | 0 | 0 | 0 | 0 | 4 | 4 | 4 | GL_ARB_texture_barrier (GL 4.5) is not advertised. |
+| `KHR-GL4?.shader_subroutine.arrays_of_arrays_of_uniforms` | extension | 0 | 0 | 0 | 0 | 1 | 1 | 1 | GL_ARB_arrays_of_arrays (GL 4.3) is not advertised. |
+| `KHR-GL4?.shader_image_load_store.basic-allFormats-loadStoreComputeStage` | version | 0 | 0 | 0 | 0 | 0 | 0 | 1 | The case uses compute shaders (GL 4.3, GL_ARB_compute_shader), which are not advertised. |
+| `KHR-GL4?.shader_image_load_store.*-ms` | extension | 0 | 0 | 0 | 0 | 0 | 0 | 1 | The case needs GL_MAX_IMAGE_SAMPLES of 4 or more. WineMetalGL reports 0, the GL minimum: Metal shaders cannot write multisample textures. |
+| `KHR-GL4?.shader_image_load_store.advanced-sso-perSample` | extension | 0 | 0 | 0 | 0 | 0 | 0 | 1 | The case needs GL_MAX_IMAGE_SAMPLES of 4 or more. WineMetalGL reports 0, the GL minimum: Metal shaders cannot write multisample textures. |
+| `KHR-GL[34]?.shaders.shader_integer_mix.prototypes` | version | 0 | 0 | 0 | 1 | 1 | 1 | 1 | Without `#extension GL_EXT_shader_integer_mix` the case needs GLSL 4.50 (glcShaderIntegerMixTests.cpp, ShaderIntegerMixPrototypesCase). |
+| `KHR-GL4?.draw_elements_base_vertex_tests.valid_active_tf` | test-design | 0 | 0 | 0 | 0 | 1 | 1 | 1 | The case applies only to OpenGL ES contexts and reports NotSupported on every desktop context (esextcDrawElementsBaseVertexTests.cpp, DrawElementsBaseVertexNegativeActiveTransformFeedbackTest). |
+| `KHR-GL[34]?.cull_distance.*` | extension | 0 | 0 | 0 | 218 | 218 | 218 | 218 | GL_ARB_cull_distance is not advertised. |
+| `KHR-GL[34]?.ext_texture_shadow_lod.*` | extension | 15 | 15 | 15 | 15 | 15 | 15 | 15 | GL_EXT_texture_shadow_lod is not advertised. |
+| `KHR-GL[34]?.transform_feedback_overflow_query_ARB.*` | extension | 0 | 0 | 13 | 13 | 13 | 13 | 13 | GL_ARB_transform_feedback_overflow_query is not advertised. |
+| `KHR-GL[34]?.pipeline_statistics_query_tests_ARB.*` | extension | 0 | 0 | 0 | 10 | 10 | 10 | 10 | GL_ARB_pipeline_statistics_query is not advertised. |
+| `KHR-GL[34]?.texture_filter_minmax_tests.*` | extension | 0 | 0 | 0 | 5 | 5 | 5 | 5 | GL_ARB_texture_filter_minmax is not advertised. |
+| `KHR-GL3?.transform_feedback2.*` | extension | 1 | 1 | 1 | 0 | 0 | 0 | 0 | GL_ARB_transform_feedback2 is not advertised. |
+| `KHR-GL3?.transform_feedback3.*` | extension | 3 | 3 | 3 | 0 | 0 | 0 | 0 | GL_ARB_transform_feedback3 is not advertised. |
+| `KHR-GL3?.gpu_shader5_gl.*` | extension | 0 | 0 | 3 | 0 | 0 | 0 | 0 | GL_ARB_gpu_shader5 is not advertised. |
+| `KHR-GL3?.shaders.shader_integer_mix.*` | extension | 0 | 0 | 0 | 0 | 0 | 0 | 0 | GL_EXT_shader_integer_mix is not advertised. |
+| `KHR-GL[34]?.pixelstoragemodes.compressedteximage*.rgba_astc_*` | extension | 0 | 0 | 0 | 80 | 80 | 80 | 80 | ASTC formats need GL_KHR_texture_compression_astc_ldr, which is not advertised. |
+| `KHR-GL[34]?.packed_depth_stencil.stencil_texturing.*` | version | 0 | 0 | 2 | 2 | 2 | 2 | 2 | Stencil texturing needs GL 4.3 (GL_ARB_stencil_texturing is not advertised). |
+| `KHR-GL[34]?.CommonBugs.CommonBug_PerVertexValidation` | version | 0 | 1 | 1 | 1 | 1 | 0 | 0 | The case runs only on OpenGL 4.1 or newer contexts. |
+| `KHR-GL[34]?.texture_swizzle.*` | test-design | 0 | 0 | 0 | 263 | 263 | 263 | 249 | The case pairs a texture target with an access routine or format that the test marks invalid (gl3cTextureSwizzleTests.cpp isTargetSuppByAccess/isTargetSuppByFormat, or a format whose m_minimum_gl_context is above 3.3), so it reports NotSupported on every implementation. |
+| `KHR-GL3[012].frag_coord_conventions.multisample` | extension | 1 | 1 | 1 | 0 | 0 | 0 | 0 | Below a GL 3.3 context the case needs GL_ARB_sample_shading (glcFragCoordConventionsTests.cpp), which is not advertised; KHR-GL33 runs it. |
+| `KHR-GL31.clip_distance.*` | test-design | 0 | 3 | 0 | 0 | 0 | 0 | 0 | KHR-GL31 creates a forward-compatible 3.1 context, and glu::contextSupports (gluRenderContext.cpp) matches a forward-compatible context only against its exact version, so the case's check for a GL 3.0 context fails (glcClipDistance.cpp); KHR-GL30, KHR-GL32 and KHR-GL33 run it. |
+| `KHR-GL31.texture_lod_bias.texture_lod_bias_all` | test-design | 0 | 1 | 0 | 0 | 0 | 0 | 0 | KHR-GL31 creates a forward-compatible 3.1 context, and glu::contextSupports (gluRenderContext.cpp) matches a forward-compatible context only against its exact version, so the case's check for a GL 3.0 context fails (glcTextureLodBiasTests.cpp); KHR-GL30, KHR-GL32 and KHR-GL33 run it. |
 <!-- END GENERATED: notsupported -->

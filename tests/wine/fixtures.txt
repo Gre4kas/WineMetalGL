@@ -1,8 +1,8 @@
 # Wine fixtures: run by tests/wine/probe-opengl-wow64.sh in one WoW64 prefix, x86_64 and i386 guests.
 # <source> <defines or -> <scope> <markers that must appear in the output...>
-# scope 'gate': part of the GL 3.3 merge gate. 'gl4': GL 4.x features outside the 3.3 roadmap;
-# kept for the GL 4.x roadmap and run only with --all. Gate fixtures load GL 4.x entry points
-# optionally (they are absent on a 3.3 context); built with -DWINEMETALGL_GL4 they require them.
+# scope 'gate': part of the merge gate (contexts up to GL 4.2). 'gl4': features of GL 4.3 and
+# later, kept for the later milestones and run only with --all. Gate fixtures load the entry
+# points of those versions optionally; built with -DWINEMETALGL_GL4 they require them.
 # opengl_load_probe and opengl_runtime write their marker to the file named by their argument.
 opengl_load_probe - gate 
 opengl_runtime - gate OPENGL_RUNTIME_ALL_OK
@@ -43,8 +43,9 @@ opengl_transform_separate - gate WINEMETALGL_TRANSFORM_SHADER_SEPARATE_OK WINEME
 opengl_shader_binary - gate WINEMETALGL_PROGRAM_BINARY_OK WINEMETALGL_PROGRAM_BINARY_DRAW_OK
 opengl_shader_binary -DWINEMETALGL_GL4 gl4 WINEMETALGL_SHADER_BINARY_OK WINEMETALGL_SHADER_SPECIALIZE_OK
 opengl_debug - gate WINEMETALGL_DEBUG_OUTPUT_OK
+opengl_gl42 - gate WINEMETALGL_GL42_CONTEXT_OK WINEMETALGL_GL40_DRAW_INDIRECT_OK WINEMETALGL_GL40_SUBROUTINE_OK WINEMETALGL_GL40_FP64_OK WINEMETALGL_GL41_VIEWPORT_ARRAY_OK WINEMETALGL_GL42_IMAGE_ATOMIC_OK
 opengl_tess_compile - gl4 WINEMETALGL_TESSELLATION_COMPILE_OK
-opengl_tess_draw - gl4 WINEMETALGL_TESSELLATION_DRAW_OK WINEMETALGL_TESSELLATION_FACTORS_OK WINEMETALGL_TESSELLATION_DEFAULT_FACTORS_OK
+opengl_tess_draw - gate WINEMETALGL_TESSELLATION_DRAW_OK WINEMETALGL_TESSELLATION_FACTORS_OK WINEMETALGL_TESSELLATION_DEFAULT_FACTORS_OK
 opengl_tess_quad - gl4 WINEMETALGL_TESSELLATION_QUAD_OK
 opengl_geometry - gate WINEMETALGL_GEOMETRY_PASSTHROUGH_OK
 opengl_geometry_points - gate WINEMETALGL_GEOMETRY_POINT_PASSTHROUGH_OK

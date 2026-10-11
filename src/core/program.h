@@ -5,6 +5,7 @@
 #import <Metal/Metal.h>
 
 #include <atomic>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -30,7 +31,7 @@ struct LinkedProgram {
     bool pipeline = false;
     Program* stageOwner[shader::kStageCount] = {};
     std::shared_ptr<LinkedProgram> stageExecutable[shader::kStageCount];
-    std::vector<std::pair<Program*, int>> blockOwner, samplerOwner;
+    std::vector<std::pair<Program*, int>> blockOwner, samplerOwner, imageOwner;
 
     // Metal functions, compiled on first use.
     id<MTLFunction> function(shader::Stage stage);
@@ -40,15 +41,35 @@ struct LinkedProgram {
     // mask (shader::fragmentWithSampleMask), and applying logical operation
     // `logicOp` - 1 (0: none; shader::fragmentWithLogicOp) to attachments of
     // `colorFormats` (MTLPixelFormat). Nil if the stage cannot have it.
-    id<MTLFunction> fragmentVariant(bool sampleMask, unsigned logicOp, const uint16_t colorFormats[8]);
+    id<MTLFunction> fragmentVariant(bool sampleMask, unsigned logicOp, const uint16_t colorFormats[8],
+                                    bool sampleRate = false, bool ignoreSampleMask = false);
+    // The fragment stage writes gl_SampleMask.
+    bool writesSampleMask();
     id<MTLFunction> fragmentSampleMask() { return fragmentVariant(true, 0, nullptr); }
     bool functionFailed(shader::Stage stage) const { return failed_[static_cast<int>(stage)]; }
     // Geometry shader emulation (link.geometry): the drawing vertex function
     // and the geometry kernel.
     id<MTLFunction> geometryPassthrough();
+    // The drawing vertex function (with a geometry shader, its pass-through)
+    // without the [[point_size]] output, which Metal rejects in pipelines
+    // with a line or triangle input topology (set for gl_Layer and
+    // gl_ViewportIndex writers).
+    id<MTLFunction> vertexWithoutPointSize(bool geometryPass);
     id<MTLComputePipelineState> geometryKernel();
     // Compute programs.
     id<MTLComputePipelineState> computePipeline();
+    // Tessellation emulation (link.tess): the control kernel, and the
+    // executable that runs the evaluation stage (as its vertex stage, with
+    // the geometry emulation and transform feedback capture) and this
+    // program's fragment stage. Its uniform blocks and samplers are this
+    // program's, in the same order, so the draw binds the program's state.
+    id<MTLComputePipelineState> tessControlKernel();
+    std::shared_ptr<LinkedProgram> tessEvaluation();
+    std::shared_ptr<LinkedProgram> pipelineTessEvaluation(const shader::LinkResult& evaluation, std::shared_ptr<LinkedProgram> out);
+    // A pipeline whose vertex processing stages span programs: the emulation
+    // assembled from each stage's program (shader::linkPipeline), or null.
+    std::shared_ptr<const shader::PipelineLinkResult> pipelineLink;
+    std::shared_ptr<LinkedProgram> spanningTessEvaluation(std::shared_ptr<LinkedProgram> out);
 
     // Whether the vertex function reads gl_VertexID (draws then keep GL's
     // vertex numbering; see DrawState::issue).
@@ -61,22 +82,41 @@ struct LinkedProgram {
         return value != 0;
     }
 
+    // Whether the drawing vertex function writes gl_ViewportIndex (with a
+    // geometry shader, its pass-through).
+    bool writesViewportIndex() const { return (outputFlags() & kWritesViewport) != 0; }
+    // ... or gl_Layer: Metal then needs the pipeline's input topology class.
+    bool writesLayerOrViewport() const { return (outputFlags() & (kWritesViewport | kWritesLayer)) != 0; }
+    const std::string& drawingVertexMsl() const {
+        return link.geometry.active ? link.geometry.passthrough.msl : stage(shader::Stage::Vertex).msl;
+    }
+
     bool hasStage(shader::Stage stage) const { return link.stages[static_cast<int>(stage)].present; }
     const shader::StageOutput& stage(shader::Stage stage) const { return link.stages[static_cast<int>(stage)]; }
 
 private:
     std::mutex mutex_;
     std::atomic<int> readsVertexId_{-1};
+    // What the drawing vertex and fragment functions write, found once in
+    // their MSL (draws ask on every call): kWrites* bits.
+    enum : int { kWritesViewport = 1, kWritesLayer = 2, kWritesSampleMask = 4 };
+    mutable std::atomic<int> outputFlags_{-1};
+    int outputFlags() const;
     id<MTLFunction> functions_[shader::kStageCount] = {};
     bool failed_[shader::kStageCount] = {};
     id<MTLFunction> vertexNoRaster_ = nil;
     bool vertexNoRasterFailed_ = false;
     std::unordered_map<std::string, id<MTLFunction>> fragmentVariants_;  // nil entries: failed
     id<MTLFunction> passthrough_ = nil;
+    id<MTLFunction> noPointSize_[2] = {};
+    bool noPointSizeFailed_[2] = {};
     id<MTLComputePipelineState> kernel_ = nil;
     bool passthroughFailed_ = false, kernelFailed_ = false;
     id<MTLComputePipelineState> compute_ = nil;
     bool computeFailed_ = false;
+    id<MTLComputePipelineState> tessKernel_ = nil;
+    bool tessKernelFailed_ = false;
+    std::shared_ptr<LinkedProgram> tessEvaluation_;
 };
 
 uint64_t nextLinkedProgramId();
@@ -90,6 +130,11 @@ class ProgramPipeline;
 std::shared_ptr<LinkedProgram> pipelineExecutable(ProgramPipeline& pipeline);
 
 class Context;
+// Subroutine selections (api/subroutine.mm): reset to the defaults (UseProgram,
+// program pipeline changes), and written into `program`'s hidden selection
+// uniforms before a draw.
+void resetSubroutineSelections(Context& ctx);
+void applySubroutineSelections(Context& ctx, Program& program);
 namespace api {
 // Updates the pipeline's VALIDATE_STATUS and info log; true if it can draw.
 bool validateProgramPipeline(ProgramPipeline& pipeline);

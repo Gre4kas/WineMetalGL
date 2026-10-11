@@ -535,16 +535,36 @@ std::string unescapeName(std::string name) {
 
 std::string checkReservedWords(const std::string& source) {
     const GlslVersion version = parseGlslVersion(source);
-    if (version.es || version.number < 130 || version.number >= 400) return "";
-    static const std::set<std::string> reserved = {
+    if (version.es || version.number < 130 || version.number >= 440) return "";
+    // The reserved words of each GLSL version's spec (section 3.6) that
+    // glslang accepts as identifiers. GLSL 4.00 makes the double types
+    // keywords; 4.20 makes the image types and volatile keywords and
+    // reserves resource; 4.40 frees packed and row_major.
+    static const std::set<std::string> common = {
         "common", "partition", "active", "asm", "class", "union", "enum", "typedef", "template", "this", "packed",
-        "goto", "inline", "noinline", "volatile", "public", "static", "extern", "external", "interface", "long",
-        "short", "double", "half", "fixed", "unsigned", "superp", "input", "output", "hvec2", "hvec3", "hvec4",
-        "dvec2", "dvec3", "dvec4", "fvec2", "fvec3", "fvec4", "sampler3DRect", "filter", "image1D", "image2D",
-        "image3D", "imageCube", "iimage1D", "iimage2D", "iimage3D", "iimageCube", "uimage1D", "uimage2D", "uimage3D",
-        "uimageCube", "image1DArray", "image2DArray", "iimage1DArray", "iimage2DArray", "uimage1DArray",
-        "uimage2DArray", "image1DShadow", "image2DShadow", "image1DArrayShadow", "image2DArrayShadow", "imageBuffer",
-        "iimageBuffer", "uimageBuffer", "sizeof", "cast", "namespace", "using", "row_major"};
+        "goto", "inline", "noinline", "public", "static", "extern", "external", "interface", "long", "short", "half",
+        "fixed", "unsigned", "superp", "input", "output", "hvec2", "hvec3", "hvec4", "fvec2", "fvec3", "fvec4",
+        "sampler3DRect", "filter", "sizeof", "cast", "namespace", "using", "row_major"};
+    static const std::set<std::string> before420 = {
+        "volatile", "image1D", "image2D", "image3D", "imageCube", "iimage1D", "iimage2D", "iimage3D", "iimageCube",
+        "uimage1D", "uimage2D", "uimage3D", "uimageCube", "image1DArray", "image2DArray", "iimage1DArray",
+        "iimage2DArray", "uimage1DArray", "uimage2DArray", "image1DShadow", "image2DShadow", "image1DArrayShadow",
+        "image2DArrayShadow", "imageBuffer", "iimageBuffer", "uimageBuffer"};
+    static const std::set<std::string> before400 = {"double", "dvec2", "dvec3", "dvec4"};
+    // Extensions that make some of them keywords early.
+    auto enables = [&](const char* extension) {
+        for (size_t at = source.find(extension); at != std::string::npos; at = source.find(extension, at + 1)) {
+            const size_t line = source.rfind('\n', at);
+            const size_t start = line == std::string::npos ? 0 : line + 1;
+            const size_t hash = source.find_first_not_of(" \t", start);
+            if (hash != std::string::npos && source.compare(hash, 10, "#extension") == 0) return true;
+        }
+        return false;
+    };
+    std::set<std::string> reserved = common;
+    if (version.number < 420 && !enables("GL_ARB_shader_image_load_store")) reserved.insert(before420.begin(), before420.end());
+    if (version.number >= 420) reserved.insert("resource");
+    if (version.number < 400 && !enables("GL_ARB_gpu_shader_fp64")) reserved.insert(before400.begin(), before400.end());
     std::string errors;
     const size_t n = source.size();
     size_t i = 0;
@@ -605,6 +625,105 @@ std::string checkReservedWords(const std::string& source) {
         ++i;
     }
     return errors;
+}
+
+std::string lowerBuiltinUniforms(Stage stage, const std::string& source) {
+    const bool fragment = stage == Stage::Fragment;
+    if (source.find("gl_DepthRange") == std::string::npos &&
+        (!fragment || source.find("gl_NumSamples") == std::string::npos))
+        return source;
+    const std::string prefix = kBuiltinUniformPrefix;
+    std::string out;
+    out.reserve(source.size() + 256);
+    bool depthRange = false, numSamples = false, lineStart = true;
+    size_t insertAt = std::string::npos;  // before the first token, outside any #if block
+    int conditionalDepth = 0;
+    size_t conditionalStart = 0;
+    const size_t n = source.size();
+    size_t i = 0;
+    while (i < n) {
+        const char c = source[i];
+        if (c == '\n') {
+            out += c;
+            ++i;
+            lineStart = true;
+            continue;
+        }
+        if (std::isspace(static_cast<unsigned char>(c))) {
+            out += c;
+            ++i;
+            continue;
+        }
+        if (source.compare(i, 2, "//") == 0) {
+            while (i < n && source[i] != '\n') out += source[i++];
+            continue;
+        }
+        if (source.compare(i, 2, "/*") == 0) {
+            const size_t end = source.find("*/", i + 2);
+            const size_t stop = end == std::string::npos ? n : end + 2;
+            out.append(source, i, stop - i);
+            i = stop;
+            continue;
+        }
+        if (c == '#' && lineStart) {
+            size_t lineEnd = i;
+            while (lineEnd < n && source[lineEnd] != '\n') {
+                if (source[lineEnd] == '\\' && lineEnd + 1 < n && source[lineEnd + 1] == '\n') lineEnd += 2;
+                else ++lineEnd;
+            }
+            size_t k = i + 1;
+            while (k < lineEnd && (source[k] == ' ' || source[k] == '\t')) ++k;
+            size_t nameEnd = k;
+            while (nameEnd < lineEnd && isIdent(source[nameEnd])) ++nameEnd;
+            const std::string name = source.substr(k, nameEnd - k);
+            if (name == "if" || name == "ifdef" || name == "ifndef") {
+                if (conditionalDepth++ == 0) conditionalStart = out.size();
+            } else if (name == "endif" && conditionalDepth > 0) {
+                --conditionalDepth;
+            }
+            if (name != "define") {
+                // Other directives are copied; #define bodies are rewritten like code.
+                out.append(source, i, lineEnd - i);
+                i = lineEnd;
+                continue;
+            }
+            out.append(source, i, nameEnd - i);
+            i = nameEnd;
+            lineStart = false;
+            continue;
+        }
+        if (insertAt == std::string::npos && conditionalDepth == 0) insertAt = out.size();
+        if (insertAt == std::string::npos && conditionalDepth > 0) insertAt = conditionalStart;
+        lineStart = false;
+        if (isIdentStart(c)) {
+            size_t end = i;
+            while (end < n && isIdent(source[end])) ++end;
+            const std::string word = source.substr(i, end - i);
+            i = end;
+            if (word == "gl_DepthRange" || word == "gl_DepthRangeParameters") {
+                depthRange = true;
+                out += prefix + word.substr(3);
+            } else if (fragment && word == "gl_NumSamples") {
+                numSamples = true;
+                out += prefix + word.substr(3);
+            } else {
+                out += word;
+            }
+            continue;
+        }
+        out += c;
+        ++i;
+    }
+    std::string decls;
+    if (depthRange)
+        decls += "struct " + prefix + "DepthRangeParameters { float near; float far; float diff; };\n"
+                 "uniform " + prefix + "DepthRangeParameters " + prefix + "DepthRange;\n";
+    if (numSamples) decls += "uniform int " + prefix + "NumSamples;\n";
+    if (decls.empty()) return source;
+    if (insertAt == std::string::npos) insertAt = out.size();
+    const long line = 1 + std::count(out.begin(), out.begin() + static_cast<long>(insertAt), '\n');
+    out.insert(insertAt, decls + "#line " + std::to_string(line) + "\n");
+    return out;
 }
 
 }  // namespace wmgl::shader

@@ -2,8 +2,10 @@
 // (GL 3.3 sections 2.11-2.12, 6.1.15).
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <string>
+#include <type_traits>
 
 #include "core/context.h"
 #include "core/limits.h"
@@ -39,7 +41,7 @@ GLenum stageToGL(Stage stage) {
 namespace api {
 namespace {
 
-constexpr GLint kMaxCombinedTextureUnits = 48;
+constexpr GLint kMaxCombinedTextureUnits = limits::kMaxCombinedTextureUnits;
 
 void copyString(const std::string& s, GLsizei bufSize, GLsizei* length, GLchar* out) {
     if (bufSize <= 0 || !out) {
@@ -138,7 +140,19 @@ TypeInfo typeInfo(GLenum type) {
     case GL_FLOAT_MAT4x2: return {'f', 4, 2};
     case GL_FLOAT_MAT4x3: return {'f', 4, 3};
     case GL_DOUBLE: return {'d', 1, 1};
-    default: return {shader::glTypeIsSampler(type) ? 's' : 'f', 1, 1};
+    case GL_DOUBLE_VEC2: return {'d', 1, 2};
+    case GL_DOUBLE_VEC3: return {'d', 1, 3};
+    case GL_DOUBLE_VEC4: return {'d', 1, 4};
+    case GL_DOUBLE_MAT2: return {'d', 2, 2};
+    case GL_DOUBLE_MAT3: return {'d', 3, 3};
+    case GL_DOUBLE_MAT4: return {'d', 4, 4};
+    case GL_DOUBLE_MAT2x3: return {'d', 2, 3};
+    case GL_DOUBLE_MAT2x4: return {'d', 2, 4};
+    case GL_DOUBLE_MAT3x2: return {'d', 3, 2};
+    case GL_DOUBLE_MAT3x4: return {'d', 3, 4};
+    case GL_DOUBLE_MAT4x2: return {'d', 4, 2};
+    case GL_DOUBLE_MAT4x3: return {'d', 4, 3};
+    default: return {shader::glTypeIsSampler(type) ? 's' : shader::glTypeIsImage(type) ? 'g' : 'f', 1, 1};
     }
 }
 
@@ -163,14 +177,24 @@ void setUniform(Context& ctx, Program* p, GLint location, GLsizei count, char ki
     const TypeInfo info = typeInfo(u->type);
     if (info.columns != 1 || info.rows != components) return ctx.setError(GL_INVALID_OPERATION);
     if (count > 1 && u->size == 1) return ctx.setError(GL_INVALID_OPERATION);
-    if (info.base == 's') {
+    if (info.base == 's' || info.base == 'g') {
         if (kind != 'i' || components != 1) return ctx.setError(GL_INVALID_OPERATION);
     } else if (info.base == 'b') {
-        // bools accept f, i and u variants
+        // bools accept f, i and u variants (not d)
+        if (kind == 'd') return ctx.setError(GL_INVALID_OPERATION);
     } else if (info.base != kind) {
         return ctx.setError(GL_INVALID_OPERATION);
     }
     const GLsizei n = std::min<GLsizei>(count, u->size - element);
+    if (info.base == 'g') {
+        // Image uniforms (GL 4.2) hold image unit numbers.
+        for (GLsizei i = 0; i < n; ++i)
+            if (static_cast<GLint>(values[i]) < 0 || static_cast<GLint>(values[i]) >= limits::kMaxImageUnits)
+                return ctx.setError(GL_INVALID_VALUE);
+        for (GLsizei i = 0; i < n; ++i) p->imageUnits[static_cast<size_t>(u->imageSlot + element + i)] = static_cast<GLint>(values[i]);
+        ctx.markDirty(kDirtyTextures);
+        return;
+    }
     if (info.base == 's') {
         for (GLsizei i = 0; i < n; ++i) {
             const GLint unit = static_cast<GLint>(values[i]);
@@ -185,7 +209,10 @@ void setUniform(Context& ctx, Program* p, GLint location, GLsizei count, char ki
         uint8_t* dst = p->uniformData.data() + u->offset + (element + i) * stride;
         for (int c = 0; c < components; ++c) {
             const T v = values[i * components + c];
-            if (info.base == 'b') {
+            if (info.base == 'd') {
+                const double d = static_cast<double>(v);
+                std::memcpy(dst + c * 8, &d, 8);
+            } else if (info.base == 'b') {
                 const uint32_t b = v != T(0) ? 1u : 0u;
                 std::memcpy(dst + c * 4, &b, 4);
             } else if (info.base == 'f') {
@@ -200,8 +227,11 @@ void setUniform(Context& ctx, Program* p, GLint location, GLsizei count, char ki
     ctx.markDirty(kDirtyUniforms);
 }
 
+template <class T>
 void setUniformMatrix(Context& ctx, Program* p, GLint location, GLsizei count, GLboolean transpose, int columns, int rows,
-                      const GLfloat* values) {
+                      const T* values) {
+    constexpr bool isDouble = std::is_same_v<T, GLdouble>;
+    constexpr size_t size = isDouble ? 8 : 4;
     if (!p) return ctx.setError(GL_INVALID_OPERATION);  // checked before location -1 is ignored
     if (location == -1) return;
     if (!p->linked) return ctx.setError(GL_INVALID_OPERATION);
@@ -210,19 +240,20 @@ void setUniformMatrix(Context& ctx, Program* p, GLint location, GLsizei count, G
     const shader::UniformInfo* u = uniformAt(*p, location, element);
     if (!u) return ctx.setError(GL_INVALID_OPERATION);
     const TypeInfo info = typeInfo(u->type);
-    if (info.base != 'f' || info.columns != columns || info.rows != rows) return ctx.setError(GL_INVALID_OPERATION);
+    if (info.base != (isDouble ? 'd' : 'f') || info.columns != columns || info.rows != rows)
+        return ctx.setError(GL_INVALID_OPERATION);
     if (count > 1 && u->size == 1) return ctx.setError(GL_INVALID_OPERATION);
     const GLsizei n = std::min<GLsizei>(count, u->size - element);
     const size_t matrixStride = u->matrixStride ? static_cast<size_t>(u->matrixStride) : 16;
     const size_t arrayStride = u->arrayStride ? static_cast<size_t>(u->arrayStride) : matrixStride * static_cast<size_t>(columns);
     for (GLsizei i = 0; i < n; ++i) {
-        const GLfloat* m = values + i * columns * rows;
+        const T* m = values + i * columns * rows;
         uint8_t* dst = p->uniformData.data() + u->offset + (element + i) * arrayStride;
         for (int c = 0; c < columns; ++c)
             for (int r = 0; r < rows; ++r) {
-                const float v = transpose ? m[r * columns + c] : m[c * rows + r];
-                if (u->rowMajor) std::memcpy(dst + r * matrixStride + c * 4, &v, 4);
-                else std::memcpy(dst + c * matrixStride + r * 4, &v, 4);
+                const T v = transpose ? m[r * columns + c] : m[c * rows + r];
+                if (u->rowMajor) std::memcpy(dst + r * matrixStride + c * size, &v, size);
+                else std::memcpy(dst + c * matrixStride + r * size, &v, size);
             }
     }
     ++p->uniformVersion;
@@ -471,9 +502,22 @@ void linkFrom(Context& ctx, Program* p, shader::LinkInput input, std::string log
     linked->link = std::move(result);
     linked->input = std::move(input);
     linked->uid = nextLinkedProgramId();
-    p->uniformData.assign((linked->link.defaultBlockSize + 15) & ~15u, 0);
+    p->uniformData = linked->link.defaultBlockInit;  // uniform initializers, else zero
+    p->uniformData.resize((linked->link.defaultBlockSize + 15) & ~15u, 0);
     p->uniformBlockBindings.assign(linked->link.blocks.size(), 0);
     p->samplerUnits.assign(linked->link.samplers.size(), 0);
+    p->imageUnits.assign(linked->link.images.size(), 0);
+    // layout(binding = N) (GL 4.2) gives the initial bindings and units;
+    // array elements take consecutive ones.
+    for (size_t b = 0; b < linked->link.blocks.size(); ++b)
+        if (linked->link.blocks[b].explicitBinding >= 0) p->uniformBlockBindings[b] = static_cast<GLuint>(linked->link.blocks[b].explicitBinding);
+    for (const shader::UniformInfo& u : linked->link.uniforms) {
+        if (u.explicitBinding < 0) continue;
+        for (GLint e = 0; e < u.size; ++e) {
+            if (u.samplerSlot >= 0) p->samplerUnits[static_cast<size_t>(u.samplerSlot + e)] = u.explicitBinding + e;
+            if (u.imageSlot >= 0) p->imageUnits[static_cast<size_t>(u.imageSlot + e)] = u.explicitBinding + e;
+        }
+    }
     p->linked = std::move(linked);
     ++p->uniformVersion;
     if (ctx.state.program.get() == p) ctx.markDirty(kDirtyProgram | kDirtyUniforms | kDirtyTextures | kDirtyVertexInput);
@@ -538,6 +582,7 @@ void UseProgram(Context& ctx, GLuint program) {
         if (!p->linkStatus) return ctx.setError(GL_INVALID_OPERATION);
         next = RefPtr<Program>(p);
     }
+    resetSubroutineSelections(ctx);
     RefPtr<Program> previous = ctx.state.program;
     if (previous == next) return;
     if (next) ++next->useCount;
@@ -749,6 +794,10 @@ void GetProgramiv(Context& ctx, GLuint program, GLenum pname, GLint* params) {
     case GL_ACTIVE_UNIFORMS: *params = link ? static_cast<GLint>(link->visibleUniformCount()) : 0; return;
     case GL_ACTIVE_UNIFORM_MAX_LENGTH: *params = link ? maxLength(link->uniforms, link->visibleUniformCount()) : 0; return;
     case GL_ACTIVE_UNIFORM_BLOCKS: *params = link ? static_cast<GLint>(link->visibleBlockCount()) : 0; return;
+    case GL_ACTIVE_ATOMIC_COUNTER_BUFFERS:
+        if (!ctx.atomicCounters()) break;
+        *params = link ? static_cast<GLint>(link->atomicBuffers.size()) : 0;
+        return;
     case GL_ACTIVE_UNIFORM_BLOCK_MAX_NAME_LENGTH: *params = link ? maxLength(link->blocks, link->visibleBlockCount()) : 0; return;
     case GL_TRANSFORM_FEEDBACK_BUFFER_MODE: *params = static_cast<GLint>(p->transformFeedbackMode); return;
     case GL_TRANSFORM_FEEDBACK_VARYINGS: *params = link ? static_cast<GLint>(link->transformFeedback.size()) : 0; return;
@@ -758,6 +807,24 @@ void GetProgramiv(Context& ctx, GLuint program, GLenum pname, GLint* params) {
         *params = pname == GL_GEOMETRY_VERTICES_OUT ? link->geometryVerticesOut
                   : pname == GL_GEOMETRY_INPUT_TYPE ? static_cast<GLint>(link->geometryInputType)
                                                     : static_cast<GLint>(link->geometryOutputType);
+        return;
+    case GL_TESS_CONTROL_OUTPUT_VERTICES:
+        if (!ctx.tessellationShaders()) break;
+        if (!link || !link->stages[static_cast<int>(shader::Stage::TessControl)].present) return ctx.setError(GL_INVALID_OPERATION);
+        *params = link->tess.verticesOut;
+        return;
+    case GL_TESS_GEN_MODE: case GL_TESS_GEN_SPACING: case GL_TESS_GEN_VERTEX_ORDER: case GL_TESS_GEN_POINT_MODE:
+        if (!ctx.tessellationShaders()) break;
+        if (!link || !link->stages[static_cast<int>(shader::Stage::TessEval)].present) return ctx.setError(GL_INVALID_OPERATION);
+        *params = pname == GL_TESS_GEN_MODE      ? static_cast<GLint>(link->tess.mode)
+                  : pname == GL_TESS_GEN_SPACING ? static_cast<GLint>(link->tess.spacing)
+                  : pname == GL_TESS_GEN_VERTEX_ORDER ? static_cast<GLint>(link->tess.order)
+                                                      : (link->tess.pointMode ? GL_TRUE : GL_FALSE);
+        return;
+    case GL_GEOMETRY_SHADER_INVOCATIONS:
+        if (ctx.version() < 40 && !ctx.hasExtension("GL_ARB_gpu_shader5")) break;
+        if (!link || !link->stages[static_cast<int>(shader::Stage::Geometry)].present) return ctx.setError(GL_INVALID_OPERATION);
+        *params = link->geometryInvocations;
         return;
     case GL_COMPUTE_WORK_GROUP_SIZE:
         if (!ctx.computeShaders()) break;
@@ -771,7 +838,10 @@ void GetProgramiv(Context& ctx, GLuint program, GLenum pname, GLint* params) {
         if (programBinaries(ctx)) { *params = programBinaryLength(*p); return; }
         break;
     case GL_PROGRAM_SEPARABLE:
-        if (separateShaderObjects(ctx)) { *params = p->separable; return; }
+        // A program whose last link failed (or that never linked) reports the
+        // initial FALSE, as the Khronos CTS expects of glCreateShaderProgramv
+        // with a shader that does not compile (Mesa behaves the same).
+        if (separateShaderObjects(ctx)) { *params = p->linkStatus ? p->separable : GL_FALSE; return; }
         break;
     default: break;
     }
@@ -787,8 +857,22 @@ void GetProgramInfoLog(Context& ctx, GLuint program, GLsizei bufSize, GLsizei* l
 GLint GetAttribLocation(Context& ctx, GLuint program, const GLchar* name) {
     Program* p = linkedProgramOrError(ctx, program);
     if (!p || !name || std::strncmp(name, "gl_", 3) == 0) return -1;
-    for (const shader::AttribInfo& a : p->linked->link.attribs)
-        if (a.name == name && !a.conventional) return a.location;
+    const std::string wanted = name;
+    for (const shader::AttribInfo& a : p->linked->link.attribs) {
+        if (a.conventional) continue;
+        if (a.name == wanted) return a.location;
+        // Elements of an attribute array: "a[i]" (each element takes the type's locations).
+        const std::string base = a.name.size() > 3 && a.name.compare(a.name.size() - 3, 3, "[0]") == 0
+                                     ? a.name.substr(0, a.name.size() - 3)
+                                     : a.name;
+        if ((a.array || a.size > 1) && wanted.size() > base.size() + 2 && wanted.compare(0, base.size(), base) == 0 &&
+            wanted[base.size()] == '[' && wanted.back() == ']') {
+            const std::string digits = wanted.substr(base.size() + 1, wanted.size() - base.size() - 2);
+            if (digits.empty() || digits.find_first_not_of("0123456789") != std::string::npos) continue;
+            const long index = std::strtol(digits.c_str(), nullptr, 10);
+            if (index < a.size) return a.location + static_cast<GLint>(index) * shader::glTypeLocations(a.type);
+        }
+    }
     return -1;
 }
 
@@ -858,18 +942,53 @@ void GetActiveUniformsiv(Context& ctx, GLuint program, GLsizei count, const GLui
         case GL_UNIFORM_SIZE: params[i] = u.size; break;
         case GL_UNIFORM_NAME_LENGTH: params[i] = static_cast<GLint>(u.name.size() + 1); break;
         case GL_UNIFORM_BLOCK_INDEX: params[i] = u.blockIndex; break;
-        case GL_UNIFORM_OFFSET: params[i] = u.blockIndex >= 0 ? u.offset : -1; break;
+        // Block members and atomic counters (GL 4.2) have offsets and strides.
+        case GL_UNIFORM_OFFSET: params[i] = u.blockIndex >= 0 || u.atomicBufferIndex >= 0 ? u.offset : -1; break;
         case GL_UNIFORM_ARRAY_STRIDE: {
             // Arrays (named "x[0]") report their stride even with one element.
             const bool array = !u.name.empty() && u.name.back() == ']';
-            params[i] = u.blockIndex >= 0 ? (array ? u.arrayStride : 0) : -1;
+            params[i] = u.blockIndex >= 0 ? (array ? u.arrayStride : 0) : u.atomicBufferIndex >= 0 ? (array ? 4 : 0) : -1;
             break;
         }
-        case GL_UNIFORM_MATRIX_STRIDE: params[i] = u.blockIndex >= 0 ? u.matrixStride : -1; break;
+        case GL_UNIFORM_ATOMIC_COUNTER_BUFFER_INDEX:
+            if (!ctx.atomicCounters()) return ctx.setError(GL_INVALID_ENUM);
+            params[i] = u.atomicBufferIndex;
+            break;
+        case GL_UNIFORM_MATRIX_STRIDE: params[i] = u.blockIndex >= 0 ? u.matrixStride : u.atomicBufferIndex >= 0 ? 0 : -1; break;
         case GL_UNIFORM_IS_ROW_MAJOR: params[i] = u.blockIndex >= 0 && u.rowMajor; break;
         default: return ctx.setError(GL_INVALID_ENUM);
         }
     }
+}
+
+// GL 4.2 / GL_ARB_shader_atomic_counters.
+void GetActiveAtomicCounterBufferiv(Context& ctx, GLuint program, GLuint bufferIndex, GLenum pname, GLint* params) {
+    if (!ctx.atomicCounters()) return ctx.unimplemented("glGetActiveAtomicCounterBufferiv");
+    Program* p = programOrError(ctx, program);
+    if (!p) return;
+    const shader::LinkResult* link = p->linked && p->linkStatus ? &p->linked->link : nullptr;
+    if (!link || bufferIndex >= link->atomicBuffers.size()) return ctx.setError(GL_INVALID_VALUE);
+    const shader::AtomicCounterBufferInfo& b = link->atomicBuffers[bufferIndex];
+    auto referenced = [&](shader::Stage stage) { return (b.stageMask >> static_cast<int>(stage)) & 1 ? 1 : 0; };
+    switch (pname) {
+    case GL_ATOMIC_COUNTER_BUFFER_BINDING: *params = static_cast<GLint>(b.binding); return;
+    case GL_ATOMIC_COUNTER_BUFFER_DATA_SIZE: *params = b.dataSize; return;
+    case GL_ATOMIC_COUNTER_BUFFER_ACTIVE_ATOMIC_COUNTERS: *params = static_cast<GLint>(b.activeUniforms.size()); return;
+    case GL_ATOMIC_COUNTER_BUFFER_ACTIVE_ATOMIC_COUNTER_INDICES:
+        for (size_t i = 0; i < b.activeUniforms.size(); ++i) params[i] = b.activeUniforms[i];
+        return;
+    case GL_ATOMIC_COUNTER_BUFFER_REFERENCED_BY_VERTEX_SHADER: *params = referenced(shader::Stage::Vertex); return;
+    case GL_ATOMIC_COUNTER_BUFFER_REFERENCED_BY_TESS_CONTROL_SHADER: *params = referenced(shader::Stage::TessControl); return;
+    case GL_ATOMIC_COUNTER_BUFFER_REFERENCED_BY_TESS_EVALUATION_SHADER: *params = referenced(shader::Stage::TessEval); return;
+    case GL_ATOMIC_COUNTER_BUFFER_REFERENCED_BY_GEOMETRY_SHADER: *params = referenced(shader::Stage::Geometry); return;
+    case GL_ATOMIC_COUNTER_BUFFER_REFERENCED_BY_FRAGMENT_SHADER: *params = referenced(shader::Stage::Fragment); return;
+    case GL_ATOMIC_COUNTER_BUFFER_REFERENCED_BY_COMPUTE_SHADER:
+        if (!ctx.computeShaders()) break;
+        *params = referenced(shader::Stage::Compute);
+        return;
+    default: break;
+    }
+    ctx.setError(GL_INVALID_ENUM);
 }
 
 void GetUniformIndices(Context& ctx, GLuint program, GLsizei count, const GLchar* const* names, GLuint* indices) {
@@ -921,6 +1040,11 @@ void GetActiveUniformBlockiv(Context& ctx, GLuint program, GLuint blockIndex, GL
         if (!ctx.computeShaders()) break;
         *params = (b.stageMask & stageBit(shader::Stage::Compute)) != 0;
         return;
+    case GL_UNIFORM_BLOCK_REFERENCED_BY_TESS_CONTROL_SHADER: case GL_UNIFORM_BLOCK_REFERENCED_BY_TESS_EVALUATION_SHADER:
+        if (!ctx.tessellationShaders()) break;
+        *params = (b.stageMask & stageBit(pname == GL_UNIFORM_BLOCK_REFERENCED_BY_TESS_CONTROL_SHADER ? shader::Stage::TessControl
+                                                                                                      : shader::Stage::TessEval)) != 0;
+        return;
     default: break;
     }
     ctx.setError(GL_INVALID_ENUM);
@@ -965,7 +1089,6 @@ WMGL_UNIFORM_V(1uiv, GLuint, 'u', 1)
 WMGL_UNIFORM_V(2uiv, GLuint, 'u', 2)
 WMGL_UNIFORM_V(3uiv, GLuint, 'u', 3)
 WMGL_UNIFORM_V(4uiv, GLuint, 'u', 4)
-#undef WMGL_UNIFORM_V
 
 void Uniform1f(Context& ctx, GLint l, GLfloat x) { Uniform1fv(ctx, l, 1, &x); }
 void Uniform2f(Context& ctx, GLint l, GLfloat x, GLfloat y) { const GLfloat v[] = {x, y}; Uniform2fv(ctx, l, 1, v); }
@@ -980,40 +1103,29 @@ void Uniform2ui(Context& ctx, GLint l, GLuint x, GLuint y) { const GLuint v[] = 
 void Uniform3ui(Context& ctx, GLint l, GLuint x, GLuint y, GLuint z) { const GLuint v[] = {x, y, z}; Uniform3uiv(ctx, l, 1, v); }
 void Uniform4ui(Context& ctx, GLint l, GLuint x, GLuint y, GLuint z, GLuint w) { const GLuint v[] = {x, y, z, w}; Uniform4uiv(ctx, l, 1, v); }
 
-// Double-precision ProgramUniform* (listed by GL_ARB_separate_shader_objects
-// for GL_ARB_gpu_shader_fp64 implementations): no shader has double
-// uniforms here, so every location other than -1 is a type mismatch.
-namespace {
-void programUniformDouble(Context& ctx, GLuint program, GLint location) {
-    if (!linkedProgramOrError(ctx, program) || location == -1) return;
-    ctx.setError(GL_INVALID_OPERATION);
+// GL_ARB_gpu_shader_fp64: double uniforms (and their program forms).
+WMGL_UNIFORM_V(1dv, GLdouble, 'd', 1)
+WMGL_UNIFORM_V(2dv, GLdouble, 'd', 2)
+WMGL_UNIFORM_V(3dv, GLdouble, 'd', 3)
+WMGL_UNIFORM_V(4dv, GLdouble, 'd', 4)
+#undef WMGL_UNIFORM_V
+void Uniform1d(Context& ctx, GLint l, GLdouble x) { Uniform1dv(ctx, l, 1, &x); }
+void Uniform2d(Context& ctx, GLint l, GLdouble x, GLdouble y) { const GLdouble v[] = {x, y}; Uniform2dv(ctx, l, 1, v); }
+void Uniform3d(Context& ctx, GLint l, GLdouble x, GLdouble y, GLdouble z) { const GLdouble v[] = {x, y, z}; Uniform3dv(ctx, l, 1, v); }
+void Uniform4d(Context& ctx, GLint l, GLdouble x, GLdouble y, GLdouble z, GLdouble w) {
+    const GLdouble v[] = {x, y, z, w};
+    Uniform4dv(ctx, l, 1, v);
 }
-}  // namespace
-void ProgramUniform1d(Context& ctx, GLuint p, GLint l, GLdouble) { programUniformDouble(ctx, p, l); }
-void ProgramUniform2d(Context& ctx, GLuint p, GLint l, GLdouble, GLdouble) { programUniformDouble(ctx, p, l); }
-void ProgramUniform3d(Context& ctx, GLuint p, GLint l, GLdouble, GLdouble, GLdouble) { programUniformDouble(ctx, p, l); }
-void ProgramUniform4d(Context& ctx, GLuint p, GLint l, GLdouble, GLdouble, GLdouble, GLdouble) { programUniformDouble(ctx, p, l); }
-#define WMGL_UNIFORM_DOUBLE_V(Name) \
-    void ProgramUniform##Name(Context& ctx, GLuint p, GLint l, GLsizei, const GLdouble*) { programUniformDouble(ctx, p, l); }
-WMGL_UNIFORM_DOUBLE_V(1dv)
-WMGL_UNIFORM_DOUBLE_V(2dv)
-WMGL_UNIFORM_DOUBLE_V(3dv)
-WMGL_UNIFORM_DOUBLE_V(4dv)
-#undef WMGL_UNIFORM_DOUBLE_V
-#define WMGL_UNIFORM_DOUBLE_MATRIX(Name) \
-    void ProgramUniformMatrix##Name##dv(Context& ctx, GLuint p, GLint l, GLsizei, GLboolean, const GLdouble*) { \
-        programUniformDouble(ctx, p, l); \
-    }
-WMGL_UNIFORM_DOUBLE_MATRIX(2)
-WMGL_UNIFORM_DOUBLE_MATRIX(3)
-WMGL_UNIFORM_DOUBLE_MATRIX(4)
-WMGL_UNIFORM_DOUBLE_MATRIX(2x3)
-WMGL_UNIFORM_DOUBLE_MATRIX(2x4)
-WMGL_UNIFORM_DOUBLE_MATRIX(3x2)
-WMGL_UNIFORM_DOUBLE_MATRIX(3x4)
-WMGL_UNIFORM_DOUBLE_MATRIX(4x2)
-WMGL_UNIFORM_DOUBLE_MATRIX(4x3)
-#undef WMGL_UNIFORM_DOUBLE_MATRIX
+void ProgramUniform1d(Context& ctx, GLuint p, GLint l, GLdouble x) { ProgramUniform1dv(ctx, p, l, 1, &x); }
+void ProgramUniform2d(Context& ctx, GLuint p, GLint l, GLdouble x, GLdouble y) { const GLdouble v[] = {x, y}; ProgramUniform2dv(ctx, p, l, 1, v); }
+void ProgramUniform3d(Context& ctx, GLuint p, GLint l, GLdouble x, GLdouble y, GLdouble z) {
+    const GLdouble v[] = {x, y, z};
+    ProgramUniform3dv(ctx, p, l, 1, v);
+}
+void ProgramUniform4d(Context& ctx, GLuint p, GLint l, GLdouble x, GLdouble y, GLdouble z, GLdouble w) {
+    const GLdouble v[] = {x, y, z, w};
+    ProgramUniform4dv(ctx, p, l, 1, v);
+}
 
 // GL_ARB_separate_shader_objects scalar forms.
 void ProgramUniform1f(Context& ctx, GLuint p, GLint l, GLfloat x) { ProgramUniform1fv(ctx, p, l, 1, &x); }
@@ -1035,6 +1147,13 @@ void ProgramUniform4ui(Context& ctx, GLuint p, GLint l, GLuint x, GLuint y, GLui
     }                                                                                                          \
     void ProgramUniformMatrix##Name##fv(Context& ctx, GLuint program, GLint location, GLsizei count, GLboolean transpose, \
                                         const GLfloat* value) {                                                \
+        setUniformMatrix(ctx, linkedProgramOrError(ctx, program), location, count, transpose, c, r, value);    \
+    }                                                                                                          \
+    void UniformMatrix##Name##dv(Context& ctx, GLint location, GLsizei count, GLboolean transpose, const GLdouble* value) { \
+        setUniformMatrix(ctx, current(ctx), location, count, transpose, c, r, value);                          \
+    }                                                                                                          \
+    void ProgramUniformMatrix##Name##dv(Context& ctx, GLuint program, GLint location, GLsizei count, GLboolean transpose, \
+                                        const GLdouble* value) {                                               \
         setUniformMatrix(ctx, linkedProgramOrError(ctx, program), location, count, transpose, c, r, value);    \
     }
 WMGL_UNIFORM_MATRIX(2, 2, 2)
@@ -1062,15 +1181,34 @@ void getUniform(Context& ctx, GLuint program, GLint location, T* params) {
         *params = static_cast<T>(p->samplerUnits[static_cast<size_t>(u->samplerSlot + element)]);
         return;
     }
+    if (info.base == 'g') {
+        *params = static_cast<T>(p->imageUnits[static_cast<size_t>(u->imageSlot + element)]);
+        return;
+    }
     const size_t matrixStride = u->matrixStride ? static_cast<size_t>(u->matrixStride) : 16;
     const size_t stride = u->arrayStride ? static_cast<size_t>(u->arrayStride)
                                          : (info.columns > 1 ? matrixStride * static_cast<size_t>(info.columns) : 16);
     const uint8_t* src = p->uniformData.data() + u->offset + element * stride;
+    const size_t size = info.base == 'd' ? 8 : 4;
     int out = 0;
     for (int c = 0; c < info.columns; ++c)
         for (int r = 0; r < info.rows; ++r) {
-            const uint8_t* at = info.columns > 1 ? src + c * matrixStride + r * 4 : src + r * 4;
-            if (info.base == 'f') { float v; std::memcpy(&v, at, 4); params[out++] = static_cast<T>(v); }
+            const uint8_t* at = info.columns > 1 ? (u->rowMajor ? src + r * matrixStride + c * size : src + c * matrixStride + r * size)
+                                                 : src + r * size;
+            // Floating-point values read as integers are rounded to the nearest integer (GL 4.6 section 2.2.2).
+            if (info.base == 'd' || info.base == 'f') {
+                double v;
+                if (info.base == 'd') {
+                    std::memcpy(&v, at, 8);
+                } else {
+                    float f;
+                    std::memcpy(&f, at, 4);
+                    v = f;
+                }
+                if constexpr (std::is_unsigned_v<T>) params[out++] = v > 0.0 ? static_cast<T>(std::floor(v + 0.5)) : T(0);
+                else if constexpr (std::is_integral_v<T>) params[out++] = static_cast<T>(std::floor(v + 0.5));
+                else params[out++] = static_cast<T>(v);
+            }
             else if (info.base == 'i') { int32_t v; std::memcpy(&v, at, 4); params[out++] = static_cast<T>(v); }
             else { uint32_t v; std::memcpy(&v, at, 4); params[out++] = static_cast<T>(v); }
         }
@@ -1101,6 +1239,19 @@ void TransformFeedbackVaryings(Context& ctx, GLuint program, GLsizei count, cons
     if (bufferMode == GL_SEPARATE_ATTRIBS && count > TransformFeedback::kMaxBuffers) return ctx.setError(GL_INVALID_VALUE);
     Program* p = programOrError(ctx, program);
     if (!p) return;
+    // GL_ARB_transform_feedback3: gl_NextBuffer and gl_SkipComponents1-4 only
+    // interleave, and gl_NextBuffer cannot go past the last buffer.
+    if (ctx.version() >= 40 || ctx.hasExtension("GL_ARB_transform_feedback3")) {
+        int nextBuffers = 0;
+        for (GLsizei i = 0; i < count && varyings; ++i) {
+            const char* name = varyings[i] ? varyings[i] : "";
+            const bool next = std::strcmp(name, "gl_NextBuffer") == 0;
+            const bool skip = std::strncmp(name, "gl_SkipComponents", 17) == 0 && name[17] >= '1' && name[17] <= '4' && !name[18];
+            if ((next || skip) && bufferMode != GL_INTERLEAVED_ATTRIBS) return ctx.setError(GL_INVALID_OPERATION);
+            nextBuffers += next ? 1 : 0;
+        }
+        if (nextBuffers >= TransformFeedback::kMaxBuffers) return ctx.setError(GL_INVALID_OPERATION);
+    }
     p->transformFeedbackVaryings.clear();
     for (GLsizei i = 0; i < count; ++i) p->transformFeedbackVaryings.emplace_back(varyings && varyings[i] ? varyings[i] : "");
     p->transformFeedbackMode = bufferMode;

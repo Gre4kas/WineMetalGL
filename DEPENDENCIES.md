@@ -7,13 +7,56 @@ configuration:
 | --- | --- | --- |
 | SPIRV-Cross | `bccaa94db814af33d8ef05c153e7c34d8bd4d685` | SPIR-V to GLSL/MSL translation |
 | glslang | `46ef757e048e760b46601e6e77ae0cb72c97bd2f` | GLSL parsing and SPIR-V generation |
+| Reference tessellator (Microsoft, MIT; from Mesa) | Mesa `65c2dc5a634b6ee31979546ec5eb5212d6ffe721` | GL tessellation (`vendor/tessellator`) |
 
 Local changes to vendored sources (each marked `WineMetalGL:` in the code):
 
 - glslang `glslang/MachineIndependent/linkValidate.cpp`, `checkStageIO`: the
   Vulkan "every input has a matching output" check skips built-in blocks
   (`gl_PerVertex`) and redeclared built-in inputs (`gl_ClipDistance`), which
-  GL provides implicitly.
+  GL provides implicitly, and inputs the stage never reads, which GL does
+  not require to be written.
+- glslang `glslang/MachineIndependent/linkValidate.cpp`, `isIoResizeArray`:
+  per-patch tessellation evaluation inputs (`patch in`) are not arrayed per
+  vertex, so `patch` arrays match their control-stage outputs at link time.
+- SPIRV-Cross `spirv_glsl.cpp`, `type_to_packed_alignment` and
+  `type_to_packed_size`: std140 rounds a matrix column (or row) up to the
+  alignment of a float vec4 (16 bytes), as GL 4.6 section 7.6.2.2 rule 4
+  says, not of a vector of the matrix's component type; double matrices with
+  two rows otherwise fail the layout check when geometry shaders are
+  translated to GLSL. Float layouts are unchanged.
+- glslang `glslang/MachineIndependent/ParseHelper.cpp`, `fixOffset`: an
+  atomic counter whose offset puts it past `gl_MaxAtomicCounterBufferSize` is
+  a compile-time error, as GLSL 4.20 requires.
+- glslang `glslang/MachineIndependent/Versions.{h,cpp}`: `GL_ARB_shader_subroutine`
+  is a known extension (and predefined macro); WineMetalGL lowers subroutines
+  before glslang parses a shader (`src/core/shader/subroutines.h`).
+- glslang `glslang/MachineIndependent/ParseHelper.cpp`, `redeclareBuiltinBlock`:
+  `gl_PerVertex` may be redeclared from GLSL 1.50, as desktop drivers allow,
+  instead of only from 4.10 or with `GL_ARB_separate_shader_objects`.
+- glslang `glslang/MachineIndependent/ParseHelper.cpp`, `setLayoutQualifier`:
+  `layout(binding)` is also accepted with `GL_ARB_shader_atomic_counters`,
+  which adds it for atomic counters.
+- SPIRV-Cross `spirv_msl.{hpp,cpp}`: an MSL option, `native_texture_atomics`,
+  emits image atomics as MSL 3.1 texture atomics instead of emulating them
+  through a buffer that aliases the texture.
+- SPIRV-Cross `spirv_msl.cpp`, `OpImageWrite`: a write to a `read_write`
+  texture is followed by `fence()`, so the invocation's later loads see it.
+- SPIRV-Cross `spirv_msl.cpp`, `InterpolateAtOffset`: the GLSL offset is
+  biased by 1/2 (upstream uses 7/16 for Intel GPUs), so on Apple GPUs an
+  offset of `gl_SamplePosition - 0.5` interpolates exactly at the sample.
+- glslang `glslang/MachineIndependent/ParseHelper.cpp`, `invariantCheck`:
+  desktop GLSL 4.20 and later accept `invariant` on inputs outside the vertex
+  stage, as desktop drivers do; only ESSL 3.00 and later restrict it to
+  outputs.
+- glslang `glslang/MachineIndependent/ParseHelper.cpp`, `layoutTypeCheck`:
+  an image's `layout(binding)` is checked against `gl_MaxImageUnits` (the
+  image units it names) instead of `gl_MaxCombinedTextureImageUnits`.
+- SPIRV-Cross `spirv_glsl.cpp`, `to_function_name` and `to_function_args`:
+  GLSL has no `textureLod` for rectangle textures and their `texelFetch`
+  takes no level, so a level-0 sample (glslang's `texture()` outside fragment
+  shaders) is written as `texture()` and a fetch without a level, when
+  geometry and tessellation control stages are translated back to GLSL.
 
 The built dylib dynamically links only Apple system frameworks and libraries
 (Metal, Foundation, QuartzCore, CoreFoundation, libc++, libSystem and

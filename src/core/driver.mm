@@ -12,6 +12,7 @@
 #include "core/stats.h"
 #include "core/surface.h"
 #include "core/util/log.h"
+#include "core/util/version.h"
 
 #define WMGL_EXPORT extern "C" __attribute__((visibility("default")))
 
@@ -26,15 +27,29 @@ constexpr int kDebugBit = 0x1, kForwardCompatibleBit = 0x2, kRobustAccessBit = 0
 constexpr int kCoreBit = 0x1, kCompatBit = 0x2;
 constexpr int kLoseContextOnReset = 0x8252;
 
-void maxVersion(int& major, int& minor) {
-    major = 3;
-    minor = 3;
+// The highest version this core implements completely.
+constexpr int kHonestMajor = 4, kHonestMinor = 2;
+
+void honestMaxVersion(int& major, int& minor) {
+    major = kHonestMajor;
+    minor = kHonestMinor;
     if (const char* level = std::getenv("WINEMETALGL_MAX_FEATURE_LEVEL")) {
         int a = 0, b = 0;
-        if (std::sscanf(level, "%d.%d", &a, &b) == 2 && (a < 3 || (a == 3 && b <= 3))) {
+        if (std::sscanf(level, "%d.%d", &a, &b) == 2 && (a < kHonestMajor || (a == kHonestMajor && b <= kHonestMinor))) {
             major = a;
             minor = b;
         }
+    }
+}
+
+// The version contexts get: the honest one, unless the development override
+// (devMaxVersion, core/util/version.h) raises it.
+void maxVersion(int& major, int& minor) {
+    honestMaxVersion(major, minor);
+    const int dev = devMaxVersion();
+    if (dev > major * 10 + minor) {
+        major = dev / 10;
+        minor = dev % 10;
     }
 }
 
@@ -200,11 +215,7 @@ WMGL_EXPORT void* wmgl_get_proc_address(const char* name) { return lookupProc(na
 
 WMGL_EXPORT const char* wmgl_renderer_string(void) {
     // GL_RENDERER's string, WINEMETALGL_RENDERER included.
-    static const std::string renderer = [] {
-        const char* r = std::getenv("WINEMETALGL_RENDERER");
-        return r && *r ? std::string(r) : std::string(Device::get().name()) + " (WineMetalGL)";
-    }();
-    return renderer.c_str();
+    return rendererString().c_str();
 }
 
 WMGL_EXPORT void wmgl_version(int* major, int* minor, int* patch) {
@@ -220,8 +231,10 @@ WMGL_EXPORT unsigned int wmgl_video_memory_mb(void) {
 }
 
 WMGL_EXPORT void wmgl_max_versions(int* coreMajor, int* coreMinor, int* compatMajor, int* compatMinor) {
+    // WGL_WINE_query_renderer reports what the core implements, never the
+    // development override.
     int major, minor;
-    maxVersion(major, minor);
+    honestMaxVersion(major, minor);
     if (coreMajor) *coreMajor = major;
     if (coreMinor) *coreMinor = minor;
     if (compatMajor) *compatMajor = major;

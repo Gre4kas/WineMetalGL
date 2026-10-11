@@ -30,6 +30,15 @@ int queryTargetIndex(Context& ctx, GLenum target) {
     }
 }
 
+int queryTargetIndex(Context& ctx, GLenum target, GLuint stream) {
+    const int index = queryTargetIndex(ctx, target);
+    if (index < 0 || stream == 0) return index;
+    if (stream >= static_cast<GLuint>(kMaxVertexStreams)) return -2;
+    if (index == kQueryPrimitivesGenerated) return kQueryStreamFirst + static_cast<int>(stream) - 1;
+    if (index == kQueryXfbPrimitivesWritten) return kQueryStreamFirst + 3 + static_cast<int>(stream) - 1;
+    return -2;
+}
+
 namespace {
 
 bool isOcclusion(int index) {
@@ -218,9 +227,50 @@ void DeleteQueries(Context& ctx, GLsizei n, const GLuint* ids) {
 
 GLboolean IsQuery(Context& ctx, GLuint name) { return ctx.queries.exists(name) ? GL_TRUE : GL_FALSE; }
 
+namespace {
+
+// index: queryTargetIndex(ctx, target, stream); -1 is an invalid target, -2
+// an invalid stream for it.
+bool checkQuerySlot(Context& ctx, int index) {
+    if (index == -1) ctx.setError(GL_INVALID_ENUM);
+    else if (index < 0) ctx.setError(GL_INVALID_VALUE);
+    return index >= 0;
+}
+
+void beginQuery(Context& ctx, GLenum target, int index, GLuint name);
+void endQuery(Context& ctx, int index);
+
+}  // namespace
+
 void BeginQuery(Context& ctx, GLenum target, GLuint name) {
     const int index = queryTargetIndex(ctx, target);
-    if (index < 0) return ctx.setError(GL_INVALID_ENUM);
+    if (!checkQuerySlot(ctx, index)) return;
+    beginQuery(ctx, target, index, name);
+}
+
+void BeginQueryIndexed(Context& ctx, GLenum target, GLuint stream, GLuint name) {
+    if (ctx.version() < 40 && !ctx.hasExtension("GL_ARB_transform_feedback3")) return ctx.unimplemented("glBeginQueryIndexed");
+    const int index = queryTargetIndex(ctx, target, stream);
+    if (!checkQuerySlot(ctx, index)) return;
+    beginQuery(ctx, target, index, name);
+}
+
+void EndQuery(Context& ctx, GLenum target) {
+    const int index = queryTargetIndex(ctx, target);
+    if (!checkQuerySlot(ctx, index)) return;
+    endQuery(ctx, index);
+}
+
+void EndQueryIndexed(Context& ctx, GLenum target, GLuint stream) {
+    if (ctx.version() < 40 && !ctx.hasExtension("GL_ARB_transform_feedback3")) return ctx.unimplemented("glEndQueryIndexed");
+    const int index = queryTargetIndex(ctx, target, stream);
+    if (!checkQuerySlot(ctx, index)) return;
+    endQuery(ctx, index);
+}
+
+namespace {
+
+void beginQuery(Context& ctx, GLenum target, int index, GLuint name) {
     if (ctx.state.activeQueries[index]) return ctx.setError(GL_INVALID_OPERATION);
     if (name == 0 || !ctx.queries.isGenerated(name)) return ctx.setError(GL_INVALID_OPERATION);
     RefPtr<Query> q = ctx.queries.getRef(name);
@@ -257,9 +307,7 @@ void BeginQuery(Context& ctx, GLenum target, GLuint name) {
     }
 }
 
-void EndQuery(Context& ctx, GLenum target) {
-    const int index = queryTargetIndex(ctx, target);
-    if (index < 0) return ctx.setError(GL_INVALID_ENUM);
+void endQuery(Context& ctx, int index) {
     RefPtr<Query> q = ctx.state.activeQueries[index];
     if (!q) return ctx.setError(GL_INVALID_OPERATION);
     ctx.state.activeQueries[index] = nullptr;
@@ -273,6 +321,8 @@ void EndQuery(Context& ctx, GLenum target) {
         q->resultFinal = true;  // counted on the CPU
     }
 }
+
+}  // namespace
 
 void QueryCounter(Context& ctx, GLuint name, GLenum target) {
     if (target != GL_TIMESTAMP) return ctx.setError(GL_INVALID_ENUM);
@@ -292,6 +342,18 @@ void QueryCounter(Context& ctx, GLuint name, GLenum target) {
     markTimerEnd(ctx, *q);
 }
 
+namespace {
+
+void getQuery(Context& ctx, int index, GLenum pname, GLint* params) {
+    switch (pname) {
+    case GL_CURRENT_QUERY: *params = ctx.state.activeQueries[index] ? static_cast<GLint>(ctx.state.activeQueries[index]->name) : 0; return;
+    case GL_QUERY_COUNTER_BITS: *params = index == kQueryAnySamplesPassed || index == kQueryAnySamplesPassedConservative ? 1 : 64; return;
+    default: return ctx.setError(GL_INVALID_ENUM);
+    }
+}
+
+}  // namespace
+
 void GetQueryiv(Context& ctx, GLenum target, GLenum pname, GLint* params) {
     if (target == GL_TIMESTAMP) {
         if (pname != GL_QUERY_COUNTER_BITS) return ctx.setError(GL_INVALID_ENUM);
@@ -299,12 +361,16 @@ void GetQueryiv(Context& ctx, GLenum target, GLenum pname, GLint* params) {
         return;
     }
     const int index = queryTargetIndex(ctx, target);
-    if (index < 0) return ctx.setError(GL_INVALID_ENUM);
-    switch (pname) {
-    case GL_CURRENT_QUERY: *params = ctx.state.activeQueries[index] ? static_cast<GLint>(ctx.state.activeQueries[index]->name) : 0; return;
-    case GL_QUERY_COUNTER_BITS: *params = index == kQueryAnySamplesPassed || index == kQueryAnySamplesPassedConservative ? 1 : 64; return;
-    default: return ctx.setError(GL_INVALID_ENUM);
-    }
+    if (!checkQuerySlot(ctx, index)) return;
+    getQuery(ctx, index, pname, params);
+}
+
+void GetQueryIndexediv(Context& ctx, GLenum target, GLuint stream, GLenum pname, GLint* params) {
+    if (ctx.version() < 40 && !ctx.hasExtension("GL_ARB_transform_feedback3")) return ctx.unimplemented("glGetQueryIndexediv");
+    if (target == GL_TIMESTAMP && stream == 0) return GetQueryiv(ctx, target, pname, params);
+    const int index = queryTargetIndex(ctx, target, stream);
+    if (!checkQuerySlot(ctx, index)) return;
+    getQuery(ctx, index, pname, params);
 }
 
 namespace {

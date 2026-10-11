@@ -174,6 +174,10 @@ void TIntermediate::checkStageIO(TInfoSink& infoSink, TIntermediate& unit) {
             if (nextStageSymbol->getType().getBasicType() != EbtBlock &&
                 nextStageSymbol->getName().compare(0, 3, "gl_") == 0)
                 continue;
+            // WineMetalGL: an input the stage never reads needs no output
+            // (GL rules; it is only an error when statically used).
+            if (nextStageSymbol->getType().getBasicType() != EbtBlock && !unit.inIoAccessed(nextStageSymbol->getName()))
+                continue;
             bool found = false;
             for (auto& curStageInterm : linkerObjects) {
                 if (isSameSymbol(curStageInterm->getAsSymbolNode(), getStage(), nextStageSymbol, unit.getStage())) {
@@ -2439,7 +2443,9 @@ bool TIntermediate::isIoResizeArray(const TType& type, EShLanguage language) {
             ((language == EShLangGeometry    && type.getQualifier().storage == EvqVaryingIn) ||
             (language == EShLangTessControl && (type.getQualifier().storage == EvqVaryingIn || type.getQualifier().storage == EvqVaryingOut) &&
                 ! type.getQualifier().patch) ||
-            (language == EShLangTessEvaluation && type.getQualifier().storage == EvqVaryingIn) ||
+            // WineMetalGL: per-patch evaluation inputs are not arrayed per vertex.
+            (language == EShLangTessEvaluation && type.getQualifier().storage == EvqVaryingIn &&
+                ! type.getQualifier().patch) ||
             (language == EShLangFragment && type.getQualifier().storage == EvqVaryingIn &&
              (type.getQualifier().pervertexNV || type.getQualifier().pervertexEXT)) ||
             (language == EShLangMesh && type.getQualifier().storage == EvqVaryingOut &&

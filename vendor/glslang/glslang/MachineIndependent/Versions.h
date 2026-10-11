@@ -124,6 +124,8 @@ const char* const E_GL_ARB_texture_rectangle            = "GL_ARB_texture_rectan
 const char* const E_GL_3DL_array_objects                = "GL_3DL_array_objects";
 const char* const E_GL_ARB_shading_language_420pack     = "GL_ARB_shading_language_420pack";
 const char* const E_GL_ARB_texture_gather               = "GL_ARB_texture_gather";
+// WineMetalGL: GL_ARB_shader_subroutine is accepted (WineMetalGL lowers subroutines before glslang parses).
+const char* const E_GL_ARB_shader_subroutine            = "GL_ARB_shader_subroutine";
 const char* const E_GL_ARB_gpu_shader5                  = "GL_ARB_gpu_shader5";
 const char* const E_GL_ARB_separate_shader_objects      = "GL_ARB_separate_shader_objects";
 const char* const E_GL_ARB_compute_shader               = "GL_ARB_compute_shader";

@@ -74,6 +74,16 @@ struct IndexedBufferBinding {
     GLsizeiptr size = 0;  // 0 = whole buffer
 };
 
+// An image unit (GL 4.2 glBindImageTexture).
+struct ImageUnit {
+    RefPtr<Texture> texture;
+    GLint level = 0;
+    bool layered = false;
+    GLint layer = 0;
+    GLenum access = GL_READ_ONLY;
+    GLenum format = GL_R8;
+};
+
 struct TextureUnit {
     // Indexed by TextureTarget.
     std::array<RefPtr<Texture>, 11> bound;
@@ -90,10 +100,14 @@ GLenum textureTargetEnum(int index);
 
 struct ContextState {
     // Rasterization and fragment operations.
-    GLint viewport[4] = {0, 0, 0, 0};
-    GLdouble depthRange[2] = {0.0, 1.0};
-    bool scissorTest = false;
-    GLint scissor[4] = {0, 0, 0, 0};
+    // Viewports, depth ranges and scissor rectangles: GL 4.1 viewport
+    // arrays, index 0 being the non-indexed state. Viewports are floats
+    // (glViewportIndexedf); the scissor test is enabled per index.
+    static constexpr int kMaxViewports = 16;
+    GLfloat viewports[kMaxViewports][4] = {};
+    GLdouble depthRanges[kMaxViewports][2] = {};
+    uint32_t scissorTests = 0;  // bit per viewport index
+    GLint scissors[kMaxViewports][4] = {};
     bool cullFace = false;
     GLenum cullFaceMode = GL_BACK;
     GLenum frontFace = GL_CCW;
@@ -116,6 +130,10 @@ struct ContextState {
     bool primitiveRestartFixedIndex = false;
     bool textureCubeMapSeamless = false;
     uint32_t clipDistanceEnables = 0;
+    // Tessellation (GL 4.0): vertices per patch, and the levels used when no
+    // control shader writes them.
+    GLint patchVertices = 3;
+    GLfloat patchDefaultOuterLevel[4] = {1, 1, 1, 1}, patchDefaultInnerLevel[2] = {1, 1};
 
     bool depthTest = false;
     GLenum depthFunc = GL_LESS;
@@ -149,6 +167,10 @@ struct ContextState {
 
     // Clear values.
     GLfloat clearColor[4] = {0, 0, 0, 0};
+    // GL_EXT_texture_integer: the clear colour of integer buffers, once set
+    // (otherwise they take clearColor, converted).
+    double clearColorInteger[4] = {0, 0, 0, 0};
+    bool clearColorIntegerSet = false;
     GLdouble clearDepth = 1.0;
     GLint clearStencil = 0;
 
@@ -165,8 +187,13 @@ struct ContextState {
     RefPtr<Buffer> arrayBuffer, copyReadBuffer, copyWriteBuffer, pixelPackBuffer, pixelUnpackBuffer,
         textureBuffer, uniformBuffer, transformFeedbackBuffer, drawIndirectBuffer, dispatchIndirectBuffer,
         shaderStorageBuffer, atomicCounterBuffer, queryBuffer;
-    static constexpr int kMaxUniformBufferBindings = 36;  // = limits::kMaxUniformBufferBindings
+    static constexpr int kMaxUniformBufferBindings = 72;  // = limits::kMaxUniformBufferBindings
     std::array<IndexedBufferBinding, kMaxUniformBufferBindings> uniformBufferBindings;
+    // GL 4.2 atomic counter buffer bindings.
+    static constexpr int kMaxAtomicCounterBufferBindings = 8;  // = limits::kMaxAtomicCounterBufferBindings
+    std::array<IndexedBufferBinding, kMaxAtomicCounterBufferBindings> atomicCounterBufferBindings;
+    static constexpr int kMaxImageUnits = 8;  // = limits::kMaxImageUnits
+    std::array<ImageUnit, kMaxImageUnits> imageUnits;
     static constexpr int kMaxTextureUnits = 80;
     std::array<TextureUnit, kMaxTextureUnits> textureUnits;
     GLuint activeTexture = 0;
@@ -182,7 +209,7 @@ struct ContextState {
     GLenum defaultReadBuffer = GL_BACK;
 
     // Active queries by target index.
-    std::array<RefPtr<Query>, 8> activeQueries;
+    std::array<RefPtr<Query>, 12> activeQueries;  // by QueryIndex slot (core/query.h)
     struct {
         RefPtr<Query> query;
         GLenum mode = 0;
@@ -196,7 +223,9 @@ struct ContextState {
             GLint i[4];
             GLuint u[4];
         } value = {{0, 0, 0, 1}};
-        GLenum type = GL_FLOAT;  // GL_FLOAT, GL_INT, GL_UNSIGNED_INT
+        GLenum type = GL_FLOAT;  // GL_FLOAT, GL_INT, GL_UNSIGNED_INT, GL_DOUBLE (glVertexAttribL*)
+        // The value of 64-bit inputs (GL_ARB_vertex_attrib_64bit), set by glVertexAttribL*.
+        GLdouble d[4] = {0, 0, 0, 1};
     };
     // Generic attributes, then the conventional current values (current
     // colour, normal, texture coordinates, ...; compat/fixed_state.h).
@@ -210,6 +239,7 @@ struct ContextState {
 
     ContextState() {
         static_assert(kInternalAttribEnd == VertexArray::kAttribSlots, "conventional attribute slots");
+        for (auto& range : depthRanges) range[1] = 1.0;
         for (auto& mask : colorMask) mask = {true, true, true, true};
         // Initial current values (GL 3.3 compatibility table 6.5).
         genericAttribs[kConvColor].value = {{1, 1, 1, 1}};
