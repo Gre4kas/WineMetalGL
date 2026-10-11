@@ -22,6 +22,10 @@ struct StageOutputVar {
     GLenum type = 0;
     int arraySize = 0;       // 0 = not an array
     std::string expression;  // GLSL access path when it differs from name ("inst.member")
+    // A member of an output block without an instance name, captured by its
+    // plain name: its "Block.member" name (the emulations translate stages
+    // through GLSL that gives every block an instance name).
+    std::string qualified;
 };
 
 // Validates glTransformFeedbackVaryings against the capturing stage's outputs

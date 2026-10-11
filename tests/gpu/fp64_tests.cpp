@@ -329,3 +329,60 @@ void main() {
     glDeleteProgram(p);
     CHECK_GL();
 }
+
+// Interface blocks with double members between the vertex and fragment
+// stages, and an anonymous geometry output block captured by member names.
+TEST(gpu_fp64_interface_blocks) {
+    gpu::Fixture fixture(16, 16, true, 42);
+    CHECK(fixture.ok);
+    if (!fixture.ok) return;
+    const char* vs = R"(#version 400 core
+out VS_DATA { flat double a; flat dvec3 b[2]; flat dmat2x3 m; flat int i; };
+void main() {
+    a = 1.0lf / 3.0lf; b[0] = dvec3(1.0, 2.0, 3.0); b[1] = dvec3(-4.0); m = dmat2x3(5.0, 6.0, 7.0, 8.0, 9.0, 10.0); i = 11;
+    gl_Position = vec4(0.0, 0.0, 0.0, 1.0);
+})";
+    const char* fs = R"(#version 400 core
+in VS_DATA { flat double a; flat dvec3 b[2]; flat dmat2x3 m; flat int i; };
+out vec4 color;
+void main() {
+    bool good = a == 1.0lf / 3.0lf && b[0] == dvec3(1.0, 2.0, 3.0) && b[1] == dvec3(-4.0) &&
+                m == dmat2x3(5.0, 6.0, 7.0, 8.0, 9.0, 10.0) && i == 11;
+    color = good ? vec4(0.0, 1.0, 0.0, 1.0) : vec4(1.0, 0.0, 0.0, 1.0);
+})";
+    GLuint p = gpu::program(vs, fs);
+    GLuint vao = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glUseProgram(p);
+    glClearColor(0, 0, 0, 0);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glPointSize(16.0f);
+    glDrawArrays(GL_POINTS, 0, 1);
+    const std::vector<uint8_t> px = gpu::readRGBA8(8, 8, 1, 1);
+    const uint8_t green[4] = {0, 255, 0, 255};
+    CHECK(gpu::near(px.data(), green));
+    glDeleteProgram(p);
+
+    const char* vs2 = R"(#version 400 core
+flat out double v;
+void main() { v = double(gl_VertexID) + 0.25lf; gl_Position = vec4(0.0); })";
+    const char* gs = R"(#version 400 core
+layout(points) in;
+layout(points, max_vertices = 1) out;
+flat in double v[];
+out GS_DATA { flat double a; flat dvec2 b[2]; };
+void main() { a = v[0] * 3.0lf; b[0] = dvec2(v[0]); b[1] = dvec2(-v[0], 7.0); EmitVertex(); EndPrimitive(); })";
+    p = linkCapture(vs2, gs, nullptr, {"b[1]", "a"});
+    const std::vector<double> got = capture(p, 2, 2 * 3);
+    int bad = 0;
+    for (int n = 0; n < 2; ++n) {
+        const double x = n + 0.25;
+        const double want[3] = {-x, 7.0, x * 3.0};
+        for (int i = 0; i < 3; ++i) bad += !sameBits(got[static_cast<size_t>(n * 3 + i)], want[i]);
+    }
+    CHECK_EQ(bad, 0);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
+    CHECK_GL();
+}
