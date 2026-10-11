@@ -2,6 +2,7 @@
 
 #include "core/format/formats.h"
 #include "core/format/pixel_transfer.h"
+#include "core/format/vertex_decode.h"
 #include "test.h"
 
 using namespace wmgl;
@@ -65,4 +66,16 @@ TEST(format_packed_float_transfer_is_bit_exact) {
         CHECK(std::memcmp(stored, texels, sizeof(texels)) == 0);
         CHECK(std::memcmp(back, texels, sizeof(texels)) == 0);
     }
+}
+
+// GL_BGRA with a packed 2_10_10_10 type swaps x and z like GL_BGRA bytes
+// (KHR-GL43.vertex_attrib_binding.basic-input-case5).
+TEST(format_vertex_bgra_packed_swaps_red_and_blue) {
+    const uint32_t word = 0u | (1023u << 10) | (511u << 20) | (1u << 30);
+    float out[4];
+    decodeVertexFloat(reinterpret_cast<const uint8_t*>(&word), GL_UNSIGNED_INT_2_10_10_10_REV, GL_BGRA, true, out);
+    CHECK(out[0] > 0.49f && out[0] < 0.51f);
+    CHECK(out[1] == 1.0f);
+    CHECK(out[2] == 0.0f);
+    CHECK(out[3] > 0.33f && out[3] < 0.34f);
 }

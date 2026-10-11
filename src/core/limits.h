@@ -34,6 +34,8 @@ constexpr GLint kMaxShaderStorageBufferBindings = 16, kMaxStageStorageBlocks = 1
 constexpr GLint kMaxShaderStorageBlockSize = 1 << 27, kShaderStorageBufferOffsetAlignment = 16;
 constexpr GLint kMaxCombinedShaderOutputResources = kMaxCombinedStorageBlocks + kMaxImageUnits + kMaxDrawBuffers;
 constexpr GLint kMaxUniformLocations = 1024;  // GL 4.3 explicit uniform locations
+// GL 4.3 vertex attribute bindings (GL_MAX_VERTEX_ATTRIB_RELATIVE_OFFSET), GL 4.4 stride limit.
+constexpr GLint kMaxVertexAttribRelativeOffset = 2047, kMaxVertexAttribStride = 2048;
 constexpr GLint kMaxViewports = 16, kMaxGeometryShaderInvocations = 32;
 constexpr GLfloat kMaxTextureLodBias = 15.0f, kMaxAnisotropy = 16.0f;
 

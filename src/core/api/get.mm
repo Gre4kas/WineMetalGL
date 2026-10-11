@@ -176,6 +176,16 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
         default: out = ints({ctx.imageLoadStore() ? kMaxImageUniformsPerStage : 0}); break;  // GL_MAX_COMPUTE_IMAGE_UNIFORMS
         }
         return true;
+    case GL_MAX_VERTEX_ATTRIB_RELATIVE_OFFSET: case GL_MAX_VERTEX_ATTRIB_BINDINGS:
+        if (ctx.version() < 43 && !ctx.hasExtension("GL_ARB_vertex_attrib_binding")) return false;
+        out = ints({pname == GL_MAX_VERTEX_ATTRIB_BINDINGS ? VertexArray::kMaxBindings : kMaxVertexAttribRelativeOffset});
+        return true;
+    case GL_MAX_VERTEX_ATTRIB_STRIDE:
+        // GL 4.4; answered with the GL 4.3 binding queries too, as the limit
+        // holds there (KHR-GL43.vertex_attrib_binding.basic-state3 reads it).
+        if (ctx.version() < 43 && !ctx.hasExtension("GL_ARB_vertex_attrib_binding")) return false;
+        out = ints({kMaxVertexAttribStride});
+        return true;
     case GL_MAX_UNIFORM_LOCATIONS:
         if (ctx.version() < 43 && !ctx.hasExtension("GL_ARB_explicit_uniform_location")) return false;
         out = ints({kMaxUniformLocations});
@@ -691,6 +701,16 @@ bool getIndexed(Context& ctx, GLenum pname, GLuint index, Value& out, bool& badI
         out = pname == GL_ATOMIC_COUNTER_BUFFER_BINDING ? ints({nameOf(b.buffer)})
               : pname == GL_ATOMIC_COUNTER_BUFFER_START ? int64v(b.offset)
                                                         : int64v(b.size);
+        return true;
+    }
+    case GL_VERTEX_BINDING_BUFFER: case GL_VERTEX_BINDING_OFFSET: case GL_VERTEX_BINDING_STRIDE: case GL_VERTEX_BINDING_DIVISOR: {
+        if (ctx.version() < 43 && !ctx.hasExtension("GL_ARB_vertex_attrib_binding")) return false;
+        if (index >= static_cast<GLuint>(VertexArray::kMaxBindings)) { badIndex = true; return true; }
+        const VertexBinding& b = s.vertexArray->bindings[index];
+        out = pname == GL_VERTEX_BINDING_BUFFER   ? ints({nameOf(b.buffer)})
+              : pname == GL_VERTEX_BINDING_OFFSET ? int64v(b.offset)
+              : pname == GL_VERTEX_BINDING_STRIDE ? ints({b.stride})
+                                                  : ints({static_cast<int64_t>(b.divisor)});
         return true;
     }
     case GL_SHADER_STORAGE_BUFFER_BINDING: case GL_SHADER_STORAGE_BUFFER_START: case GL_SHADER_STORAGE_BUFFER_SIZE: {

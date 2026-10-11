@@ -164,3 +164,57 @@ void main() { o = vec4(1.0); })";
     glDeleteBuffers(1, &b1);
     glDeleteProgram(p);
 }
+
+// GL 4.3 vertex attribute bindings: two attributes formatted at relative
+// offsets in one binding, a divisor on another binding.
+GPU_TEST_VERSION(gpu_gl43_vertex_attrib_binding, 43) {
+    const char* vs = R"(#version 430 core
+layout(location = 0) in vec2 position;
+layout(location = 1) in vec4 color;
+layout(location = 2) in float scale;
+out vec4 c;
+void main() { c = color * scale; gl_Position = vec4(position, 0.0, 1.0); })";
+    const char* fs = R"(#version 430 core
+in vec4 c;
+out vec4 o;
+void main() { o = c; })";
+    GLuint p = gpu::program(vs, fs);
+    // Per vertex: position (2 floats) then colour (4 unsigned bytes); 12 bytes.
+    struct Vertex { float x, y; uint8_t r, g, b, a; };
+    const Vertex vertices[4] = {{-1, -1, 0, 255, 0, 255}, {1, -1, 0, 255, 0, 255}, {-1, 1, 0, 255, 0, 255}, {1, 1, 0, 255, 0, 255}};
+    const float scales[1] = {1.0f};
+    GLuint buffers[2], vao;
+    glGenBuffers(2, buffers);
+    glBindBuffer(GL_ARRAY_BUFFER, buffers[0]);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+    glBindBuffer(GL_ARRAY_BUFFER, buffers[1]);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(scales), scales, GL_STATIC_DRAW);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glVertexAttribFormat(0, 2, GL_FLOAT, GL_FALSE, 0);
+    glVertexAttribFormat(1, 4, GL_UNSIGNED_BYTE, GL_TRUE, 8);
+    glVertexAttribFormat(2, 1, GL_FLOAT, GL_FALSE, 0);
+    glVertexAttribBinding(0, 3);
+    glVertexAttribBinding(1, 3);
+    glVertexAttribBinding(2, 7);
+    glBindVertexBuffer(3, buffers[0], 0, sizeof(Vertex));
+    glBindVertexBuffer(7, buffers[1], 0, 4);
+    glVertexBindingDivisor(7, 1);
+    for (GLuint i = 0; i < 3; ++i) glEnableVertexAttribArray(i);
+    GLint binding = -1, stride = -1;
+    glGetVertexAttribiv(1, GL_VERTEX_ATTRIB_BINDING, &binding);
+    glGetIntegeri_v(GL_VERTEX_BINDING_STRIDE, 3, &stride);
+    CHECK_EQ(binding, 3);
+    CHECK_EQ(stride, static_cast<GLint>(sizeof(Vertex)));
+    glUseProgram(p);
+    glClearColor(0, 0, 0, 0);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, 1);
+    const uint8_t green[4] = {0, 255, 0, 255};
+    const std::vector<uint8_t> px = gpu::readRGBA8(32, 32, 1, 1);
+    CHECK(gpu::near(px.data(), green));
+    CHECK_GL();
+    glDeleteVertexArrays(1, &vao);
+    glDeleteBuffers(2, buffers);
+    glDeleteProgram(p);
+}

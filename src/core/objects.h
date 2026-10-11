@@ -209,13 +209,34 @@ struct VertexAttrib {
     GLintptr offset = 0;      // byte offset in buffer, or client pointer when buffer is null
     RefPtr<Buffer> buffer;
     GLuint divisor = 0;
+    // GL 4.3 vertex attribute bindings (generic attributes): the binding
+    // supplying buffer, offset, stride and divisor, and the format's offset
+    // within an element. The fields above hold the resolved values
+    // (VertexArray::resolveBinding); `pointerStride` is the stride given to
+    // glVertexAttribPointer (GL_VERTEX_ATTRIB_ARRAY_STRIDE), and a binding
+    // with stride 0 makes every vertex read the same element (`zeroStride`).
+    GLuint binding = 0;
+    GLuint relativeOffset = 0;
+    GLsizei pointerStride = 0;
+    GLintptr pointer = 0;  // GL_VERTEX_ATTRIB_ARRAY_POINTER: glVertexAttribPointer's value
+    bool zeroStride = false;
     GLsizei effectiveStride() const;
     uint32_t elementBytes() const;
 };
 
+// A GL 4.3 vertex buffer binding (glBindVertexBuffer).
+struct VertexBinding {
+    RefPtr<Buffer> buffer;
+    GLintptr offset = 0;
+    GLsizei stride = 16;
+    GLuint divisor = 0;
+};
+
 class VertexArray : public RefCounted, public Labeled {
 public:
-    explicit VertexArray(GLuint name) : name(name) {}
+    explicit VertexArray(GLuint name) : name(name) {
+        for (int i = 0; i < kMaxAttribs; ++i) attribs[static_cast<size_t>(i)].binding = static_cast<GLuint>(i);
+    }
     GLuint name;
     static constexpr int kMaxAttribs = 16;   // generic attributes (GL_MAX_VERTEX_ATTRIBS)
     // Generic attributes, then the compatibility profile's conventional arrays
@@ -223,6 +244,10 @@ public:
     // compat/fixed_state.h), which the lowered legacy built-ins read.
     static constexpr int kAttribSlots = 31;  // + 2 internal (compat/fixed_state.h InternalAttrib)
     std::array<VertexAttrib, kAttribSlots> attribs;
+    static constexpr int kMaxBindings = 16;  // GL_MAX_VERTEX_ATTRIB_BINDINGS
+    std::array<VertexBinding, kMaxBindings> bindings;
+    // Copies binding `index`'s state into the attributes that use it.
+    void resolveBinding(GLuint index);
     RefPtr<Buffer> elementBuffer;
     uint64_t version = 0;  // not read yet (state.h)
 };

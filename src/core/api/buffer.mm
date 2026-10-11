@@ -122,6 +122,8 @@ void DeleteBuffers(Context& ctx, GLsizei n, const GLuint* buffers) {
         if (s.vertexArray->elementBuffer == buffer) s.vertexArray->elementBuffer.reset();
         for (VertexAttrib& a : s.vertexArray->attribs)
             if (a.buffer == buffer) a.buffer.reset();
+        for (VertexBinding& b : s.vertexArray->bindings)
+            if (b.buffer == buffer) b.buffer.reset();
         for (IndexedBufferBinding& b : s.uniformBufferBindings)
             if (b.buffer == buffer) b = IndexedBufferBinding();
         for (IndexedBufferBinding& b : s.atomicCounterBufferBindings)

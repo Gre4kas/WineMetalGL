@@ -55,7 +55,8 @@
     X(glGetFloati_v) X(glFramebufferTexture) X(glGenTransformFeedbacks) X(glBindTransformFeedback)          \
     X(glDeleteTransformFeedbacks) X(glPauseTransformFeedback) X(glResumeTransformFeedback)                  \
     X(glDrawTransformFeedback) X(glPatchParameteri) X(glGetActiveAtomicCounterBufferiv) X(glMemoryBarrier)           \
-    X(glBindImageTexture) X(glTexStorage2D) X(glUniform1iv) X(glDrawElementsInstancedBaseVertex) X(glUniform1uiv)
+    X(glBindImageTexture) X(glTexStorage2D) X(glUniform1iv) X(glDrawElementsInstancedBaseVertex) X(glUniform1uiv)                   \
+    X(glVertexAttribFormat) X(glVertexAttribBinding) X(glBindVertexBuffer) X(glVertexBindingDivisor) X(glGetVertexAttribiv)
 
 #define WMGL_DECLARE_FUNC(name) extern PFN_##name name;
 WMGL_GPU_FUNCS(WMGL_DECLARE_FUNC)
