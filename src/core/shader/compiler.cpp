@@ -17,6 +17,7 @@
 
 #include "core/shader/glsl_upgrade.h"
 #include "core/shader/geometry.h"
+#include "core/shader/spirv_passes.h"
 #include "core/shader/transform_feedback.h"
 
 namespace wmgl::shader {
@@ -1445,7 +1446,7 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
         if (!stage.present || s == static_cast<int>(Stage::Geometry)) continue;
         const bool noRaster = variant == 1;
         try {
-            spirv_cross::CompilerMSL msl(rectImagesAs2D(stage.spirv));
+            spirv_cross::CompilerMSL msl(lowerGatherOffsets(rectImagesAs2D(stage.spirv)));
             spirv_cross::CompilerMSL::Options mslOptions;
             mslOptions.disable_rasterization = noRaster;
             mslOptions.platform = spirv_cross::CompilerMSL::Options::macOS;

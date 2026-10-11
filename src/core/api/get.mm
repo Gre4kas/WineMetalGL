@@ -292,6 +292,12 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
     case GL_SUBPIXEL_BITS: out = ints({8}); return true;
     case GL_MAX_PROGRAM_TEXEL_OFFSET: out = ints({7}); return true;
     case GL_MIN_PROGRAM_TEXEL_OFFSET: out = ints({-8}); return true;
+    // GL 4.0 / GL_ARB_texture_gather: Metal's gather offsets span -8..7.
+    case GL_MIN_PROGRAM_TEXTURE_GATHER_OFFSET: case GL_MAX_PROGRAM_TEXTURE_GATHER_OFFSET:
+    case GL_MAX_PROGRAM_TEXTURE_GATHER_COMPONENTS_ARB:
+        if (ctx.version() < 40 && !ctx.hasExtension("GL_ARB_texture_gather")) return false;
+        out = ints({pname == GL_MIN_PROGRAM_TEXTURE_GATHER_OFFSET ? -8 : pname == GL_MAX_PROGRAM_TEXTURE_GATHER_OFFSET ? 7 : 4});
+        return true;
     // Wide lines are drawn by the compatibility profile's fixed-function programs only.
     case GL_ALIASED_LINE_WIDTH_RANGE:
         out = floats({1.0, ctx.isCompat() ? static_cast<double>(compat::kMaxLineWidth) : 1.0});
