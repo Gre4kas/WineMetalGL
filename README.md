@@ -36,12 +36,12 @@ Dead Cells (Requires OpenGL 3.2+) running under MetalSharp Wine-11.17 Using Wine
 | 4.0 | 99.96% | Tessellation, GLSL 4.00, double precision, indirect draws, per-sample shading | 12.22% |
 | 4.1 | 99.96% | Separate shader objects, program binaries, viewport arrays, 64-bit attributes | 12.19% |
 | 4.2 | 99.95% | Image load/store, atomic counters, immutable texture storage | 11.83% |
-| 4.3 | - | Compute shaders, shader storage buffers, debug output, texture views | 100% |
+| 4.3 | 99.96% | Compute shaders, shader storage buffers, debug output, texture views | 17.65% |
 | 4.4 | - | Buffer storage, multi-bind, texture clears, enhanced layouts | 100% |
 | 4.5 | - | Direct state access, clip control, robustness, cull distances | 100% |
 | 4.6 | - | SPIR-V shaders, anisotropic filtering, indirect draw counts | 100% |
 
-**Conformance %**: passing cases over applicable cases (cases that are not NotSupported) of the version's Khronos CTS mustpass list (`KHR-GL30` to `KHR-GL42`), in the worst of its 8 runs (configurations 1 to 4 of `mustpass.xml`, each under Wine and natively) at commit 14eaa75, 851476e.
+**Conformance %**: passing cases over applicable cases (cases that are not NotSupported) of the version's Khronos CTS mustpass list (`KHR-GL30` to `KHR-GL43`), in the worst of its 8 runs (configurations 1 to 4 of `mustpass.xml`, each under Wine and natively) at commit 14eaa75, 851476e, f4ecccd.
 
 What Unsupported % counts, and why each failing case fails: [Unsupported](docs/unsupported.md#conformance-notes).
 

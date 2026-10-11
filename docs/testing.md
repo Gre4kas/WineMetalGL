@@ -79,6 +79,7 @@ rejects the evidence. Run times from the committed results:
 | `KHR-GL40` | 11,862 | 9.4 min to 11.0 min | 4.2 min | 58.7 min |
 | `KHR-GL41` | 11,883 | 8.9 min to 10.8 min | 4.2 min | 56.1 min |
 | `KHR-GL42` | 12,305 | 10.0 min to 11.3 min | 4.3 min to 4.5 min | 60.6 min |
+| `KHR-GL43` | 16,085 | 9.6 min to 11.6 min | 4.7 min to 5.2 min | 62.5 min |
 <!-- END GENERATED: cts-times -->
 
 ## Game corpus and frame times
