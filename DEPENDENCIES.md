@@ -39,6 +39,18 @@ Local changes to vendored sources (each marked `WineMetalGL:` in the code):
 - SPIRV-Cross `spirv_msl.{hpp,cpp}`: an MSL option, `native_texture_atomics`,
   emits image atomics as MSL 3.1 texture atomics instead of emulating them
   through a buffer that aliases the texture.
+- glslang `glslang/MachineIndependent/ParseHelper.cpp`, `invariantCheck`:
+  desktop GLSL 4.20 and later accept `invariant` on inputs outside the vertex
+  stage, as desktop drivers do; only ESSL 3.00 and later restrict it to
+  outputs.
+- glslang `glslang/MachineIndependent/ParseHelper.cpp`, `layoutTypeCheck`:
+  an image's `layout(binding)` is checked against `gl_MaxImageUnits` (the
+  image units it names) instead of `gl_MaxCombinedTextureImageUnits`.
+- SPIRV-Cross `spirv_glsl.cpp`, `to_function_name` and `to_function_args`:
+  GLSL has no `textureLod` for rectangle textures and their `texelFetch`
+  takes no level, so a level-0 sample (glslang's `texture()` outside fragment
+  shaders) is written as `texture()` and a fetch without a level, when
+  geometry and tessellation control stages are translated back to GLSL.
 
 The built dylib dynamically links only Apple system frameworks and libraries
 (Metal, Foundation, QuartzCore, CoreFoundation, libc++, libSystem and
