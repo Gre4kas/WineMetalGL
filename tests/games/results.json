@@ -1,6 +1,6 @@
 {
  "path": "new",
- "commit": "f305a88",
+ "commit": "3ecbeea",
  "date": "2026-10-11",
  "threshold": 8,
  "entries": [
@@ -48,6 +48,13 @@
   },
   {
    "name": "scene4x-core42",
+   "tier": "B",
+   "status": "PASS",
+   "worst_fraction": 5.6e-05,
+   "min_psnr_db": 54.3
+  },
+  {
+   "name": "scene4x-core43",
    "tier": "B",
    "status": "PASS",
    "worst_fraction": 5.6e-05,
