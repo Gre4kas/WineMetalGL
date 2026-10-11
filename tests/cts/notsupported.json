@@ -1,6 +1,14 @@
 {
   "comment": "Every NotSupported case in a committed baseline must match one entry (fnmatch pattern; the first match counts). scripts/docs/generate.py fails otherwise. 'kind' is 'extension' (a group for an extension or optional capability WineMetalGL does not offer), 'version' (the case needs a newer GL version than the context) or 'test-design' (the CTS reports NotSupported for this combination on every implementation; the reason cites the test code).",
   "entries": [
+    {"pattern": "KHR-GL4?.sparse_texture_tests.*", "kind": "extension", "reason": "GL_ARB_sparse_texture is not advertised."},
+    {"pattern": "KHR-GL4?.sparse_buffer_tests.*", "kind": "extension", "reason": "GL_ARB_sparse_buffer is not advertised."},
+    {"pattern": "KHR-GL4?.blend_equation_advanced.*", "kind": "extension", "reason": "GL_KHR_blend_equation_advanced is not advertised."},
+    {"pattern": "KHR-GL4?.shader_ballot_tests.*", "kind": "extension", "reason": "GL_ARB_shader_ballot and GL_ARB_gpu_shader_int64 are not advertised."},
+    {"pattern": "KHR-GL4?.clear_tex_image.*", "kind": "version", "reason": "The cases need GL 4.4 or GL_ARB_clear_texture, which is not advertised."},
+    {"pattern": "KHR-GL4?.indirect_parameters_tests.*", "kind": "version", "reason": "The cases need GL 4.6 or GL_ARB_indirect_parameters, which is not advertised."},
+    {"pattern": "KHR-GL4?.texture_buffer_size_clamping.*", "kind": "version", "reason": "The cases need GL 4.5 or GL_ARB_direct_state_access, which is not advertised."},
+    {"pattern": "KHR-GL4?.texture_query_lod.*", "kind": "test-design", "reason": "The cases need a render target of at least 256 x 256 (gl4cTextureQueryLodTests.cpp, TextureQueryLodBaseTest::iterate); the mustpass configurations use 64 x 64 surfaces, so they report NotSupported on every implementation."},
     {"pattern": "KHR-GL4?.fragment_shading_rate.*", "kind": "extension", "reason": "GL_EXT_fragment_shading_rate is not advertised."},
     {"pattern": "KHR-GL4?.texture_view.*", "kind": "extension", "reason": "GL_ARB_texture_view (GL 4.3) is not advertised."},
     {"pattern": "KHR-GL4?.texture_barrier_ARB.*", "kind": "extension", "reason": "GL_ARB_texture_barrier (GL 4.5) is not advertised."},
