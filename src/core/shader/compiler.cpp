@@ -942,6 +942,55 @@ void expandMember(const spirv_cross::Compiler& compiler, const spirv_cross::SPIR
     out.push_back(info);
 }
 
+// Expands a storage block member into GL buffer variables (GL 4.3 section
+// 7.3.1.1). Unlike uniforms, a top-level member that is an array of
+// aggregates is enumerated for its first element only; its size and stride
+// are the variables' TOP_LEVEL_ARRAY_SIZE/STRIDE (0 size: unsized).
+void expandBufferMember(const spirv_cross::Compiler& compiler, const spirv_cross::SPIRType& parent, uint32_t index,
+                        const std::string& prefix, uint32_t baseOffset, int blockIndex, bool topLevel, GLint topSize,
+                        GLint topStride, std::vector<BufferVariableInfo>& out) {
+    const spirv_cross::SPIRType& type = compiler.get_type(parent.member_types[index]);
+    const std::string name = prefix + unescapeName(compiler.get_member_name(parent.self, index));
+    const uint32_t offset = baseOffset + compiler.type_struct_member_offset(parent, index);
+    const bool isArray = !type.array.empty();
+    // SPIR-V lists array dimensions innermost first; 0 is a runtime (unsized) array.
+    const uint32_t outer = isArray ? (type.array_size_literal.back() ? type.array.back() : 0) : 1;
+    const uint32_t stride = isArray ? compiler.type_struct_member_array_stride(parent, index) : 0;
+    if (topLevel) {
+        topSize = static_cast<GLint>(outer);
+        topStride = static_cast<GLint>(stride);
+    }
+    if (type.basetype == spirv_cross::SPIRType::Struct) {
+        const spirv_cross::SPIRType& structType = compiler.get_type(type.self);
+        const uint32_t elements = !isArray ? 1u : topLevel ? 1u : std::max(1u, outer);
+        for (uint32_t e = 0; e < elements; ++e) {
+            const std::string elementName = isArray ? name + "[" + std::to_string(e) + "]" : name;
+            for (uint32_t m = 0; m < structType.member_types.size(); ++m)
+                expandBufferMember(compiler, structType, m, elementName + ".", offset + e * stride, blockIndex, false,
+                                   topSize, topStride, out);
+        }
+        return;
+    }
+    BufferVariableInfo v;
+    v.name = isArray ? name + "[0]" : name;
+    v.type = glTypeOf(type);
+    v.size = static_cast<GLint>(outer);
+    v.offset = static_cast<GLint>(offset);
+    v.arrayStride = static_cast<GLint>(stride);
+    if (type.columns > 1) {
+        v.matrixStride = static_cast<GLint>(compiler.type_struct_member_matrix_stride(parent, index));
+        v.rowMajor = compiler.has_member_decoration(parent.self, index, spv::DecorationRowMajor);
+    }
+    v.blockIndex = blockIndex;
+    v.topLevelArraySize = topSize;
+    v.topLevelArrayStride = topStride;
+    out.push_back(v);
+}
+
+bool isUserStorageBlock(const std::string& blockName) {
+    return atomicCounterBlockBinding(blockName) < 0 && blockName.rfind("wmgl_", 0) != 0;
+}
+
 }  // namespace
 
 // ------------------------------------------------------------- helpers
@@ -1081,11 +1130,15 @@ std::string checkBlockBindings(glslang::TShader& shader) {
             if (!symbol) continue;
             const glslang::TType& type = symbol->getType();
             const glslang::TQualifier& q = type.getQualifier();
-            if (type.getBasicType() != glslang::EbtBlock || q.storage != glslang::EvqUniform || !q.hasBinding()) continue;
+            if (type.getBasicType() != glslang::EbtBlock || !q.hasBinding()) continue;
             const int count = type.isSizedArray() ? type.getCumulativeArraySize() : 1;
-            if (static_cast<int64_t>(q.layoutBinding) + count > wmgl::limits::kMaxUniformBufferBindings)
+            if (q.storage == glslang::EvqUniform && static_cast<int64_t>(q.layoutBinding) + count > wmgl::limits::kMaxUniformBufferBindings)
                 return "ERROR: uniform block '" + unescapeName(type.getTypeName().c_str()) +
                        "': binding is not less than GL_MAX_UNIFORM_BUFFER_BINDINGS\n";
+            if (q.storage == glslang::EvqBuffer &&
+                static_cast<int64_t>(q.layoutBinding) + count > wmgl::limits::kMaxShaderStorageBufferBindings)
+                return "ERROR: shader storage block '" + unescapeName(type.getTypeName().c_str()) +
+                       "': binding is not less than GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS\n";
         }
     }
     return {};
@@ -1510,6 +1563,9 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
     // Live top-level names and blocks, from glslang's liveness-aware reflection.
     std::set<std::string> liveDefault;
     std::set<std::string> liveBlocks;
+    std::set<std::string> liveBuffers;  // storage blocks (GL 4.3)
+    for (int i = 0; i < program.getNumBufferBlocks(); ++i)
+        liveBuffers.insert(unescapeName(topLevelName(program.getBufferBlock(i).name)));
     int defaultBlockReflectionIndex = -1;
     for (int i = 0; i < program.getNumUniformBlocks(); ++i) {
         const auto& block = program.getUniformBlock(i);
@@ -1559,6 +1615,12 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
                 if (varying && q.hasLocation())
                     explicitVaryings.insert(unescapeName(type.getBasicType() == glslang::EbtBlock ? type.getTypeName().c_str()
                                                                                                     : symbol->getName().c_str()));
+                if (q.storage == glslang::EvqBuffer && type.getBasicType() == glslang::EbtBlock) {
+                    const std::string blockName = unescapeName(type.getTypeName().c_str());
+                    if (q.hasBinding()) explicitBindings["buffer:" + blockName] = static_cast<int>(q.layoutBinding);
+                    if (q.layoutPacking == glslang::ElpShared || q.layoutPacking == glslang::ElpStd140) liveBuffers.insert(blockName);
+                    collectBoolMembers(type, glslang::IsAnonymous(symbol->getName()) ? "" : blockName + ".", boolTypes);
+                }
                 if (q.storage == glslang::EvqUniform && q.hasBinding()) {
                     // layout(binding = N) (GL 4.2): the initial binding of blocks, samplers and images.
                     if (type.getBasicType() == glslang::EbtBlock)
@@ -1906,6 +1968,58 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
                 result.uniforms.push_back(u);
             }
         }
+        // Shader storage blocks (GL 4.3).
+        for (const auto& ssbo : resources.storage_buffers) {
+            const std::string blockName = unescapeName(compiler.get_name(ssbo.base_type_id));
+            if (!isUserStorageBlock(blockName) || !liveBuffers.count(blockName)) continue;
+            if (s != static_cast<int>(Stage::Vertex) && s != static_cast<int>(Stage::Fragment) &&
+                s != static_cast<int>(Stage::Compute)) {
+                result.log += "error: shader storage blocks are not supported in geometry and tessellation shaders\n";
+                return result;
+            }
+            const spirv_cross::SPIRType& varType = compiler.get_type(ssbo.type_id);
+            const spirv_cross::SPIRType& structType = compiler.get_type(ssbo.base_type_id);
+            const uint32_t count = varType.array.empty() ? 1 : std::max(1u, varType.array.back());
+            int first = -1;
+            for (uint32_t element = 0; element < count; ++element) {
+                const std::string name = varType.array.empty() ? blockName : blockName + "[" + std::to_string(element) + "]";
+                auto it = std::find_if(result.storageBlocks.begin(), result.storageBlocks.end(),
+                                       [&](const StorageBlockInfo& b) { return b.name == name; });
+                if (it != result.storageBlocks.end()) {
+                    it->stageMask |= 1u << s;
+                    if (element == 0) first = static_cast<int>(it - result.storageBlocks.begin());
+                    continue;
+                }
+                StorageBlockInfo block;
+                block.name = name;
+                block.dataSize = static_cast<GLint>(compiler.get_declared_struct_size_runtime_array(structType, 1));
+                if (auto b = explicitBindings.find("buffer:" + blockName); b != explicitBindings.end())
+                    block.explicitBinding = b->second + static_cast<GLint>(element);
+                block.stageMask = 1u << s;
+                if (element == 0) first = static_cast<int>(result.storageBlocks.size());
+                result.storageBlocks.push_back(block);
+            }
+            // The block's variables, listed once (for its first element).
+            if (std::none_of(result.bufferVariables.begin(), result.bufferVariables.end(),
+                             [&](const BufferVariableInfo& v) { return v.blockIndex == first; })) {
+                const std::string prefix = compiler.get_name(ssbo.id).empty() ? "" : blockName + ".";
+                std::vector<BufferVariableInfo> vars;
+                for (uint32_t m = 0; m < structType.member_types.size(); ++m)
+                    expandBufferMember(compiler, structType, m, prefix, 0, first, true, 1, 0, vars);
+                for (BufferVariableInfo& v : vars) {
+                    if (auto b = boolTypes.find(arrayBaseName(v.name)); b != boolTypes.end()) v.type = b->second;
+                    result.bufferVariables.push_back(v);
+                }
+            }
+            for (BufferVariableInfo& v : result.bufferVariables)
+                if (v.blockIndex == first) v.stageMask |= 1u << s;
+        }
+    }
+    for (size_t v = 0; v < result.bufferVariables.size(); ++v) {
+        const std::string& owner = result.storageBlocks[static_cast<size_t>(result.bufferVariables[v].blockIndex)].name;
+        const std::string base = owner.substr(0, owner.find('['));
+        for (StorageBlockInfo& block : result.storageBlocks)
+            if (block.name.substr(0, block.name.find('[')) == base) block.activeVariables.push_back(static_cast<int>(v));
     }
 
     // Shader subroutines (shader/subroutines.h): each stage's functions and
@@ -2171,8 +2285,39 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
                 {"wmgl_TesPatches", kSlotTessPatches}, {"wmgl_TesControl", kSlotTessControl},
             };
             uint32_t nextAtomicSlot = kSlotFirstAtomicCounterBuffer;
+            stage.storageArgs.clear();
             for (const auto& ssbo : resources.storage_buffers) {
                 const std::string blockName = msl.get_name(ssbo.base_type_id);
+                if (isUserStorageBlock(unescapeName(blockName))) {
+                    // Shader storage block: the stage's argument buffer (kSlotStorageBlocks).
+                    const std::string name = unescapeName(blockName);
+                    const spirv_cross::SPIRType& varType = msl.get_type(ssbo.type_id);
+                    const uint32_t count = varType.array.empty() ? 1 : std::max(1u, varType.array.back());
+                    const bool writes = !msl.get_buffer_block_flags(ssbo.id).get(spv::DecorationNonWritable);
+                    const uint32_t id = static_cast<uint32_t>(stage.storageArgs.size());
+                    for (uint32_t e = 0; e < count; ++e) {
+                        const std::string element = varType.array.empty() ? name : name + "[" + std::to_string(e) + "]";
+                        auto it = std::find_if(result.storageBlocks.begin(), result.storageBlocks.end(),
+                                               [&](const StorageBlockInfo& b) { return b.name == element; });
+                        stage.storageArgs.push_back(
+                            {it == result.storageBlocks.end() ? -1 : static_cast<int>(it - result.storageBlocks.begin()), writes});
+                    }
+                    if (stage.storageArgs.size() > kMaxStageStorageBlocks) {
+                        result.log += "error: too many shader storage blocks in one stage\n";
+                        return result;
+                    }
+                    msl.set_decoration(ssbo.id, spv::DecorationDescriptorSet, 1);
+                    msl.set_decoration(ssbo.id, spv::DecorationBinding, uniqueBinding++);
+                    spirv_cross::MSLResourceBinding b;
+                    b.stage = model;
+                    b.desc_set = 1;
+                    b.binding = msl.get_decoration(ssbo.id, spv::DecorationBinding);
+                    b.count = count;
+                    b.msl_buffer = id;   // [[id(n)]]
+                    b.msl_texture = id;  // its size's index in spvBufferSizeConstants
+                    msl.add_msl_resource_binding(b);
+                    continue;
+                }
                 spirv_cross::MSLResourceBinding b;
                 b.stage = model;
                 msl.set_decoration(ssbo.id, spv::DecorationBinding, uniqueBinding++);
@@ -2197,11 +2342,27 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
                     b.msl_buffer = nextAtomicSlot++;
                     for (AtomicCounterBufferInfo& buffer : result.atomicBuffers)
                         if (buffer.binding == static_cast<GLuint>(counterBinding)) buffer.stageSlot[s] = static_cast<int>(b.msl_buffer);
-                } else {
-                    result.log += "error: shader storage blocks are not supported\n";
-                    return result;
                 }
                 msl.add_msl_resource_binding(b);
+            }
+            if (!stage.storageArgs.empty()) {
+                // Descriptor set 1 becomes the argument buffer; set 0 keeps its discrete slots.
+                mslOptions.argument_buffers = true;
+                mslOptions.argument_buffers_tier = spirv_cross::CompilerMSL::Options::ArgumentBuffersTier::Tier2;
+                msl.set_msl_options(mslOptions);
+                msl.add_discrete_descriptor_set(0);
+                spirv_cross::MSLResourceBinding ab;
+                ab.stage = model;
+                ab.desc_set = 1;
+                ab.binding = spirv_cross::kArgumentBufferBinding;
+                ab.msl_buffer = kSlotStorageBlocks;
+                msl.add_msl_resource_binding(ab);
+                spirv_cross::MSLResourceBinding sizes;
+                sizes.stage = model;
+                sizes.desc_set = 1;
+                sizes.binding = spirv_cross::kBufferSizeBufferBinding;
+                sizes.msl_buffer = static_cast<uint32_t>(stage.storageArgs.size());
+                msl.add_msl_resource_binding(sizes);
             }
             // Samplers.
             uint32_t nextTexture = 0;

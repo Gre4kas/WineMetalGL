@@ -1414,10 +1414,37 @@ void TIntermediate::finalCheck(TInfoSink& infoSink, bool keepUncalled)
 
         virtual void visitSymbol(TIntermSymbol* symbol)
         {
+            // WineMetalGL: a std140/std430 block member before the last one
+            // that is sized only now (by its largest constant index) moves the
+            // members after it, whose offsets were assigned at declaration.
+            TType& type = symbol->getWritableType();
+            bool resized = false;
+            if (type.getBasicType() == EbtBlock && type.isStruct() && type.getStruct()->size() > 1 &&
+                (type.getQualifier().layoutPacking == ElpStd140 || type.getQualifier().layoutPacking == ElpStd430)) {
+                const TTypeList& members = *type.getStruct();
+                for (size_t m = 0; m + 1 < members.size(); ++m)
+                    resized = resized || members[m].type->isUnsizedArray();
+            }
             // Implicitly size arrays.
             // If an unsized array is left as unsized, it effectively
             // becomes run-time sized.
-            symbol->getWritableType().adoptImplicitArraySizes(false);
+            type.adoptImplicitArraySizes(false);
+            if (resized) {
+                const TQualifier& block = type.getQualifier();
+                int offset = 0;
+                for (const TTypeLoc& member : *type.getStruct()) {
+                    TQualifier& q = member.type->getQualifier();
+                    const bool rowMajor = q.layoutMatrix != ElmNone ? q.layoutMatrix == ElmRowMajor : block.layoutMatrix == ElmRowMajor;
+                    int size = 0, stride = 0;
+                    int alignment = TIntermediate::getMemberAlignment(*member.type, size, stride, block.layoutPacking, rowMajor);
+                    if (q.hasAlign()) alignment = std::max(alignment, q.layoutAlign);
+                    RoundToPow2(offset, alignment);
+                    // A larger declared offset is an explicit layout(offset); keep it.
+                    if (q.hasOffset()) offset = std::max(offset, q.layoutOffset);
+                    q.layoutOffset = offset;
+                    offset += size;
+                }
+            }
         }
     } finalLinkTraverser;
 

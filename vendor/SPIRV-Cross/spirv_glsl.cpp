@@ -9471,7 +9471,7 @@ string CompilerGLSL::bitcast_glsl(const SPIRType &result_type, uint32_t argument
 
 std::string CompilerGLSL::bitcast_expression(SPIRType::BaseType target_type, uint32_t arg)
 {
-	auto expr = to_expression(arg);
+	auto expr = to_unpacked_expression(arg);
 	auto &src_type = expression_type(arg);
 	if (src_type.basetype != target_type)
 	{

@@ -5,6 +5,7 @@
 
 #include "core/context.h"
 #include "core/draw.h"
+#include "core/limits.h"
 #include "core/metal/device.h"
 #include "gl_api.gen.h"
 
@@ -125,6 +126,8 @@ void DeleteBuffers(Context& ctx, GLsizei n, const GLuint* buffers) {
             if (b.buffer == buffer) b = IndexedBufferBinding();
         for (IndexedBufferBinding& b : s.atomicCounterBufferBindings)
             if (b.buffer == buffer) b = IndexedBufferBinding();
+        for (IndexedBufferBinding& b : s.shaderStorageBufferBindings)
+            if (b.buffer == buffer) b = IndexedBufferBinding();
         for (auto& b : s.transformFeedback->buffers)
             if (b.buffer == buffer) b = TransformFeedback::Binding();
         ctx.markDirty(kDirtyVertexInput | kDirtyUniformBuffers);
@@ -151,7 +154,8 @@ namespace {
 
 bool indexedTarget(Context& ctx, GLenum target) {
     return target == GL_UNIFORM_BUFFER || target == GL_TRANSFORM_FEEDBACK_BUFFER ||
-           (target == GL_ATOMIC_COUNTER_BUFFER && ctx.atomicCounters());
+           (target == GL_ATOMIC_COUNTER_BUFFER && ctx.atomicCounters()) ||
+           (target == GL_SHADER_STORAGE_BUFFER && ctx.storageBuffers());
 }
 
 }  // namespace
@@ -164,10 +168,19 @@ void BindBufferRange(Context& ctx, GLenum target, GLuint index, GLuint name, GLi
         if (target == GL_TRANSFORM_FEEDBACK_BUFFER && (offset % 4 || size % 4)) return ctx.setError(GL_INVALID_VALUE);
         if (target == GL_ATOMIC_COUNTER_BUFFER && offset % 4) return ctx.setError(GL_INVALID_VALUE);
     }
+    // Checked with buffer 0 too (KHR-GL43.shader_storage_buffer_object.negative-api-bind).
+    if (target == GL_SHADER_STORAGE_BUFFER && offset % limits::kShaderStorageBufferOffsetAlignment)
+        return ctx.setError(GL_INVALID_VALUE);
+    // Binding buffer 0 clears the range (GL_*_START and GL_*_SIZE read 0).
+    if (!name) offset = size = 0;
     bool ok;
     RefPtr<Buffer> buffer = bufferForBind(ctx, name, ok);
     if (!ok) return;
-    if (target == GL_ATOMIC_COUNTER_BUFFER) {
+    if (target == GL_SHADER_STORAGE_BUFFER) {
+        if (index >= ContextState::kMaxShaderStorageBufferBindings) return ctx.setError(GL_INVALID_VALUE);
+        ctx.state.shaderStorageBufferBindings[index] = {buffer, offset, size};
+        ctx.state.shaderStorageBuffer = buffer;
+    } else if (target == GL_ATOMIC_COUNTER_BUFFER) {
         if (index >= ContextState::kMaxAtomicCounterBufferBindings) return ctx.setError(GL_INVALID_VALUE);
         ctx.state.atomicCounterBufferBindings[index] = {buffer, offset, size};
         ctx.state.atomicCounterBuffer = buffer;
@@ -190,7 +203,11 @@ void BindBufferBase(Context& ctx, GLenum target, GLuint index, GLuint name) {
     bool ok;
     RefPtr<Buffer> buffer = bufferForBind(ctx, name, ok);
     if (!ok) return;
-    if (target == GL_ATOMIC_COUNTER_BUFFER) {
+    if (target == GL_SHADER_STORAGE_BUFFER) {
+        if (index >= ContextState::kMaxShaderStorageBufferBindings) return ctx.setError(GL_INVALID_VALUE);
+        ctx.state.shaderStorageBufferBindings[index] = {buffer, 0, 0};
+        ctx.state.shaderStorageBuffer = buffer;
+    } else if (target == GL_ATOMIC_COUNTER_BUFFER) {
         if (index >= ContextState::kMaxAtomicCounterBufferBindings) return ctx.setError(GL_INVALID_VALUE);
         ctx.state.atomicCounterBufferBindings[index] = {buffer, 0, 0};
         ctx.state.atomicCounterBuffer = buffer;

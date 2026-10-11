@@ -287,7 +287,7 @@ RefPtr<Buffer>* Context::bufferBinding(GLenum target) {
     if (version() >= 40 || hasExtension("GL_ARB_draw_indirect"))
         if (target == GL_DRAW_INDIRECT_BUFFER) return &state.drawIndirectBuffer;
     if (computeShaders() && target == GL_DISPATCH_INDIRECT_BUFFER) return &state.dispatchIndirectBuffer;
-    if (version() >= 43 && target == GL_SHADER_STORAGE_BUFFER) return &state.shaderStorageBuffer;
+    if (storageBuffers() && target == GL_SHADER_STORAGE_BUFFER) return &state.shaderStorageBuffer;
     if (atomicCounters() && target == GL_ATOMIC_COUNTER_BUFFER) return &state.atomicCounterBuffer;
     if (version() >= 44 && target == GL_QUERY_BUFFER) return &state.queryBuffer;
     return nullptr;

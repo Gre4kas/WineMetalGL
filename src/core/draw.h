@@ -136,6 +136,17 @@ private:
     // The buffer bound to atomic counter buffer `index`'s binding point (a
     // scratch buffer when none is), marked as written by the draw.
     void atomicCounterBuffer(LinkedProgram& program, size_t index, __strong id<MTLBuffer>& buffer, NSUInteger& offset);
+    // Shader storage blocks (GL 4.3): fills stage `s`'s argument buffer
+    // (shader::kSlotStorageBlocks) and makes its buffers resident. Returns
+    // false if the stage has none.
+    struct StorageArguments {
+        id<MTLBuffer> buffer = nil;
+        NSUInteger offset = 0;
+        std::vector<std::pair<id<MTLBuffer>, bool>> resources;  // buffer, written
+    };
+    bool storageArguments(LinkedProgram& program, int s, StorageArguments& out);
+    void bindStorageBlocks(id<MTLRenderCommandEncoder> encoder, LinkedProgram& program, int s);
+    void bindStorageBlocks(id<MTLComputeCommandEncoder> encoder, LinkedProgram& program, int s);
     // The program object whose state feeds `stage` (pipelines: the stage's
     // program), and the owner and own index of a uniform block or sampler.
     Program* stageProgram(LinkedProgram& program, int stage);

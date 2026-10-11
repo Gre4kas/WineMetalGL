@@ -169,7 +169,31 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
             break;
         case GL_MAX_COMPUTE_SHARED_MEMORY_SIZE: out = ints({kMaxComputeSharedMemorySize}); break;
         case GL_DISPATCH_INDIRECT_BUFFER_BINDING: out = ints({nameOf(s.dispatchIndirectBuffer)}); break;
-        default: out = ints({0}); break;  // atomic counters and images are separate extensions
+        case GL_MAX_COMPUTE_ATOMIC_COUNTER_BUFFERS:
+            out = ints({ctx.atomicCounters() ? kMaxStageAtomicCounterBuffers : 0});
+            break;
+        case GL_MAX_COMPUTE_ATOMIC_COUNTERS: out = ints({ctx.atomicCounters() ? kMaxStageAtomicCounters : 0}); break;
+        default: out = ints({ctx.imageLoadStore() ? kMaxImageUniformsPerStage : 0}); break;  // GL_MAX_COMPUTE_IMAGE_UNIFORMS
+        }
+        return true;
+    // GL 4.3 shader storage blocks (limits.h): vertex, fragment and compute stages.
+    case GL_SHADER_STORAGE_BUFFER_BINDING: case GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS: case GL_MAX_SHADER_STORAGE_BLOCK_SIZE:
+    case GL_SHADER_STORAGE_BUFFER_OFFSET_ALIGNMENT: case GL_MAX_VERTEX_SHADER_STORAGE_BLOCKS:
+    case GL_MAX_TESS_CONTROL_SHADER_STORAGE_BLOCKS: case GL_MAX_TESS_EVALUATION_SHADER_STORAGE_BLOCKS:
+    case GL_MAX_GEOMETRY_SHADER_STORAGE_BLOCKS: case GL_MAX_FRAGMENT_SHADER_STORAGE_BLOCKS:
+    case GL_MAX_COMPUTE_SHADER_STORAGE_BLOCKS: case GL_MAX_COMBINED_SHADER_STORAGE_BLOCKS:
+        if (!ctx.storageBuffers()) return false;
+        switch (pname) {
+        case GL_SHADER_STORAGE_BUFFER_BINDING: out = ints({nameOf(s.shaderStorageBuffer)}); break;
+        case GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS: out = ints({kMaxShaderStorageBufferBindings}); break;
+        case GL_MAX_SHADER_STORAGE_BLOCK_SIZE: out = ints({kMaxShaderStorageBlockSize}); break;
+        case GL_SHADER_STORAGE_BUFFER_OFFSET_ALIGNMENT: out = ints({kShaderStorageBufferOffsetAlignment}); break;
+        case GL_MAX_TESS_CONTROL_SHADER_STORAGE_BLOCKS: case GL_MAX_TESS_EVALUATION_SHADER_STORAGE_BLOCKS:
+        case GL_MAX_GEOMETRY_SHADER_STORAGE_BLOCKS:
+            out = ints({0});
+            break;
+        case GL_MAX_COMBINED_SHADER_STORAGE_BLOCKS: out = ints({kMaxCombinedStorageBlocks}); break;
+        default: out = ints({kMaxStageStorageBlocks}); break;
         }
         return true;
     case GL_MAX_VIEWPORT_DIMS: out = ints({kMaxTextureSize, kMaxTextureSize}); return true;
@@ -248,7 +272,9 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
     case GL_MAX_GEOMETRY_IMAGE_UNIFORMS: case GL_MAX_FRAGMENT_IMAGE_UNIFORMS: case GL_MAX_COMBINED_IMAGE_UNIFORMS:
         if (!ctx.imageLoadStore()) return false;
         out = ints({pname == GL_MAX_IMAGE_UNITS ? kMaxImageUnits
-                    : pname == GL_MAX_COMBINED_IMAGE_UNITS_AND_FRAGMENT_OUTPUTS ? kMaxCombinedImageUnitsAndFragmentOutputs
+                    // = GL_MAX_COMBINED_SHADER_OUTPUT_RESOURCES (GL 4.3), which counts storage blocks too
+                    : pname == GL_MAX_COMBINED_IMAGE_UNITS_AND_FRAGMENT_OUTPUTS
+                        ? (ctx.storageBuffers() ? kMaxCombinedShaderOutputResources : kMaxCombinedImageUnitsAndFragmentOutputs)
                     : pname == GL_MAX_IMAGE_SAMPLES ? 0  // multisample images: Metal cannot write them
                     : pname == GL_MAX_COMBINED_IMAGE_UNIFORMS ? kMaxCombinedImageUniforms
                                                                : kMaxImageUniformsPerStage});
@@ -660,6 +686,15 @@ bool getIndexed(Context& ctx, GLenum pname, GLuint index, Value& out, bool& badI
         const IndexedBufferBinding& b = s.atomicCounterBufferBindings[index];
         out = pname == GL_ATOMIC_COUNTER_BUFFER_BINDING ? ints({nameOf(b.buffer)})
               : pname == GL_ATOMIC_COUNTER_BUFFER_START ? int64v(b.offset)
+                                                        : int64v(b.size);
+        return true;
+    }
+    case GL_SHADER_STORAGE_BUFFER_BINDING: case GL_SHADER_STORAGE_BUFFER_START: case GL_SHADER_STORAGE_BUFFER_SIZE: {
+        if (!ctx.storageBuffers()) return false;
+        if (index >= static_cast<GLuint>(ContextState::kMaxShaderStorageBufferBindings)) { badIndex = true; return true; }
+        const IndexedBufferBinding& b = s.shaderStorageBufferBindings[index];
+        out = pname == GL_SHADER_STORAGE_BUFFER_BINDING ? ints({nameOf(b.buffer)})
+              : pname == GL_SHADER_STORAGE_BUFFER_START ? int64v(b.offset)
                                                         : int64v(b.size);
         return true;
     }

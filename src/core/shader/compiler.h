@@ -50,6 +50,13 @@ constexpr uint32_t kMaxVertexAtomicCounterBuffers = 1;
 constexpr uint32_t kSlotFirstImage = 16;
 constexpr uint32_t kMaxStageImages = 8;
 constexpr uint32_t kMaxStageAtomicCounterBuffers = 8;
+// Shader storage blocks (GL 4.3): one argument buffer per vertex, fragment
+// or compute function at buffer 28, holding a device pointer per block
+// element (ids 0..n-1) and, at id n, a pointer to the elements' sizes in
+// bytes (for .length()). A vertex function using it keeps 8 vertex buffers.
+// Geometry and tessellation stages have none (their GL minimum is 0).
+constexpr uint32_t kSlotStorageBlocks = 28;
+constexpr uint32_t kMaxStageStorageBlocks = 16;
 
 struct CompileResult {
     bool ok = false;
@@ -105,6 +112,28 @@ struct AtomicCounterBufferInfo {
 };
 // The GL binding of an atomic counter storage block name, or -1.
 int atomicCounterBlockBinding(const std::string& blockName);
+
+// A shader storage block element (GL 4.3): "Block" or "Block[2]".
+struct StorageBlockInfo {
+    std::string name;
+    GLint dataSize = 0;                  // bytes, an unsized last array counted with one element
+    std::vector<int> activeVariables;    // indices into LinkResult::bufferVariables
+    uint32_t stageMask = 0;
+    GLint explicitBinding = -1;          // layout(binding = N); -1 if none
+};
+
+// A buffer variable (GL 4.3 GL_BUFFER_VARIABLE): a member of a storage
+// block, named and laid out as GL reports it.
+struct BufferVariableInfo {
+    std::string name;
+    GLenum type = 0;
+    GLint size = 1;                      // array size; 0 for an unsized array
+    GLint offset = 0, arrayStride = 0, matrixStride = 0;
+    bool rowMajor = false;
+    int blockIndex = -1;                 // the first element of its block
+    GLint topLevelArraySize = 1, topLevelArrayStride = 0;
+    uint32_t stageMask = 0;
+};
 
 struct UniformBlockInfo {
     std::string name;          // "Block" or "Block[2]"
@@ -186,6 +215,10 @@ struct StageOutput {
     // Fragment stage: outputs written (location, index, component kind).
     struct FragOutput { GLint location; GLint index; char kind; };
     std::vector<FragOutput> fragOutputs;
+    // Storage blocks in the kSlotStorageBlocks argument buffer: entry i (id i)
+    // is element `block` of the LinkResult that compiled this stage.
+    struct StorageArg { int block; bool writes; };
+    std::vector<StorageArg> storageArgs;
 };
 
 struct TransformFeedbackVarying {
@@ -301,6 +334,8 @@ struct LinkResult {
     std::vector<SamplerSlotInfo> samplers;
     std::vector<ImageSlotInfo> images;
     std::vector<AtomicCounterBufferInfo> atomicBuffers;
+    std::vector<StorageBlockInfo> storageBlocks;
+    std::vector<BufferVariableInfo> bufferVariables;
     SubroutineStageInfo subroutines[kStageCount];
     // Default-block offsets of the hidden built-in uniforms (-1: unused):
     // gl_DepthRange's near, far and diff, gl_NumSamples (glsl_upgrade.h).

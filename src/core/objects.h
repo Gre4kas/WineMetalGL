@@ -269,6 +269,7 @@ public:
     // Default-uniform-block values (std140 layout from the linked program).
     std::vector<uint8_t> uniformData;
     std::vector<GLuint> uniformBlockBindings;   // per block index
+    std::vector<GLuint> storageBlockBindings;   // per storage block index (GL 4.3)
     std::vector<GLint> samplerUnits;            // per sampler slot
     std::vector<GLint> imageUnits;              // per image slot (GL 4.2)
     uint64_t uniformVersion = 0;

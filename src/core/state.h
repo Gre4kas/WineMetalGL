@@ -192,6 +192,9 @@ struct ContextState {
     // GL 4.2 atomic counter buffer bindings.
     static constexpr int kMaxAtomicCounterBufferBindings = 8;  // = limits::kMaxAtomicCounterBufferBindings
     std::array<IndexedBufferBinding, kMaxAtomicCounterBufferBindings> atomicCounterBufferBindings;
+    // GL 4.3 shader storage buffer bindings.
+    static constexpr int kMaxShaderStorageBufferBindings = 16;  // = limits::kMaxShaderStorageBufferBindings
+    std::array<IndexedBufferBinding, kMaxShaderStorageBufferBindings> shaderStorageBufferBindings;
     static constexpr int kMaxImageUnits = 8;  // = limits::kMaxImageUnits
     std::array<ImageUnit, kMaxImageUnits> imageUnits;
     static constexpr int kMaxTextureUnits = 80;

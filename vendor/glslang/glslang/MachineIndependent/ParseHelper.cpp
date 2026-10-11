@@ -7492,6 +7492,10 @@ bool TParseContext::vkRelaxedRemapUniformVariable(const TSourceLoc& loc, TString
     }
 
     if (initializer) {
+        // WineMetalGL: an unsized array still takes its size from the
+        // initializer (GLSL 4.30 section 4.1.9) before the value is dropped.
+        if (type.isUnsizedArray() && initializer->getType().isSizedArray())
+            type.changeOuterArraySize(initializer->getType().getOuterArraySize());
         warn(loc, "Ignoring initializer for uniform", identifier.c_str(), "");
         initializer = nullptr;
     }

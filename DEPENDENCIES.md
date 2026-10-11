@@ -52,6 +52,21 @@ Local changes to vendored sources (each marked `WineMetalGL:` in the code):
 - glslang `glslang/MachineIndependent/ParseHelper.cpp`, `layoutTypeCheck`:
   an image's `layout(binding)` is checked against `gl_MaxImageUnits` (the
   image units it names) instead of `gl_MaxCombinedTextureImageUnits`.
+- glslang `glslang/MachineIndependent/linkValidate.cpp`, `finalCheck`: a
+  std140/std430 block whose non-last member is an array sized only by its
+  largest constant index gets its member offsets recomputed once that size is
+  known (they were assigned when the block was declared).
+- glslang `glslang/MachineIndependent/ParseHelper.cpp`,
+  `vkRelaxedRemapUniformVariable`: an unsized uniform array takes its size
+  from its initializer before the Vulkan rules drop the initializer (the
+  values are applied from the default block, `applyUniformInitializers`).
+- SPIRV-Cross `spirv_glsl.cpp`, `bitcast_expression`, and `spirv_msl.cpp`,
+  `emit_atomic_func_op`: atomic operands are read unpacked, so an element of a
+  scalar array in a std140 block (padded to a vector) is passed as a scalar.
+- SPIRV-Cross `spirv_msl.cpp`, `get_argument_address_space`: `coherent`
+  storage no longer becomes `volatile` (only `volatile` does): Metal has no
+  element access on volatile matrices, and MSL's barriers and atomics give
+  GL's coherent visibility.
 - SPIRV-Cross `spirv_glsl.cpp`, `to_function_name` and `to_function_args`:
   GLSL has no `textureLod` for rectangle textures and their `texelFetch`
   takes no level, so a level-0 sample (glslang's `texture()` outside fragment

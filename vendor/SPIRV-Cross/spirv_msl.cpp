@@ -9809,7 +9809,7 @@ void CompilerMSL::emit_atomic_func_op(uint32_t result_type, uint32_t result_id, 
 		exp += ", &";
 		exp += to_name(result_id);
 		exp += ", ";
-		exp += to_expression(op2);
+		exp += to_unpacked_expression(op2);
 		exp += ", ";
 		exp += get_memory_order(mem_order_1);
 		exp += ", ";
@@ -9826,8 +9826,8 @@ void CompilerMSL::emit_atomic_func_op(uint32_t result_type, uint32_t result_id, 
 			emit_uninitialized_temporary_expression(result_type, result_id);
 		statement("do");
 		begin_scope();
-		statement(to_name(result_id), " = ", to_expression(op1), ";");
-		end_scope_decl(join("while (!", exp, " && ", to_name(result_id), " == ", to_enclosed_expression(op1), ")"));
+		statement(to_name(result_id), " = ", to_unpacked_expression(op1), ";");
+		end_scope_decl(join("while (!", exp, " && ", to_name(result_id), " == ", to_enclosed_unpacked_expression(op1), ")"));
 		if (check_discard)
 		{
 			end_scope();
@@ -9870,7 +9870,7 @@ void CompilerMSL::emit_atomic_func_op(uint32_t result_type, uint32_t result_id, 
 				exp += ", " + bitcast_expression(expected_type, op1);
 		}
 		if (op2)
-			exp += ", " + to_expression(op2);
+			exp += ", " + to_unpacked_expression(op2);
 
 		exp += string(", ") + get_memory_order(mem_order_1);
 		if (has_mem_order_2)
@@ -12580,7 +12580,10 @@ string CompilerMSL::get_type_address_space(const SPIRType &type, uint32_t id, bo
 		addr_space = type.pointer || (argument && type.basetype == SPIRType::ControlPointArray) ? "thread" : "";
 	}
 
-	return join(flags.get(DecorationVolatile) || flags.get(DecorationCoherent) ? "volatile " : "", addr_space);
+	// WineMetalGL: only Volatile becomes volatile. GL's coherent promises
+	// visibility after barriers (which MSL's barriers and atomics give), and
+	// Metal defines no operator[] for volatile matrices.
+	return join(flags.get(DecorationVolatile) ? "volatile " : "", addr_space);
 }
 
 const char *CompilerMSL::to_restrict(uint32_t id, bool space)

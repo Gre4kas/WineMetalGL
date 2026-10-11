@@ -505,6 +505,10 @@ void linkFrom(Context& ctx, Program* p, shader::LinkInput input, std::string log
     p->uniformData = linked->link.defaultBlockInit;  // uniform initializers, else zero
     p->uniformData.resize((linked->link.defaultBlockSize + 15) & ~15u, 0);
     p->uniformBlockBindings.assign(linked->link.blocks.size(), 0);
+    p->storageBlockBindings.assign(linked->link.storageBlocks.size(), 0);
+    for (size_t b = 0; b < linked->link.storageBlocks.size(); ++b)
+        if (linked->link.storageBlocks[b].explicitBinding >= 0)
+            p->storageBlockBindings[b] = static_cast<GLuint>(linked->link.storageBlocks[b].explicitBinding);
     p->samplerUnits.assign(linked->link.samplers.size(), 0);
     p->imageUnits.assign(linked->link.images.size(), 0);
     // layout(binding = N) (GL 4.2) gives the initial bindings and units;
@@ -1066,6 +1070,15 @@ void UniformBlockBinding(Context& ctx, GLuint program, GLuint blockIndex, GLuint
     if (binding >= static_cast<GLuint>(ContextState::kMaxUniformBufferBindings)) return ctx.setError(GL_INVALID_VALUE);
     p->uniformBlockBindings[blockIndex] = binding;
     ctx.markDirty(kDirtyUniformBuffers);
+}
+
+void ShaderStorageBlockBinding(Context& ctx, GLuint program, GLuint blockIndex, GLuint binding) {
+    if (!ctx.storageBuffers()) return ctx.unimplemented("glShaderStorageBlockBinding");
+    Program* p = programOrError(ctx, program);
+    if (!p) return;
+    if (!p->linked || !p->linkStatus || blockIndex >= p->linked->link.storageBlocks.size()) return ctx.setError(GL_INVALID_VALUE);
+    if (binding >= static_cast<GLuint>(ContextState::kMaxShaderStorageBufferBindings)) return ctx.setError(GL_INVALID_VALUE);
+    p->storageBlockBindings[blockIndex] = binding;
 }
 
 // ------------------------------------------------------------ uniforms
