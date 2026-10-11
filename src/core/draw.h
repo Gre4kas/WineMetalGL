@@ -122,8 +122,9 @@ private:
     // Uniforms, uniform blocks and samplers of a compute function (the
     // `stage` slots: Stage::Compute for a compute program or the geometry
     // kernel, Stage::TessControl for the tessellation control kernel).
+    // `kernel`: the kernel's stage output (its storage block arguments).
     void bindKernelResources(id<MTLComputeCommandEncoder> encoder, LinkedProgram& program, bool usesDefaultUniforms,
-                             int stage = static_cast<int>(shader::Stage::Compute));
+                             int stage = static_cast<int>(shader::Stage::Compute), const shader::StageOutput* kernel = nullptr);
     void bindCaptureDefaults(id<MTLRenderCommandEncoder> encoder, LinkedProgram& program);
     // Whether a draw must list its primitives with the provoking vertex first
     // (LAST_VERTEX_CONVENTION and flat fragment inputs).
@@ -144,9 +145,10 @@ private:
         NSUInteger offset = 0;
         std::vector<std::pair<id<MTLBuffer>, bool>> resources;  // buffer, written
     };
-    bool storageArguments(LinkedProgram& program, int s, StorageArguments& out);
+    // `stage`'s storage block arguments index `owner`'s storage blocks.
+    bool storageArguments(const shader::StageOutput& stage, const Program* owner, StorageArguments& out);
     void bindStorageBlocks(id<MTLRenderCommandEncoder> encoder, LinkedProgram& program, int s);
-    void bindStorageBlocks(id<MTLComputeCommandEncoder> encoder, LinkedProgram& program, int s);
+    void bindStorageBlocks(id<MTLComputeCommandEncoder> encoder, const shader::StageOutput& stage, const Program* owner);
     // The program object whose state feeds `stage` (pipelines: the stage's
     // program), and the owner and own index of a uniform block or sampler.
     Program* stageProgram(LinkedProgram& program, int stage);

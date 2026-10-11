@@ -2075,11 +2075,6 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
         for (const auto& ssbo : resources.storage_buffers) {
             const std::string blockName = unescapeName(compiler.get_name(ssbo.base_type_id));
             if (!isUserStorageBlock(blockName) || !liveBuffers.count(blockName)) continue;
-            if (s != static_cast<int>(Stage::Vertex) && s != static_cast<int>(Stage::Fragment) &&
-                s != static_cast<int>(Stage::Compute)) {
-                result.log += "error: shader storage blocks are not supported in geometry and tessellation shaders\n";
-                return result;
-            }
             const spirv_cross::SPIRType& varType = compiler.get_type(ssbo.type_id);
             const spirv_cross::SPIRType& structType = compiler.get_type(ssbo.base_type_id);
             const uint32_t count = varType.array.empty() ? 1 : std::max(1u, varType.array.back());
@@ -2734,6 +2729,15 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
     return result;
 }
 
+void remapStorageArgs(StageOutput& stage, const LinkResult& from, const LinkResult& to) {
+    for (StageOutput::StorageArg& arg : stage.storageArgs) {
+        if (arg.block < 0 || static_cast<size_t>(arg.block) >= from.storageBlocks.size()) continue;
+        const std::string& name = from.storageBlocks[static_cast<size_t>(arg.block)].name;
+        auto it = std::find_if(to.storageBlocks.begin(), to.storageBlocks.end(), [&](const StorageBlockInfo& b) { return b.name == name; });
+        arg.block = it == to.storageBlocks.end() ? -1 : static_cast<int>(it - to.storageBlocks.begin());
+    }
+}
+
 void copyStageSlots(const LinkResult& source, int from, LinkResult& result, int to) {
     for (UniformBlockInfo& block : result.blocks)
         for (const UniformBlockInfo& other : source.blocks)
@@ -2826,6 +2830,7 @@ bool buildGeometryEmulation(const LinkInput& input, const GeometryShaderInfo& in
     }
     const int cs = static_cast<int>(Stage::Compute);
     g.kernel = kernel.stages[cs];
+    remapStorageArgs(g.kernel, kernel, result);
     copyStageSlots(kernel, cs, result, cs);
     LinkInput passthroughInput;
     passthroughInput.separable = true;
@@ -2874,6 +2879,7 @@ bool buildTessellationEmulation(const LinkInput& input, const TessellationLink& 
         }
         const int cs = static_cast<int>(Stage::Compute);
         e.control = kernel.stages[cs];
+        remapStorageArgs(e.control, kernel, result);
         copyStageSlots(kernel, cs, result, static_cast<int>(Stage::TessControl));
     }
     std::string log;

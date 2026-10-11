@@ -206,10 +206,6 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
         case GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS: out = ints({kMaxShaderStorageBufferBindings}); break;
         case GL_MAX_SHADER_STORAGE_BLOCK_SIZE: out = ints({kMaxShaderStorageBlockSize}); break;
         case GL_SHADER_STORAGE_BUFFER_OFFSET_ALIGNMENT: out = ints({kShaderStorageBufferOffsetAlignment}); break;
-        case GL_MAX_TESS_CONTROL_SHADER_STORAGE_BLOCKS: case GL_MAX_TESS_EVALUATION_SHADER_STORAGE_BLOCKS:
-        case GL_MAX_GEOMETRY_SHADER_STORAGE_BLOCKS:
-            out = ints({0});
-            break;
         case GL_MAX_COMBINED_SHADER_STORAGE_BLOCKS: out = ints({kMaxCombinedStorageBlocks}); break;
         default: out = ints({kMaxStageStorageBlocks}); break;
         }

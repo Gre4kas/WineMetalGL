@@ -268,6 +268,10 @@ std::shared_ptr<LinkedProgram> LinkedProgram::tessEvaluation() {
     l.locations = link.locations;
     l.defaultBlockSize = link.defaultBlockSize;
     l.fixedFunctionBlock = link.fixedFunctionBlock;
+    // Storage blocks: this program's (its block bindings apply).
+    l.storageBlocks = link.storageBlocks;
+    shader::remapStorageArgs(l.stages[static_cast<int>(Stage::Vertex)], e, link);
+    if (l.geometry.active) shader::remapStorageArgs(l.geometry.kernel, e, link);
     // This program's blocks and samplers, bound in the evaluation executable's
     // vertex and compute (geometry kernel) stages where it uses them.
     const int vs = static_cast<int>(Stage::Vertex), fs = static_cast<int>(Stage::Fragment), cs = static_cast<int>(Stage::Compute);

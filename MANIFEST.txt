@@ -92,6 +92,8 @@ src/core/context.mm
 src/core/draw.h
 src/core/draw.mm
 src/core/driver.mm
+src/core/format/block_encode.cpp
+src/core/format/block_encode.h
 src/core/format/formats.cpp
 src/core/format/formats.h
 src/core/format/pixel_transfer.cpp

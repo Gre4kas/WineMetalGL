@@ -553,3 +553,50 @@ GPU_TEST_VERSION(gpu_gl43_compress_bc6h, 43) {
         glDeleteTextures(1, &tex);
     }
 }
+
+// Storage blocks in the emulated geometry stage (a compute kernel): each
+// primitive counts itself (KHR-GL43.shader_storage_buffer_object.advanced-write-geometry).
+GPU_TEST_VERSION(gpu_gl43_ssbo_geometry_stage, 43) {
+    const char* gs = R"(#version 430 core
+layout(triangles) in;
+layout(triangle_strip, max_vertices = 3) out;
+layout(std430, binding = 1) buffer Count { uint primitives; uint vertices; };
+void main() {
+    atomicAdd(primitives, 1u);
+    for (int i = 0; i < 3; ++i) { atomicAdd(vertices, 1u); gl_Position = gl_in[i].gl_Position; EmitVertex(); }
+})";
+    GLuint p = glCreateProgram();
+    const char* vs = R"(#version 430 core
+in vec2 position;
+void main() { gl_Position = vec4(position, 0.0, 1.0); })";
+    const char* fs = R"(#version 430 core
+out vec4 o;
+void main() { o = vec4(1.0); })";
+    for (auto [type, src] : {std::pair<GLenum, const char*>{GL_VERTEX_SHADER, vs}, {GL_GEOMETRY_SHADER, gs}, {GL_FRAGMENT_SHADER, fs}}) {
+        GLuint sh = glCreateShader(type);
+        glShaderSource(sh, 1, &src, nullptr);
+        glCompileShader(sh);
+        glAttachShader(p, sh);
+        glDeleteShader(sh);
+    }
+    glBindAttribLocation(p, 0, "position");
+    glLinkProgram(p);
+    GLint linked = 0;
+    glGetProgramiv(p, GL_LINK_STATUS, &linked);
+    CHECK(linked);
+    GLint maxBlocks = 0;
+    glGetIntegerv(GL_MAX_GEOMETRY_SHADER_STORAGE_BLOCKS, &maxBlocks);
+    CHECK(maxBlocks >= 8);
+    GLuint counts = storageBuffer(1, {0, 0});
+    GLuint vao = gpu::quad();
+    glUseProgram(p);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
+    const std::vector<uint32_t> got = readBuffer(counts, 2);
+    CHECK_EQ(got[0], 2u);
+    CHECK_EQ(got[1], 6u);
+    CHECK_GL();
+    glDeleteVertexArrays(1, &vao);
+    glDeleteBuffers(1, &counts);
+    glDeleteProgram(p);
+}

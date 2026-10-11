@@ -50,11 +50,11 @@ constexpr uint32_t kMaxVertexAtomicCounterBuffers = 1;
 constexpr uint32_t kSlotFirstImage = 16;
 constexpr uint32_t kMaxStageImages = 8;
 constexpr uint32_t kMaxStageAtomicCounterBuffers = 8;
-// Shader storage blocks (GL 4.3): one argument buffer per vertex, fragment
-// or compute function at buffer 28, holding a device pointer per block
-// element (ids 0..n-1) and, at id n, a pointer to the elements' sizes in
-// bytes (for .length()). A vertex function using it keeps 8 vertex buffers.
-// Geometry and tessellation stages have none (their GL minimum is 0).
+// Shader storage blocks (GL 4.3): one argument buffer per stage function at
+// buffer 28 (geometry and tessellation emulation kernels and the evaluation
+// vertex function included), holding a device pointer per block element (ids
+// 0..n-1) and, at id n, a pointer to the elements' sizes in bytes (for
+// .length()). A vertex function using it keeps 8 vertex buffers.
 constexpr uint32_t kSlotStorageBlocks = 28;
 constexpr uint32_t kMaxStageStorageBlocks = 16;
 
@@ -381,6 +381,11 @@ struct LinkResult {
                                        : uniforms.size();
     }
 };
+
+// Points `stage`'s storage block arguments, which index `from`'s storage
+// blocks (an emulation stage's own link), at the same-named blocks of `to`
+// (the program's link), or -1.
+void remapStorageArgs(StageOutput& stage, const LinkResult& from, const LinkResult& to);
 
 // GL_COLOR_LOGIC_OP: how the logical operation treats one colour attachment.
 struct LogicOpTarget {

@@ -30,8 +30,8 @@ constexpr GLint kMaxImageUnits = 8, kMaxImageUniformsPerStage = 8, kMaxCombinedI
 constexpr GLint kMaxAtomicCounterBufferBindings = 8, kMaxStageAtomicCounterBuffers = 8, kMaxStageAtomicCounters = 8;
 constexpr GLint kMaxVertexAtomicCounterBuffers = 1;
 constexpr GLint kMaxAtomicCounterBufferSize = 16384;
-// GL 4.3 shader storage blocks: an argument buffer per vertex, fragment and
-// compute function (shader/compiler.h); geometry and tessellation have none.
+// GL 4.3 shader storage blocks: an argument buffer per stage function,
+// emulated geometry and tessellation stages included (shader/compiler.h).
 constexpr GLint kMaxShaderStorageBufferBindings = 16, kMaxStageStorageBlocks = 16, kMaxCombinedStorageBlocks = 48;
 constexpr GLint kMaxShaderStorageBlockSize = 1 << 27, kShaderStorageBufferOffsetAlignment = 16;
 constexpr GLint kMaxCombinedShaderOutputResources = kMaxCombinedStorageBlocks + kMaxImageUnits + kMaxDrawBuffers;

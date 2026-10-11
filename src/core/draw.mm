@@ -968,12 +968,10 @@ void DrawState::atomicCounterBuffer(LinkedProgram& program, size_t index, __stro
     ++ib.buffer->version;
 }
 
-bool DrawState::storageArguments(LinkedProgram& program, int s, StorageArguments& out) {
-    const shader::StageOutput& stage = program.link.stages[s];
+bool DrawState::storageArguments(const shader::StageOutput& stage, const Program* owner, StorageArguments& out) {
     if (stage.storageArgs.empty()) return false;
     // Unbound elements point at scratch memory (GL leaves their accesses undefined).
     static id<MTLBuffer> scratch = [Device::get().mtl() newBufferWithLength:65536 options:MTLResourceStorageModePrivate];
-    const Program* owner = stageProgram(program, s);
     const size_t n = stage.storageArgs.size();
     const uint64_t serial = ctx_.stream().serial();
     // Layout (shader/compiler.h): n device pointers, the pointer to the
@@ -1018,7 +1016,7 @@ bool DrawState::storageArguments(LinkedProgram& program, int s, StorageArguments
 
 void DrawState::bindStorageBlocks(id<MTLRenderCommandEncoder> encoder, LinkedProgram& program, int s) {
     StorageArguments args;
-    if (!storageArguments(program, s, args)) return;
+    if (!storageArguments(program.link.stages[s], stageProgram(program, s), args)) return;
     const bool vertex = s == static_cast<int>(Stage::Vertex);
     const MTLRenderStages stages = vertex ? MTLRenderStageVertex : MTLRenderStageFragment;
     for (const auto& [buffer, writes] : args.resources)
@@ -1027,9 +1025,9 @@ void DrawState::bindStorageBlocks(id<MTLRenderCommandEncoder> encoder, LinkedPro
     else [encoder setFragmentBuffer:args.buffer offset:args.offset atIndex:shader::kSlotStorageBlocks];
 }
 
-void DrawState::bindStorageBlocks(id<MTLComputeCommandEncoder> encoder, LinkedProgram& program, int s) {
+void DrawState::bindStorageBlocks(id<MTLComputeCommandEncoder> encoder, const shader::StageOutput& stage, const Program* owner) {
     StorageArguments args;
-    if (!storageArguments(program, s, args)) return;
+    if (!storageArguments(stage, owner, args)) return;
     for (const auto& [buffer, writes] : args.resources)
         [encoder useResource:buffer usage:writes ? MTLResourceUsageRead | MTLResourceUsageWrite : MTLResourceUsageRead];
     [encoder setBuffer:args.buffer offset:args.offset atIndex:shader::kSlotStorageBlocks];
@@ -1774,7 +1772,7 @@ GLenum geometryInputFor(GLenum mode) {
 }  // namespace
 
 void DrawState::bindKernelResources(id<MTLComputeCommandEncoder> encoder, LinkedProgram& program,
-                                    bool usesDefaultUniforms, int stage) {
+                                    bool usesDefaultUniforms, int stage, const shader::StageOutput* kernel) {
     const int cs = stage;
     // The compute program, or (geometry and tessellation kernels) the vertex program.
     Program* owner = stageProgram(program, cs);
@@ -1820,7 +1818,9 @@ void DrawState::bindKernelResources(id<MTLComputeCommandEncoder> encoder, Linked
         atomicCounterBuffer(program, b, buffer, offset);
         [encoder setBuffer:buffer offset:offset atIndex:static_cast<NSUInteger>(slot)];
     }
-    bindStorageBlocks(encoder, program, cs);
+    // The kernel's storage blocks: a compute program's own, or the geometry
+    // or tessellation control emulation kernel's (they index the program's).
+    if (kernel) bindStorageBlocks(encoder, *kernel, owner);
     for (size_t i = 0; i < program.link.images.size(); ++i) {
         const int index = program.link.images[i].stageTexture[cs];
         if (index >= 0) [encoder setTexture:imageBinding(program, i) atIndex:static_cast<NSUInteger>(index)];
@@ -1840,7 +1840,8 @@ void DrawState::dispatch(GLuint x, GLuint y, GLuint z, Buffer* indirect, GLintpt
     prepareSamplerStorage(lp);
     id<MTLComputeCommandEncoder> encoder = ctx_.stream().compute();
     [encoder setComputePipelineState:pipeline];
-    bindKernelResources(encoder, lp, lp.stage(Stage::Compute).usesDefaultUniforms);
+    bindKernelResources(encoder, lp, lp.stage(Stage::Compute).usesDefaultUniforms, static_cast<int>(Stage::Compute),
+                        &lp.stage(Stage::Compute));
     const uint32_t* local = lp.link.computeLocalSize;
     const MTLSize threads = MTLSizeMake(local[0], local[1], local[2]);
     if (indirect) {
@@ -1947,7 +1948,7 @@ void DrawState::drawGeometry(GLenum mode, const std::vector<uint32_t>& vertices,
     TransientAllocation indices = transient_.allocate(indexCount * 4, serial, 16);
     id<MTLComputeCommandEncoder> compute = ctx_.stream().compute();
     [compute setComputePipelineState:kernel];
-    bindKernelResources(compute, lp, g.kernel.usesDefaultUniforms);
+    bindKernelResources(compute, lp, g.kernel.usesDefaultUniforms, static_cast<int>(Stage::Compute), &g.kernel);
     const uint32_t control[4] = {static_cast<uint32_t>(total), primitives, primitiveBase, 0};
     [compute setBuffer:input.buffer offset:input.offset atIndex:shader::kSlotFirstXfbBuffer];
     [compute setBuffer:output.buffer offset:output.offset atIndex:shader::kSlotFirstXfbBuffer + 1];
@@ -2134,7 +2135,7 @@ void DrawState::drawPatches(const std::vector<uint32_t>& vertices, GLsizei insta
         TransientAllocation output = transient_.allocate(total * recordWords * 4, serial, 16);
         id<MTLComputeCommandEncoder> compute = ctx_.stream().compute();
         [compute setComputePipelineState:lp.tessControlKernel()];
-        bindKernelResources(compute, lp, t.control.usesDefaultUniforms, static_cast<int>(Stage::TessControl));
+        bindKernelResources(compute, lp, t.control.usesDefaultUniforms, static_cast<int>(Stage::TessControl), &t.control);
         const uint32_t control[4] = {patchVertices, static_cast<uint32_t>(total), static_cast<uint32_t>(patches), 0};
         [compute setBuffer:captured.buffer offset:captured.offset atIndex:shader::kSlotFirstXfbBuffer];
         [compute setBuffer:output.buffer offset:output.offset atIndex:shader::kSlotFirstXfbBuffer + 1];
