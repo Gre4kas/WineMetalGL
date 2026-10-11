@@ -26,23 +26,23 @@ constexpr int kStageCount = static_cast<int>(Stage::Count);
 // Metal argument-table layout used by every generated stage function.
 constexpr uint32_t kSlotDefaultUniforms = 0;   // buffer: default uniform block
 constexpr uint32_t kSlotDriverUniforms = 1;    // buffer: WineMetalGL driver constants
-constexpr uint32_t kSlotFirstUniformBlock = 2; // buffers 2..13: uniform blocks used by the stage
-constexpr uint32_t kMaxStageUniformBlocks = 12;
-constexpr uint32_t kSlotFirstXfbBuffer = 14;   // buffers 14..17: transform feedback outputs
+constexpr uint32_t kSlotFirstUniformBlock = 2; // buffers 2..15: uniform blocks used by the stage
+constexpr uint32_t kMaxStageUniformBlocks = 14;
+constexpr uint32_t kSlotFirstXfbBuffer = 16;   // buffers 16..19: transform feedback outputs
                                                // (geometry kernel: input, output, indices, control)
-constexpr uint32_t kSlotFirstVertexBuffer = 18;  // buffers 18..29: vertex buffers
-constexpr uint32_t kMaxVertexBufferSlots = 12;
+constexpr uint32_t kSlotFirstVertexBuffer = 20;  // buffers 20..29: vertex buffers
+constexpr uint32_t kMaxVertexBufferSlots = 10;
 constexpr uint32_t kSlotXfbControl = 30;       // buffer 30: transform feedback capture control
 constexpr uint32_t kMaxStageSamplers = 16;     // textures/samplers 0..15
 // Tessellation emulation (tessellation.h): the control kernel reads the
-// captured vertices and writes patch records through buffers 14..16; the
+// captured vertices and writes patch records through buffers 16..18; the
 // evaluation vertex function, which has no vertex attributes, reads its
-// domain points, patch records and control block from buffers 18..20.
-constexpr uint32_t kSlotTessVertices = 18, kSlotTessPatches = 19, kSlotTessControl = 20;
-// Atomic counter buffers (GL 4.2): buffers 18..25 of fragment and compute
+// domain points, patch records and control block from buffers 20..22.
+constexpr uint32_t kSlotTessVertices = 20, kSlotTessPatches = 21, kSlotTessControl = 22;
+// Atomic counter buffers (GL 4.2): buffers 20..27 of fragment and compute
 // functions (the geometry kernel included), which bind no vertex buffers.
 // Vertex functions have no free slot, so they have none.
-constexpr uint32_t kSlotFirstAtomicCounterBuffer = 18;
+constexpr uint32_t kSlotFirstAtomicCounterBuffer = 20;
 // Image uniforms (GL 4.2 image load/store): textures 16..23 of every stage.
 constexpr uint32_t kSlotFirstImage = 16;
 constexpr uint32_t kMaxStageImages = 8;

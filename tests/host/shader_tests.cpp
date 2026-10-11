@@ -176,7 +176,7 @@ TEST(shader_transform_feedback_vertex_capture) {
     }
     const std::string& msl = r.stages[static_cast<int>(Stage::Vertex)].msl;
     CHECK(msl.find("[[buffer(30)]]") != std::string::npos);
-    CHECK(msl.find("[[buffer(14)]]") != std::string::npos);
+    CHECK(msl.find("[[buffer(16)]]") != std::string::npos);
 
     in.transformFeedbackMode = GL_SEPARATE_ATTRIBS;
     in.transformFeedbackVaryings = {"a", "c"};  // c is 3 components: allowed separately
@@ -234,7 +234,7 @@ TEST(shader_geometry_emulation) {
     const UniformInfo* tex = findUniform(r, "tex");
     CHECK(tex && tex->samplerSlot >= 0 && r.samplers[tex->samplerSlot].stageTexture[static_cast<int>(Stage::Compute)] == 0);
     CHECK(findUniform(r, "scale") != nullptr);
-    CHECK(r.stages[static_cast<int>(Stage::Vertex)].mslNoRaster.find("[[buffer(14)]]") != std::string::npos);
+    CHECK(r.stages[static_cast<int>(Stage::Vertex)].mslNoRaster.find("[[buffer(16)]]") != std::string::npos);
 }
 
 TEST(shader_fragment_point_coord_and_flat) {
@@ -406,6 +406,18 @@ TEST(shader_glsl420_pack_rules) {
                                    "out vec4 o; void main() { o = b[1].a; }\n").ok);
     CHECK(!compile(Stage::Fragment, "#version 420\nlayout(std140, binding = 70) uniform B { vec4 a; } b[3];\n"
                                     "out vec4 o; void main() { o = b[2].a; }\n").ok);
+}
+
+TEST(shader_fourteen_uniform_blocks_per_stage) {
+    LinkInput in;
+    in.shaders.push_back({Stage::Vertex, "#version 420\nlayout(std140, binding = 2) uniform G { vec4 a; } g[14];\n"
+                                         "void main() { vec4 s = vec4(0); for (int i = 0; i < 14; ++i) s += g[i].a;\n"
+                                         "gl_Position = s; }\n"});
+    in.shaders.push_back({Stage::Fragment, "#version 420\nout vec4 o; void main() { o = vec4(1); }\n"});
+    LinkResult r = link(in);
+    if (!r.ok) std::fprintf(stderr, "%s\n", r.log.c_str());
+    CHECK(r.ok && r.blocks.size() == 14);
+    if (r.blocks.size() == 14) CHECK_EQ(r.blocks[13].stageSlot[0], static_cast<int>(kSlotFirstUniformBlock + 13));
 }
 
 TEST(shader_rectangle_texture_outside_fragment_stages) {
