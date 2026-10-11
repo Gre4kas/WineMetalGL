@@ -10,6 +10,7 @@
 #include "core/metal/device.h"
 #include "core/program.h"
 #include "core/util/log.h"
+#include "core/util/version.h"
 
 namespace wmgl {
 namespace {
@@ -147,6 +148,23 @@ void Context::initStrings() {
     for (const char* name : {"GL_KHR_robustness", "GL_ARB_robustness", "GL_ARB_internalformat_query",
                              "GL_ARB_invalidate_subdata", "GL_ARB_copy_image", "GL_NVX_gpu_memory_info", "GL_ATI_meminfo"})
         extensions_.push_back(name);
+    // GL 4.0-4.2 features still in development: advertised only in
+    // contexts raised by WINEMETALGL_DEV_MAX_VERSION (core/util/version.h),
+    // so their CTS groups (gated on these strings) run during development.
+    // Each moves to the list above once it is complete.
+    if (devMaxVersion()) {
+        for (const char* name :
+             {"GL_ARB_draw_indirect", "GL_ARB_gpu_shader5", "GL_ARB_gpu_shader_fp64", "GL_ARB_sample_shading",
+              "GL_ARB_shader_subroutine", "GL_ARB_tessellation_shader", "GL_ARB_texture_buffer_object_rgb32",
+              "GL_ARB_texture_cube_map_array", "GL_ARB_texture_gather", "GL_ARB_texture_query_lod",
+              "GL_ARB_transform_feedback2", "GL_ARB_transform_feedback3", "GL_ARB_shader_precision",
+              "GL_ARB_vertex_attrib_64bit", "GL_ARB_viewport_array", "GL_ARB_conservative_depth",
+              "GL_ARB_shader_atomic_counters", "GL_ARB_shader_image_load_store", "GL_ARB_shading_language_420pack",
+              "GL_ARB_shading_language_packing", "GL_ARB_texture_compression_bptc",
+              "GL_ARB_transform_feedback_instanced", "GL_ARB_texture_query_levels", "GL_EXT_shader_integer_mix",
+              "GL_ARB_polygon_offset_clamp", "GL_EXT_polygon_offset_clamp"})
+            if (!hasExtension(name)) extensions_.push_back(name);
+    }
     extensionString_.clear();
     for (const std::string& ext : extensions_) {
         if (!extensionString_.empty()) extensionString_ += ' ';
