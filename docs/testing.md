@@ -10,8 +10,8 @@ next to another project's GPU tests.
 |---|---|---:|
 | Host tests | The GLSL upgrade, the shader compiler and the format code, without a GPU | under 1 s |
 | GPU tests | The core on Metal through its own API, without Wine | about 2 s |
-| Wine fixtures | 49 programs, each as an x86_64 and an i386 guest in one WoW64 prefix, through Wine's `opengl32` | about 1.5 min |
-| Khronos CTS | `KHR-GL30` to `KHR-GL33`, 8 runs each (per list below) | about 1.5 h |
+| Wine fixtures | 51 programs, each as an x86_64 and an i386 guest in one WoW64 prefix, through Wine's `opengl32` | about 1.5 min |
+| Khronos CTS | `KHR-GL30` to `KHR-GL42`, 8 runs each (per list below) | about 6 h |
 | Game corpus | Rendered frames compared with Apple's OpenGL | about 1 min |
 | Frame times | The game corpus timed on both implementations | about 4 min |
 | Source gates | The manifest and checksums, generated docs and evidence provenance, no Apple OpenGL, no code that recognises CTS shaders | under 1 s |
@@ -37,21 +37,21 @@ checks.
 WINEMETALGL_WINE_RUNTIME=/path/to/wine tests/wine/probe-opengl-wow64.sh
 ```
 
-The 49 gate fixtures run by default; `--all` adds the 18 GL 4.x fixtures kept
-for the 4.x work, which need features a 3.3 context does not have.
+The 51 gate fixtures run by default; `--all` adds the 17 fixtures kept for
+the later 4.x milestones, which need features of GL 4.3 or later.
 
 ## Khronos CTS
 
 The Khronos VK-GL-CTS at commit `1942832`, built for Wine with
 `tests/cts/windows/build.sh` (`glcts.exe`) and natively with
 `tests/cts/native/build.sh` (a `glcts` that calls the core through its driver
-ABI, without Wine). Each mustpass list, `KHR-GL30` to `KHR-GL33`, runs in
+ABI, without Wine). Each mustpass list, `KHR-GL30` to `KHR-GL42`, runs in
 configurations 1 to 4 of `mustpass.xml`, under Wine and natively: 8 runs per
 list. Configurations 5 and 6 repeat the command lines of 1 and 2 (their only
 difference, `useForFirstEGLConfig`, applies to EGL), so they are not run.
 
 ```sh
-for list in gl30 gl31 gl32 gl33; do
+for list in gl30 gl31 gl32 gl33 gl40 gl41 gl42; do
   for config in 1 2 3 4; do
     python3 scripts/cts/run.py --mustpass $list-main.txt --config $config \
         --wine /path/to/wine --cts /path/to/build-win64/external/openglcts/modules/glcts.exe \
