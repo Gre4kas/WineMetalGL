@@ -2,12 +2,14 @@
 
 WineMetalGL is an OpenGL implementation on Metal for Wine on macOS 15 or newer.
 Wine's macOS driver (`winemac.drv`) loads it instead of Apple's OpenGL, so
-Windows programs get OpenGL 3.3 contexts with geometry shaders and transform
-feedback, core or compatibility profile. Contexts created without a
-core-profile request (which Apple's OpenGL caps at 2.1) get the full 3.3
-compatibility profile: fixed-function vertex and fragment processing,
-immediate mode, display lists, client arrays, legacy GLSL built-ins and the
-legacy pixel paths, together with every 3.x feature. It runs x86_64 and i386
+Windows programs get OpenGL 4.2 contexts, core or compatibility profile:
+geometry and tessellation shaders, double precision, transform feedback with
+vertex streams, separate shader objects, viewport arrays, image load/store
+and atomic counters. Contexts created without a core-profile request (which
+Apple's OpenGL caps at 2.1) get the full 4.2 compatibility profile:
+fixed-function vertex and fragment processing, immediate mode, display lists,
+client arrays, legacy GLSL built-ins and the legacy pixel paths, together with
+every 3.x and 4.x feature. It runs x86_64 and i386
 Windows programs together in a WoW64 prefix.
 
 The library, `libwinemetalgl.dylib`, has no dependency on Apple's OpenGL. It

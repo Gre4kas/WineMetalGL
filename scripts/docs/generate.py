@@ -4,13 +4,13 @@
     scripts/docs/generate.py [--check] [--check-provenance]
 
 Inputs (all tracked):
-  tests/cts/baseline/gl3M-cfgN-*.txt   KHR-GL30 to KHR-GL33 results (scripts/cts/run.py)
+  tests/cts/baseline/glMN-cfgN-*.txt   KHR-GL30 to KHR-GL42 results (scripts/cts/run.py)
   tests/cts/notsupported.json          reason for every NotSupported case
   tests/cts/known-failures.json        reasons for failing cases the core does not fix
   tests/games/corpus.json              game corpus manifest
   tests/games/results.json             last corpus run (scripts/traces/replay.py --json)
   tests/games/perf.json                frame times (scripts/traces/benchmark.py)
-  third_party/khronos/gl.xml           the GL 3.3 core command list
+  third_party/khronos/gl.xml           the GL 4.2 core command list
   src/core                             advertised extensions, implemented commands
 
 Outputs:
@@ -40,7 +40,10 @@ BEGIN = "<!-- BEGIN GENERATED: %s (scripts/docs/generate.py) -->"
 END = "<!-- END GENERATED: %s -->"
 STATUSES = ["Pass", "Fail", "NotSupported", "InternalError", "Crash", "Timeout", "Missing"]
 # Mustpass lists with committed baselines (tests/cts/baseline/<list>-cfgN-<runner>.txt).
-SUITES = [("gl30", "KHR-GL30"), ("gl31", "KHR-GL31"), ("gl32", "KHR-GL32"), ("gl33", "KHR-GL33")]
+SUITES = [("gl30", "KHR-GL30"), ("gl31", "KHR-GL31"), ("gl32", "KHR-GL32"), ("gl33", "KHR-GL33"),
+          ("gl40", "KHR-GL40"), ("gl41", "KHR-GL41"), ("gl42", "KHR-GL42")]
+# The highest version contexts get (src/core/driver.mm).
+MAX_VERSION = "4.2"
 # mustpass.xml configurations that are run. Configurations 5 and 6 repeat the command
 # lines of 1 and 2: their only difference, useForFirstEGLConfig, applies to EGL.
 CONFIGS = (1, 2, 3, 4)
@@ -53,9 +56,9 @@ VERSIONS = [
     ("3.1", "Instancing, texture buffers, uniform buffers, primitive restart", "gl31"),
     ("3.2", "Profiles, geometry shaders, sync objects, multisample textures, base vertex", "gl32"),
     ("3.3", "GLSL 3.30, sampler objects, timer queries, instanced arrays, dual-source blending", "gl33"),
-    ("4.0", "Tessellation, GLSL 4.00, double precision, indirect draws, per-sample shading", None),
-    ("4.1", "Separate shader objects, program binaries, viewport arrays, 64-bit attributes", None),
-    ("4.2", "Image load/store, atomic counters, immutable texture storage", None),
+    ("4.0", "Tessellation, GLSL 4.00, double precision, indirect draws, per-sample shading", "gl40"),
+    ("4.1", "Separate shader objects, program binaries, viewport arrays, 64-bit attributes", "gl41"),
+    ("4.2", "Image load/store, atomic counters, immutable texture storage", "gl42"),
     ("4.3", "Compute shaders, shader storage buffers, debug output, texture views", None),
     ("4.4", "Buffer storage, multi-bind, texture clears, enhanced layouts", None),
     ("4.5", "Direct state access, clip control, robustness, cull distances", None),
@@ -72,7 +75,7 @@ PROMOTED = {
     "4.2": ["GL_ARB_base_instance", "GL_ARB_compressed_texture_pixel_storage", "GL_ARB_conservative_depth",
             "GL_ARB_internalformat_query", "GL_ARB_map_buffer_alignment", "GL_ARB_shader_atomic_counters",
             "GL_ARB_shader_image_load_store", "GL_ARB_shading_language_420pack", "GL_ARB_shading_language_packing",
-            "GL_ARB_texture_storage", "GL_ARB_transform_feedback_instanced"],
+            "GL_ARB_texture_compression_bptc", "GL_ARB_texture_storage", "GL_ARB_transform_feedback_instanced"],
     "4.3": ["GL_ARB_arrays_of_arrays", "GL_ARB_clear_buffer_object", "GL_ARB_compute_shader", "GL_ARB_copy_image",
             "GL_ARB_ES3_compatibility", "GL_ARB_explicit_uniform_location", "GL_ARB_fragment_layer_viewport",
             "GL_ARB_framebuffer_no_attachments", "GL_ARB_internalformat_query2", "GL_ARB_invalidate_subdata",
@@ -229,11 +232,11 @@ def describe_runs(runs):
 
 
 def core_commands():
-    """GL 3.3 core profile commands from the Khronos registry."""
+    """Core profile commands up to MAX_VERSION from the Khronos registry."""
     tree = ET.parse(rel("third_party", "khronos", "gl.xml"))
     commands, removed = set(), set()
     for feature in tree.getroot().iter("feature"):
-        if feature.get("api") != "gl" or float(feature.get("number")) > 3.3:
+        if feature.get("api") != "gl" or float(feature.get("number")) > float(MAX_VERSION):
             continue
         for require in feature.iter("require"):
             if require.get("profile") in (None, "core"):
@@ -375,8 +378,8 @@ def render(suites):
         md.append("")
     md += ["NotSupported cases, and the reason for each: [Unsupported](unsupported.md#cts-cases-reported-notsupported).",
            "", "## API", "",
-           "GL 3.3 core profile commands in the Khronos registry: %d. Implemented: %d. Missing: %s." % (
-               len(core), len(core) - len(missing), ", ".join("`%s`" % m for m in missing) if missing else "none"),
+           "GL %s core profile commands in the Khronos registry: %d. Implemented: %d. Missing: %s." % (
+               MAX_VERSION, len(core), len(core) - len(missing), ", ".join("`%s`" % m for m in missing) if missing else "none"),
            "", "Advertised extensions: %s." % ", ".join("`%s`" % e for e in extensions), "",
            "The machine-readable form is `docs/api-coverage.json`.", ""]
     conformance = "\n".join(md)
@@ -384,9 +387,10 @@ def render(suites):
     coverage = json.dumps({
         "project": "WineMetalGL",
         "generated_by": "scripts/docs/generate.py",
-        "context": {"versions": "up to 3.3", "profiles": ["core", "compatibility"]},
+        "context": {"versions": "up to %s" % MAX_VERSION, "profiles": ["core", "compatibility"]},
         "host": {"os": "macOS", "minimum": "15.0", "architecture": "x86_64"},
-        "gl33_core_commands": len(core),
+        "core_commands_version": MAX_VERSION,
+        "core_commands": len(core),
         "implemented": len(core) - len(missing),
         "missing": missing,
         "extensions": extensions,
@@ -516,21 +520,21 @@ def render(suites):
             shares = [lacking(baselines[k][1], kind_of) for k in runs]
             most = max(shares, key=lambda x: x[0] / max(x[1], 1))
             conformance_cell, unsupported_cell = percent(*rates[worst]), share(*most)
-        elif version > "3.3":
+        elif version > MAX_VERSION:
             conformance_cell, unsupported_cell = "-", "100%"
         else:
             conformance_cell, unsupported_cell = "not measured", "not measured"
         lines.append("| %s | %s | %s | %s |" % (version, conformance_cell, adds, unsupported_cell))
     lines += ["",
               "**Conformance %%**: passing cases over applicable cases (cases that are not NotSupported) of the "
-              "version's Khronos CTS mustpass list (`KHR-GL30` to `KHR-GL33`), in the worst of its %d runs "
+              "version's Khronos CTS mustpass list (`KHR-GL30` to `KHR-GL42`), in the worst of its %d runs "
               "(configurations %s of `mustpass.xml`, each under Wine and natively) at commit %s." % (
                   2 * len(CONFIGS), "%d to %d" % (CONFIGS[0], CONFIGS[-1]), ", ".join(commits)),
               "",
               "**Unsupported %**: cases the CTS reports NotSupported because WineMetalGL does not offer what they "
               "test (an extension it does not advertise or a newer GL version), over the cases any implementation "
-              "can run. Contexts stop at OpenGL 3.3, so 4.x is 100%; some 4.x features are available as "
-              "extensions ([Unsupported](docs/unsupported.md#opengl-4x))."]
+              "can run. Contexts stop at OpenGL 4.2, so 4.3 and later are 100%; some of their features are "
+              "available as extensions ([Unsupported](docs/unsupported.md#opengl-4x))."]
     failing = [(suite, case, f) for suite, _ in SUITES for case, f in sorted(failures.get(suite, {}).items())]
     if failing:
         explained = all(f["reason"] for _, case, f in failing)

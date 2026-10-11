@@ -5,10 +5,11 @@ that fail, are in [Conformance results](conformance.md).
 
 ## OpenGL 4.x
 
-Contexts stop at OpenGL 3.3: `wglCreateContextAttribsARB` refuses a request
-for 4.0 or newer with `ERROR_INVALID_VERSION_ARB`, as it does for any version
-an implementation does not offer. Some 4.x features are available in 3.3
-contexts as the extensions that were promoted into each version:
+Contexts stop at OpenGL 4.2: `wglCreateContextAttribsARB` refuses a request
+for 4.3 or newer with `ERROR_INVALID_VERSION_ARB`, as it does for any version
+an implementation does not offer. Some features of later versions are
+available in 4.2 contexts as the extensions that were promoted into each
+version:
 
 <!-- BEGIN GENERATED: gl4 (scripts/docs/generate.py) -->
 | Version | Features | Promoted extensions advertised | Not advertised |
@@ -23,10 +24,9 @@ contexts as the extensions that were promoted into each version:
 <!-- END GENERATED: gl4 -->
 
 `GL_ARB_compute_shader` is not advertised even though the core runs compute
-kernels internally (geometry shader and transform feedback emulation):
-without storage buffers, images or atomic counters a compute shader has no
-way to write output, and engines that detect the extension would skip their
-working fallback.
+kernels internally (geometry shader, tessellation control and transform
+feedback emulation): compute shaders come with GL 4.3 and its shader storage
+buffers, which are the next milestone.
 
 ### Double precision
 
