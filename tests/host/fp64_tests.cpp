@@ -193,10 +193,16 @@ TEST(fp64_frexp_ldexp_match_libm) {
         if (std::isfinite(d)) {
             int e = 0;
             const double m = std::frexp(d, &e);
-            if (!same(wmgl_dfrexp_mant(a), bits(m)) || wmgl_dfrexp_exp(a) != e) ++bad;
+            if (!same(wmgl_dfrexp_mant(a), bits(m)) || wmgl_dfrexp_exp(a) != e) {
+                if (bad++ < 5)
+                    std::fprintf(stderr, "  frexp(%016llx): %016llx %d, libm %016llx %d\n", (unsigned long long)a,
+                                 (unsigned long long)wmgl_dfrexp_mant(a), wmgl_dfrexp_exp(a), (unsigned long long)bits(m), e);
+            }
         }
         const int scale = static_cast<int>(rng() % 2200) - 1100;
-        if (!same(wmgl_dldexp(a, scale), bits(std::ldexp(d, scale)))) ++bad;
+        if (!same(wmgl_dldexp(a, scale), bits(std::ldexp(d, scale))) && bad++ < 5)
+            std::fprintf(stderr, "  ldexp(%016llx, %d): %016llx, libm %016llx\n", (unsigned long long)a, scale,
+                         (unsigned long long)wmgl_dldexp(a, scale), (unsigned long long)bits(std::ldexp(d, scale)));
     }
     CHECK_EQ(bad, 0);
 }
