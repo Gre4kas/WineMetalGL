@@ -58,6 +58,8 @@ public:
     // pending clear for this target is applied as load actions.
     id<MTLRenderCommandEncoder> render(const RenderTargetDesc& target);
     id<MTLRenderCommandEncoder> currentRender() const { return render_; }
+    // A render or compute encoder is open (work encoded now joins a draw or dispatch in progress).
+    bool encoding() const { return render_ != nil || compute_ != nil; }
     const RenderTargetDesc& currentTarget() const { return target_; }
     // Bumped every time a new render encoder starts (dynamic state must be re-sent).
     uint64_t passGeneration() const { return passGeneration_; }

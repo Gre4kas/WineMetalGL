@@ -287,7 +287,10 @@ bool internalformatQuery(Context& ctx, GLenum target, GLenum internalformat, GLe
     bool supported = f != nullptr;
     if (supported) {
         if (target == GL_RENDERBUFFER || multisample) supported = renderable && !f->compressed;
-        else if (target == GL_TEXTURE_BUFFER) supported = !f->compressed && !f->isDepthOrStencil() && f->baseFormat != GL_RGB;
+        else if (target == GL_TEXTURE_BUFFER)  // RGB only as RGB32 (GL_ARB_texture_buffer_object_rgb32)
+            supported = !f->compressed && !f->isDepthOrStencil() &&
+                        (f->baseFormat != GL_RGB || internalformat == GL_RGB32F || internalformat == GL_RGB32I ||
+                         internalformat == GL_RGB32UI);
         else if (f->compressed) supported = target == GL_TEXTURE_2D || target == GL_TEXTURE_2D_ARRAY || target == GL_TEXTURE_CUBE_MAP ||
                                             target == GL_TEXTURE_CUBE_MAP_ARRAY;
         else if (f->isDepthOrStencil()) supported = target != GL_TEXTURE_3D;

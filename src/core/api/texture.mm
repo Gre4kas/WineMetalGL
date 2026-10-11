@@ -1479,6 +1479,7 @@ void texBuffer(Context& ctx, GLenum target, GLenum internalformat, GLuint buffer
     case GL_RG32I: case GL_RG8UI: case GL_RG16UI: case GL_RG32UI: case GL_RGBA8: case GL_RGBA16: case GL_RGBA16F:
     case GL_RGBA32F: case GL_RGBA8I: case GL_RGBA16I: case GL_RGBA32I: case GL_RGBA8UI: case GL_RGBA16UI:
     case GL_RGBA32UI:
+    case GL_RGB32F: case GL_RGB32I: case GL_RGB32UI:  // GL 4.0, GL_ARB_texture_buffer_object_rgb32
         break;
     default: return ctx.setError(GL_INVALID_ENUM);
     }
@@ -1500,6 +1501,7 @@ void texBuffer(Context& ctx, GLenum target, GLenum internalformat, GLuint buffer
     tex->bufferOffset = object && range ? offset : 0;
     tex->bufferSize = object && range ? size : -1;
     tex->views.clear();
+    tex->rgb32ShadowVersion = 0;
     imageChanged(ctx, *tex);
 }
 

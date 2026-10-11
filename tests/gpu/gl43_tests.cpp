@@ -937,3 +937,56 @@ GPU_TEST_VERSION(gpu_gl43_attach_and_range_errors, 43) {
     glDeleteTextures(1, &view);
     glDeleteBuffers(1, &buffer);
 }
+
+// GL_RGB32F/I/UI buffer textures (GL 4.0, GL_ARB_texture_buffer_object_rgb32):
+// texels of 12 bytes, alpha 1, updated by glBufferSubData between draws.
+GPU_TEST_VERSION(gpu_gl43_texture_buffer_rgb32, 43) {
+    const char* vs = R"(#version 430 core
+in vec2 position;
+void main() { gl_Position = vec4(position, 0.0, 1.0); })";
+    const char* fs = R"(#version 430 core
+layout(binding = 0) uniform samplerBuffer colors;
+layout(binding = 1) uniform usamplerBuffer counts;
+out vec4 o;
+void main() {
+    int i = gl_FragCoord.x < 32.0 ? 0 : 1;
+    uvec4 c = texelFetch(counts, i);
+    o = vec4(texelFetch(colors, i).rgb, c.w == 1u && c.z == uint(i + 3) ? 1.0 : 0.0);
+})";
+    GLuint p = gpu::program(vs, fs);
+    glUseProgram(p);
+    const float colors[6] = {0.25f, 0.5f, 0.75f, 1.0f, 0.0f, 0.0f};
+    const GLuint counts[6] = {1, 2, 3, 4, 5, 4};
+    GLuint buffers[2], textures[2];
+    glGenBuffers(2, buffers);
+    glGenTextures(2, textures);
+    glBindBuffer(GL_TEXTURE_BUFFER, buffers[0]);
+    glBufferData(GL_TEXTURE_BUFFER, sizeof(colors), colors, GL_DYNAMIC_DRAW);
+    glBindBuffer(GL_TEXTURE_BUFFER, buffers[1]);
+    glBufferData(GL_TEXTURE_BUFFER, sizeof(counts), counts, GL_STATIC_DRAW);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_BUFFER, textures[0]);
+    glTexBuffer(GL_TEXTURE_BUFFER, GL_RGB32F, buffers[0]);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_BUFFER, textures[1]);
+    glTexBuffer(GL_TEXTURE_BUFFER, GL_RGB32UI, buffers[1]);
+    CHECK_GL();
+    GLuint vao = gpu::quad();
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    const uint8_t left[4] = {64, 128, 191, 255}, right[4] = {255, 0, 0, 255};
+    CHECK(gpu::near(gpu::readRGBA8(16, 32, 1, 1).data(), left));
+    CHECK(gpu::near(gpu::readRGBA8(48, 32, 1, 1).data(), right));
+    // The next draw sees an update of the buffer.
+    const float green[3] = {0.0f, 1.0f, 0.0f};
+    glBindBuffer(GL_TEXTURE_BUFFER, buffers[0]);
+    glBufferSubData(GL_TEXTURE_BUFFER, 0, sizeof(green), green);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    const uint8_t updated[4] = {0, 255, 0, 255};
+    CHECK(gpu::near(gpu::readRGBA8(16, 32, 1, 1).data(), updated));
+    CHECK_GL();
+    glActiveTexture(GL_TEXTURE0);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteTextures(2, textures);
+    glDeleteBuffers(2, buffers);
+    glDeleteProgram(p);
+}

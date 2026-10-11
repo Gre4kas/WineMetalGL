@@ -138,6 +138,13 @@ public:
     GLenum bufferFormat = 0;
     GLintptr bufferOffset = 0;
     GLsizeiptr bufferSize = -1;
+    // GL_RGB32F/I/UI buffer textures: Metal has no RGB32 formats, so the
+    // texels are expanded into an RGBA32 copy, refreshed when the buffer's
+    // version changes (texture_storage.mm).
+    id<MTLBuffer> rgb32Shadow = nil;
+    id<MTLBuffer> rgb32ShadowSource = nil;
+    uint64_t rgb32ShadowVersion = 0;
+    GLintptr rgb32ShadowOffset = -1;
 
     // Metal storage: rebuilt when the defined images no longer match it.
     id<MTLTexture> mtl = nil;

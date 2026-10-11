@@ -151,6 +151,14 @@ kernel void wmgl_decode_texels(texture2d<float> source [[texture(0)]], device fl
     out[id.y * size.x + id.x] = source.sample(nearest, (float2(id) + 0.5) / float2(size), level(0));
 }
 
+// GL_RGB32F/I/UI buffer texels (12 bytes) expanded to RGBA32 with alpha
+// `one` (1.0f or 1, as bits): params.x = texel count, params.y = one.
+kernel void wmgl_expand_rgb32(device const uint* in [[buffer(0)]], device uint4* out [[buffer(1)]],
+                              constant uint2& params [[buffer(2)]], uint t [[thread_position_in_grid]]) {
+    if (t >= params.x) return;
+    out[t] = uint4(in[3 * t], in[3 * t + 1], in[3 * t + 2], params.y);
+}
+
 // Geometry-shader strips as lists listing GL's last-vertex provoking vertex
 // first (Metal flat-shades from a primitive's first vertex); each triangle is
 // rotated, so its winding is unchanged. One thread per input primitive:
