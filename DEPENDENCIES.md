@@ -31,6 +31,9 @@ Local changes to vendored sources (each marked `WineMetalGL:` in the code):
 - glslang `glslang/MachineIndependent/Versions.{h,cpp}`: `GL_ARB_shader_subroutine`
   is a known extension (and predefined macro); WineMetalGL lowers subroutines
   before glslang parses a shader (`src/core/shader/subroutines.h`).
+- glslang `glslang/MachineIndependent/{Versions.h,Versions.cpp,ParseHelper.cpp}`:
+  `GL_ARB_arrays_of_arrays` is a known extension (and predefined macro) that
+  allows arrays of arrays below GLSL 4.30.
 - glslang `glslang/MachineIndependent/ParseHelper.cpp`, `redeclareBuiltinBlock`:
   `gl_PerVertex` may be redeclared from GLSL 1.50, as desktop drivers allow,
   instead of only from 4.10 or with `GL_ARB_separate_shader_objects`.

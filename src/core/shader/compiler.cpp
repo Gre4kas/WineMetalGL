@@ -2158,7 +2158,10 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
                 for (int st = 0; st < kStageCount; ++st)
                     for (auto& su : result.subroutines[st].uniforms)
                         if (arrayBaseName(u.name) == subroutineSelectionUniform(static_cast<Stage>(st), su.name)) {
-                            su.selectionOffset = u.offset;
+                            // An array of arrays reflects one uniform per outer
+                            // element: the selections start at the first.
+                            if (su.selectionOffset < 0 || static_cast<int>(u.offset) < su.selectionOffset)
+                                su.selectionOffset = static_cast<int>(u.offset);
                             su.selectionStride = u.arrayStride ? u.arrayStride : 16;
                         }
                 continue;

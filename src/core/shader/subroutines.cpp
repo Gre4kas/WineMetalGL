@@ -320,8 +320,10 @@ SubroutineLowering lowerSubroutines(Stage stage, const std::string& source) {
             indices.push_back(source.substr(t[k].end, t[close].begin - t[k].end));
             k = close + 1;
         }
-        if (indices.empty() && k + 2 < t.size() && t[k].text == "." && t[k + 1].text == "length" && t[k + 2].text == "(") {
-            // name.length() of an array: the selection array has its dimensions.
+        if (indices.size() < uniformDims[name].size() && k + 2 < t.size() && t[k].text == "." && t[k + 1].text == "length" &&
+            t[k + 2].text == "(") {
+            // name.length() or name[i].length() of an array: the selection
+            // array has its dimensions.
             edits.push_back({t[i].begin, t[i].end, subroutineSelectionUniform(stage, name)});
             continue;
         }

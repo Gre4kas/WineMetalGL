@@ -845,3 +845,41 @@ void main() { o = color; })";
     glDeleteTextures(1, &tex);
     glDeleteProgram(p);
 }
+
+// A two-dimensional subroutine uniform array walked with length()
+// (GL_ARB_arrays_of_arrays; KHR-GL43.shader_subroutine.arrays_of_arrays_of_uniforms).
+GPU_TEST_VERSION(gpu_gl43_subroutine_arrays_of_arrays, 43) {
+    const char* vs = R"(#version 400 core
+in vec2 position;
+void main() { gl_Position = vec4(position, 0.0, 1.0); })";
+    const char* fs = R"(#version 400 core
+#extension GL_ARB_arrays_of_arrays : require
+subroutine float step_type(float x);
+subroutine(step_type) float up(float x) { return x + 0.125; }
+subroutine(step_type) float down(float x) { return x - 0.125; }
+subroutine uniform step_type steps[2][3];
+out vec4 o;
+void main() {
+    float x = 0.5;
+    for (int j = 0; j < steps.length(); ++j)
+        for (int i = 0; i < steps[j].length(); ++i) x = steps[j][i](x);
+    o = vec4(x, 0.0, 0.0, 1.0);
+})";
+    GLuint p = gpu::program(vs, fs);
+    glUseProgram(p);
+    const GLuint up = glGetSubroutineIndex(p, GL_FRAGMENT_SHADER, "up");
+    const GLuint down = glGetSubroutineIndex(p, GL_FRAGMENT_SHADER, "down");
+    CHECK_EQ(glGetSubroutineUniformLocation(p, GL_FRAGMENT_SHADER, "steps[1][2]"), 5);
+    // Four steps up, two down: 0.5 + 0.25.
+    const GLuint selection[6] = {up, up, down, up, down, up};
+    glUniformSubroutinesuiv(GL_FRAGMENT_SHADER, 6, selection);
+    GLuint vao = gpu::quad();
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    CHECK_GL();
+    const uint8_t want[4] = {191, 0, 0, 255};
+    const std::vector<uint8_t> got = gpu::readRGBA8(32, 32, 1, 1);
+    if (!gpu::near(got.data(), want)) std::fprintf(stderr, "  red %u, up %u down %u\n", got[0], up, down);
+    CHECK(gpu::near(got.data(), want));
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
+}
