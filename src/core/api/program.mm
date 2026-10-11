@@ -785,6 +785,19 @@ void GetProgramiv(Context& ctx, GLuint program, GLenum pname, GLint* params) {
                   : pname == GL_GEOMETRY_INPUT_TYPE ? static_cast<GLint>(link->geometryInputType)
                                                     : static_cast<GLint>(link->geometryOutputType);
         return;
+    case GL_TESS_CONTROL_OUTPUT_VERTICES:
+        if (!ctx.tessellationShaders()) break;
+        if (!link || !link->stages[static_cast<int>(shader::Stage::TessControl)].present) return ctx.setError(GL_INVALID_OPERATION);
+        *params = link->tess.verticesOut;
+        return;
+    case GL_TESS_GEN_MODE: case GL_TESS_GEN_SPACING: case GL_TESS_GEN_VERTEX_ORDER: case GL_TESS_GEN_POINT_MODE:
+        if (!ctx.tessellationShaders()) break;
+        if (!link || !link->stages[static_cast<int>(shader::Stage::TessEval)].present) return ctx.setError(GL_INVALID_OPERATION);
+        *params = pname == GL_TESS_GEN_MODE      ? static_cast<GLint>(link->tess.mode)
+                  : pname == GL_TESS_GEN_SPACING ? static_cast<GLint>(link->tess.spacing)
+                  : pname == GL_TESS_GEN_VERTEX_ORDER ? static_cast<GLint>(link->tess.order)
+                                                      : (link->tess.pointMode ? GL_TRUE : GL_FALSE);
+        return;
     case GL_GEOMETRY_SHADER_INVOCATIONS:
         if (ctx.version() < 40 && !ctx.hasExtension("GL_ARB_gpu_shader5")) break;
         if (!link || !link->stages[static_cast<int>(shader::Stage::Geometry)].present) return ctx.setError(GL_INVALID_OPERATION);
@@ -986,6 +999,11 @@ void GetActiveUniformBlockiv(Context& ctx, GLuint program, GLuint blockIndex, GL
     case GL_UNIFORM_BLOCK_REFERENCED_BY_COMPUTE_SHADER:
         if (!ctx.computeShaders()) break;
         *params = (b.stageMask & stageBit(shader::Stage::Compute)) != 0;
+        return;
+    case GL_UNIFORM_BLOCK_REFERENCED_BY_TESS_CONTROL_SHADER: case GL_UNIFORM_BLOCK_REFERENCED_BY_TESS_EVALUATION_SHADER:
+        if (!ctx.tessellationShaders()) break;
+        *params = (b.stageMask & stageBit(pname == GL_UNIFORM_BLOCK_REFERENCED_BY_TESS_CONTROL_SHADER ? shader::Stage::TessControl
+                                                                                                      : shader::Stage::TessEval)) != 0;
         return;
     default: break;
     }

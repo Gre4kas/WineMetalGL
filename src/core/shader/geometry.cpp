@@ -513,3 +513,14 @@ GeometrySources geometrySources(const GeometryShaderInfo& info, const LinkResult
 }
 
 }  // namespace wmgl::shader
+
+namespace wmgl::shader {
+
+// Shared with the tessellation emulation (tessellation.cpp).
+GLenum glslTypeFromName(const std::string& type) { return glslTypeEnum(type); }
+
+std::string glslLoadValue(const std::string& type, GLenum glType, const std::string& buffer, const std::string& base) {
+    return loadValue(type, glType, buffer, base);
+}
+
+}  // namespace wmgl::shader

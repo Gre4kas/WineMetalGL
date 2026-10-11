@@ -286,6 +286,9 @@ bool DrawState::validateDraw(GLenum mode) {
     case GL_QUADS: case GL_QUAD_STRIP: case GL_POLYGON:
         if (ctx_.isCompat()) break;
         [[fallthrough]];
+    case GL_PATCHES:
+        if (mode == GL_PATCHES && ctx_.tessellationShaders()) break;
+        [[fallthrough]];
     default:
         ctx_.setError(GL_INVALID_ENUM);
         return false;
@@ -318,6 +321,15 @@ bool DrawState::validateDraw(GLenum mode) {
             ctx_.setError(GL_INVALID_OPERATION);
             return false;
         }
+    // GL_PATCHES draws exactly when a tessellation evaluation shader is
+    // active (GL 4.0 section 2.12); tessellation needs a program object.
+    LinkedProgram* executableNow = executable();
+    const bool tessellated = executableNow && executableNow->hasStage(Stage::TessEval);
+    if ((mode == GL_PATCHES) != tessellated) {
+        ctx_.setError(GL_INVALID_OPERATION);
+        return false;
+    }
+    if (tessellated && !executableNow->link.tess.active) return false;  // a pipeline without the vertex program's emulation
     // Active transform feedback restricts the draw mode (GL 3.3 section 2.15.2).
     const TransformFeedback& xfb = *ctx_.state.transformFeedback;
     if (xfb.active && !xfb.paused) {
@@ -329,9 +341,17 @@ bool DrawState::validateDraw(GLenum mode) {
         case GL_QUADS: case GL_QUAD_STRIP: case GL_POLYGON: family = GL_TRIANGLES; break;  // compatibility profile
         default: break;
         }
-        // With a geometry shader, its output type must match instead.
+        // With a geometry shader, its output type must match instead; with
+        // tessellation, the tessellator's output.
         LinkedProgram* lp = program ? program->linked.get() : nullptr;
-        if (lp && lp->link.geometry.active) {
+        if (tessellated) {
+            const shader::TessellationEmulation& t = executableNow->link.tess;
+            family = t.pointMode ? GL_POINTS : t.mode == GL_ISOLINES ? GL_LINES : GL_TRIANGLES;
+            if (executableNow->hasStage(Stage::Geometry)) {
+                const GLenum out = executableNow->link.geometryOutputType;
+                family = out == GL_POINTS ? GL_POINTS : out == GL_LINE_STRIP ? GL_LINES : GL_TRIANGLES;
+            }
+        } else if (lp && lp->link.geometry.active) {
             const GLenum out = lp->link.geometry.outputType;
             family = out == GL_POINTS ? GL_POINTS : out == GL_LINE_STRIP ? GL_LINES : GL_TRIANGLES;
         }
@@ -340,11 +360,20 @@ bool DrawState::validateDraw(GLenum mode) {
             return false;
         }
     }
-    // A geometry shader accepts only draw modes of its input type (GL 3.3 section 2.12.1).
+    // A geometry shader accepts only draw modes of its input type (GL 3.3
+    // section 2.12.1); after tessellation, the tessellator's output type.
     if (LinkedProgram* lp = program ? program->linked.get() : nullptr;
         lp && lp->link.geometry.active && geometryInputFor(mode) != lp->link.geometry.inputType) {
         ctx_.setError(GL_INVALID_OPERATION);
         return false;
+    }
+    if (tessellated && executableNow->hasStage(Stage::Geometry)) {
+        const shader::TessellationEmulation& t = executableNow->link.tess;
+        const GLenum produced = t.pointMode ? GL_POINTS : t.mode == GL_ISOLINES ? GL_LINES : GL_TRIANGLES;
+        if (executableNow->link.geometryInputType != produced) {
+            ctx_.setError(GL_INVALID_OPERATION);
+            return false;
+        }
     }
     RenderTargetDesc target;
     TargetFormats formats;
@@ -693,6 +722,7 @@ id<MTLTexture> DrawState::imageBinding(LinkedProgram& program, size_t index) {
 }
 
 LinkedProgram* DrawState::executable() {
+    if (override_) return override_;
     if (Program* p = ctx_.state.program.get()) return p->linked.get();
     if (ProgramPipeline* pp = ctx_.state.programPipeline.get()) {
         current_ = pipelineExecutable(*pp);
@@ -719,6 +749,12 @@ void DrawState::beginDraw(GLenum mode) {
 }
 
 void DrawState::bindUniforms(id<MTLRenderCommandEncoder> encoder, LinkedProgram& program) {
+    if (tessInputs_.active) {
+        // The tessellation evaluation vertex function's domain points, patch records and control block.
+        static const NSUInteger kSlots[3] = {shader::kSlotTessVertices, shader::kSlotTessPatches, shader::kSlotTessControl};
+        for (int i = 0; i < 3; ++i)
+            [encoder setVertexBuffer:tessInputs_.buffers[i] offset:tessInputs_.offsets[i] atIndex:kSlots[i]];
+    }
     // Driver uniforms read by the generated vertex code (see compiler.cpp addPointSize).
     const struct {
         float pointSize;
@@ -1529,9 +1565,9 @@ GLenum geometryInputFor(GLenum mode) {
 }  // namespace
 
 void DrawState::bindKernelResources(id<MTLComputeCommandEncoder> encoder, LinkedProgram& program,
-                                    bool usesDefaultUniforms) {
-    const int cs = static_cast<int>(Stage::Compute);
-    // The compute program, or (geometry kernel) the vertex program.
+                                    bool usesDefaultUniforms, int stage) {
+    const int cs = stage;
+    // The compute program, or (geometry and tessellation kernels) the vertex program.
     Program* owner = stageProgram(program, cs);
     if (!owner) owner = stageProgram(program, static_cast<int>(Stage::Vertex));
     if (!owner || !owner->linked) return;
@@ -1825,6 +1861,134 @@ void DrawState::drawGeometry(GLenum mode, const std::vector<uint32_t>& vertices,
     }
 }
 
+// ------------------------------------------------------------ tessellation
+
+void DrawState::drawPatches(const std::vector<uint32_t>& vertices, GLsizei instances) {
+    LinkedProgram& lp = *executable();
+    const shader::TessellationEmulation& t = lp.link.tess;
+    std::shared_ptr<LinkedProgram> evaluation = lp.tessEvaluation();
+    if (!evaluation) return;
+    const uint32_t patchVertices = static_cast<uint32_t>(std::max(1, ctx_.state.patchVertices));
+    const size_t patches = vertices.size() / patchVertices;  // an incomplete last patch is ignored
+    if (!patches) return;
+    const std::vector<uint32_t> list(vertices.begin(), vertices.begin() + static_cast<long>(patches * patchVertices));
+    const uint32_t copies = static_cast<uint32_t>(std::max(1, instances));
+    const uint64_t total = static_cast<uint64_t>(patches) * copies;  // patch p of instance i is patch i * patches + p
+    if (t.hasControl && !lp.tessControlKernel()) return;
+    waitForCpuVertexReads(lp, true);
+    prepareSamplerStorage(lp);
+    queriesPrepareVisibility(ctx_);
+    uint64_t serial = ctx_.stream().serial();
+
+    // 1. The vertex outputs of every patch vertex, in patch order.
+    TransientAllocation captured = transient_.allocate(total * patchVertices * t.inputStride * 4, serial, 16);
+    {
+        const id<MTLBuffer> buffers[1] = {captured.buffer};
+        const uint32_t base[1] = {static_cast<uint32_t>(captured.offset / 4)};
+        const uint32_t stride[1] = {t.inputStride};
+        if (!runVertexCapture(lp, list, instances, static_cast<uint32_t>(list.size() * copies), 1, buffers, base, stride)) return;
+    }
+
+    // 2. The control shader, one threadgroup per patch; its levels are read
+    // back for the tessellator (the patch records with them).
+    std::vector<uint32_t> records;  // control: the patch records, copied out of the transient memory
+    const uint32_t recordWords = t.recordWords();
+    if (t.hasControl) {
+        TransientAllocation output = transient_.allocate(total * recordWords * 4, serial, 16);
+        id<MTLComputeCommandEncoder> compute = ctx_.stream().compute();
+        [compute setComputePipelineState:lp.tessControlKernel()];
+        bindKernelResources(compute, lp, t.control.usesDefaultUniforms, static_cast<int>(Stage::TessControl));
+        const uint32_t control[4] = {patchVertices, static_cast<uint32_t>(total), static_cast<uint32_t>(patches), 0};
+        [compute setBuffer:captured.buffer offset:captured.offset atIndex:shader::kSlotFirstXfbBuffer];
+        [compute setBuffer:output.buffer offset:output.offset atIndex:shader::kSlotFirstXfbBuffer + 1];
+        [compute setBytes:control length:sizeof(control) atIndex:shader::kSlotFirstXfbBuffer + 2];
+        [compute dispatchThreadgroups:MTLSizeMake(total, 1, 1)
+                threadsPerThreadgroup:MTLSizeMake(static_cast<NSUInteger>(t.verticesOut), 1, 1)];
+        ctx_.stream().waitFor(serial);
+        const auto* words = static_cast<const uint32_t*>(output.data);
+        records.assign(words, words + total * recordWords);
+        serial = ctx_.stream().serial();
+    }
+
+    // 3. Tessellation: domain points (patch, u, v, w) and the primitive list.
+    if (!tessellator_) tessellator_ = std::make_unique<tess::Tessellator>();
+    const tess::Mode mode{t.mode, t.spacing, t.order == GL_CW, t.pointMode};
+    std::vector<uint32_t> points;  // 4 words per domain point
+    std::vector<uint32_t> indices;
+    tess::Patch patch;
+    float lastOuter[4] = {}, lastInner[2] = {};
+    bool haveLast = false;
+    for (uint64_t p = 0; p < total; ++p) {
+        float outer[4], inner[2];
+        if (t.hasControl) {
+            const uint32_t* levels = records.data() + p * recordWords + static_cast<uint64_t>(t.verticesOut) * t.vertexWords;
+            std::memcpy(outer, levels, sizeof(outer));
+            std::memcpy(inner, levels + 4, sizeof(inner));
+        } else {
+            std::memcpy(outer, ctx_.state.patchDefaultOuterLevel, sizeof(outer));
+            std::memcpy(inner, ctx_.state.patchDefaultInnerLevel, sizeof(inner));
+        }
+        // Patches with the same levels tessellate the same way.
+        if (!haveLast || std::memcmp(outer, lastOuter, sizeof(outer)) != 0 || std::memcmp(inner, lastInner, sizeof(inner)) != 0) {
+            tessellator_->tessellate(mode, outer, inner, patch);
+            std::memcpy(lastOuter, outer, sizeof(outer));
+            std::memcpy(lastInner, inner, sizeof(inner));
+            haveLast = true;
+        }
+        if (patch.indices.empty()) continue;
+        const uint32_t base = static_cast<uint32_t>(points.size() / 4);
+        for (size_t i = 0; i < patch.u.size(); ++i) {
+            const float u = patch.u[i], v = patch.v[i], w = t.mode == GL_TRIANGLES ? 1.0f - u - v : 0.0f;
+            uint32_t word[4] = {static_cast<uint32_t>(p), 0, 0, 0};
+            std::memcpy(&word[1], &u, 4);
+            std::memcpy(&word[2], &v, 4);
+            std::memcpy(&word[3], &w, 4);
+            points.insert(points.end(), word, word + 4);
+        }
+        for (uint32_t index : patch.indices) indices.push_back(base + index);
+    }
+    const GLenum listMode = t.pointMode ? GL_POINTS : t.mode == GL_ISOLINES ? GL_LINES : GL_TRIANGLES;
+    if (indices.empty()) return;
+
+    // 4. The evaluation stage over the domain points, drawn (or captured, or
+    // fed to the geometry shader) as independent primitives.
+    TransientAllocation pointData = transient_.allocate(points.size() * 4, serial, 16);
+    std::memcpy(pointData.data, points.data(), points.size() * 4);
+    TransientAllocation patchData;
+    if (t.hasControl) {
+        patchData = transient_.allocate(records.size() * 4, serial, 16);
+        std::memcpy(patchData.data, records.data(), records.size() * 4);
+    } else {
+        patchData = captured;  // read in this command buffer
+    }
+    struct {
+        uint32_t patchVertices, patchesPerInstance, pad[2];
+        float outer[4], inner[2], pad2[2];
+    } control = {patchVertices, static_cast<uint32_t>(patches), {0, 0}, {}, {}, {}};
+    std::memcpy(control.outer, ctx_.state.patchDefaultOuterLevel, sizeof(control.outer));
+    std::memcpy(control.inner, ctx_.state.patchDefaultInnerLevel, sizeof(control.inner));
+    TransientAllocation controlData = transient_.allocate(sizeof(control), serial, 16);
+    std::memcpy(controlData.data, &control, sizeof(control));
+    tessInputs_.active = true;
+    tessInputs_.buffers[0] = pointData.buffer;
+    tessInputs_.offsets[0] = pointData.offset;
+    tessInputs_.buffers[1] = patchData.buffer;
+    tessInputs_.offsets[1] = patchData.offset;
+    tessInputs_.buffers[2] = controlData.buffer;
+    tessInputs_.offsets[2] = controlData.offset;
+    override_ = evaluation.get();
+    if (evaluation->link.geometry.active) {
+        uint32_t primitiveBase = 0;
+        drawGeometry(listMode, indices, 1, primitiveBase);
+    } else {
+        if (ctx_.state.transformFeedback->active) captureTransformFeedback(listMode, indices, 1);
+        issue(listMode, 0, static_cast<GLsizei>(indices.size()), 1, indices.data(), nil, 0, MTLIndexTypeUInt32, 0, 0,
+              static_cast<GLsizei>(points.size() / 4));
+    }
+    override_ = nullptr;
+    tessInputs_ = {};
+}
+
 void DrawState::drawArrays(GLenum mode, GLint first, GLsizei count, GLsizei instances) {
     beginDraw(mode);
     if (first < 0 || count < 0 || instances < 0) {
@@ -1837,6 +2001,12 @@ void DrawState::drawArrays(GLenum mode, GLint first, GLsizei count, GLsizei inst
         std::vector<uint32_t> vertices(static_cast<size_t>(count));
         for (GLsizei i = 0; i < count; ++i) vertices[static_cast<size_t>(i)] = static_cast<uint32_t>(first + i);
         drawWideLines(mode, vertices, instances);
+        return;
+    }
+    if (mode == GL_PATCHES) {
+        std::vector<uint32_t> vertices(static_cast<size_t>(count));
+        for (GLsizei i = 0; i < count; ++i) vertices[static_cast<size_t>(i)] = static_cast<uint32_t>(first + i);
+        drawPatches(vertices, instances);
         return;
     }
     if (executable()->link.geometry.active) {
@@ -1977,6 +2147,14 @@ void DrawState::drawElements(GLenum mode, GLsizei count, GLenum type, const void
             lines.insert(lines.end(), part.begin(), part.end());
         });
         drawWideLines(GL_LINES, lines, instances);
+        return;
+    }
+    if (mode == GL_PATCHES) {
+        // Primitive restart does not apply to patches
+        // (PRIMITIVE_RESTART_FOR_PATCHES_SUPPORTED is false).
+        std::vector<uint32_t> list = cpuIndices();
+        for (uint32_t& v : list) v += bias;
+        drawPatches(list, instances);
         return;
     }
     if (executable()->link.geometry.active) {

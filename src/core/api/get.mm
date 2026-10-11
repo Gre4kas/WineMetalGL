@@ -212,6 +212,11 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
     case GL_MAX_GEOMETRY_OUTPUT_COMPONENTS: out = ints({128}); return true;
     case GL_MAX_FRAGMENT_INPUT_COMPONENTS: out = ints({128}); return true;
     case GL_MAX_GEOMETRY_OUTPUT_VERTICES: out = ints({256}); return true;
+    // Primitive restart is treated as disabled for GL_PATCHES (GL 4.3 section 10.3.5).
+    case GL_PRIMITIVE_RESTART_FOR_PATCHES_SUPPORTED:
+        if (!ctx.tessellationShaders()) return false;
+        out = bools({false});
+        return true;
     // GL 4.2 atomic counters (limits.h); vertex and tessellation stages have none.
     case GL_ATOMIC_COUNTER_BUFFER_BINDING: case GL_MAX_ATOMIC_COUNTER_BUFFER_BINDINGS: case GL_MAX_ATOMIC_COUNTER_BUFFER_SIZE:
     case GL_MAX_VERTEX_ATOMIC_COUNTER_BUFFERS: case GL_MAX_TESS_CONTROL_ATOMIC_COUNTER_BUFFERS:

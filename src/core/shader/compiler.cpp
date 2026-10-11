@@ -18,6 +18,7 @@
 #include "core/shader/glsl_upgrade.h"
 #include "core/limits.h"
 #include "core/shader/geometry.h"
+#include "core/shader/tessellation.h"
 #include "core/shader/spirv_passes.h"
 #include "core/shader/subroutines.h"
 #include "core/shader/transform_feedback.h"
@@ -1096,8 +1097,18 @@ static void hideFixedFunctionBlock(LinkResult& r) {
 
 // `geometry`/`geometryCapture` (optional) receive the parsed geometry stage
 // and the layout of the vertex outputs it reads (see geometry.h).
+// What link() needs to build the tessellation emulation: the parsed control
+// and evaluation stages, the layout of the vertex outputs they read, and the
+// geometry stage as GLSL (linked again after the evaluation stage).
+struct TessellationLink {
+    TessStageInfo control, evaluation;
+    bool hasControl = false;
+    LinkResult capture;
+    std::string geometryGlsl;
+};
+
 static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, GeometryShaderInfo* geometry = nullptr,
-                           LinkResult* geometryCapture = nullptr) {
+                           LinkResult* geometryCapture = nullptr, TessellationLink* tessellation = nullptr) {
     initGlslang();
     LinkResult result;
     std::vector<ParsedShader> parsed(input.shaders.size());
@@ -1136,6 +1147,18 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
             result.log += "error: a geometry shader requires a vertex shader\n";
             return result;
         }
+        if ((stagePresent[static_cast<int>(Stage::TessControl)] || stagePresent[static_cast<int>(Stage::TessEval)]) &&
+            !stagePresent[static_cast<int>(Stage::Vertex)]) {
+            result.log += "error: tessellation shaders require a vertex shader\n";
+            return result;
+        }
+    }
+    // A control shader without an evaluation shader cannot draw anything
+    // (GL_PATCHES needs both; transform feedback cannot capture patches).
+    if (stagePresent[static_cast<int>(Stage::TessControl)] && !stagePresent[static_cast<int>(Stage::TessEval)] &&
+        !input.separable) {
+        result.log += "error: a tessellation control shader requires a tessellation evaluation shader\n";
+        return result;
     }
 
     glslang::TProgram program;
@@ -1152,15 +1175,45 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
         }
         for (int d = 0; d < 3; ++d) result.computeLocalSize[d] = cs->getLocalSize(d);
     }
+    const bool tessellated = stagePresent[static_cast<int>(Stage::TessEval)];
+    if (tessellated) {
+        // The tessellation layout (merged over the stage's shader objects).
+        TessellationEmulation& t = result.tess;
+        const glslang::TIntermediate* tes = program.getIntermediate(EShLangTessEvaluation);
+        t.mode = tes->getInputPrimitive() == glslang::ElgQuads      ? GL_QUADS
+                 : tes->getInputPrimitive() == glslang::ElgIsolines ? GL_ISOLINES
+                                                                    : GL_TRIANGLES;
+        t.spacing = tes->getVertexSpacing() == glslang::EvsFractionalEven  ? GL_FRACTIONAL_EVEN
+                    : tes->getVertexSpacing() == glslang::EvsFractionalOdd ? GL_FRACTIONAL_ODD
+                                                                           : GL_EQUAL;
+        t.order = tes->getVertexOrder() == glslang::EvoCw ? GL_CW : GL_CCW;
+        t.pointMode = tes->getPointMode();
+        if (const glslang::TIntermediate* tcs = program.getIntermediate(EShLangTessControl)) {
+            t.hasControl = true;
+            t.verticesOut = tcs->getVertices();
+        }
+    } else if (stagePresent[static_cast<int>(Stage::TessControl)]) {
+        // A separable control-only program: its output vertex count is queryable.
+        if (const glslang::TIntermediate* tcs = program.getIntermediate(EShLangTessControl))
+            result.tess.verticesOut = tcs->getVertices();
+    }
     // Transform feedback varyings are validated against the last vertex
-    // processing stage (geometry if present, else vertex).
-    if (!capture && !input.transformFeedbackVaryings.empty()) {
+    // processing stage (geometry if present, else tessellation evaluation,
+    // else vertex).
+    // A separable control-only program captures nothing: its varyings would
+    // apply if it ended a pipeline, which the control stage cannot, so desktop
+    // GL accepts them without checking (unlike OpenGL ES).
+    const bool controlOnly = input.separable && stagePresent[static_cast<int>(Stage::TessControl)] && !tessellated &&
+                             !stagePresent[static_cast<int>(Stage::Geometry)] && !stagePresent[static_cast<int>(Stage::Vertex)];
+    if (!capture && !input.transformFeedbackVaryings.empty() && !controlOnly) {
         const bool geometry = stagePresent[static_cast<int>(Stage::Geometry)];
-        if (!geometry && !stagePresent[static_cast<int>(Stage::Vertex)]) {
+        if (!geometry && !tessellated && !stagePresent[static_cast<int>(Stage::Vertex)]) {
             result.log += "error: transform feedback varyings need a vertex or geometry shader\n";
             return result;
         }
-        glslang::TIntermediate* last = program.getIntermediate(geometry ? EShLangGeometry : EShLangVertex);
+        glslang::TIntermediate* last = program.getIntermediate(geometry      ? EShLangGeometry
+                                                               : tessellated ? EShLangTessEvaluation
+                                                                             : EShLangVertex);
         if (!layoutTransformFeedback(input.transformFeedbackVaryings, input.transformFeedbackMode,
                                      captureableOutputs(last), result, result.log))
             return result;
@@ -1314,7 +1367,48 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
         if (input.separable && !input.internal)
             hashVaryingLocations(result.stages[s].spirv, static_cast<Stage>(s), explicitVaryings);
     }
-    if (geometry && result.stages[static_cast<int>(Stage::Geometry)].present) {
+    // SPIRV-Cross GLSL of a linked stage (the emulations rebuild stages from it).
+    auto stageGlsl = [&](Stage stage, std::string& glsl) {
+        try {
+            spirv_cross::CompilerGLSL glslOut(result.stages[static_cast<int>(stage)].spirv);
+            spirv_cross::CompilerGLSL::Options options = glslOut.get_common_options();
+            options.version = 450;
+            options.es = false;
+            options.vulkan_semantics = false;
+            glslOut.set_common_options(options);
+            glsl = glslOut.compile();
+            return true;
+        } catch (const std::exception& error) {
+            result.log += std::string("error: shader translation failed: ") + error.what() + "\n";
+            return false;
+        }
+    };
+    // Separable programs without a vertex stage link without the emulation
+    // (a program pipeline would have to assemble it from several programs).
+    if (tessellation && tessellated && stagePresent[static_cast<int>(Stage::Vertex)]) {
+        TessellationLink& t = *tessellation;
+        std::string glsl;
+        t.hasControl = result.stages[static_cast<int>(Stage::TessControl)].present;
+        if (t.hasControl) {
+            if (!stageGlsl(Stage::TessControl, glsl) || !parseTessellationGlsl(Stage::TessControl, glsl, t.control, result.log))
+                return result;
+        }
+        if (!stageGlsl(Stage::TessEval, glsl) || !parseTessellationGlsl(Stage::TessEval, glsl, t.evaluation, result.log))
+            return result;
+        if (result.stages[static_cast<int>(Stage::Geometry)].present) {
+            if (!stageGlsl(Stage::Geometry, t.geometryGlsl)) return result;
+            // The geometry shader layout, for the program queries.
+            GeometryShaderInfo info;
+            if (!parseGeometryGlsl(t.geometryGlsl, info, result.log)) return result;
+            result.geometryInputType = info.inputType;
+            result.geometryOutputType = info.outputType;
+            result.geometryVerticesOut = info.maxVertices;
+        }
+        if (!layoutTransformFeedback(tessellationCaptureVaryings(t.hasControl ? t.control : t.evaluation), GL_INTERLEAVED_ATTRIBS,
+                                     captureableOutputs(program.getIntermediate(EShLangVertex)), t.capture, result.log,
+                                     UINT32_MAX))
+            return result;
+    } else if (geometry && result.stages[static_cast<int>(Stage::Geometry)].present) {
         std::string glsl;
         try {
             spirv_cross::CompilerGLSL glslOut(result.stages[static_cast<int>(Stage::Geometry)].spirv);
@@ -1686,7 +1780,9 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
     for (int s = 0; s < kStageCount; ++s)
     for (int variant = 0; variant < (s == static_cast<int>(Stage::Vertex) ? 2 : 1); ++variant) {
         StageOutput& stage = result.stages[s];
-        if (!stage.present || s == static_cast<int>(Stage::Geometry)) continue;
+        if (!stage.present || s == static_cast<int>(Stage::Geometry) || s == static_cast<int>(Stage::TessControl) ||
+            s == static_cast<int>(Stage::TessEval))
+            continue;
         const bool noRaster = variant == 1;
         try {
             spirv_cross::CompilerMSL msl(cubeStorageImagesAs2DArrays(lowerGatherOffsets(rectImagesAs2D(stage.spirv))));
@@ -1750,6 +1846,9 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
                 {"wmgl_XfbControl", kSlotXfbControl},      {"wmgl_GsInput", kSlotFirstXfbBuffer},
                 {"wmgl_GsOutput", kSlotFirstXfbBuffer + 1}, {"wmgl_GsIndices", kSlotFirstXfbBuffer + 2},
                 {"wmgl_GsControl", kSlotFirstXfbBuffer + 3}, {"wmgl_GsVertices", kSlotFirstXfbBuffer},
+                {"wmgl_TcsInput", kSlotFirstXfbBuffer}, {"wmgl_TcsOutput", kSlotFirstXfbBuffer + 1},
+                {"wmgl_TcsControl", kSlotFirstXfbBuffer + 2}, {"wmgl_TesVertices", kSlotTessVertices},
+                {"wmgl_TesPatches", kSlotTessPatches}, {"wmgl_TesControl", kSlotTessControl},
             };
             uint32_t nextAtomicSlot = kSlotFirstAtomicCounterBuffer;
             for (const auto& ssbo : resources.storage_buffers) {
@@ -1996,13 +2095,71 @@ bool buildGeometryEmulation(const LinkInput& input, const GeometryShaderInfo& in
     return true;
 }
 
+bool buildTessellationEmulation(const LinkInput& input, const TessellationLink& t, LinkResult& result) {
+    if (!useVertexCapture(input, t.capture, result)) return false;
+    TessellationEmulation& e = result.tess;
+    e.inputStride = t.capture.xfbStride[0];
+    static const bool dump = [] {
+        const char* v = std::getenv("WINEMETALGL_DUMP_SHADERS");
+        return v && v[0] == '1';
+    }();
+    TessControlSources control;
+    if (t.hasControl) {
+        control = tessControlSources(t.control, t.capture);
+        e.vertexWords = control.vertexWords;
+        e.patchWords = control.patchWords;
+        if (dump) std::fprintf(stderr, "winemetalgl: tessellation control kernel GLSL:\n%s\n", control.kernel.c_str());
+        LinkInput kernelInput;
+        kernelInput.shaders = {{Stage::Compute, control.kernel}};
+        kernelInput.internal = true;
+        LinkResult kernel = linkImpl(kernelInput, nullptr);
+        if (!kernel.ok) {
+            result.log += "error: internal error building the tessellation control kernel:\n" + kernel.log;
+            return false;
+        }
+        const int cs = static_cast<int>(Stage::Compute);
+        e.control = kernel.stages[cs];
+        copyStageSlots(kernel, cs, result, static_cast<int>(Stage::TessControl));
+    }
+    std::string log;
+    const std::string vertex = tessEvaluationVertexShader(t.evaluation, t.hasControl ? &control : nullptr, &t.capture, log);
+    if (vertex.empty()) {
+        result.log += log;
+        return false;
+    }
+    if (dump) std::fprintf(stderr, "winemetalgl: tessellation evaluation vertex GLSL:\n%s\n", vertex.c_str());
+    LinkInput evaluationInput;
+    evaluationInput.shaders = {{Stage::Vertex, vertex}};
+    if (!t.geometryGlsl.empty()) evaluationInput.shaders.push_back({Stage::Geometry, t.geometryGlsl});
+    evaluationInput.transformFeedbackVaryings = input.transformFeedbackVaryings;
+    evaluationInput.transformFeedbackMode = input.transformFeedbackMode;
+    evaluationInput.internal = true;
+    auto evaluation = std::make_shared<LinkResult>(link(evaluationInput));
+    if (!evaluation->ok) {
+        result.log += "error: internal error building the tessellation evaluation stage:\n" + evaluation->log;
+        return false;
+    }
+    e.evaluation = std::move(evaluation);
+    e.active = true;
+    return true;
+}
+
 }  // namespace
 
 LinkResult link(const LinkInput& input) {
     GeometryShaderInfo geometry;
     LinkResult geometryCapture;
-    LinkResult result = linkImpl(input, nullptr, &geometry, &geometryCapture);
+    TessellationLink tessellation;
+    LinkResult result = linkImpl(input, nullptr, &geometry, &geometryCapture, &tessellation);
     if (!result.ok) return result;
+    if (result.stages[static_cast<int>(Stage::TessEval)].present) {
+        // The evaluation executable captures transform feedback and runs the
+        // geometry shader (if any); the program's vertex stage feeds patches.
+        if (result.stages[static_cast<int>(Stage::Vertex)].present && !buildTessellationEmulation(input, tessellation, result))
+            result.ok = false;
+        return result;
+    }
+    if (result.stages[static_cast<int>(Stage::TessControl)].present) return result;  // separable control-only program
     if (result.stages[static_cast<int>(Stage::Geometry)].present) {
         if (!result.stages[static_cast<int>(Stage::Vertex)].present) return result;  // separable, geometry only
         // Transform feedback (if any) captures the emitted vertices; the draw

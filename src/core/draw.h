@@ -4,6 +4,7 @@
 #import <Metal/Metal.h>
 
 #include <array>
+#include <memory>
 #include <cstdint>
 #include <vector>
 
@@ -12,6 +13,8 @@
 #include "core/metal/command_stream.h"
 #include "core/metal/pipeline_cache.h"
 #include "core/metal/transient.h"
+#include "core/shader/compiler.h"
+#include "core/tess/tessellator.h"
 
 namespace wmgl {
 
@@ -111,9 +114,15 @@ private:
     // Fixed-function wide lines (compat/fixed_function.h): `vertices` (one
     // restart-free line stream) drawn as two triangles per segment.
     void drawWideLines(GLenum mode, const std::vector<uint32_t>& vertices, GLsizei instances);
+    // Draws `vertices` (vertex numbers in draw order, one restart-free
+    // segment) as GL_PATCHES through the tessellation emulation
+    // (shader/tessellation.h).
+    void drawPatches(const std::vector<uint32_t>& vertices, GLsizei instances);
     // Uniforms, uniform blocks and samplers of a compute function (the
-    // Stage::Compute slots: a compute program or the geometry kernel).
-    void bindKernelResources(id<MTLComputeCommandEncoder> encoder, LinkedProgram& program, bool usesDefaultUniforms);
+    // `stage` slots: Stage::Compute for a compute program or the geometry
+    // kernel, Stage::TessControl for the tessellation control kernel).
+    void bindKernelResources(id<MTLComputeCommandEncoder> encoder, LinkedProgram& program, bool usesDefaultUniforms,
+                             int stage = static_cast<int>(shader::Stage::Compute));
     void bindCaptureDefaults(id<MTLRenderCommandEncoder> encoder, LinkedProgram& program);
     // Whether a draw must list its primitives with the provoking vertex first
     // (LAST_VERTEX_CONVENTION and flat fragment inputs).
@@ -169,6 +178,16 @@ private:
     // GL sample mask the current draw's fragment function writes (~0: none; prepare()).
     uint32_t sampleMask_ = ~0u;
     std::shared_ptr<LinkedProgram> current_;  // keeps a pipeline executable alive during a draw
+    // The executable draws use while a tessellated draw runs its evaluation
+    // stage (null otherwise), and the buffers its vertex function reads
+    // (shader::kSlotTessVertices, kSlotTessPatches, kSlotTessControl).
+    LinkedProgram* override_ = nullptr;
+    struct {
+        bool active = false;
+        id<MTLBuffer> buffers[3] = {};
+        NSUInteger offsets[3] = {};
+    } tessInputs_;
+    std::unique_ptr<tess::Tessellator> tessellator_;
     // Fixed-function program of the current draw (owned by the share group's cache).
     Program* ownerProgram();
     GLenum drawMode_ = GL_TRIANGLES;
