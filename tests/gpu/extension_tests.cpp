@@ -31,6 +31,7 @@ GLuint texture2D(GLenum internal, GLenum format, GLenum type, int w, int h, cons
     glGenTextures(1, &t);
     glBindTexture(GL_TEXTURE_2D, t);
     glTexImage2D(GL_TEXTURE_2D, 0, static_cast<GLint>(internal), w, h, 0, format, type, data);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);  // complete: glCopyImageSubData requires it
     return t;
 }
 

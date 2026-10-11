@@ -281,6 +281,7 @@ GPU_TEST(gpu_review_copy_image_compressed_mip_tail) {
         glBindTexture(GL_TEXTURE_2D, tex[i]);
         glCompressedTexImage2D_(GL_TEXTURE_2D, 0, formats[i], 4, 4, 0, 8, block);
         glCompressedTexImage2D_(GL_TEXTURE_2D, 1, formats[i], 2, 2, 0, 8, i == 0 ? block : nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 1);  // complete: glCopyImageSubData requires it
     }
     glCopyImageSubData_(tex[0], GL_TEXTURE_2D, 1, 0, 0, 0, tex[1], GL_TEXTURE_2D, 1, 0, 0, 0, 2, 2, 1);
     CHECK_GL();
