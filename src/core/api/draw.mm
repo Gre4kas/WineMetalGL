@@ -189,7 +189,13 @@ void MultiDrawElements(Context& ctx, GLenum mode, const GLsizei* count, GLenum t
 void MultiDrawElementsBaseVertex(Context& ctx, GLenum mode, const GLsizei* count, GLenum type, const void* const* indices,
                                  GLsizei drawcount, const GLint* basevertex) {
     if (drawcount < 0) return ctx.setError(GL_INVALID_VALUE);
-    for (GLsizei i = 0; i < drawcount; ++i) ctx.draw().drawElements(mode, count[i], type, indices[i], 1, basevertex[i]);
+    // Errors of any draw are reported before anything draws (and before the
+    // other arrays are read).
+    for (GLsizei i = 0; i < drawcount; ++i)
+        if (count[i] < 0) return ctx.setError(GL_INVALID_VALUE);
+    if (type != GL_UNSIGNED_BYTE && type != GL_UNSIGNED_SHORT && type != GL_UNSIGNED_INT) return ctx.setError(GL_INVALID_ENUM);
+    for (GLsizei i = 0; i < drawcount; ++i)
+        ctx.draw().drawElements(mode, count[i], type, indices[i], 1, basevertex ? basevertex[i] : 0);
 }
 
 void Clear(Context& ctx, GLbitfield mask) { ctx.draw().clear(mask); }

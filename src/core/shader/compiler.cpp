@@ -1227,11 +1227,14 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
             return result;
         }
         if (!parseGeometryGlsl(glsl, *geometry, result.log)) return result;
-        if (!stagePresent[static_cast<int>(Stage::Vertex)]) {
+        if (!stagePresent[static_cast<int>(Stage::Vertex)] && !input.separable) {
             result.log += "error: a geometry shader requires a vertex shader\n";
             return result;
         }
-        if (!layoutTransformFeedback(geometryCaptureVaryings(*geometry), GL_INTERLEAVED_ATTRIBS,
+        // A separable geometry-only program links; its emulation needs the
+        // vertex stage and is not built (program pipelines then report it).
+        if (stagePresent[static_cast<int>(Stage::Vertex)] &&
+            !layoutTransformFeedback(geometryCaptureVaryings(*geometry), GL_INTERLEAVED_ATTRIBS,
                                      captureableOutputs(program.getIntermediate(EShLangVertex)), *geometryCapture, result.log,
                                      UINT32_MAX))
             return result;
@@ -1713,6 +1716,7 @@ LinkResult link(const LinkInput& input) {
     LinkResult result = linkImpl(input, nullptr, &geometry, &geometryCapture);
     if (!result.ok) return result;
     if (result.stages[static_cast<int>(Stage::Geometry)].present) {
+        if (!result.stages[static_cast<int>(Stage::Vertex)].present) return result;  // separable, geometry only
         // Transform feedback (if any) captures the emitted vertices; the draw
         // path reads them back from the kernel output (DrawState).
         if (!buildGeometryEmulation(input, geometry, geometryCapture, result)) result.ok = false;
