@@ -189,9 +189,13 @@ tests/cts/baseline/gl33-cfg3-wine.txt
 tests/cts/baseline/gl33-cfg4-native.txt
 tests/cts/baseline/gl33-cfg4-wine.txt
 tests/cts/baseline/gl40-cfg1-native.txt
+tests/cts/baseline/gl40-cfg1-wine.txt
 tests/cts/baseline/gl40-cfg2-native.txt
+tests/cts/baseline/gl40-cfg2-wine.txt
 tests/cts/baseline/gl40-cfg3-native.txt
+tests/cts/baseline/gl40-cfg3-wine.txt
 tests/cts/baseline/gl40-cfg4-native.txt
+tests/cts/baseline/gl40-cfg4-wine.txt
 tests/cts/baseline/gl41-cfg1-native.txt
 tests/cts/baseline/gl41-cfg1-wine.txt
 tests/cts/baseline/gl41-cfg2-native.txt
