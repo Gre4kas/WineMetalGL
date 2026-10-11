@@ -9928,12 +9928,16 @@ bool CompilerMSL::emit_native_texture_atomic(uint32_t result_type, uint32_t resu
 	const string scalar = type_to_glsl(value_type);
 	const string vec4 = scalar + "4";
 	const string tex = to_expression(img);
-	const string c = to_enclosed_expression(pointer.second);
+	const string c = to_enclosed_unpacked_expression(pointer.second);
 	string coord;
 	switch (img_type.image.dim)
 	{
 	case Dim1D:
-		coord = img_type.image.arrayed ? join("uint(", c, ".x), uint(", c, ".y)") : join("uint(", c, ")");
+		// 1D textures may be declared as 2D ones (texture_1D_as_2D): row 0.
+		if (msl_options.texture_1D_as_2D)
+			coord = img_type.image.arrayed ? join("uint2(uint(", c, ".x), 0u), uint(", c, ".y)") : join("uint2(uint(", c, "), 0u)");
+		else
+			coord = img_type.image.arrayed ? join("uint(", c, ".x), uint(", c, ".y)") : join("uint(", c, ")");
 		break;
 	case Dim2D:
 		coord = img_type.image.arrayed ? join("uint2(", c, ".xy), uint(", c, ".z)") : join("uint2(", c, ")");
@@ -9952,7 +9956,7 @@ bool CompilerMSL::emit_native_texture_atomic(uint32_t result_type, uint32_t resu
 	if (method.size() > suffix.size() && method.compare(method.size() - suffix.size(), suffix.size(), suffix) == 0)
 		method.resize(method.size() - suffix.size());
 	auto value = [&](uint32_t id, bool literal) {
-		return literal ? join(scalar, "(", id, ")") : join(scalar, "(", to_expression(id), ")");
+		return literal ? join(scalar, "(", id, ")") : join(scalar, "(", to_unpacked_expression(id), ")");
 	};
 	if (method == "atomic_store")
 	{

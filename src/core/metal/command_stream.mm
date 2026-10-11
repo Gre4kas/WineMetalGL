@@ -221,8 +221,10 @@ void CommandStream::waitFor(uint64_t serial) {
 
 void CommandStream::memoryBarrier() {
     if (render_) {
-        const MTLRenderStages stages = MTLRenderStageVertex | MTLRenderStageFragment;
-        [render_ memoryBarrierWithScope:MTLBarrierScopeBuffers | MTLBarrierScopeTextures afterStages:stages beforeStages:stages];
+        // Apple GPUs cannot order fragment-stage writes inside a render
+        // pass (render-encoder barriers may not wait on the fragment
+        // stage): end the pass; Metal orders work across encoders.
+        endEncoder();
     } else if (compute_) {
         [compute_ memoryBarrierWithScope:MTLBarrierScopeBuffers | MTLBarrierScopeTextures];
     }

@@ -10,6 +10,7 @@
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <memory>
 #include <mutex>
 #include <set>
@@ -1104,6 +1105,109 @@ std::vector<StageOutputVar> captureableOutputs(glslang::TIntermediate* intermedi
 
 }  // namespace
 
+namespace {
+
+// Uniform initializers (GLSL 1.20+). The codegen parse (Vulkan rules) drops
+// them, so they come from a GL-rules parse of each shader: name -> the
+// initializer's components, flattened (array elements, matrix columns).
+struct UniformInitializer {
+    std::vector<double> values;
+};
+
+std::map<std::string, UniformInitializer> uniformInitializers(const std::vector<ShaderSource>& shaders) {
+    std::map<std::string, UniformInitializer> out;
+    for (const ShaderSource& shader : shaders) {
+        if (shader.source.find('=') == std::string::npos) continue;
+        const SubroutineLowering lowered = lowerSubroutines(shader.stage, shader.source);
+        const std::string source = raiseComputeVersion(shader.stage, lowered.source);
+        const EShLanguage lang = language(shader.stage);
+        glslang::TShader parsed(lang);
+        const char* text = source.c_str();
+        parsed.setStrings(&text, 1);
+        parsed.setEnvInput(glslang::EShSourceGlsl, lang, glslang::EShClientNone, 0);
+        parsed.setEnvClient(glslang::EShClientNone, glslang::EShTargetClientVersion(0));
+        parsed.setEnvTarget(glslang::EShTargetNone, glslang::EShTargetLanguageVersion(0));
+        if (!parsed.parse(resources(), 110, ENoProfile, false, false, EShMsgRelaxedErrors)) continue;
+        glslang::TIntermediate* intermediate = parsed.getIntermediate();
+        glslang::TIntermAggregate* root = intermediate && intermediate->getTreeRoot() ? intermediate->getTreeRoot()->getAsAggregate() : nullptr;
+        if (!root) continue;
+        for (TIntermNode* node : root->getSequence()) {
+            glslang::TIntermAggregate* objects = node->getAsAggregate();
+            if (!objects || objects->getOp() != glslang::EOpLinkerObjects) continue;
+            for (TIntermNode* object : objects->getSequence()) {
+                glslang::TIntermSymbol* symbol = object->getAsSymbolNode();
+                if (!symbol || symbol->getQualifier().storage != glslang::EvqUniform) continue;
+                const glslang::TConstUnionArray& values = symbol->getConstArray();
+                if (values.empty() || symbol->getType().isStruct() || symbol->getBasicType() == glslang::EbtSampler) continue;
+                UniformInitializer init;
+                for (int i = 0; i < values.size(); ++i) {
+                    const glslang::TConstUnion& v = values[i];
+                    switch (v.getType()) {
+                    case glslang::EbtInt: init.values.push_back(v.getIConst()); break;
+                    case glslang::EbtUint: init.values.push_back(v.getUConst()); break;
+                    case glslang::EbtBool: init.values.push_back(v.getBConst() ? 1.0 : 0.0); break;
+                    default: init.values.push_back(v.getDConst()); break;
+                    }
+                }
+                out[unescapeName(symbol->getName().c_str())] = init;
+            }
+        }
+    }
+    return out;
+}
+
+// Writes the initializers into the default block image of `result`.
+void applyUniformInitializers(const std::vector<ShaderSource>& shaders, LinkResult& result) {
+    result.defaultBlockInit.assign((result.defaultBlockSize + 15) & ~15u, 0);
+    const std::map<std::string, UniformInitializer> inits = uniformInitializers(shaders);
+    if (inits.empty()) return;
+    for (const UniformInfo& u : result.uniforms) {
+        if (u.blockIndex >= 0 || u.samplerSlot >= 0 || u.imageSlot >= 0 || u.atomicBufferIndex >= 0 || u.offset < 0) continue;
+        auto it = inits.find(arrayBaseName(u.name));
+        if (it == inits.end()) continue;
+        const std::vector<double>& values = it->second.values;
+        const int components = glTypeComponents(u.type);
+        int columns = 1;
+        switch (u.type) {
+        case GL_FLOAT_MAT2: case GL_FLOAT_MAT2x3: case GL_FLOAT_MAT2x4: case GL_DOUBLE_MAT2: case GL_DOUBLE_MAT2x3:
+        case GL_DOUBLE_MAT2x4: columns = 2; break;
+        case GL_FLOAT_MAT3: case GL_FLOAT_MAT3x2: case GL_FLOAT_MAT3x4: case GL_DOUBLE_MAT3: case GL_DOUBLE_MAT3x2:
+        case GL_DOUBLE_MAT3x4: columns = 3; break;
+        case GL_FLOAT_MAT4: case GL_FLOAT_MAT4x2: case GL_FLOAT_MAT4x3: case GL_DOUBLE_MAT4: case GL_DOUBLE_MAT4x2:
+        case GL_DOUBLE_MAT4x3: columns = 4; break;
+        default: break;
+        }
+        const int rows = components / columns;
+        const bool isDouble = glTypeWords(u.type) == 2 * components;
+        const char kind = isDouble ? 'd'
+                          : (u.type == GL_INT || u.type == GL_INT_VEC2 || u.type == GL_INT_VEC3 || u.type == GL_INT_VEC4) ? 'i'
+                          : (u.type == GL_UNSIGNED_INT || u.type == GL_UNSIGNED_INT_VEC2 || u.type == GL_UNSIGNED_INT_VEC3 ||
+                             u.type == GL_UNSIGNED_INT_VEC4) ? 'u'
+                          : (u.type == GL_BOOL || u.type == GL_BOOL_VEC2 || u.type == GL_BOOL_VEC3 || u.type == GL_BOOL_VEC4) ? 'b'
+                                                                                                                        : 'f';
+        const size_t scalar = isDouble ? 8 : 4;
+        const size_t matrixStride = u.matrixStride ? static_cast<size_t>(u.matrixStride) : 16;
+        const size_t stride = u.arrayStride ? static_cast<size_t>(u.arrayStride) : 0;
+        for (GLint e = 0; e < u.size; ++e)
+            for (int c = 0; c < components; ++c) {
+                const size_t index = static_cast<size_t>(e) * static_cast<size_t>(components) + static_cast<size_t>(c);
+                if (index >= values.size()) break;
+                const size_t at = static_cast<size_t>(u.offset) + static_cast<size_t>(e) * stride +
+                                  (columns > 1 ? static_cast<size_t>(c / rows) * matrixStride + static_cast<size_t>(c % rows) * scalar
+                                               : static_cast<size_t>(c) * scalar);
+                if (at + scalar > result.defaultBlockInit.size()) continue;
+                uint8_t* dst = result.defaultBlockInit.data() + at;
+                const double v = values[index];
+                if (kind == 'd') std::memcpy(dst, &v, 8);
+                else if (kind == 'f') { const float f = static_cast<float>(v); std::memcpy(dst, &f, 4); }
+                else if (kind == 'i') { const int32_t i = static_cast<int32_t>(v); std::memcpy(dst, &i, 4); }
+                else { const uint32_t i = static_cast<uint32_t>(v); std::memcpy(dst, &i, 4); }
+            }
+    }
+}
+
+}  // namespace
+
 // Moves the wmgl_FixedFunction block and its members after the
 // application's blocks and uniforms (LinkResult::fixedFunctionBlock).
 static void hideFixedFunctionBlock(LinkResult& r) {
@@ -2054,6 +2158,8 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
             }
             if (noRaster) {
                 stage.mslNoRaster = finishFp64Msl(msl.compile());
+                if (const char* v = std::getenv("WINEMETALGL_DUMP_SHADERS"); v && v[0] == '1')
+                    std::fprintf(stderr, "winemetalgl: MSL vertex stage without rasterization:\n%s\n", stage.mslNoRaster.c_str());
                 instanceIdFromZero(stage.mslNoRaster);
                 continue;
             }
@@ -2082,6 +2188,7 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
     }
 
     hideFixedFunctionBlock(result);
+    applyUniformInitializers(input.shaders, result);
     result.ok = true;
     return result;
 }

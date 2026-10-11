@@ -297,3 +297,112 @@ void main() { captured = position; gl_Position = vec4(position, 0.0, 1.0); })";
     glDeleteVertexArrays(1, &vao);
     glDeleteProgram(p);
 }
+
+GPU_TEST_VERSION(gpu_gl4_image_store_vertex_and_fragment, 42) {
+    // A vertex shader (rasterization discarded) stores one texel per vertex;
+    // a fragment shader adds 1 to each texel with an image atomic.
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexStorage2D(GL_TEXTURE_2D, 1, GL_R32UI, 4, 1);
+    glBindImageTexture(2, tex, 0, GL_FALSE, 0, GL_READ_WRITE, GL_R32UI);
+    const char* vs = R"(#version 420 core
+layout(r32ui, binding = 2) uniform uimage2D img;
+void main() { imageStore(img, ivec2(gl_VertexID, 0), uvec4(10u + uint(gl_VertexID))); gl_Position = vec4(0.0); })";
+    const char* fs = R"(#version 420 core
+out vec4 o;
+void main() { o = vec4(1.0); })";
+    GLuint p = gpu::program(vs, fs);
+    glUseProgram(p);
+    GLuint vao = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glEnable(GL_RASTERIZER_DISCARD);
+    glDrawArrays(GL_POINTS, 0, 4);
+    glDisable(GL_RASTERIZER_DISCARD);
+    glMemoryBarrier(GL_TEXTURE_UPDATE_BARRIER_BIT);
+    CHECK_GL();
+    GLuint texels[4] = {};
+    glGetTexImage(GL_TEXTURE_2D, 0, GL_RED_INTEGER, GL_UNSIGNED_INT, texels);
+    for (int i = 0; i < 4; ++i) CHECK_EQ(texels[i], 10u + static_cast<GLuint>(i));
+    const char* atomicFs = R"(#version 420 core
+layout(r32ui, binding = 2) uniform uimage2D img;
+out vec4 o;
+void main() { imageAtomicAdd(img, ivec2(int(gl_FragCoord.x) % 4, 0), 1u); o = vec4(1.0); })";
+    GLuint q = gpu::program(kQuadVs, atomicFs);
+    glUseProgram(q);
+    GLuint quad = gpu::quad();
+    glViewport(0, 0, 4, 1);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glViewport(0, 0, 64, 64);
+    glMemoryBarrier(GL_TEXTURE_UPDATE_BARRIER_BIT);
+    glGetTexImage(GL_TEXTURE_2D, 0, GL_RED_INTEGER, GL_UNSIGNED_INT, texels);
+    for (int i = 0; i < 4; ++i) CHECK_EQ(texels[i], 11u + static_cast<GLuint>(i));
+    CHECK_GL();
+    glDeleteVertexArrays(1, &quad);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
+    glDeleteProgram(q);
+    glDeleteTextures(1, &tex);
+}
+
+GPU_TEST_VERSION(gpu_gl4_image_store_vertex_only_program, 42) {
+    // A program with only a vertex shader stores through images of several
+    // targets (rasterization discarded).
+    GLuint tex2d = 0, tex3d = 0;
+    glGenTextures(1, &tex2d);
+    glBindTexture(GL_TEXTURE_2D, tex2d);
+    glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA32F, 1, 1);
+    glGenTextures(1, &tex3d);
+    glBindTexture(GL_TEXTURE_3D, tex3d);
+    glTexImage3D(GL_TEXTURE_3D, 0, GL_RGBA32F, 1, 1, 2, 0, GL_RGBA, GL_FLOAT, nullptr);
+    glBindImageTexture(0, tex2d, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F);
+    glBindImageTexture(1, tex3d, 0, GL_TRUE, 0, GL_WRITE_ONLY, GL_RGBA32F);
+    const char* vs = R"(#version 420 core
+layout(rgba32f) writeonly uniform image2D g_image_2d;
+layout(rgba32f) writeonly uniform image3D g_image_3d;
+uniform vec4 g_value;
+uniform int g_index[6];
+void main() {
+    ivec2 coord = ivec2(gl_VertexID, g_index[0]);
+    imageStore(g_image_2d, coord, g_value);
+    imageStore(g_image_3d, ivec3(coord, g_index[1]), g_value);
+    gl_Position = vec4(0.0);
+})";
+    GLuint p = glCreateProgram();
+    GLuint v = glCreateShader(GL_VERTEX_SHADER);
+    glShaderSource(v, 1, &vs, nullptr);
+    glCompileShader(v);
+    glAttachShader(p, v);
+    glDeleteShader(v);
+    glLinkProgram(p);
+    GLint linked = 0;
+    glGetProgramiv(p, GL_LINK_STATUS, &linked);
+    CHECK(linked);
+    glUseProgram(p);
+    glUniform1i(glGetUniformLocation(p, "g_image_2d"), 0);
+    glUniform1i(glGetUniformLocation(p, "g_image_3d"), 1);
+    glUniform4f(glGetUniformLocation(p, "g_value"), 1, 2, 3, 4);
+    glUniform1i(glGetUniformLocation(p, "g_index[1]"), 1);
+    GLuint vao = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glEnable(GL_RASTERIZER_DISCARD);
+    glDrawArrays(GL_POINTS, 0, 1);
+    glDisable(GL_RASTERIZER_DISCARD);
+    glMemoryBarrier(GL_TEXTURE_UPDATE_BARRIER_BIT);
+    CHECK_GL();
+    float texel[8] = {};
+    glBindTexture(GL_TEXTURE_2D, tex2d);
+    glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_FLOAT, texel);
+    CHECK_EQ(texel[0], 1.0f);
+    CHECK_EQ(texel[3], 4.0f);
+    glBindTexture(GL_TEXTURE_3D, tex3d);
+    glGetTexImage(GL_TEXTURE_3D, 0, GL_RGBA, GL_FLOAT, texel);
+    CHECK_EQ(texel[4], 1.0f);  // slice 1
+    CHECK_EQ(texel[7], 4.0f);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
+    glDeleteTextures(1, &tex2d);
+    glDeleteTextures(1, &tex3d);
+}

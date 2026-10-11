@@ -73,8 +73,8 @@ public:
     id<MTLComputeCommandEncoder> compute();
     void endEncoder();
     // glMemoryBarrier: orders shader writes to buffers and textures before
-    // later shader accesses in the open render or compute encoder (Metal
-    // tracks hazards between encoders itself).
+    // later shader accesses: ends an open render pass, or a barrier in the
+    // open compute encoder (Metal tracks hazards between encoders itself).
     void memoryBarrier();
 
     // Commits the command buffer; returns its serial (0 if nothing was recorded).

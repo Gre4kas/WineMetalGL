@@ -290,6 +290,9 @@ struct LinkResult {
     int xfbBufferCount = 0;
     bool xfbVertexCapture = false;   // the vertex stage MSL writes captured vertices
     uint32_t defaultBlockSize = 0;
+    // The default block's initial contents: values of uniform initializers
+    // ("uniform vec4 v = vec4(1.0);"), zero elsewhere.
+    std::vector<uint8_t> defaultBlockInit;
     StageOutput stages[kStageCount];
     // Geometry shader layout (for emulation).
     GLenum geometryInputType = 0, geometryOutputType = 0;

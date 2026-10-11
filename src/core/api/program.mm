@@ -502,7 +502,8 @@ void linkFrom(Context& ctx, Program* p, shader::LinkInput input, std::string log
     linked->link = std::move(result);
     linked->input = std::move(input);
     linked->uid = nextLinkedProgramId();
-    p->uniformData.assign((linked->link.defaultBlockSize + 15) & ~15u, 0);
+    p->uniformData = linked->link.defaultBlockInit;  // uniform initializers, else zero
+    p->uniformData.resize((linked->link.defaultBlockSize + 15) & ~15u, 0);
     p->uniformBlockBindings.assign(linked->link.blocks.size(), 0);
     p->samplerUnits.assign(linked->link.samplers.size(), 0);
     p->imageUnits.assign(linked->link.images.size(), 0);
