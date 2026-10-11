@@ -49,6 +49,32 @@ double value(ulong u) {
     return d;
 }
 
+// x * 2^scale rounded to nearest even, without the platform's ldexp: the
+// macOS 15 libm truncates some subnormal results (ldexp(0x3fa5df3d645bcc45,
+// -1024) gives 0x2bbe7ac8b798; the shifted-out bits are 0x45 of 0x80, so the
+// correctly rounded result is 0x2bbe7ac8b799).
+double exactLdexp(double d, int scale) {
+    if (!std::isfinite(d) || d == 0) return d;
+    int e = 0;
+    const double m = std::frexp(d, &e);  // d = m * 2^e, 0.5 <= |m| < 1 (exact)
+    uint64_t mag = static_cast<uint64_t>(std::fabs(m) * 9007199254740992.0);  // * 2^53 (exact)
+    int64_t exp = static_cast<int64_t>(e) - 53 + scale;                        // result = mag * 2^exp
+    if (exp > 1024 - 53) return std::copysign(HUGE_VAL, d);
+    if (exp < -1074) {
+        const int64_t shift = -1074 - exp;
+        if (shift > 60) return std::copysign(0.0, d);
+        const uint64_t half = uint64_t(1) << (shift - 1), rest = mag & ((uint64_t(1) << shift) - 1);
+        mag >>= shift;
+        if (rest > half || (rest == half && (mag & 1))) ++mag;
+        exp = -1074;
+    }
+    // mag * 2^exp is representable now; two exact power-of-two products.
+    const int64_t first = exp / 2;
+    double r = static_cast<double>(mag) * std::pow(2.0, static_cast<double>(first));
+    r *= std::pow(2.0, static_cast<double>(exp - first));
+    return std::copysign(r, d);
+}
+
 // Equal bit patterns, or both NaN (payloads are not specified by GL).
 bool same(ulong a, ulong b) { return a == b || (std::isnan(value(a)) && std::isnan(value(b))); }
 
@@ -183,7 +209,7 @@ TEST(fp64_rounding_functions_match_libm) {
     CHECK_EQ(checkUnary(wmgl_dmodf_int, [](double a) { double i; std::modf(a, &i); return i; }), 0);
 }
 
-TEST(fp64_frexp_ldexp_match_libm) {
+TEST(fp64_frexp_ldexp_match_reference) {
     Source s;
     int bad = 0;
     std::mt19937 rng(11);
@@ -200,9 +226,9 @@ TEST(fp64_frexp_ldexp_match_libm) {
             }
         }
         const int scale = static_cast<int>(rng() % 2200) - 1100;
-        if (!same(wmgl_dldexp(a, scale), bits(std::ldexp(d, scale))) && bad++ < 5)
-            std::fprintf(stderr, "  ldexp(%016llx, %d): %016llx, libm %016llx\n", (unsigned long long)a, scale,
-                         (unsigned long long)wmgl_dldexp(a, scale), (unsigned long long)bits(std::ldexp(d, scale)));
+        if (!same(wmgl_dldexp(a, scale), bits(exactLdexp(d, scale))) && bad++ < 5)
+            std::fprintf(stderr, "  ldexp(%016llx, %d): %016llx, exact %016llx\n", (unsigned long long)a, scale,
+                         (unsigned long long)wmgl_dldexp(a, scale), (unsigned long long)bits(exactLdexp(d, scale)));
     }
     CHECK_EQ(bad, 0);
 }
