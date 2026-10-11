@@ -139,7 +139,7 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
     case GL_NUM_SHADING_LANGUAGE_VERSIONS:
         // The glGetStringi(GL_SHADING_LANGUAGE_VERSION) list (api/state.mm).
         if (ctx.version() < 43) return false;
-        out = ints({ctx.version() - 43 + 11});
+        out = ints({ctx.version() - 43 + 12});
         return true;
     case GL_RESET_NOTIFICATION_STRATEGY: out = ints({ctx.config().resetNotification}); return true;
     case 0x90F3:  // GL_CONTEXT_ROBUST_ACCESS (GL_KHR_robustness)
@@ -189,6 +189,14 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
         // holds there (KHR-GL43.vertex_attrib_binding.basic-state3 reads it).
         if (ctx.version() < 43 && !ctx.hasExtension("GL_ARB_vertex_attrib_binding")) return false;
         out = ints({kMaxVertexAttribStride});
+        return true;
+    case GL_MAX_FRAMEBUFFER_WIDTH: case GL_MAX_FRAMEBUFFER_HEIGHT: case GL_MAX_FRAMEBUFFER_LAYERS:
+    case GL_MAX_FRAMEBUFFER_SAMPLES:
+        // GL 4.3 framebuffers without attachments.
+        if (ctx.version() < 43 && !ctx.hasExtension("GL_ARB_framebuffer_no_attachments")) return false;
+        out = ints({pname == GL_MAX_FRAMEBUFFER_LAYERS    ? kMaxArrayLayers
+                    : pname == GL_MAX_FRAMEBUFFER_SAMPLES ? static_cast<int64_t>(caps.maxSamples)
+                                                          : kMaxTextureSize});
         return true;
     case GL_MAX_UNIFORM_LOCATIONS:
         if (ctx.version() < 43 && !ctx.hasExtension("GL_ARB_explicit_uniform_location")) return false;

@@ -200,6 +200,14 @@ public:
     std::array<GLenum, kMaxColor> drawBuffers{GL_COLOR_ATTACHMENT0, GL_NONE, GL_NONE, GL_NONE,
                                               GL_NONE, GL_NONE, GL_NONE, GL_NONE};
     GLenum readBuffer = GL_COLOR_ATTACHMENT0;
+    // GL 4.3 framebuffers without attachments: GL_FRAMEBUFFER_DEFAULT_*.
+    GLint defaultWidth = 0, defaultHeight = 0, defaultLayers = 0, defaultSamples = 0;
+    bool defaultFixedSampleLocations = false;
+    bool hasAttachments() const {
+        for (const Attachment& a : color)
+            if (a.attached()) return true;
+        return depth.attached() || stencil.attached();
+    }
     uint64_t version = 0;  // bumped on any attachment/draw-buffer change (not read yet; state.h)
 };
 

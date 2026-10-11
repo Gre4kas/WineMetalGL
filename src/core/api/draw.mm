@@ -173,6 +173,25 @@ void DrawElementsIndirect(Context& ctx, GLenum mode, GLenum type, const void* in
                             static_cast<GLsizei>(command[1]), static_cast<GLint>(command[3]));
 }
 
+// GL 4.3 / GL_ARB_multi_draw_indirect: each command as its own indirect
+// draw (commands are read on the CPU, as for the single-draw forms).
+void MultiDrawArraysIndirect(Context& ctx, GLenum mode, const void* indirect, GLsizei drawcount, GLsizei stride) {
+    if (ctx.version() < 43 && !ctx.hasExtension("GL_ARB_multi_draw_indirect")) return ctx.unimplemented("glMultiDrawArraysIndirect");
+    if (drawcount < 0 || stride < 0 || stride % 4) return ctx.setError(GL_INVALID_VALUE);
+    const uintptr_t step = stride ? static_cast<uintptr_t>(stride) : 16;
+    for (GLsizei i = 0; i < drawcount; ++i)
+        DrawArraysIndirect(ctx, mode, reinterpret_cast<const void*>(reinterpret_cast<uintptr_t>(indirect) + step * static_cast<uintptr_t>(i)));
+}
+
+void MultiDrawElementsIndirect(Context& ctx, GLenum mode, GLenum type, const void* indirect, GLsizei drawcount, GLsizei stride) {
+    if (ctx.version() < 43 && !ctx.hasExtension("GL_ARB_multi_draw_indirect")) return ctx.unimplemented("glMultiDrawElementsIndirect");
+    if (drawcount < 0 || stride < 0 || stride % 4) return ctx.setError(GL_INVALID_VALUE);
+    const uintptr_t step = stride ? static_cast<uintptr_t>(stride) : 20;
+    for (GLsizei i = 0; i < drawcount; ++i)
+        DrawElementsIndirect(ctx, mode, type,
+                             reinterpret_cast<const void*>(reinterpret_cast<uintptr_t>(indirect) + step * static_cast<uintptr_t>(i)));
+}
+
 void MultiDrawArrays(Context& ctx, GLenum mode, const GLint* first, const GLsizei* count, GLsizei drawcount) {
     if (drawcount < 0) return ctx.setError(GL_INVALID_VALUE);
     for (GLsizei i = 0; i < drawcount; ++i)

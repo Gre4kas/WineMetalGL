@@ -103,7 +103,9 @@ uint32_t attachmentLayers(const Attachment& a) {
     const Texture* tex = a.texture.get();
     if (a.type != GL_TEXTURE || !a.layered || !tex) return 0;
     if (tex->target == GL_TEXTURE_CUBE_MAP) return 6;
-    return static_cast<uint32_t>(std::max(1, tex->image(0, a.level).depth));
+    // A 1D array's layers are its image height.
+    const TextureImage& image = tex->image(0, a.level);
+    return static_cast<uint32_t>(std::max(1, tex->target == GL_TEXTURE_1D_ARRAY ? image.height : image.depth));
 }
 
 }  // namespace
@@ -174,6 +176,17 @@ bool DrawState::drawTarget(RenderTargetDesc& target, TargetFormats& formats, boo
         height = std::min(height, h);
         samples = s;
         any = true;
+    }
+    if (!any && !fb->hasAttachments() && ctx_.version() >= 43 && fb->defaultWidth > 0 && fb->defaultHeight > 0) {
+        // GL 4.3: no attachments; rasterization at the framebuffer's default size.
+        target.width = static_cast<uint32_t>(fb->defaultWidth);
+        target.height = static_cast<uint32_t>(fb->defaultHeight);
+        uint32_t samples = 1;
+        for (uint32_t s : {2u, 4u, 8u})
+            if (static_cast<uint32_t>(fb->defaultSamples) > samples && Device::get().caps().sampleCountSupported[s]) samples = s;
+        target.samples = samples;
+        if (fb->defaultLayers > 0) target.layers = static_cast<uint32_t>(fb->defaultLayers);
+        return true;
     }
     if (!any) {
         if (reportErrors) ctx_.setError(GL_INVALID_FRAMEBUFFER_OPERATION);

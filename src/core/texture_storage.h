@@ -70,6 +70,8 @@ void uploadTexels(Context& ctx, Texture& tex, int face, int level, int x, int y,
 namespace api {
 // glGenerateMipmap of a depth or depth/stencil texture (api/blit.mm).
 void generateDepthMipmaps(Context& ctx, Texture& tex, int base, int last);
+// Whether a compressed format is exposed in this context (api/texture.mm).
+bool compressedFormatSupported(Context& ctx, const FormatInfo* info);
 }  // namespace api
 
 }  // namespace wmgl

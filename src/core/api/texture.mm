@@ -331,6 +331,8 @@ std::vector<uint8_t> gatherBlocks(const CompressedLayout& l, const uint8_t* src)
     return out;
 }
 
+}  // namespace
+
 bool compressedFormatSupported(Context& ctx, const FormatInfo* info) {
     if (!info || !info->compressed) return false;
     if (info->storage >= Storage::ETC2_RGB8 && info->storage <= Storage::EAC_RG11Snorm)
@@ -346,6 +348,8 @@ bool compressedFormatSupported(Context& ctx, const FormatInfo* info) {
         return ctx.hasExtension("GL_ARB_texture_compression_bptc");
     }
 }
+
+namespace {
 
 void uploadCompressed(Context& ctx, Texture& tex, int face, int level, int x, int y, int z, int w, int h, int d,
                       const uint8_t* src) {

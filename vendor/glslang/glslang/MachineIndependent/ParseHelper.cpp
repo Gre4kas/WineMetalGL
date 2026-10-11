@@ -6079,9 +6079,11 @@ void TParseContext::setLayoutQualifier(const TSourceLoc& loc, TPublicType& publi
             error(loc, "needs a literal integer", "set", "");
         return;
     } else if (id == "binding") {
-        // WineMetalGL: GL_ARB_shader_atomic_counters adds layout(binding) for atomic counters.
-        const char* bindingExts[2] = { E_GL_ARB_shading_language_420pack, E_GL_ARB_shader_atomic_counters };
-        profileRequires(loc, ~EEsProfile, 420, 2, bindingExts, "binding");
+        // WineMetalGL: GL_ARB_shader_atomic_counters and GL_ARB_shader_storage_buffer_object
+        // add layout(binding) for atomic counters and storage blocks (as Mesa accepts).
+        const char* bindingExts[3] = { E_GL_ARB_shading_language_420pack, E_GL_ARB_shader_atomic_counters,
+                                       E_GL_ARB_shader_storage_buffer_object };
+        profileRequires(loc, ~EEsProfile, 420, 3, bindingExts, "binding");
         profileRequires(loc, EEsProfile, 310, nullptr, "binding");
         if ((unsigned int)value >= TQualifier::layoutBindingEnd)
             error(loc, "binding is too large", id.c_str(), "");

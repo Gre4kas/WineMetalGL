@@ -3,7 +3,7 @@
 #include "gpu.h"
 
 #define WMGL_EXT_FUNCS(X)                                                                                    \
-    X(glCopyImageSubData) X(glGetInternalformativ) X(glReadnPixels) X(glGetnUniformfv) X(glInvalidateFramebuffer) \
+    X(glCopyImageSubData) X(glReadnPixels) X(glGetnUniformfv) X(glInvalidateFramebuffer) \
     X(glInvalidateBufferData) X(glGetGraphicsResetStatus) X(glGetProgramBinary) X(glProgramBinary)
 
 #define WMGL_EXT_DECLARE(name) static PFN_##name name;

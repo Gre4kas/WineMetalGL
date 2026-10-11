@@ -5,6 +5,8 @@
 
 #include "core/context.h"
 #include "core/draw.h"
+#include "core/format/formats.h"
+#include "core/format/pixel_transfer.h"
 #include "core/limits.h"
 #include "core/metal/device.h"
 #include "gl_api.gen.h"
@@ -303,6 +305,57 @@ void BufferSubData(Context& ctx, GLenum target, GLintptr offset, GLsizeiptr size
     }
     std::memcpy(static_cast<uint8_t*>(buffer->mtl.contents) + offset, data, static_cast<size_t>(size));
     ++buffer->version;
+}
+
+// GL 4.3 / GL_ARB_clear_buffer_object: fills a range with one element of
+// `internalformat` (a texture buffer format, GL 4.3 table 8.18) converted
+// from one pixel of `data` (zero if null), through an ordered GPU copy.
+void ClearBufferSubData(Context& ctx, GLenum target, GLenum internalformat, GLintptr offset, GLsizeiptr size, GLenum format,
+                        GLenum type, const void* data) {
+    if (ctx.version() < 43 && !ctx.hasExtension("GL_ARB_clear_buffer_object")) return ctx.unimplemented("glClearBufferSubData");
+    Buffer* buffer = boundBuffer(ctx, target);
+    if (!buffer) return;
+    size_t element = 0;
+    switch (internalformat) {
+    case GL_R8: case GL_R8I: case GL_R8UI: element = 1; break;
+    case GL_R16: case GL_R16F: case GL_R16I: case GL_R16UI: case GL_RG8: case GL_RG8I: case GL_RG8UI: element = 2; break;
+    case GL_R32F: case GL_R32I: case GL_R32UI: case GL_RG16: case GL_RG16F: case GL_RG16I: case GL_RG16UI: case GL_RGBA8:
+    case GL_RGBA8I: case GL_RGBA8UI: element = 4; break;
+    case GL_RG32F: case GL_RG32I: case GL_RG32UI: case GL_RGBA16: case GL_RGBA16F: case GL_RGBA16I: case GL_RGBA16UI:
+        element = 8;
+        break;
+    case GL_RGB32F: case GL_RGB32I: case GL_RGB32UI: element = 12; break;
+    case GL_RGBA32F: case GL_RGBA32I: case GL_RGBA32UI: element = 16; break;
+    default: return ctx.setError(GL_INVALID_ENUM);
+    }
+    const FormatInfo* info = formatInfo(internalformat);
+    if (!info || !validTransferFormatType(format, type, false)) return ctx.setError(GL_INVALID_VALUE);
+    if (!transferCompatible(format, type, *info)) return ctx.setError(GL_INVALID_OPERATION);
+    if (offset < 0 || size < 0 || offset + size > buffer->size) return ctx.setError(GL_INVALID_VALUE);
+    if (offset % static_cast<GLintptr>(element) || size % static_cast<GLsizeiptr>(element)) return ctx.setError(GL_INVALID_VALUE);
+    if (buffer->mapped && !(buffer->mapAccess & GL_MAP_PERSISTENT_BIT)) return ctx.setError(GL_INVALID_OPERATION);
+    if (!size || !buffer->mtl) return;
+    // The element, as stored (RGB32 texels are stored with a fourth component).
+    uint8_t texel[16] = {};
+    if (data) {
+        PixelStoreParams ps;
+        ps.alignment = 1;
+        unpackPixels(data, format, type, 1, 1, 1, ps, *info, texel);
+    }
+    TransientAllocation staging = ctx.draw().transient().allocate(static_cast<size_t>(size), ctx.stream().serial(), 16);
+    for (size_t at = 0; at < static_cast<size_t>(size); at += element)
+        std::memcpy(static_cast<uint8_t*>(staging.data) + at, texel, element);
+    [ctx.stream().blit() copyFromBuffer:staging.buffer sourceOffset:staging.offset toBuffer:buffer->mtl
+                        destinationOffset:static_cast<NSUInteger>(offset) size:static_cast<NSUInteger>(size)];
+    buffer->lastUseSerial = buffer->lastWriteSerial = ctx.stream().serial();
+    ++buffer->version;
+}
+
+void ClearBufferData(Context& ctx, GLenum target, GLenum internalformat, GLenum format, GLenum type, const void* data) {
+    if (ctx.version() < 43 && !ctx.hasExtension("GL_ARB_clear_buffer_object")) return ctx.unimplemented("glClearBufferData");
+    Buffer* buffer = boundBuffer(ctx, target);
+    if (!buffer) return;
+    ClearBufferSubData(ctx, target, internalformat, 0, buffer->size, format, type, data);
 }
 
 void GetBufferSubData(Context& ctx, GLenum target, GLintptr offset, GLsizeiptr size, void* data) {

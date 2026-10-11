@@ -57,7 +57,9 @@
     X(glDrawTransformFeedback) X(glPatchParameteri) X(glGetActiveAtomicCounterBufferiv) X(glMemoryBarrier)           \
     X(glBindImageTexture) X(glTexStorage2D) X(glUniform1iv) X(glDrawElementsInstancedBaseVertex) X(glUniform1uiv)                   \
     X(glVertexAttribFormat) X(glVertexAttribBinding) X(glBindVertexBuffer) X(glVertexBindingDivisor) X(glGetVertexAttribiv)        \
-    X(glTexBufferRange) X(glTextureView) X(glTexStorage3D)
+    X(glTexBufferRange) X(glTextureView) X(glTexStorage3D) X(glMultiDrawArraysIndirect) X(glMultiDrawElementsIndirect)      \
+    X(glClearBufferData) X(glClearBufferSubData) X(glFramebufferParameteri) X(glGetFramebufferParameteriv)          \
+    X(glGetInternalformativ) X(glGetInternalformati64v) X(glBlendFunc)
 
 #define WMGL_DECLARE_FUNC(name) extern PFN_##name name;
 WMGL_GPU_FUNCS(WMGL_DECLARE_FUNC)

@@ -457,8 +457,6 @@ GPU_TEST_VERSION(gpu_gl43_texture_view_cube_levels, 43) {
     glTextureView(view, GL_TEXTURE_CUBE_MAP, parent, GL_RGBA8, 1, 2, 0, 6);
     CHECK_GL();
     glBindTexture(GL_TEXTURE_CUBE_MAP, view);
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_NEAREST);
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     GLuint p = gpu::program(R"(#version 430 core
 in vec2 position;
 void main() { gl_Position = vec4(position, 0.0, 1.0); })", R"(#version 430 core
@@ -598,5 +596,252 @@ void main() { o = vec4(1.0); })";
     CHECK_GL();
     glDeleteVertexArrays(1, &vao);
     glDeleteBuffers(1, &counts);
+    glDeleteProgram(p);
+}
+
+// Several indirect commands in one call, with a command stride, and a
+// command with no instances (KHR-GL43.multi_draw_indirect).
+GPU_TEST_VERSION(gpu_gl43_multi_draw_indirect, 43) {
+    const char* vs = R"(#version 430 core
+in vec2 position;
+void main() { gl_Position = vec4(position, 0.0, 1.0); })";
+    const char* fs = R"(#version 430 core
+out vec4 o;
+void main() { o = vec4(0.25, 0.0, 0.0, 1.0); })";
+    GLuint p = gpu::program(vs, fs);
+    glUseProgram(p);
+    GLuint vao = gpu::quad();
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_ONE, GL_ONE);
+    glClearColor(0, 0, 0, 0);
+    glClear(GL_COLOR_BUFFER_BIT);
+    // count, instances, first, base instance, padding: three quads drawn.
+    const GLuint arrays[15] = {4, 1, 0, 0, 0, 4, 0, 0, 0, 0, 4, 2, 0, 0, 0};
+    GLuint indirect = 0;
+    glGenBuffers(1, &indirect);
+    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, indirect);
+    glBufferData(GL_DRAW_INDIRECT_BUFFER, sizeof(arrays), arrays, GL_STATIC_DRAW);
+    glMultiDrawArraysIndirect(GL_TRIANGLE_STRIP, nullptr, 3, 20);
+    CHECK_GL();
+    std::vector<uint8_t> got = gpu::readRGBA8(32, 32, 1, 1);
+    std::fprintf(stderr, "  arrays red %u\n", got[0]);
+    CHECK(got[0] >= 189 && got[0] <= 193);
+    // Elements: indices 1..4 moved to 0..3 by base vertex -1, tightly packed commands.
+    glClear(GL_COLOR_BUFFER_BIT);
+    const GLuint indices[5] = {9, 1, 2, 3, 4};
+    GLuint ebo = 0;
+    glGenBuffers(1, &ebo);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
+    const GLint elements[10] = {4, 1, 1, -1, 0, 4, 1, 1, -1, 0};
+    glBufferData(GL_DRAW_INDIRECT_BUFFER, sizeof(elements), elements, GL_STATIC_DRAW);
+    glMultiDrawElementsIndirect(GL_TRIANGLE_STRIP, GL_UNSIGNED_INT, nullptr, 2, 0);
+    CHECK_GL();
+    got = gpu::readRGBA8(32, 32, 1, 1);
+    std::fprintf(stderr, "  elements red %u\n", got[0]);
+    CHECK(got[0] >= 126 && got[0] <= 130);
+    // A stride that is not a multiple of four is INVALID_VALUE.
+    glMultiDrawArraysIndirect(GL_TRIANGLE_STRIP, nullptr, 1, 18);
+    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_INVALID_VALUE));
+    glDisable(GL_BLEND);
+    glDeleteBuffers(1, &ebo);
+    glDeleteBuffers(1, &indirect);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
+}
+
+// glClearBufferData/SubData convert one texel and repeat it (KHR-GL43.clear_buffer).
+GPU_TEST_VERSION(gpu_gl43_clear_buffer_data, 43) {
+    GLuint b = storageBuffer(0, std::vector<uint32_t>(12, 0xffffffffu));
+    const GLuint seven = 7;
+    glClearBufferData(GL_SHADER_STORAGE_BUFFER, GL_R32UI, GL_RED_INTEGER, GL_UNSIGNED_INT, &seven);
+    CHECK_GL();
+    const uint8_t rgba[4] = {1, 2, 3, 4};
+    glClearBufferSubData(GL_SHADER_STORAGE_BUFFER, GL_RGBA8, 16, 16, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+    CHECK_GL();
+    glClearBufferSubData(GL_SHADER_STORAGE_BUFFER, GL_R32UI, 32, 8, GL_RED_INTEGER, GL_UNSIGNED_INT, nullptr);
+    CHECK_GL();
+    const std::vector<uint32_t> got = readBuffer(b, 12);
+    for (int i = 0; i < 12; ++i) {
+        const uint32_t want = i < 4 ? 7u : i < 8 ? 0x04030201u : i < 10 ? 0u : 7u;
+        if (got[static_cast<size_t>(i)] != want) std::fprintf(stderr, "  word %d: 0x%x, expected 0x%x\n", i, got[static_cast<size_t>(i)], want);
+        CHECK_EQ(got[static_cast<size_t>(i)], want);
+    }
+    // An offset that is not a multiple of the texel size is INVALID_VALUE.
+    glClearBufferSubData(GL_SHADER_STORAGE_BUFFER, GL_R32UI, 2, 4, GL_RED_INTEGER, GL_UNSIGNED_INT, &seven);
+    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_INVALID_VALUE));
+    glDeleteBuffers(1, &b);
+}
+
+// A framebuffer with no attachments rasterises at its default size; the
+// fragment shader counts itself (KHR-GL43.framebuffer_no_attachments).
+GPU_TEST_VERSION(gpu_gl43_framebuffer_no_attachments, 43) {
+    const char* vs = R"(#version 430 core
+in vec2 position;
+void main() { gl_Position = vec4(position, 0.0, 1.0); })";
+    const char* fs = R"(#version 430 core
+layout(std430, binding = 0) buffer Count { uint fragments; };
+void main() { atomicAdd(fragments, 1u); })";
+    GLuint p = gpu::program(vs, fs);
+    GLuint counter = storageBuffer(0, {0});
+    GLuint fbo = 0;
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    CHECK_EQ(glCheckFramebufferStatus(GL_FRAMEBUFFER), static_cast<GLenum>(GL_FRAMEBUFFER_INCOMPLETE_MISSING_ATTACHMENT));
+    glFramebufferParameteri(GL_FRAMEBUFFER, GL_FRAMEBUFFER_DEFAULT_WIDTH, 16);
+    glFramebufferParameteri(GL_FRAMEBUFFER, GL_FRAMEBUFFER_DEFAULT_HEIGHT, 8);
+    CHECK_EQ(glCheckFramebufferStatus(GL_FRAMEBUFFER), static_cast<GLenum>(GL_FRAMEBUFFER_COMPLETE));
+    GLint width = 0;
+    glGetFramebufferParameteriv(GL_FRAMEBUFFER, GL_FRAMEBUFFER_DEFAULT_WIDTH, &width);
+    CHECK_EQ(width, 16);
+    glViewport(0, 0, 16, 8);
+    GLuint vao = gpu::quad();
+    glUseProgram(p);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
+    CHECK_GL();
+    const std::vector<uint32_t> got = readBuffer(counter, 1);
+    std::fprintf(stderr, "  fragments %u\n", got[0]);
+    CHECK_EQ(got[0], 128u);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glViewport(0, 0, 64, 64);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteBuffers(1, &counter);
+    glDeleteProgram(p);
+}
+
+// glGetInternalformat with the GL 4.3 pnames (KHR-GL43.internalformat_query2 subset).
+GPU_TEST_VERSION(gpu_gl43_internalformat_query2, 43) {
+    GLint v = -1;
+    glGetInternalformativ(GL_TEXTURE_2D, GL_RGBA8, GL_INTERNALFORMAT_SUPPORTED, 1, &v);
+    CHECK_EQ(v, GL_TRUE);
+    glGetInternalformativ(GL_TEXTURE_2D, GL_R32F, GL_IMAGE_TEXEL_SIZE, 1, &v);
+    CHECK_EQ(v, 32);
+    glGetInternalformativ(GL_TEXTURE_2D, GL_RGBA8, GL_VIEW_COMPATIBILITY_CLASS, 1, &v);
+    CHECK_EQ(v, GL_VIEW_CLASS_32_BITS);
+    glGetInternalformativ(GL_TEXTURE_2D, GL_DEPTH_COMPONENT32F, GL_DEPTH_RENDERABLE, 1, &v);
+    CHECK_EQ(v, GL_TRUE);
+    glGetInternalformativ(GL_TEXTURE_3D, GL_DEPTH_COMPONENT32F, GL_INTERNALFORMAT_SUPPORTED, 1, &v);
+    CHECK_EQ(v, GL_FALSE);
+    GLint64 counts = -1;
+    glGetInternalformati64v(GL_RENDERBUFFER, GL_RGBA8, GL_NUM_SAMPLE_COUNTS, 1, &counts);
+    CHECK(counts >= 1);
+    CHECK_GL();
+    glGetInternalformativ(GL_TEXTURE_2D, GL_RGBA8, GL_TEXTURE_2D, 1, &v);
+    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_INVALID_ENUM));
+    glGetInternalformativ(GL_ARRAY_BUFFER, GL_RGBA8, GL_INTERNALFORMAT_SUPPORTED, 1, &v);
+    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_INVALID_ENUM));
+}
+
+// GLSL ES 3.00 shaders (GL 4.3, GL_ARB_ES3_compatibility): precision
+// statements, a uniform block, a sampler and a flat integer varying.
+GPU_TEST_VERSION(gpu_gl43_es3_shaders, 43) {
+    const char* vs = R"(#version 300 es
+precision highp float;
+layout(location = 0) in vec2 position;
+flat out int k;
+out vec2 uv;
+uniform Block { vec4 tint; mat2 rot; };
+void main() { k = 3; uv = rot * position * 0.5 + 0.5; gl_Position = vec4(position, 0.0, 1.0); })";
+    const char* fs = R"(#version 300 es
+precision mediump float;
+precision lowp sampler2D;
+flat in int k;
+in vec2 uv;
+uniform sampler2D tex;
+uniform Block { vec4 tint; mat2 rot; };
+uniform float scale;
+layout(location = 0) out vec4 o;
+void main() { o = texture(tex, uv) * tint * scale + vec4(0.0, 0.0, float(k) / 3.0, 0.0); })";
+    GLuint p = gpu::program(vs, fs);
+    glUseProgram(p);
+    const float block[12] = {1, 1, 1, 1, 1, 0, 0, 0, 0, 1, 0, 0};
+    GLuint ubo = 0;
+    glGenBuffers(1, &ubo);
+    glBindBufferBase(GL_UNIFORM_BUFFER, 0, ubo);
+    glBufferData(GL_UNIFORM_BUFFER, sizeof(block), block, GL_STATIC_DRAW);
+    glUniformBlockBinding(p, glGetUniformBlockIndex(p, "Block"), 0);
+    glUniform1f(glGetUniformLocation(p, "scale"), 1.0f);
+    const uint8_t red[4] = {255, 0, 0, 255};
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, red);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glUniform1i(glGetUniformLocation(p, "tex"), 0);
+    GLuint vao = gpu::quad();
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    CHECK_GL();
+    const uint8_t magenta[4] = {255, 0, 255, 255};
+    CHECK(gpu::near(gpu::readRGBA8(32, 32, 1, 1).data(), magenta));
+    glDeleteVertexArrays(1, &vao);
+    glDeleteTextures(1, &tex);
+    glDeleteBuffers(1, &ubo);
+    glDeleteProgram(p);
+}
+
+// Layered rendering into each level of a 1D array texture: gl_Layer selects
+// the layer (KHR-GL43.texture_view.view_sampling fills its parents this way).
+GPU_TEST_VERSION(gpu_gl43_layered_1d_array, 43) {
+    const char* vs = R"(#version 400
+void main() { gl_Position = vec4(-1.0, -1.0, 0.0, 1.0); })";
+    const char* gs = R"(#version 400
+layout(points) in;
+layout(triangle_strip, max_vertices = 4) out;
+uniform int layer_id;
+void main() {
+    gl_Layer = layer_id; gl_Position = vec4(-1.0, -1.0, 0.0, 1.0); EmitVertex();
+    gl_Layer = layer_id; gl_Position = vec4(-1.0,  1.0, 0.0, 1.0); EmitVertex();
+    gl_Layer = layer_id; gl_Position = vec4( 1.0, -1.0, 0.0, 1.0); EmitVertex();
+    gl_Layer = layer_id; gl_Position = vec4( 1.0,  1.0, 0.0, 1.0); EmitVertex();
+    EndPrimitive();
+})";
+    const char* fs = R"(#version 400
+uniform vec4 color;
+out vec4 o;
+void main() { o = color; })";
+    GLuint p = glCreateProgram();
+    for (auto [type, src] : {std::pair<GLenum, const char*>{GL_VERTEX_SHADER, vs}, {GL_GEOMETRY_SHADER, gs}, {GL_FRAGMENT_SHADER, fs}}) {
+        GLuint sh = glCreateShader(type);
+        glShaderSource(sh, 1, &src, nullptr);
+        glCompileShader(sh);
+        glAttachShader(p, sh);
+        glDeleteShader(sh);
+    }
+    glLinkProgram(p);
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_1D_ARRAY, tex);
+    glTexStorage2D(GL_TEXTURE_1D_ARRAY, 3, GL_RGBA8, 4, 4);
+    GLuint fbo = 0, vao = 0;
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glUseProgram(p);
+    for (int layer = 0; layer < 4; ++layer)
+        for (int level = 0; level < 3; ++level) {
+            glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, tex, level);
+            glUniform4f(glGetUniformLocation(p, "color"), layer / 8.0f, level / 4.0f, 1.0f, 1.0f);
+            glUniform1i(glGetUniformLocation(p, "layer_id"), layer);
+            glDrawArrays(GL_POINTS, 0, 1);
+        }
+    CHECK_GL();
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    for (int level = 0; level < 3; ++level) {
+        const int width = 4 >> level;
+        std::vector<uint8_t> back(static_cast<size_t>(width * 4 * 4), 0);
+        glGetTexImage(GL_TEXTURE_1D_ARRAY, level, GL_RGBA, GL_UNSIGNED_BYTE, back.data());
+        for (int layer = 0; layer < 4; ++layer)
+            for (int x = 0; x < width; ++x) {
+                const uint8_t* texel = &back[static_cast<size_t>((layer * width + x) * 4)];
+                CHECK_EQ(static_cast<int>(texel[0]), layer * 32);
+                CHECK_EQ(static_cast<int>(texel[1]), level * 64);
+            }
+    }
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteTextures(1, &tex);
     glDeleteProgram(p);
 }

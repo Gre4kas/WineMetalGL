@@ -652,7 +652,8 @@ bool DeduceVersionProfile(TInfoSink& infoSink, EShLanguage stage, bool versionNo
     if (spvVersion.spv != 0) {
         switch (profile) {
         case EEsProfile:
-            if (version < 310) {
+            // WineMetalGL: GLSL ES 3.00 (GL 4.3, GL_ARB_ES3_compatibility) under relaxed Vulkan rules.
+            if (version < 310 && !(version == 300 && spvVersion.vulkanRelaxed)) {
                 correct = false;
                 infoSink.info.message(EPrefixError, "#version: ES shaders for SPIR-V require version 310 or higher");
                 version = 310;

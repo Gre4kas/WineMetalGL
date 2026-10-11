@@ -35,8 +35,12 @@ Local changes to vendored sources (each marked `WineMetalGL:` in the code):
   `gl_PerVertex` may be redeclared from GLSL 1.50, as desktop drivers allow,
   instead of only from 4.10 or with `GL_ARB_separate_shader_objects`.
 - glslang `glslang/MachineIndependent/ParseHelper.cpp`, `setLayoutQualifier`:
-  `layout(binding)` is also accepted with `GL_ARB_shader_atomic_counters`,
-  which adds it for atomic counters.
+  `layout(binding)` is also accepted with `GL_ARB_shader_atomic_counters` or
+  `GL_ARB_shader_storage_buffer_object`, which add it for atomic counters and
+  storage blocks (Mesa accepts both).
+- glslang `glslang/MachineIndependent/ShaderLang.cpp`, `DeduceVersionProfile`:
+  GLSL ES 3.00 shaders compile to SPIR-V under relaxed Vulkan rules (GL 4.3
+  `GL_ARB_ES3_compatibility`), instead of requiring ES 3.10.
 - SPIRV-Cross `spirv_msl.{hpp,cpp}`: an MSL option, `native_texture_atomics`,
   emits image atomics as MSL 3.1 texture atomics instead of emulating them
   through a buffer that aliases the texture.
