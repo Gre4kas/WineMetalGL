@@ -5,14 +5,16 @@
  * viewport array; a subroutine picks the shading; an RGBA16F + depth render
  * target is tonemapped to the default framebuffer.
  *
- *   scene4x.exe [--frames N] [--size WxH] [--profile core41|core42]
+ *   scene4x.exe [--frames N] [--size WxH] [--profile core41|core42|core43]
  *               [--dump out.ppm] [--hidden] [--benchmark]
  *
  * core41 (a forward-compatible 4.1 core context) is what Apple's OpenGL can
  * run, so it records the reference. core42 renders the same frame with GL 4.2
  * features: the tonemap pass stores the frame to an rgba8 image and counts
  * its fragments with an atomic counter, and a second pass displays the image.
- * Both profiles must produce the same pixels.
+ * core43 draws the terrain with a multi-draw indirect command and tonemaps in
+ * a compute shader that stores the image and counts its pixels in a shader
+ * storage block. Every profile must produce the same pixels.
  *
  * Prints "SCENE4X_OK <crc32>" on success; the CRC covers the last frame's
  * default-framebuffer pixels (RGBA8, bottom-up). Build with mingw:
@@ -49,9 +51,12 @@
 #define GLFUNCS42(X) \
     X(PFNGLBINDIMAGETEXTUREPROC, glBindImageTexture) X(PFNGLMEMORYBARRIERPROC, glMemoryBarrier) \
     X(PFNGLTEXSTORAGE2DPROC, glTexStorage2D)
+#define GLFUNCS43(X) \
+    X(PFNGLDISPATCHCOMPUTEPROC, glDispatchCompute) X(PFNGLMULTIDRAWARRAYSINDIRECTPROC, glMultiDrawArraysIndirect)
 #define DECLARE(type, name) static type p_##name;
 GLFUNCS(DECLARE)
 GLFUNCS42(DECLARE)
+GLFUNCS43(DECLARE)
 #define LOAD(type, name) p_##name = (type)wglGetProcAddress(#name); if (!p_##name) { fprintf(stderr, "missing %s\n", #name); return 0; }
 
 /* The first GL error after each step, with the step's name. */
@@ -61,9 +66,10 @@ static void check(const char* step) {
     if (e && !reported++) fprintf(stderr, "GL error 0x%04x after %s\n", e, step);
 }
 
-static int load_funcs(int gl42) {
+static int load_funcs(int profile) {
     GLFUNCS(LOAD)
-    if (gl42) { GLFUNCS42(LOAD) }
+    if (profile >= 42) { GLFUNCS42(LOAD) }
+    if (profile >= 43) { GLFUNCS43(LOAD) }
     return 1;
 }
 
@@ -167,6 +173,20 @@ static const char* fs_show42 =
     "out vec4 color;\n"
     "void main() { color = texelFetch(ldr, ivec2(gl_FragCoord.xy), 0); }\n";
 
+/* core43: a compute shader tonemaps into the image, counting its pixels. */
+static const char* cs_tonemap43 =
+    "#version 430 core\n"
+    "layout(local_size_x = 8, local_size_y = 8) in;\n"
+    "layout(binding = 0) uniform sampler2D hdr;\n"
+    "layout(rgba8, binding = 0) writeonly uniform image2D ldr;\n"
+    "layout(std430, binding = 0) buffer Count { uint written; };\n" TONEMAP
+    "void main() {\n"
+    "    ivec2 p = ivec2(gl_GlobalInvocationID.xy);\n"
+    "    if (any(greaterThanEqual(p, textureSize(hdr, 0)))) return;\n"
+    "    imageStore(ldr, p, vec4(tonemap(texelFetch(hdr, p, 0).rgb), 1.0));\n"
+    "    atomicAdd(written, 1u);\n"
+    "}\n";
+
 static GLuint compile(GLenum type, const char* source) {
     GLuint shader = p_glCreateShader(type);
     GLint ok = 0;
@@ -186,6 +206,16 @@ static GLuint link_stages(const char* vs, const char* tcs, const char* tes, cons
     if (gs) p_glAttachShader(program, compile(GL_GEOMETRY_SHADER, gs));
     p_glAttachShader(program, compile(GL_FRAGMENT_SHADER, fs));
     p_glBindFragDataLocation(program, 0, "color");
+    p_glLinkProgram(program);
+    p_glGetProgramiv(program, GL_LINK_STATUS, &ok);
+    if (!ok) { char log[2048]; p_glGetProgramInfoLog(program, sizeof(log), NULL, log); fprintf(stderr, "link failed: %s\n", log); exit(2); }
+    return program;
+}
+
+static GLuint link_compute(const char* cs) {
+    GLuint program = p_glCreateProgram();
+    GLint ok = 0;
+    p_glAttachShader(program, compile(GL_COMPUTE_SHADER, cs));
     p_glLinkProgram(program);
     p_glGetProgramiv(program, GL_LINK_STATUS, &ok);
     if (!ok) { char log[2048]; p_glGetProgramInfoLog(program, sizeof(log), NULL, log); fprintf(stderr, "link failed: %s\n", log); exit(2); }
@@ -258,7 +288,7 @@ static void report_frame_times(double* times, int count) {
 }
 
 int main(int argc, char** argv) {
-    int frames = 120, width = 640, height = 360, gl42 = 0, hidden = 0, benchmark = 0, i, frame;
+    int frames = 120, width = 640, height = 360, profile = 41, hidden = 0, benchmark = 0, i, frame;
     const char* dump = NULL;
     double* frame_ms = NULL;
     unsigned counted = 0;
@@ -266,7 +296,10 @@ int main(int argc, char** argv) {
     for (i = 1; i < argc; ++i) {
         if (!strcmp(argv[i], "--frames") && i + 1 < argc) frames = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--size") && i + 1 < argc) sscanf(argv[++i], "%dx%d", &width, &height);
-        else if (!strcmp(argv[i], "--profile") && i + 1 < argc) gl42 = !strcmp(argv[++i], "core42");
+        else if (!strcmp(argv[i], "--profile") && i + 1 < argc) {
+            ++i;
+            profile = !strcmp(argv[i], "core43") ? 43 : !strcmp(argv[i], "core42") ? 42 : 41;
+        }
         else if (!strcmp(argv[i], "--dump") && i + 1 < argc) dump = argv[++i];
         else if (!strcmp(argv[i], "--hidden")) hidden = 1;
         else if (!strcmp(argv[i], "--benchmark")) benchmark = 1;
@@ -301,14 +334,14 @@ int main(int argc, char** argv) {
     if (!legacy || !wglMakeCurrent(dc, legacy)) return 1;
     PFNWGLCREATECONTEXTATTRIBSARBPROC create = (PFNWGLCREATECONTEXTATTRIBSARBPROC)wglGetProcAddress("wglCreateContextAttribsARB");
     if (!create) { fprintf(stderr, "no wglCreateContextAttribsARB\n"); return 1; }
-    int attribs[] = {WGL_CONTEXT_MAJOR_VERSION_ARB, 4, WGL_CONTEXT_MINOR_VERSION_ARB, gl42 ? 2 : 1,
+    int attribs[] = {WGL_CONTEXT_MAJOR_VERSION_ARB, 4, WGL_CONTEXT_MINOR_VERSION_ARB, profile - 40,
                      WGL_CONTEXT_PROFILE_MASK_ARB, WGL_CONTEXT_CORE_PROFILE_BIT_ARB,
                      WGL_CONTEXT_FLAGS_ARB, WGL_CONTEXT_FORWARD_COMPATIBLE_BIT_ARB, 0};
     HGLRC context = create(dc, NULL, attribs);
-    if (!context) { fprintf(stderr, "no GL 4.%d core context\n", gl42 ? 2 : 1); return 1; }
+    if (!context) { fprintf(stderr, "no GL 4.%d core context\n", profile - 40); return 1; }
     wglMakeCurrent(dc, context);
     wglDeleteContext(legacy);
-    if (!load_funcs(gl42)) return 1;
+    if (!load_funcs(profile)) return 1;
     printf("GL_VERSION %s\n", (const char*)glGetString(GL_VERSION));
 
     /* 16 x 16 patches over [-8, 8]^2, four corners each. */
@@ -337,7 +370,7 @@ int main(int argc, char** argv) {
     p_glPatchParameteri(GL_PATCH_VERTICES, 4);
     check("patch setup");
 
-    /* HDR target and, for core42, the stored frame. */
+    /* HDR target and, for core42 and core43, the stored frame. */
     GLuint textures[3], fbo;
     glGenTextures(3, textures);
     glBindTexture(GL_TEXTURE_2D, textures[0]);
@@ -355,14 +388,16 @@ int main(int argc, char** argv) {
     if (p_glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) { fprintf(stderr, "FBO incomplete\n"); return 1; }
     p_glBindFramebuffer(GL_FRAMEBUFFER, 0);
     check("fbo setup");
-    if (gl42) {
+    /* The pixel count: an atomic counter (core42) or a storage block (core43). */
+    const GLenum count_target = profile == 43 ? GL_SHADER_STORAGE_BUFFER : GL_ATOMIC_COUNTER_BUFFER;
+    if (profile >= 42) {
         glBindTexture(GL_TEXTURE_2D, textures[2]);
         p_glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, width, height);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        p_glBindBuffer(GL_ATOMIC_COUNTER_BUFFER, buffers[2]);
-        p_glBufferData(GL_ATOMIC_COUNTER_BUFFER, sizeof(GLuint), NULL, GL_DYNAMIC_READ);
-        p_glBindBufferBase(GL_ATOMIC_COUNTER_BUFFER, 0, buffers[2]);
+        p_glBindBuffer(count_target, buffers[2]);
+        p_glBufferData(count_target, sizeof(GLuint), NULL, GL_DYNAMIC_READ);
+        p_glBindBufferBase(count_target, 0, buffers[2]);
     }
 
     check("resources");
@@ -371,8 +406,8 @@ int main(int argc, char** argv) {
     const GLint view_proj = p_glGetUniformLocation(terrain, "view_proj"), wave = p_glGetUniformLocation(terrain, "wave");
     const GLuint shades[2] = {p_glGetSubroutineIndex(terrain, GL_FRAGMENT_SHADER, "sunny"),
                               p_glGetSubroutineIndex(terrain, GL_FRAGMENT_SHADER, "dusk")};
-    if (gl42) {
-        store = link_stages(vs_post, NULL, NULL, NULL, fs_store42);
+    if (profile >= 42) {
+        store = profile == 43 ? link_compute(cs_tonemap43) : link_stages(vs_post, NULL, NULL, NULL, fs_store42);
         show = link_stages(vs_post, NULL, NULL, NULL, fs_show42);
     } else {
         post = link_stages(vs_post, NULL, NULL, NULL, fs_post41);
@@ -415,7 +450,8 @@ int main(int argc, char** argv) {
         p_glUniformSubroutinesuiv(GL_FRAGMENT_SHADER, 1, &shades[frame & 1]);
         check("terrain uniforms");
         p_glBindVertexArray(vaos[0]);
-        p_glDrawArraysIndirect(GL_PATCHES, (void*)0);
+        if (profile == 43) p_glMultiDrawArraysIndirect(GL_PATCHES, (void*)0, 1, 0);
+        else p_glDrawArraysIndirect(GL_PATCHES, (void*)0);
         check("terrain draw");
         glDisable(GL_DEPTH_TEST);
 
@@ -425,15 +461,20 @@ int main(int argc, char** argv) {
         p_glBindVertexArray(vaos[1]);
         p_glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, textures[0]);
-        if (gl42) {
+        if (profile >= 42) {
             const GLuint zero = 0;
-            p_glBufferSubData(GL_ATOMIC_COUNTER_BUFFER, 0, sizeof(zero), &zero);
+            p_glBufferSubData(count_target, 0, sizeof(zero), &zero);
             p_glBindImageTexture(0, textures[2], 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
-            glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
             p_glUseProgram(store);
-            glDrawArrays(GL_TRIANGLES, 0, 3);
-            glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-            p_glMemoryBarrier(GL_TEXTURE_FETCH_BARRIER_BIT | GL_ATOMIC_COUNTER_BARRIER_BIT);
+            if (profile == 43) {
+                p_glDispatchCompute((GLuint)(width + 7) / 8, (GLuint)(height + 7) / 8, 1);
+                p_glMemoryBarrier(GL_TEXTURE_FETCH_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
+            } else {
+                glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+                glDrawArrays(GL_TRIANGLES, 0, 3);
+                glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+                p_glMemoryBarrier(GL_TEXTURE_FETCH_BARRIER_BIT | GL_ATOMIC_COUNTER_BARRIER_BIT);
+            }
             p_glActiveTexture(GL_TEXTURE1);
             glBindTexture(GL_TEXTURE_2D, textures[2]);
             p_glUseProgram(show);
@@ -447,7 +488,7 @@ int main(int argc, char** argv) {
             glPixelStorei(GL_PACK_ALIGNMENT, 4);
             glReadBuffer(GL_BACK);
             glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, readback);
-            if (gl42) p_glGetBufferSubData(GL_ATOMIC_COUNTER_BUFFER, 0, sizeof(counted), &counted);
+            if (profile >= 42) p_glGetBufferSubData(count_target, 0, sizeof(counted), &counted);
         }
         SwapBuffers(dc);
         QueryPerformanceCounter(&frame_end);
@@ -457,8 +498,8 @@ int main(int argc, char** argv) {
     free(frame_ms);
     check("frame");
     GLenum error = glGetError();
-    if (gl42 && counted != (unsigned)(width * height)) {
-        fprintf(stderr, "atomic counter: %u fragments, expected %d\n", counted, width * height);
+    if (profile >= 42 && counted != (unsigned)(width * height)) {
+        fprintf(stderr, "pixel count: %u, expected %d\n", counted, width * height);
         error = error ? error : GL_INVALID_OPERATION;
     }
     unsigned crc = crc32_bytes(readback, (size_t)width * height * 4);

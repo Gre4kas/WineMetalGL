@@ -18,7 +18,7 @@ outside git under a **corpus root**:
   can also run. Their references come from that path (`--path apple
   --update-references`).
 - **B (beyond Apple):** legacy or compatibility-profile contexts using 3.x
-  features, and GL 4.2 features, which Apple's OpenGL cannot provide. Where possible they reuse an
+  features, and GL 4.2 and 4.3 features, which Apple's OpenGL cannot provide. Where possible they reuse an
   equivalent Tier A reference (for example `scene33-compat` must render the
   same frame as `scene33-core`).
 - **C (old compatibility games):** regression checks only.
@@ -57,9 +57,10 @@ the trace to `corpus.json` with the frames to compare.
   double-precision wave height, a geometry shader with two invocations
   writing `gl_ViewportIndex` into a two-viewport array, subroutine shading,
   and a tonemap pass. `--profile core41` (a 4.1 core context; Apple's OpenGL
-  records the reference) or `core42` (the tonemap stores the frame to an
-  image and counts its fragments with an atomic counter, Tier B; it must
-  render the same frame).
+  records the reference), `core42` (the tonemap stores the frame to an
+  image and counts its fragments with an atomic counter, Tier B) or `core43`
+  (a multi-draw indirect terrain and a compute-shader tonemap that counts its
+  pixels in a shader storage block, Tier B); each must render the same frame.
 - `demos/legacy.c`: a deterministic fixed-function frame in the style of GL
   1.x/2.x games (lighting, display lists, immediate mode, client arrays with
   quads, multitexture, sphere-map texgen, fog, alpha test, clip plane, point
