@@ -55,9 +55,11 @@ WMGL_GPU_FUNCS(WMGL_DECLARE_FUNC)
 
 namespace gpu {
 
-// A 3.3 core context current on a pbuffer for the lifetime of the fixture.
+// A context current on a pbuffer for the lifetime of the fixture: 3.3, or
+// `version` (10 * major + minor) above it through the development override
+// (WINEMETALGL_DEV_MAX_VERSION) for GL 4.x features.
 struct Fixture {
-    explicit Fixture(int width = 64, int height = 64, bool core = true);
+    explicit Fixture(int width = 64, int height = 64, bool core = true, int version = 33);
     ~Fixture();
     bool ok = false;
     wmgl_context* context = nullptr;
