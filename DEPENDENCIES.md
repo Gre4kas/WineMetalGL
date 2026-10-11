@@ -7,6 +7,7 @@ configuration:
 | --- | --- | --- |
 | SPIRV-Cross | `bccaa94db814af33d8ef05c153e7c34d8bd4d685` | SPIR-V to GLSL/MSL translation |
 | glslang | `46ef757e048e760b46601e6e77ae0cb72c97bd2f` | GLSL parsing and SPIR-V generation |
+| Reference tessellator (Microsoft, MIT; from Mesa) | Mesa `65c2dc5a634b6ee31979546ec5eb5212d6ffe721` | GL tessellation (`vendor/tessellator`) |
 
 Local changes to vendored sources (each marked `WineMetalGL:` in the code):
 
@@ -14,6 +15,9 @@ Local changes to vendored sources (each marked `WineMetalGL:` in the code):
   Vulkan "every input has a matching output" check skips built-in blocks
   (`gl_PerVertex`) and redeclared built-in inputs (`gl_ClipDistance`), which
   GL provides implicitly.
+- glslang `glslang/MachineIndependent/linkValidate.cpp`, `isIoResizeArray`:
+  per-patch tessellation evaluation inputs (`patch in`) are not arrayed per
+  vertex, so `patch` arrays match their control-stage outputs at link time.
 
 The built dylib dynamically links only Apple system frameworks and libraries
 (Metal, Foundation, QuartzCore, CoreFoundation, libc++, libSystem and

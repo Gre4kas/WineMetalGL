@@ -29,6 +29,7 @@ LICENSES/glslang.txt
 LICENSES/GPL-3.0.txt
 LICENSES/SPIRV-Cross-Apache-2.0.txt
 LICENSES/SPIRV-Cross-Khronos-Free-Use.txt
+LICENSES/tessellator-MIT.txt
 LICENSES/Wine-LGPL-2.1.txt
 MANIFEST.txt
 patches/wine/README.md
@@ -132,6 +133,8 @@ src/core/stats.h
 src/core/stats.mm
 src/core/surface.h
 src/core/surface.mm
+src/core/tess/tessellator.cpp
+src/core/tess/tessellator.h
 src/core/texture_storage.h
 src/core/texture_storage.mm
 src/core/util/log.cpp
@@ -7436,3 +7439,7 @@ vendor/SPIRV-Cross/tests-other/msl_ycbcr_conversion_test.spv
 vendor/SPIRV-Cross/tests-other/small_vector.cpp
 vendor/SPIRV-Cross/tests-other/typed_id_test.cpp
 vendor/SPIRV-Cross/update_test_shaders.sh
+vendor/tessellator/LICENSE.txt
+vendor/tessellator/README.md
+vendor/tessellator/tessellator.cpp
+vendor/tessellator/tessellator.hpp

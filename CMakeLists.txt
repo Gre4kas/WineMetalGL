@@ -87,9 +87,15 @@ add_library(wmgl_portable STATIC
     src/core/shader/geometry.cpp
     src/core/shader/transform_feedback.cpp
     src/core/shader/glsl_upgrade.cpp
+    src/core/shader/tessellation.cpp
+    src/core/tess/tessellator.cpp
     src/core/util/log.cpp
+    vendor/tessellator/tessellator.cpp
 )
 add_dependencies(wmgl_portable wmgl_generated)
+target_include_directories(wmgl_portable PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/vendor/tessellator")
+# The vendored reference tessellator (vendor/tessellator) is kept as it is.
+set_source_files_properties(vendor/tessellator/tessellator.cpp PROPERTIES COMPILE_OPTIONS "-w")
 target_include_directories(wmgl_portable PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
