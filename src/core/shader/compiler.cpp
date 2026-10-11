@@ -1071,10 +1071,14 @@ std::vector<StageOutputVar> captureableOutputs(glslang::TIntermediate* intermedi
                             clipDistance = true;
                         }
                         if (blockName == "gl_PerVertex" || field.rfind("gl_", 0) == 0 || type.isArray()) continue;
-                        // User blocks: members are named "Block.member" (GL 3.3 section 2.15).
+                        // User blocks: members are named "Block.member" (GL 3.3 section 2.15);
+                        // members of a block without an instance name also by their own name.
+                        const std::string expression = anonymous ? m.getFieldName().c_str()
+                                                                 : std::string(symbol->getName().c_str()) + "." + m.getFieldName().c_str();
                         outputs.push_back({blockName + "." + field, glTypeOfAst(m), m.isSizedArray() ? m.getOuterArraySize() : 0,
-                                           anonymous ? m.getFieldName().c_str()
-                                                     : std::string(symbol->getName().c_str()) + "." + m.getFieldName().c_str()});
+                                           expression});
+                        if (anonymous)
+                            outputs.push_back({field, glTypeOfAst(m), m.isSizedArray() ? m.getOuterArraySize() : 0, expression});
                     }
                     continue;
                 }
@@ -1415,6 +1419,8 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
             options.version = 450;
             options.es = false;
             options.vulkan_semantics = false;
+            // Row-major matrices load as in the geometry path (doubles need the plain form).
+            options.enable_row_major_load_workaround = false;
             glslOut.set_common_options(options);
             glsl = glslOut.compile();
             return true;

@@ -159,7 +159,7 @@ std::string varKey(const TessVar& v) {
     return unescapeName(v.blockName + "." + (v.member.empty() ? v.name : v.member));
 }
 
-int words(GLenum type) { return glTypeComponents(type); }
+int words(GLenum type) { return glTypeWords(type); }  // two per double component
 
 }  // namespace
 
