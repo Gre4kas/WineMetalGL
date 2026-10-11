@@ -398,6 +398,30 @@ const VertexAttrib& DrawState::attribFor(const VertexArray& vao, int location) c
     return vao.attribs[static_cast<size_t>(location)];
 }
 
+namespace {
+
+// How a vertex input reads its attribute's element: the Metal format, the
+// byte offset of the first byte read and the bytes read. 64-bit inputs
+// (kind 'd') read raw 32-bit words, 16 bytes per location (shader/fp64.h).
+struct VertexFetch {
+    MTLVertexFormat format = MTLVertexFormatInvalid;
+    NSUInteger offset = 0;
+    uint32_t bytes = 0;
+};
+
+VertexFetch vertexFetch(const shader::StageOutput::VertexInput& input, const VertexAttrib& a) {
+    if (input.kind == 'd') {
+        const uint32_t element = a.isDouble ? a.elementBytes() : 0, start = 16u * static_cast<uint32_t>(input.part);
+        if (element <= start) return {MTLVertexFormatInvalid, static_cast<NSUInteger>(a.offset), 0};
+        const uint32_t bytes = std::min(16u, element - start);
+        return {bytes == 8 ? MTLVertexFormatUInt2 : MTLVertexFormatUInt4, static_cast<NSUInteger>(a.offset) + start, bytes};
+    }
+    return {a.isDouble ? MTLVertexFormatInvalid : mtlVertexFormat(a.type, a.size, a.normalized, a.integer),
+            static_cast<NSUInteger>(a.offset), a.elementBytes()};
+}
+
+}  // namespace
+
 void DrawState::planVertexInputs(LinkedProgram& program, bool gather, VertexInputPlan& plan) const {
     using Plan = VertexInputPlan;
     const VertexArray& vao = *ctx_.state.vertexArray;
@@ -415,7 +439,12 @@ void DrawState::planVertexInputs(LinkedProgram& program, bool gather, VertexInpu
         else if (std::find(convertedDivisors.begin(), convertedDivisors.end(), divisor) == convertedDivisors.end())
             convertedDivisors.push_back(divisor);
     };
-    std::vector<std::pair<int, const VertexAttrib*>> direct;
+    struct Direct {
+        int location;
+        const VertexAttrib* a;
+        VertexFetch fetch;
+    };
+    std::vector<Direct> direct;
     for (const shader::StageOutput::VertexInput& input : program.stage(Stage::Vertex).vertexInputs) {
         const int location = input.location;
         if (location < 0 || location >= VertexArray::kAttribSlots) continue;
@@ -426,27 +455,29 @@ void DrawState::planVertexInputs(LinkedProgram& program, bool gather, VertexInpu
         }
         // The other endpoint of a wide line segment reads the position array in partner order.
         const bool partner = linePartners_ && location == kLinePartner;
-        const VertexAttrib& a = attribFor(vao, partner ? static_cast<int>(kConvVertex) : location);
+        const VertexAttrib& a = attribFor(vao, partner ? static_cast<int>(kConvVertex) : input.source());
         if (!a.enabled) {
             plan.how[static_cast<size_t>(location)] = Plan::Constant;
             constants = true;
             continue;
         }
         const uint32_t stride = static_cast<uint32_t>(a.effectiveStride());
-        const MTLVertexFormat format = a.isDouble ? MTLVertexFormatInvalid : mtlVertexFormat(a.type, a.size, a.normalized, a.integer);
-        const bool aligned = (a.offset % 4) == 0 && (stride % 4) == 0 && stride > 0;
+        const VertexFetch fetch = vertexFetch(input, a);
+        const bool aligned = (fetch.offset % 4) == 0 && (stride % 4) == 0 && stride > 0;
         const bool gathered = (gather || partner) && !a.divisor;
-        if (a.buffer && a.buffer->mtl && format != MTLVertexFormatInvalid && aligned && !gathered)
-            direct.emplace_back(location, &a);
+        if (a.buffer && a.buffer->mtl && fetch.format != MTLVertexFormatInvalid && aligned && !gathered)
+            direct.push_back({location, &a, fetch});
         else
             convert(location, a.divisor);
     }
     // Attributes of one buffer, stride and divisor share a layout when they
     // all fit in one element window, whatever their order.
     std::vector<std::vector<int>> members;
-    for (const auto& [location, a] : direct) {
+    for (const Direct& d : direct) {
+        const int location = d.location;
+        const VertexAttrib* a = d.a;
         const uint32_t stride = static_cast<uint32_t>(a->effectiveStride());
-        const NSUInteger offset = static_cast<NSUInteger>(a->offset), end = offset + a->elementBytes();
+        const NSUInteger offset = d.fetch.offset, end = offset + d.fetch.bytes;
         size_t chosen = plan.groups.size();
         for (Window& w : windows) {
             Plan::DirectGroup& g = plan.groups[w.group];
@@ -491,7 +522,7 @@ void DrawState::waitForCpuVertexReads(LinkedProgram& program, bool gather) {
     for (const shader::StageOutput::VertexInput& input : program.stage(Stage::Vertex).vertexInputs) {
         if (input.location < 0 || input.location >= VertexArray::kAttribSlots) continue;
         if (plan.how[static_cast<size_t>(input.location)] != VertexInputPlan::Converted) continue;
-        const VertexAttrib& a = attribFor(vao, input.location);
+        const VertexAttrib& a = attribFor(vao, input.source());
         if (a.buffer && a.buffer->lastWriteSerial && !queue.isComplete(a.buffer->lastWriteSerial))
             ctx_.stream().waitFor(a.buffer->lastWriteSerial);
     }
@@ -530,15 +561,22 @@ bool DrawState::bindVertexInputs(id<MTLRenderCommandEncoder> encoder, PipelineKe
         const VertexAttrib* attrib;
         const std::vector<uint32_t>* order;  // gathered: the vertex fetched for each draw vertex
         char kind;
+        int part;  // 'd': 16-byte part of the element
     };
     std::vector<Converted> converted;
-    std::vector<int> constants;  // current values, one constant element each, packed into one buffer
+    // Current values, one constant element each, packed into one buffer:
+    // the GL attribute and (64-bit inputs) the 16-byte part of its value.
+    struct ConstantInput {
+        int location, attrib, part;
+        char kind;
+    };
+    std::vector<ConstantInput> constants;
     for (const shader::StageOutput::VertexInput& input : program.stage(Stage::Vertex).vertexInputs) {
         const int location = input.location;
         if (location < 0 || location >= VertexArray::kAttribSlots) continue;
         VertexAttributeKey& out = key.attributes[location];
         const bool partner = linePartners_ && location == kLinePartner;
-        const VertexAttrib& a = attribFor(vao, partner ? static_cast<int>(kConvVertex) : location);
+        const VertexAttrib& a = attribFor(vao, partner ? static_cast<int>(kConvVertex) : input.source());
         switch (plan.how[static_cast<size_t>(location)]) {
         case Plan::LineSide: {
             TransientAllocation alloc = transient_.allocate(lineSides_->size() * 16, serial, 16);
@@ -558,16 +596,17 @@ bool DrawState::bindVertexInputs(id<MTLRenderCommandEncoder> encoder, PipelineKe
         }
         case Plan::Constant:
             out.format = static_cast<uint8_t>(input.kind == 'i' ? MTLVertexFormatInt4
-                                              : input.kind == 'u' ? MTLVertexFormatUInt4
-                                                                  : MTLVertexFormatFloat4);
+                                              : input.kind == 'u' || input.kind == 'd' ? MTLVertexFormatUInt4
+                                                                                       : MTLVertexFormatFloat4);
             out.offset = static_cast<uint16_t>(constants.size() * 16);
-            constants.push_back(location);
+            constants.push_back({location, input.source(), input.part, input.kind});
             break;
         case Plan::Direct: {
             const size_t g = static_cast<size_t>(plan.group[static_cast<size_t>(location)]);
-            out.format = static_cast<uint8_t>(mtlVertexFormat(a.type, a.size, a.normalized, a.integer));
+            const VertexFetch fetch = vertexFetch(input, a);
+            out.format = static_cast<uint8_t>(fetch.format);
             out.layout = static_cast<uint8_t>(g);
-            out.offset = static_cast<uint16_t>(static_cast<NSUInteger>(a.offset) - plan.groups[g].base);
+            out.offset = static_cast<uint16_t>(fetch.offset - plan.groups[g].base);
             break;
         }
         case Plan::Converted:
@@ -575,7 +614,7 @@ bool DrawState::bindVertexInputs(id<MTLRenderCommandEncoder> encoder, PipelineKe
                 ctx_.setError(GL_INVALID_OPERATION);
                 return false;
             }
-            converted.push_back({location, &a, partner ? linePartners_ : gather, input.kind});
+            converted.push_back({location, &a, partner ? linePartners_ : gather, input.kind, input.part});
             break;
         case Plan::None: break;
         }
@@ -636,11 +675,17 @@ bool DrawState::bindVertexInputs(id<MTLRenderCommandEncoder> encoder, PipelineKe
                     const int32_t one = 1;
                     const float oneF = 1.0f;
                     std::memset(to, 0, 16);
-                    std::memcpy(to + 12, a.integer ? static_cast<const void*>(&one) : static_cast<const void*>(&oneF), 4);
+                    if (group[m]->kind != 'd')
+                        std::memcpy(to + 12, a.integer ? static_cast<const void*>(&one) : static_cast<const void*>(&oneF), 4);
                     continue;
                 }
                 const uint8_t* element = source + at;
-                if (a.integer) {
+                if (group[m]->kind == 'd') {
+                    // Raw 64-bit components (shader/fp64.h); anything but an L array reads zeros.
+                    std::memset(to, 0, 16);
+                    const uint32_t start = 16u * static_cast<uint32_t>(group[m]->part);
+                    if (a.isDouble && elementBytes > start) std::memcpy(to, element + start, std::min(16u, elementBytes - start));
+                } else if (a.integer) {
                     int32_t values[4];
                     decodeVertexInt(element, a.type, a.size, values);
                     std::memcpy(to, values, 16);
@@ -656,7 +701,8 @@ bool DrawState::bindVertexInputs(id<MTLRenderCommandEncoder> encoder, PipelineKe
         if (layout < 0) return false;
         for (size_t m = 0; m < group.size(); ++m) {
             VertexAttributeKey& out = key.attributes[group[m]->location];
-            out.format = static_cast<uint8_t>(group[m]->attrib->integer
+            out.format = static_cast<uint8_t>(group[m]->kind == 'd' ? MTLVertexFormatUInt4
+                                              : group[m]->attrib->integer
                                                   ? (group[m]->kind == 'u' ? MTLVertexFormatUInt4 : MTLVertexFormatInt4)
                                                   : MTLVertexFormatFloat4);
             out.layout = static_cast<uint8_t>(layout);
@@ -666,11 +712,15 @@ bool DrawState::bindVertexInputs(id<MTLRenderCommandEncoder> encoder, PipelineKe
     if (!constants.empty()) {
         TransientAllocation alloc = transient_.allocate(constants.size() * 16, serial, 16);
         if (!alloc.data) return false;
-        for (size_t c = 0; c < constants.size(); ++c)
-            std::memcpy(static_cast<uint8_t*>(alloc.data) + c * 16, &ctx_.state.genericAttribs[static_cast<size_t>(constants[c])].value, 16);
+        for (size_t c = 0; c < constants.size(); ++c) {
+            const ContextState::GenericAttrib& g = ctx_.state.genericAttribs[static_cast<size_t>(constants[c].attrib)];
+            uint8_t* dst = static_cast<uint8_t*>(alloc.data) + c * 16;
+            if (constants[c].kind == 'd') std::memcpy(dst, reinterpret_cast<const uint8_t*>(g.d) + 16 * constants[c].part, 16);
+            else std::memcpy(dst, &g.value, 16);
+        }
         const int layout = addLayout(alloc.buffer, alloc.offset, static_cast<uint32_t>(constants.size() * 16), 0, true);
         if (layout < 0) return false;
-        for (int location : constants) key.attributes[location].layout = static_cast<uint8_t>(layout);
+        for (const ConstantInput& c : constants) key.attributes[c.location].layout = static_cast<uint8_t>(layout);
     }
     key.layoutCount = static_cast<uint8_t>(layouts.size());
     for (size_t l = 0; l < layouts.size(); ++l) {
@@ -1844,6 +1894,7 @@ void DrawState::drawGeometry(GLenum mode, const std::vector<uint32_t>& vertices,
     xfb.primitivesWritten += written;
     const uint64_t vertexCount = written * perPrimitive;
     for (const shader::TransformFeedbackVarying& v : link.transformFeedback) {
+        if (v.type == GL_NONE) continue;  // gl_SkipComponents / gl_NextBuffer write nothing
         Buffer& buffer = *xfb.buffers[v.buffer].buffer;
         uint8_t* base = buffer.contents() + xfb.buffers[v.buffer].offset + xfb.written[v.buffer];
         for (uint64_t i = 0; i < vertexCount; ++i) {

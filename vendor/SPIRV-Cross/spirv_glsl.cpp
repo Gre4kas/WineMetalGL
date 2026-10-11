@@ -1600,8 +1600,10 @@ uint32_t CompilerGLSL::type_to_packed_alignment(const SPIRType &type, const Bits
 		// vectors.
 		if (flags.get(DecorationColMajor) && type.columns > 1)
 		{
+			// WineMetalGL: std140 rounds a column's alignment up to that of
+			// a (float) vec4, 16 bytes, so dmat2 columns stay 16 (was 4 * base).
 			if (packing_is_vec4_padded(packing))
-				return 4 * base_alignment;
+				return max<uint32_t>(16u, (type.vecsize == 2 ? 2 : 4) * base_alignment);
 			else if (type.vecsize == 3)
 				return 4 * base_alignment;
 			else
@@ -1613,8 +1615,9 @@ uint32_t CompilerGLSL::type_to_packed_alignment(const SPIRType &type, const Bits
 		// Rule 7.
 		if (flags.get(DecorationRowMajor) && type.vecsize > 1)
 		{
+			// WineMetalGL: as for columns above.
 			if (packing_is_vec4_padded(packing))
-				return 4 * base_alignment;
+				return max<uint32_t>(16u, (type.columns == 2 ? 2 : 4) * base_alignment);
 			else if (type.columns == 3)
 				return 4 * base_alignment;
 			else
@@ -1707,8 +1710,9 @@ uint32_t CompilerGLSL::type_to_packed_size(const SPIRType &type, const Bitset &f
 
 			if (flags.get(DecorationColMajor) && type.columns > 1)
 			{
+				// WineMetalGL: see type_to_packed_alignment.
 				if (packing_is_vec4_padded(packing))
-					size = type.columns * 4 * base_alignment;
+					size = type.columns * max<uint32_t>(16u, (type.vecsize == 2 ? 2 : 4) * base_alignment);
 				else if (type.vecsize == 3)
 					size = type.columns * 4 * base_alignment;
 				else
@@ -1718,7 +1722,7 @@ uint32_t CompilerGLSL::type_to_packed_size(const SPIRType &type, const Bitset &f
 			if (flags.get(DecorationRowMajor) && type.vecsize > 1)
 			{
 				if (packing_is_vec4_padded(packing))
-					size = type.vecsize * 4 * base_alignment;
+					size = type.vecsize * max<uint32_t>(16u, (type.columns == 2 ? 2 : 4) * base_alignment);
 				else if (type.columns == 3)
 					size = type.vecsize * 4 * base_alignment;
 				else

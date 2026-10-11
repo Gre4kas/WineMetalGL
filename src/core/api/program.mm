@@ -2,8 +2,10 @@
 // (GL 3.3 sections 2.11-2.12, 6.1.15).
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <string>
+#include <type_traits>
 
 #include "core/context.h"
 #include "core/limits.h"
@@ -138,6 +140,18 @@ TypeInfo typeInfo(GLenum type) {
     case GL_FLOAT_MAT4x2: return {'f', 4, 2};
     case GL_FLOAT_MAT4x3: return {'f', 4, 3};
     case GL_DOUBLE: return {'d', 1, 1};
+    case GL_DOUBLE_VEC2: return {'d', 1, 2};
+    case GL_DOUBLE_VEC3: return {'d', 1, 3};
+    case GL_DOUBLE_VEC4: return {'d', 1, 4};
+    case GL_DOUBLE_MAT2: return {'d', 2, 2};
+    case GL_DOUBLE_MAT3: return {'d', 3, 3};
+    case GL_DOUBLE_MAT4: return {'d', 4, 4};
+    case GL_DOUBLE_MAT2x3: return {'d', 2, 3};
+    case GL_DOUBLE_MAT2x4: return {'d', 2, 4};
+    case GL_DOUBLE_MAT3x2: return {'d', 3, 2};
+    case GL_DOUBLE_MAT3x4: return {'d', 3, 4};
+    case GL_DOUBLE_MAT4x2: return {'d', 4, 2};
+    case GL_DOUBLE_MAT4x3: return {'d', 4, 3};
     default: return {shader::glTypeIsSampler(type) ? 's' : shader::glTypeIsImage(type) ? 'g' : 'f', 1, 1};
     }
 }
@@ -166,7 +180,8 @@ void setUniform(Context& ctx, Program* p, GLint location, GLsizei count, char ki
     if (info.base == 's' || info.base == 'g') {
         if (kind != 'i' || components != 1) return ctx.setError(GL_INVALID_OPERATION);
     } else if (info.base == 'b') {
-        // bools accept f, i and u variants
+        // bools accept f, i and u variants (not d)
+        if (kind == 'd') return ctx.setError(GL_INVALID_OPERATION);
     } else if (info.base != kind) {
         return ctx.setError(GL_INVALID_OPERATION);
     }
@@ -194,7 +209,10 @@ void setUniform(Context& ctx, Program* p, GLint location, GLsizei count, char ki
         uint8_t* dst = p->uniformData.data() + u->offset + (element + i) * stride;
         for (int c = 0; c < components; ++c) {
             const T v = values[i * components + c];
-            if (info.base == 'b') {
+            if (info.base == 'd') {
+                const double d = static_cast<double>(v);
+                std::memcpy(dst + c * 8, &d, 8);
+            } else if (info.base == 'b') {
                 const uint32_t b = v != T(0) ? 1u : 0u;
                 std::memcpy(dst + c * 4, &b, 4);
             } else if (info.base == 'f') {
@@ -209,8 +227,11 @@ void setUniform(Context& ctx, Program* p, GLint location, GLsizei count, char ki
     ctx.markDirty(kDirtyUniforms);
 }
 
+template <class T>
 void setUniformMatrix(Context& ctx, Program* p, GLint location, GLsizei count, GLboolean transpose, int columns, int rows,
-                      const GLfloat* values) {
+                      const T* values) {
+    constexpr bool isDouble = std::is_same_v<T, GLdouble>;
+    constexpr size_t size = isDouble ? 8 : 4;
     if (!p) return ctx.setError(GL_INVALID_OPERATION);  // checked before location -1 is ignored
     if (location == -1) return;
     if (!p->linked) return ctx.setError(GL_INVALID_OPERATION);
@@ -219,19 +240,20 @@ void setUniformMatrix(Context& ctx, Program* p, GLint location, GLsizei count, G
     const shader::UniformInfo* u = uniformAt(*p, location, element);
     if (!u) return ctx.setError(GL_INVALID_OPERATION);
     const TypeInfo info = typeInfo(u->type);
-    if (info.base != 'f' || info.columns != columns || info.rows != rows) return ctx.setError(GL_INVALID_OPERATION);
+    if (info.base != (isDouble ? 'd' : 'f') || info.columns != columns || info.rows != rows)
+        return ctx.setError(GL_INVALID_OPERATION);
     if (count > 1 && u->size == 1) return ctx.setError(GL_INVALID_OPERATION);
     const GLsizei n = std::min<GLsizei>(count, u->size - element);
     const size_t matrixStride = u->matrixStride ? static_cast<size_t>(u->matrixStride) : 16;
     const size_t arrayStride = u->arrayStride ? static_cast<size_t>(u->arrayStride) : matrixStride * static_cast<size_t>(columns);
     for (GLsizei i = 0; i < n; ++i) {
-        const GLfloat* m = values + i * columns * rows;
+        const T* m = values + i * columns * rows;
         uint8_t* dst = p->uniformData.data() + u->offset + (element + i) * arrayStride;
         for (int c = 0; c < columns; ++c)
             for (int r = 0; r < rows; ++r) {
-                const float v = transpose ? m[r * columns + c] : m[c * rows + r];
-                if (u->rowMajor) std::memcpy(dst + r * matrixStride + c * 4, &v, 4);
-                else std::memcpy(dst + c * matrixStride + r * 4, &v, 4);
+                const T v = transpose ? m[r * columns + c] : m[c * rows + r];
+                if (u->rowMajor) std::memcpy(dst + r * matrixStride + c * size, &v, size);
+                else std::memcpy(dst + c * matrixStride + r * size, &v, size);
             }
     }
     ++p->uniformVersion;
@@ -831,8 +853,22 @@ void GetProgramInfoLog(Context& ctx, GLuint program, GLsizei bufSize, GLsizei* l
 GLint GetAttribLocation(Context& ctx, GLuint program, const GLchar* name) {
     Program* p = linkedProgramOrError(ctx, program);
     if (!p || !name || std::strncmp(name, "gl_", 3) == 0) return -1;
-    for (const shader::AttribInfo& a : p->linked->link.attribs)
-        if (a.name == name && !a.conventional) return a.location;
+    const std::string wanted = name;
+    for (const shader::AttribInfo& a : p->linked->link.attribs) {
+        if (a.conventional) continue;
+        if (a.name == wanted) return a.location;
+        // Elements of an attribute array: "a[i]" (each element takes the type's locations).
+        const std::string base = a.name.size() > 3 && a.name.compare(a.name.size() - 3, 3, "[0]") == 0
+                                     ? a.name.substr(0, a.name.size() - 3)
+                                     : a.name;
+        if ((a.array || a.size > 1) && wanted.size() > base.size() + 2 && wanted.compare(0, base.size(), base) == 0 &&
+            wanted[base.size()] == '[' && wanted.back() == ']') {
+            const std::string digits = wanted.substr(base.size() + 1, wanted.size() - base.size() - 2);
+            if (digits.empty() || digits.find_first_not_of("0123456789") != std::string::npos) continue;
+            const long index = std::strtol(digits.c_str(), nullptr, 10);
+            if (index < a.size) return a.location + static_cast<GLint>(index) * shader::glTypeLocations(a.type);
+        }
+    }
     return -1;
 }
 
@@ -1049,7 +1085,6 @@ WMGL_UNIFORM_V(1uiv, GLuint, 'u', 1)
 WMGL_UNIFORM_V(2uiv, GLuint, 'u', 2)
 WMGL_UNIFORM_V(3uiv, GLuint, 'u', 3)
 WMGL_UNIFORM_V(4uiv, GLuint, 'u', 4)
-#undef WMGL_UNIFORM_V
 
 void Uniform1f(Context& ctx, GLint l, GLfloat x) { Uniform1fv(ctx, l, 1, &x); }
 void Uniform2f(Context& ctx, GLint l, GLfloat x, GLfloat y) { const GLfloat v[] = {x, y}; Uniform2fv(ctx, l, 1, v); }
@@ -1064,40 +1099,29 @@ void Uniform2ui(Context& ctx, GLint l, GLuint x, GLuint y) { const GLuint v[] = 
 void Uniform3ui(Context& ctx, GLint l, GLuint x, GLuint y, GLuint z) { const GLuint v[] = {x, y, z}; Uniform3uiv(ctx, l, 1, v); }
 void Uniform4ui(Context& ctx, GLint l, GLuint x, GLuint y, GLuint z, GLuint w) { const GLuint v[] = {x, y, z, w}; Uniform4uiv(ctx, l, 1, v); }
 
-// Double-precision ProgramUniform* (listed by GL_ARB_separate_shader_objects
-// for GL_ARB_gpu_shader_fp64 implementations): no shader has double
-// uniforms here, so every location other than -1 is a type mismatch.
-namespace {
-void programUniformDouble(Context& ctx, GLuint program, GLint location) {
-    if (!linkedProgramOrError(ctx, program) || location == -1) return;
-    ctx.setError(GL_INVALID_OPERATION);
+// GL_ARB_gpu_shader_fp64: double uniforms (and their program forms).
+WMGL_UNIFORM_V(1dv, GLdouble, 'd', 1)
+WMGL_UNIFORM_V(2dv, GLdouble, 'd', 2)
+WMGL_UNIFORM_V(3dv, GLdouble, 'd', 3)
+WMGL_UNIFORM_V(4dv, GLdouble, 'd', 4)
+#undef WMGL_UNIFORM_V
+void Uniform1d(Context& ctx, GLint l, GLdouble x) { Uniform1dv(ctx, l, 1, &x); }
+void Uniform2d(Context& ctx, GLint l, GLdouble x, GLdouble y) { const GLdouble v[] = {x, y}; Uniform2dv(ctx, l, 1, v); }
+void Uniform3d(Context& ctx, GLint l, GLdouble x, GLdouble y, GLdouble z) { const GLdouble v[] = {x, y, z}; Uniform3dv(ctx, l, 1, v); }
+void Uniform4d(Context& ctx, GLint l, GLdouble x, GLdouble y, GLdouble z, GLdouble w) {
+    const GLdouble v[] = {x, y, z, w};
+    Uniform4dv(ctx, l, 1, v);
 }
-}  // namespace
-void ProgramUniform1d(Context& ctx, GLuint p, GLint l, GLdouble) { programUniformDouble(ctx, p, l); }
-void ProgramUniform2d(Context& ctx, GLuint p, GLint l, GLdouble, GLdouble) { programUniformDouble(ctx, p, l); }
-void ProgramUniform3d(Context& ctx, GLuint p, GLint l, GLdouble, GLdouble, GLdouble) { programUniformDouble(ctx, p, l); }
-void ProgramUniform4d(Context& ctx, GLuint p, GLint l, GLdouble, GLdouble, GLdouble, GLdouble) { programUniformDouble(ctx, p, l); }
-#define WMGL_UNIFORM_DOUBLE_V(Name) \
-    void ProgramUniform##Name(Context& ctx, GLuint p, GLint l, GLsizei, const GLdouble*) { programUniformDouble(ctx, p, l); }
-WMGL_UNIFORM_DOUBLE_V(1dv)
-WMGL_UNIFORM_DOUBLE_V(2dv)
-WMGL_UNIFORM_DOUBLE_V(3dv)
-WMGL_UNIFORM_DOUBLE_V(4dv)
-#undef WMGL_UNIFORM_DOUBLE_V
-#define WMGL_UNIFORM_DOUBLE_MATRIX(Name) \
-    void ProgramUniformMatrix##Name##dv(Context& ctx, GLuint p, GLint l, GLsizei, GLboolean, const GLdouble*) { \
-        programUniformDouble(ctx, p, l); \
-    }
-WMGL_UNIFORM_DOUBLE_MATRIX(2)
-WMGL_UNIFORM_DOUBLE_MATRIX(3)
-WMGL_UNIFORM_DOUBLE_MATRIX(4)
-WMGL_UNIFORM_DOUBLE_MATRIX(2x3)
-WMGL_UNIFORM_DOUBLE_MATRIX(2x4)
-WMGL_UNIFORM_DOUBLE_MATRIX(3x2)
-WMGL_UNIFORM_DOUBLE_MATRIX(3x4)
-WMGL_UNIFORM_DOUBLE_MATRIX(4x2)
-WMGL_UNIFORM_DOUBLE_MATRIX(4x3)
-#undef WMGL_UNIFORM_DOUBLE_MATRIX
+void ProgramUniform1d(Context& ctx, GLuint p, GLint l, GLdouble x) { ProgramUniform1dv(ctx, p, l, 1, &x); }
+void ProgramUniform2d(Context& ctx, GLuint p, GLint l, GLdouble x, GLdouble y) { const GLdouble v[] = {x, y}; ProgramUniform2dv(ctx, p, l, 1, v); }
+void ProgramUniform3d(Context& ctx, GLuint p, GLint l, GLdouble x, GLdouble y, GLdouble z) {
+    const GLdouble v[] = {x, y, z};
+    ProgramUniform3dv(ctx, p, l, 1, v);
+}
+void ProgramUniform4d(Context& ctx, GLuint p, GLint l, GLdouble x, GLdouble y, GLdouble z, GLdouble w) {
+    const GLdouble v[] = {x, y, z, w};
+    ProgramUniform4dv(ctx, p, l, 1, v);
+}
 
 // GL_ARB_separate_shader_objects scalar forms.
 void ProgramUniform1f(Context& ctx, GLuint p, GLint l, GLfloat x) { ProgramUniform1fv(ctx, p, l, 1, &x); }
@@ -1119,6 +1143,13 @@ void ProgramUniform4ui(Context& ctx, GLuint p, GLint l, GLuint x, GLuint y, GLui
     }                                                                                                          \
     void ProgramUniformMatrix##Name##fv(Context& ctx, GLuint program, GLint location, GLsizei count, GLboolean transpose, \
                                         const GLfloat* value) {                                                \
+        setUniformMatrix(ctx, linkedProgramOrError(ctx, program), location, count, transpose, c, r, value);    \
+    }                                                                                                          \
+    void UniformMatrix##Name##dv(Context& ctx, GLint location, GLsizei count, GLboolean transpose, const GLdouble* value) { \
+        setUniformMatrix(ctx, current(ctx), location, count, transpose, c, r, value);                          \
+    }                                                                                                          \
+    void ProgramUniformMatrix##Name##dv(Context& ctx, GLuint program, GLint location, GLsizei count, GLboolean transpose, \
+                                        const GLdouble* value) {                                               \
         setUniformMatrix(ctx, linkedProgramOrError(ctx, program), location, count, transpose, c, r, value);    \
     }
 WMGL_UNIFORM_MATRIX(2, 2, 2)
@@ -1154,11 +1185,26 @@ void getUniform(Context& ctx, GLuint program, GLint location, T* params) {
     const size_t stride = u->arrayStride ? static_cast<size_t>(u->arrayStride)
                                          : (info.columns > 1 ? matrixStride * static_cast<size_t>(info.columns) : 16);
     const uint8_t* src = p->uniformData.data() + u->offset + element * stride;
+    const size_t size = info.base == 'd' ? 8 : 4;
     int out = 0;
     for (int c = 0; c < info.columns; ++c)
         for (int r = 0; r < info.rows; ++r) {
-            const uint8_t* at = info.columns > 1 ? src + c * matrixStride + r * 4 : src + r * 4;
-            if (info.base == 'f') { float v; std::memcpy(&v, at, 4); params[out++] = static_cast<T>(v); }
+            const uint8_t* at = info.columns > 1 ? (u->rowMajor ? src + r * matrixStride + c * size : src + c * matrixStride + r * size)
+                                                 : src + r * size;
+            // Floating-point values read as integers are rounded to the nearest integer (GL 4.6 section 2.2.2).
+            if (info.base == 'd' || info.base == 'f') {
+                double v;
+                if (info.base == 'd') {
+                    std::memcpy(&v, at, 8);
+                } else {
+                    float f;
+                    std::memcpy(&f, at, 4);
+                    v = f;
+                }
+                if constexpr (std::is_unsigned_v<T>) params[out++] = v > 0.0 ? static_cast<T>(std::floor(v + 0.5)) : T(0);
+                else if constexpr (std::is_integral_v<T>) params[out++] = static_cast<T>(std::floor(v + 0.5));
+                else params[out++] = static_cast<T>(v);
+            }
             else if (info.base == 'i') { int32_t v; std::memcpy(&v, at, 4); params[out++] = static_cast<T>(v); }
             else { uint32_t v; std::memcpy(&v, at, 4); params[out++] = static_cast<T>(v); }
         }

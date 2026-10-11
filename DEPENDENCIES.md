@@ -18,6 +18,12 @@ Local changes to vendored sources (each marked `WineMetalGL:` in the code):
 - glslang `glslang/MachineIndependent/linkValidate.cpp`, `isIoResizeArray`:
   per-patch tessellation evaluation inputs (`patch in`) are not arrayed per
   vertex, so `patch` arrays match their control-stage outputs at link time.
+- SPIRV-Cross `spirv_glsl.cpp`, `type_to_packed_alignment` and
+  `type_to_packed_size`: std140 rounds a matrix column (or row) up to the
+  alignment of a float vec4 (16 bytes), as GL 4.6 section 7.6.2.2 rule 4
+  says, not of a vector of the matrix's component type; double matrices with
+  two rows otherwise fail the layout check when geometry shaders are
+  translated to GLSL. Float layouts are unchanged.
 - glslang `glslang/MachineIndependent/ParseHelper.cpp`, `fixOffset`: an
   atomic counter whose offset puts it past `gl_MaxAtomicCounterBufferSize` is
   a compile-time error, as GLSL 4.20 requires.

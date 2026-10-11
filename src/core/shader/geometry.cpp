@@ -46,6 +46,11 @@ GLenum glslTypeEnum(const std::string& t) {
         {"mat2x2", GL_FLOAT_MAT2}, {"mat3x3", GL_FLOAT_MAT3}, {"mat4x4", GL_FLOAT_MAT4}, {"mat2x3", GL_FLOAT_MAT2x3},
         {"mat2x4", GL_FLOAT_MAT2x4}, {"mat3x2", GL_FLOAT_MAT3x2}, {"mat3x4", GL_FLOAT_MAT3x4},
         {"mat4x2", GL_FLOAT_MAT4x2}, {"mat4x3", GL_FLOAT_MAT4x3},
+        {"double", GL_DOUBLE}, {"dvec2", GL_DOUBLE_VEC2}, {"dvec3", GL_DOUBLE_VEC3}, {"dvec4", GL_DOUBLE_VEC4},
+        {"dmat2", GL_DOUBLE_MAT2}, {"dmat3", GL_DOUBLE_MAT3}, {"dmat4", GL_DOUBLE_MAT4}, {"dmat2x2", GL_DOUBLE_MAT2},
+        {"dmat3x3", GL_DOUBLE_MAT3}, {"dmat4x4", GL_DOUBLE_MAT4}, {"dmat2x3", GL_DOUBLE_MAT2x3}, {"dmat2x4", GL_DOUBLE_MAT2x4},
+        {"dmat3x2", GL_DOUBLE_MAT3x2}, {"dmat3x4", GL_DOUBLE_MAT3x4}, {"dmat4x2", GL_DOUBLE_MAT4x2},
+        {"dmat4x3", GL_DOUBLE_MAT4x3},
     };
     auto it = kTypes.find(t);
     return it == kTypes.end() ? 0 : it->second;
@@ -95,6 +100,16 @@ int verticesForInput(GLenum type) {
 // Converts words at `index` expressions into a value of `type`.
 std::string loadValue(const std::string& type, GLenum glType, const std::string& buffer, const std::string& base) {
     const int n = glTypeComponents(glType);
+    if (glTypeIsDouble(glType)) {
+        // Two words per component, low word first (packDouble2x32).
+        std::string args;
+        for (int c = 0; c < n; ++c) {
+            if (!args.empty()) args += ", ";
+            args += "packDouble2x32(uvec2(" + buffer + "[" + base + " + " + std::to_string(2 * c) + "u], " + buffer + "[" + base +
+                    " + " + std::to_string(2 * c + 1) + "u]))";
+        }
+        return type + "(" + args + ")";
+    }
     const char* kind = glType == GL_INT || glType == GL_INT_VEC2 || glType == GL_INT_VEC3 || glType == GL_INT_VEC4 ? "int"
                        : glType == GL_UNSIGNED_INT || glType == GL_UNSIGNED_INT_VEC2 || glType == GL_UNSIGNED_INT_VEC3 ||
                                glType == GL_UNSIGNED_INT_VEC4
@@ -352,7 +367,7 @@ GeometrySources geometrySources(const GeometryShaderInfo& info, const LinkResult
     uint32_t words = 0;
     auto addField = [&](const std::string& expr, GLenum type, const std::string& glslType) {
         fields.push_back({expr, type, glslType, words});
-        words += static_cast<uint32_t>(glTypeComponents(type));
+        words += static_cast<uint32_t>(glTypeWords(type));
     };
     // Arrays are stored element by element; `out.fields` names the whole array.
     auto addVar = [&](const std::string& glName, const std::string& expr, GLenum type, const std::string& glslType, int arraySize) {
@@ -468,7 +483,7 @@ GeometrySources geometrySources(const GeometryShaderInfo& info, const LinkResult
         for (int e = 0; e < std::min(v.arraySize, p->size); ++e)
             c += "        " + target + "[" + std::to_string(e) + "] = " +
                  loadValue(v.glslType, v.type, "wmgl_gs_in",
-                           "wmgl_b + " + std::to_string(p->offset + static_cast<uint32_t>(e * glTypeComponents(v.type))) + "u") +
+                           "wmgl_b + " + std::to_string(p->offset + static_cast<uint32_t>(e * glTypeWords(v.type))) + "u") +
                  ";\n";
     }
     c += "    }\n"

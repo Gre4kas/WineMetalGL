@@ -84,6 +84,7 @@ add_library(wmgl_portable STATIC
     src/core/format/pixel_transfer.cpp
     src/core/format/vertex_decode.cpp
     src/core/shader/compiler.cpp
+    src/core/shader/fp64.cpp
     src/core/shader/geometry.cpp
     src/core/shader/transform_feedback.cpp
     src/core/shader/glsl_upgrade.cpp
@@ -142,7 +143,8 @@ target_link_options(winemetalgl_core PRIVATE "LINKER:-exported_symbol,_wmgl_*")
 install(TARGETS winemetalgl_core LIBRARY DESTINATION lib)
 
 # Host tests (no GPU, no Wine).
-add_executable(wmgl_host_tests tests/host/main.cpp tests/host/shader_tests.cpp tests/host/format_tests.cpp)
+add_executable(wmgl_host_tests tests/host/main.cpp tests/host/shader_tests.cpp tests/host/format_tests.cpp
+    tests/host/fp64_tests.cpp)
 target_link_libraries(wmgl_host_tests PRIVATE wmgl_portable)
 
 # GPU tests: drive the core through the driver ABI on pbuffers (Metal, no Wine).
