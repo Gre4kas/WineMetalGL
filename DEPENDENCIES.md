@@ -14,7 +14,8 @@ Local changes to vendored sources (each marked `WineMetalGL:` in the code):
 - glslang `glslang/MachineIndependent/linkValidate.cpp`, `checkStageIO`: the
   Vulkan "every input has a matching output" check skips built-in blocks
   (`gl_PerVertex`) and redeclared built-in inputs (`gl_ClipDistance`), which
-  GL provides implicitly.
+  GL provides implicitly, and inputs the stage never reads, which GL does
+  not require to be written.
 - glslang `glslang/MachineIndependent/linkValidate.cpp`, `isIoResizeArray`:
   per-patch tessellation evaluation inputs (`patch in`) are not arrayed per
   vertex, so `patch` arrays match their control-stage outputs at link time.
