@@ -28,6 +28,28 @@ without storage buffers, images or atomic counters a compute shader has no
 way to write output, and engines that detect the extension would skip their
 working fallback.
 
+### Double precision
+
+Metal has no 64-bit floating-point type, so doubles (`GL_ARB_gpu_shader_fp64`,
+`GL_ARB_vertex_attrib_64bit`) run in software: shaders keep the bit patterns in
+64-bit integers and call an IEEE 754 binary64 library
+(`src/core/shader/fp64.h`). Addition, subtraction, multiplication, division,
+square root and every conversion are correctly rounded (to nearest, ties to
+even), with subnormals, infinities and NaNs. Where results can differ from a
+GPU with hardware doubles:
+
+- `fma()` rounds twice (a multiply, then an add). GLSL allows this outside
+  `precise` expressions; a `precise` fused multiply-add is not exact either.
+- A double literal in the subnormal range (below about 2.2e-308) compiles to
+  zero, because the shader compiler (glslang) flushes such literals.
+  Subnormal values computed at run time or read from buffers, attributes and
+  uniforms are kept.
+- A NaN result is the first NaN operand made quiet, or the default NaN; other
+  payload propagation rules do not apply.
+
+Only shaders that declare doubles pay for this: each double operation is a
+library call several times slower than a float operation.
+
 ## Compatibility profile (OpenGL 1.0 to 2.1)
 
 WineMetalGL implements OpenGL 1.0 to 2.1 itself, as its compatibility
