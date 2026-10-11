@@ -7548,6 +7548,15 @@ bool TParseContext::vkRelaxedRemapUniformVariable(const TSourceLoc& loc, TString
 
         // xxTODO: use logic from fixOffset() to apply explicit member offset
         bufferBinding = type.getQualifier().layoutBinding;
+        // WineMetalGL: a counter without an offset takes its binding's default
+        // offset (layout(binding = b, offset = o) uniform atomic_uint;), which
+        // then advances past it, as fixOffset() does outside relaxed rules.
+        if (bufferBinding >= 0 && bufferBinding < resources.maxAtomicCounterBindings) {
+            const int offset = type.getQualifier().hasOffset() ? type.getQualifier().layoutOffset : atomicUintOffsets[bufferBinding];
+            const int count = type.isSizedArray() ? type.getCumulativeArraySize() : 1;
+            type.getQualifier().layoutOffset = offset;
+            atomicUintOffsets[bufferBinding] = offset + 4 * count;
+        }
         type.getQualifier().layoutBinding = TQualifier::layoutBindingEnd;
         type.getQualifier().explicitOffset = false;
         growAtomicCounterBlock(bufferBinding, loc, type, identifier, nullptr);

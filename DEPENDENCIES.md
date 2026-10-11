@@ -41,6 +41,11 @@ Local changes to vendored sources (each marked `WineMetalGL:` in the code):
   `layout(binding)` is also accepted with `GL_ARB_shader_atomic_counters` or
   `GL_ARB_shader_storage_buffer_object`, which add it for atomic counters and
   storage blocks (Mesa accepts both).
+- glslang `glslang/MachineIndependent/ParseHelper.cpp`,
+  `vkRelaxedRemapUniformVariable`: an atomic counter without an offset takes
+  its binding's default offset (`layout(binding = b, offset = o) uniform
+  atomic_uint;`) under relaxed Vulkan rules too, as `fixOffset` gives it
+  otherwise.
 - glslang `glslang/MachineIndependent/ShaderLang.cpp`, `DeduceVersionProfile`:
   GLSL ES 3.00 shaders compile to SPIR-V under relaxed Vulkan rules (GL 4.3
   `GL_ARB_ES3_compatibility`), instead of requiring ES 3.10.

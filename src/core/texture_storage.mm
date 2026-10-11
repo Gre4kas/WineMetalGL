@@ -413,7 +413,9 @@ id<MTLSamplerState> samplerState(Context& ctx, const SamplerParams& p, bool shad
                                                                                            : MTLCompareFunctionAlways)
                                               : MTLCompareFunctionNever);
     // Metal border colours are limited to these three; others are approximated (W12).
-    const float* c = p.borderColor.f;
+    // An integer border colour (glTexParameterI*) is read as integers.
+    float c[4];
+    for (int i = 0; i < 4; ++i) c[i] = p.borderIsInteger ? static_cast<float>(p.borderColor.i[i]) : p.borderColor.f[i];
     key.border = static_cast<uint8_t>(c[3] == 0.0f ? MTLSamplerBorderColorTransparentBlack
                                       : (c[0] + c[1] + c[2]) > 1.5f ? MTLSamplerBorderColorOpaqueWhite
                                                                     : MTLSamplerBorderColorOpaqueBlack);

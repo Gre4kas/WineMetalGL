@@ -127,13 +127,15 @@ void framebufferChanged(Context& ctx, Framebuffer& fb) {
     ctx.markDirty(kDirtyFramebuffer);
 }
 
-RefPtr<Texture> textureForAttach(Context& ctx, GLuint name, bool& ok) {
+// `missing`: the error for a name that is not a texture (glFramebufferTexture
+// raises INVALID_VALUE, KHR-GL44.geometry_shader.layered_fbo.fb_texture_invalid_value).
+RefPtr<Texture> textureForAttach(Context& ctx, GLuint name, bool& ok, GLenum missing = GL_INVALID_OPERATION) {
     ok = true;
     if (!name) return nullptr;
     ShareLock lock(ctx);
     RefPtr<Texture> tex = ctx.share().textures.getRef(name);
     if (!tex) {
-        ctx.setError(GL_INVALID_OPERATION);
+        ctx.setError(missing);
         ok = false;
     }
     return tex;
@@ -151,11 +153,15 @@ void attachTexture(Context& ctx, GLenum target, GLenum attachment, GLenum textar
                                         ? GL_INVALID_OPERATION
                                         : GL_INVALID_ENUM);
     bool ok;
-    RefPtr<Texture> tex = textureForAttach(ctx, texture, ok);
+    const bool framebufferTexture = !textarget && !layerCall;
+    RefPtr<Texture> tex = textureForAttach(ctx, texture, ok, framebufferTexture ? GL_INVALID_VALUE : GL_INVALID_OPERATION);
     if (!ok) return;
     Attachment a;
     if (tex) {
+        if (tex->target == GL_TEXTURE_BUFFER) return ctx.setError(GL_INVALID_OPERATION);
         if (level < 0 || level >= Texture::kMaxLevels) return ctx.setError(GL_INVALID_VALUE);
+        // An immutable texture has only its levels.
+        if (tex->immutable && tex->immutableLevels > 0 && level >= tex->immutableLevels) return ctx.setError(GL_INVALID_VALUE);
         if (textarget) {
             const bool cubeFace = textarget >= GL_TEXTURE_CUBE_MAP_POSITIVE_X && textarget <= GL_TEXTURE_CUBE_MAP_NEGATIVE_Z;
             const GLenum expect = cubeFace ? GL_TEXTURE_CUBE_MAP : textarget;

@@ -2032,6 +2032,7 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
             result.uniforms.push_back(u);
         }
         // Atomic counters (GL 4.2): the storage blocks glslang made of them.
+        uint32_t stageCounters = 0;
         for (const auto& ssbo : resources.storage_buffers) {
             const int binding = atomicCounterBlockBinding(compiler.get_name(ssbo.base_type_id));
             if (binding < 0) continue;
@@ -2051,6 +2052,7 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
                 const std::string name = unescapeName(compiler.get_member_name(type.self, m));
                 const uint32_t offset = compiler.type_struct_member_offset(type, m);
                 const uint32_t count = memberType.array.empty() ? 1 : std::max(1u, memberType.array.back());
+                stageCounters += count;
                 buffer->dataSize = std::max<GLint>(buffer->dataSize, static_cast<GLint>(offset + 4 * count));
                 const std::string glName = memberType.array.empty() ? name : name + "[0]";
                 auto it = std::find_if(result.uniforms.begin(), result.uniforms.end(),
@@ -2070,6 +2072,11 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
                 buffer->activeUniforms.push_back(static_cast<int>(result.uniforms.size()));
                 result.uniforms.push_back(u);
             }
+        }
+        // GL_MAX_<stage>_ATOMIC_COUNTERS (KHR-GL44.geometry_shader.linking.more_ACs_in_GS_than_supported).
+        if (stageCounters > static_cast<uint32_t>(wmgl::limits::kMaxStageAtomicCounters)) {
+            result.log += "error: too many atomic counters in one stage\n";
+            return result;
         }
         // Shader storage blocks (GL 4.3).
         for (const auto& ssbo : resources.storage_buffers) {

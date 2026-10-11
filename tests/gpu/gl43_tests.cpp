@@ -883,3 +883,57 @@ void main() {
     glDeleteVertexArrays(1, &vao);
     glDeleteProgram(p);
 }
+
+// A counter without an offset takes its binding's default offset from a
+// declaration without a name (KHR-GL44.layout_binding.atomic_uint_layout_binding_atomic_*).
+GPU_TEST_VERSION(gpu_gl43_atomic_counter_default_offset, 43) {
+    const char* vs = R"(#version 430 core
+in vec2 position;
+void main() { gl_Position = vec4(position, 0.0, 1.0); })";
+    const char* fs = R"(#version 430 core
+layout(binding=2, offset=4) uniform atomic_uint;
+layout(binding=2) uniform atomic_uint counter;
+out vec4 o;
+void main() { o = vec4(float(atomicCounterIncrement(counter))); })";
+    GLuint p = gpu::program(vs, fs);
+    GLuint index = glGetProgramResourceIndex(p, GL_UNIFORM, "counter");
+    const GLenum props[2] = {GL_OFFSET, GL_ATOMIC_COUNTER_BUFFER_INDEX};
+    GLint values[2] = {-1, -1};
+    glGetProgramResourceiv(p, GL_UNIFORM, index, 2, props, 2, nullptr, values);
+    CHECK_EQ(values[0], 4);
+    CHECK_GL();
+    glDeleteProgram(p);
+}
+
+// glFramebufferTexture and glTexBufferRange errors
+// (KHR-GL44.geometry_shader.layered_fbo.fb_texture_*, texture_buffer.texture_buffer_errors).
+GPU_TEST_VERSION(gpu_gl43_attach_and_range_errors, 43) {
+    GLuint fbo = 0, tex = 0, buffer = 0, view = 0;
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, 4321, 0);  // not a texture
+    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_INVALID_VALUE));
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_3D, tex);
+    glTexStorage3D(GL_TEXTURE_3D, 2, GL_RGBA8, 4, 4, 4);
+    glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, tex, 2);  // past the immutable levels
+    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_INVALID_VALUE));
+    glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, tex, 1);
+    CHECK_GL();
+    glGenBuffers(1, &buffer);
+    glBindBuffer(GL_TEXTURE_BUFFER, buffer);
+    glBufferData(GL_TEXTURE_BUFFER, 1024, nullptr, GL_STATIC_DRAW);
+    glGenTextures(1, &view);
+    glBindTexture(GL_TEXTURE_BUFFER, view);
+    glTexBufferRange(GL_TEXTURE_BUFFER, GL_R32F, buffer, 0, -16);
+    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_INVALID_VALUE));
+    glTexBufferRange(GL_TEXTURE_BUFFER, GL_R32F, buffer, 0, 512);
+    CHECK_GL();
+    glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, view, 0);  // a buffer texture
+    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_INVALID_OPERATION));
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &tex);
+    glDeleteTextures(1, &view);
+    glDeleteBuffers(1, &buffer);
+}

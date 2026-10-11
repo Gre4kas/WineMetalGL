@@ -1469,8 +1469,9 @@ void TexImage3DMultisample(Context& ctx, GLenum target, GLsizei samples, GLenum 
 
 namespace {
 
-// glTexBuffer (size -1: the whole buffer) and glTexBufferRange.
-void texBuffer(Context& ctx, GLenum target, GLenum internalformat, GLuint buffer, GLintptr offset, GLsizeiptr size) {
+// glTexBuffer (`range` false: the whole buffer) and glTexBufferRange.
+void texBuffer(Context& ctx, GLenum target, GLenum internalformat, GLuint buffer, GLintptr offset, GLsizeiptr size,
+               bool range) {
     if (target != GL_TEXTURE_BUFFER) return ctx.setError(GL_INVALID_ENUM);
     switch (internalformat) {
     case GL_R8: case GL_R16: case GL_R16F: case GL_R32F: case GL_R8I: case GL_R16I: case GL_R32I: case GL_R8UI:
@@ -1489,15 +1490,15 @@ void texBuffer(Context& ctx, GLenum target, GLenum internalformat, GLuint buffer
         object = ctx.share().buffers.getRef(buffer);
         if (!object) return ctx.setError(GL_INVALID_OPERATION);
     }
-    if (object && size >= 0) {
+    if (object && range) {
         // GL 4.3 section 8.9: a range inside the buffer, aligned.
         if (offset < 0 || size <= 0 || offset + size > object->size) return ctx.setError(GL_INVALID_VALUE);
         if (offset % limits::kTextureBufferOffsetAlignment) return ctx.setError(GL_INVALID_VALUE);
     }
     tex->buffer = object;
     tex->bufferFormat = internalformat;
-    tex->bufferOffset = object && size >= 0 ? offset : 0;
-    tex->bufferSize = object && size >= 0 ? size : -1;
+    tex->bufferOffset = object && range ? offset : 0;
+    tex->bufferSize = object && range ? size : -1;
     tex->views.clear();
     imageChanged(ctx, *tex);
 }
@@ -1505,7 +1506,7 @@ void texBuffer(Context& ctx, GLenum target, GLenum internalformat, GLuint buffer
 }  // namespace
 
 void TexBuffer(Context& ctx, GLenum target, GLenum internalformat, GLuint buffer) {
-    texBuffer(ctx, target, internalformat, buffer, 0, -1);
+    texBuffer(ctx, target, internalformat, buffer, 0, -1, false);
 }
 
 // ------------------------------------------------------------ texture views (GL 4.3)
@@ -1624,7 +1625,7 @@ void TextureView(Context& ctx, GLuint texture, GLenum target, GLuint origtexture
 
 void TexBufferRange(Context& ctx, GLenum target, GLenum internalformat, GLuint buffer, GLintptr offset, GLsizeiptr size) {
     if (ctx.version() < 43 && !ctx.hasExtension("GL_ARB_texture_buffer_range")) return ctx.unimplemented("glTexBufferRange");
-    texBuffer(ctx, target, internalformat, buffer, offset, size);
+    texBuffer(ctx, target, internalformat, buffer, offset, size, true);
 }
 
 void GenerateMipmap(Context& ctx, GLenum target) {
