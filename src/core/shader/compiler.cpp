@@ -1719,11 +1719,20 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
         }
         // A separable geometry-only program links; its emulation needs the
         // vertex stage and is not built (program pipelines then report it).
-        if (stagePresent[static_cast<int>(Stage::Vertex)] &&
-            !layoutTransformFeedback(geometryCaptureVaryings(*geometry), GL_INTERLEAVED_ATTRIBS,
-                                     captureableOutputs(program.getIntermediate(EShLangVertex)), *geometryCapture, result.log,
-                                     UINT32_MAX))
-            return result;
+        if (stagePresent[static_cast<int>(Stage::Vertex)]) {
+            // Inputs the vertex stage does not write (allowed when the
+            // geometry shader never reads them) are not captured.
+            const std::vector<StageOutputVar> vertexOutputs = captureableOutputs(program.getIntermediate(EShLangVertex));
+            std::vector<std::string> varyings;
+            for (const std::string& v : geometryCaptureVaryings(*geometry))
+                for (const StageOutputVar& o : vertexOutputs)
+                    if (o.name == v) {
+                        varyings.push_back(v);
+                        break;
+                    }
+            if (!layoutTransformFeedback(varyings, GL_INTERLEAVED_ATTRIBS, vertexOutputs, *geometryCapture, result.log, UINT32_MAX))
+                return result;
+        }
         result.geometryInputType = geometry->inputType;
         result.geometryOutputType = geometry->outputType;
         result.geometryVerticesOut = geometry->maxVertices;
@@ -2404,6 +2413,9 @@ bool buildGeometryEmulation(const LinkInput& input, const GeometryShaderInfo& in
     g.inputStride = captureLayout.xfbStride[0];
     g.outputStride = sources.outputStride;
     g.outputs = sources.fields;
+    g.streams = info.streams;
+    g.streamOffset = sources.streamOffset;
+    bool bufferStreamSet[4] = {};
     for (TransformFeedbackVarying& v : result.transformFeedback) {
         if (v.type == GL_NONE) continue;
         const size_t open = v.name.find('[');
@@ -2412,7 +2424,18 @@ bool buildGeometryEmulation(const LinkInput& input, const GeometryShaderInfo& in
         const int index = open == std::string::npos ? 0 : std::atoi(v.name.c_str() + open + 1);
         v.sourceOffset = TransformFeedbackVarying::kNotEmitted;
         for (const GeometryEmulation::Field& f : g.outputs)
-            if (f.name == base) v.sourceOffset = f.offset + static_cast<uint32_t>(index * glTypeWords(f.type));
+            if (f.name == base) {
+                v.sourceOffset = f.offset + static_cast<uint32_t>(index * glTypeWords(f.type));
+                v.stream = f.stream;
+            }
+        // Each buffer captures the vertices of one stream (GL 4.0 section 13.2.2).
+        if (bufferStreamSet[v.buffer] && result.xfbStream[v.buffer] != v.stream) {
+            result.log += "error: transform feedback buffer " + std::to_string(v.buffer) +
+                          " captures varyings of more than one vertex stream\n";
+            return false;
+        }
+        bufferStreamSet[v.buffer] = true;
+        result.xfbStream[v.buffer] = v.stream;
     }
     LinkInput kernelInput;
     kernelInput.shaders = {{Stage::Compute, sources.compute}};
@@ -2506,7 +2529,44 @@ bool buildTessellationEmulation(const LinkInput& input, const TessellationLink& 
 
 }  // namespace
 
-LinkResult link(const LinkInput& input) {
+namespace {
+
+bool usesIdentifier(const std::string& source, const std::string& name) {
+    for (size_t at = source.find(name); at != std::string::npos; at = source.find(name, at + 1)) {
+        const bool before = at > 0 && (std::isalnum(static_cast<unsigned char>(source[at - 1])) || source[at - 1] == '_');
+        const size_t end = at + name.size();
+        const bool after = end < source.size() && (std::isalnum(static_cast<unsigned char>(source[end])) || source[end] == '_');
+        if (!before && !after) return true;
+    }
+    return false;
+}
+
+// A geometry shader's gl_PrimitiveID reaches the fragment shader as a flat
+// varying: the emulation draws the emitted vertices with a vertex shader, so
+// Metal's primitive ID would count the pass-through draw's primitives.
+LinkInput withGeometryPrimitiveId(const LinkInput& input) {
+    bool geometry = false, fragment = false;
+    for (const ShaderSource& shader : input.shaders) {
+        if (shader.stage == Stage::Geometry) geometry |= usesIdentifier(shader.source, "gl_PrimitiveID");
+        if (shader.stage == Stage::Fragment) fragment |= usesIdentifier(shader.source, "gl_PrimitiveID");
+    }
+    if (!geometry || !fragment) return input;
+    LinkInput out = input;
+    for (ShaderSource& shader : out.shaders) {
+        if ((shader.stage != Stage::Geometry && shader.stage != Stage::Fragment) || !usesIdentifier(shader.source, "gl_PrimitiveID"))
+            continue;
+        const std::string declaration = shader.stage == Stage::Geometry ? "flat out int wmgl_gs_primitive_id;\n"
+                                                                         : "flat in int wmgl_gs_primitive_id;\n";
+        shader.source = insertAfterDirectives(shader.source, declaration + "#define gl_PrimitiveID wmgl_gs_primitive_id\n",
+                                              parseGlslVersion(shader.source).number);
+    }
+    return out;
+}
+
+}  // namespace
+
+LinkResult link(const LinkInput& original) {
+    const LinkInput input = withGeometryPrimitiveId(original);
     GeometryShaderInfo geometry;
     LinkResult geometryCapture;
     TessellationLink tessellation;

@@ -1586,7 +1586,7 @@ void DrawState::captureTransformFeedback(GLenum mode, const std::vector<uint32_t
         if (vertexBytes) primitives = std::min<uint64_t>(primitives, static_cast<uint64_t>(remaining) / vertexBytes / perPrimitive);
     }
     if (Query* q = ctx_.state.activeQueries[kQueryXfbPrimitivesWritten].get()) q->result += primitives;
-    xfb.primitivesWritten += primitives;
+    xfb.primitivesWritten[0] += primitives;
     if (!primitives) return;
 
     id<MTLBuffer> buffers[4] = {};
@@ -1947,15 +1947,24 @@ void DrawState::drawGeometry(GLenum mode, const std::vector<uint32_t>& vertices,
     }
 
     // 4. Primitive queries and transform feedback need the emitted
-    // primitives on the CPU.
+    // primitives on the CPU, by vertex stream.
     TransformFeedback& xfb = *ctx_.state.transformFeedback;
     const bool capture = xfb.active && !xfb.paused && !lp.link.transformFeedback.empty();
-    Query* generated = ctx_.state.activeQueries[kQueryPrimitivesGenerated].get();
-    if (!capture && !generated) return;
+    Query* generated[kMaxVertexStreams] = {};
+    Query* writtenQuery[kMaxVertexStreams] = {};
+    bool anyQuery = false;
+    for (GLuint s = 0; s < static_cast<GLuint>(kMaxVertexStreams); ++s) {
+        generated[s] = ctx_.state.activeQueries[queryTargetIndex(ctx_, GL_PRIMITIVES_GENERATED, s)].get();
+        writtenQuery[s] = ctx_.state.activeQueries[queryTargetIndex(ctx_, GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN, s)].get();
+        anyQuery |= generated[s] || writtenQuery[s];
+    }
+    if (!capture && !anyQuery) return;
     ctx_.stream().waitFor(serial);
     const auto* slots = static_cast<const uint32_t*>(indices.data);
     const auto* records = static_cast<const uint32_t*>(output.data);
-    std::vector<uint32_t> emitted;  // record slots of independent primitives, in order
+    // Record slots of independent primitives, in order, per stream (only
+    // points output has streams other than 0).
+    std::vector<uint32_t> emitted[kMaxVertexStreams];
     std::vector<uint32_t> strip;
     for (uint64_t t = 0; t < threads; ++t) {
         for (uint32_t k = 0; k <= 2 * maxV; ++k) {
@@ -1965,35 +1974,48 @@ void DrawState::drawGeometry(GLenum mode, const std::vector<uint32_t>& vertices,
                 if (g.outputType != GL_POINTS) continue;
             }
             if (strip.empty()) continue;
-            const std::vector<uint32_t> assembled = assembleForCapture(g.outputType == GL_LINE_STRIP ? GL_LINE_STRIP
-                                                                       : g.outputType == GL_POINTS   ? GL_POINTS
-                                                                                                     : GL_TRIANGLE_STRIP,
-                                                                       strip);
-            emitted.insert(emitted.end(), assembled.begin(), assembled.end());
+            if (g.outputType == GL_POINTS) {
+                const uint32_t stream = g.streams ? records[static_cast<uint64_t>(strip[0]) * g.outputStride + g.streamOffset] : 0;
+                if (stream < static_cast<uint32_t>(kMaxVertexStreams)) emitted[stream].push_back(strip[0]);
+            } else {
+                const std::vector<uint32_t> assembled =
+                    assembleForCapture(g.outputType == GL_LINE_STRIP ? GL_LINE_STRIP : GL_TRIANGLE_STRIP, strip);
+                emitted[0].insert(emitted[0].end(), assembled.begin(), assembled.end());
+            }
             strip.clear();
         }
     }
     const uint32_t perPrimitive = g.outputType == GL_POINTS ? 1 : g.outputType == GL_LINE_STRIP ? 2 : 3;
-    const uint64_t generatedCount = emitted.size() / perPrimitive;
-    if (generated) generated->result += generatedCount;
+    for (int s = 0; s < kMaxVertexStreams; ++s)
+        if (generated[s]) generated[s]->result += emitted[s].size() / perPrimitive;
     if (!capture) return;
     const shader::LinkResult& link = lp.link;
-    uint64_t written = generatedCount;
+    // Primitives each stream writes: what fits in every buffer it feeds;
+    // a stream without buffers writes none.
+    uint64_t written[kMaxVertexStreams] = {};
+    bool captured[kMaxVertexStreams] = {};
+    for (int s = 0; s < kMaxVertexStreams; ++s) written[s] = emitted[s].size() / perPrimitive;
     for (int b = 0; b < link.xfbBufferCount; ++b) {
         const TransformFeedback::Binding& binding = xfb.buffers[b];
         if (!binding.buffer || !binding.buffer->mtl) return;
+        const int s = link.xfbStream[b];
+        captured[s] = true;
         // The bound range, clamped to the buffer's current size (it may have shrunk since binding).
         const int64_t available = std::max<int64_t>(0, binding.buffer->size - binding.offset);
         const int64_t size = binding.size ? std::min<int64_t>(binding.size, available) : available;
         const int64_t remaining = std::max<int64_t>(0, size - xfb.written[b]);
         const uint64_t vertexBytes = static_cast<uint64_t>(link.xfbStride[b]) * 4;
-        if (vertexBytes) written = std::min<uint64_t>(written, static_cast<uint64_t>(remaining) / vertexBytes / perPrimitive);
+        if (vertexBytes) written[s] = std::min<uint64_t>(written[s], static_cast<uint64_t>(remaining) / vertexBytes / perPrimitive);
     }
-    if (Query* q = ctx_.state.activeQueries[kQueryXfbPrimitivesWritten].get()) q->result += written;
-    xfb.primitivesWritten += written;
-    const uint64_t vertexCount = written * perPrimitive;
+    for (int s = 0; s < kMaxVertexStreams; ++s) {
+        if (!captured[s]) written[s] = 0;
+        if (writtenQuery[s]) writtenQuery[s]->result += written[s];
+        xfb.primitivesWritten[static_cast<size_t>(s)] += written[s];
+    }
     for (const shader::TransformFeedbackVarying& v : link.transformFeedback) {
         if (v.type == GL_NONE) continue;  // gl_SkipComponents / gl_NextBuffer write nothing
+        const int s = link.xfbStream[v.buffer];
+        const uint64_t vertexCount = written[s] * perPrimitive;
         Buffer& buffer = *xfb.buffers[v.buffer].buffer;
         uint8_t* base = buffer.contents() + xfb.buffers[v.buffer].offset + xfb.written[v.buffer];
         for (uint64_t i = 0; i < vertexCount; ++i) {
@@ -2001,12 +2023,12 @@ void DrawState::drawGeometry(GLenum mode, const std::vector<uint32_t>& vertices,
             if (v.sourceOffset == shader::TransformFeedbackVarying::kNotEmitted)
                 std::memset(dst, 0, static_cast<size_t>(v.components) * 4);
             else
-                std::memcpy(dst, records + static_cast<uint64_t>(emitted[i]) * g.outputStride + v.sourceOffset,
+                std::memcpy(dst, records + static_cast<uint64_t>(emitted[s][i]) * g.outputStride + v.sourceOffset,
                             static_cast<size_t>(v.components) * 4);
         }
     }
     for (int b = 0; b < link.xfbBufferCount; ++b) {
-        xfb.written[b] += static_cast<GLsizeiptr>(vertexCount * link.xfbStride[b] * 4);
+        xfb.written[b] += static_cast<GLsizeiptr>(written[link.xfbStream[b]] * perPrimitive * link.xfbStride[b] * 4);
         ++xfb.buffers[b].buffer->version;
     }
 }

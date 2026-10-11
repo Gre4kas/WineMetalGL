@@ -27,7 +27,7 @@ void BeginTransformFeedback(Context& ctx, GLenum primitiveMode) {
     xfb.primitiveMode = primitiveMode;
     xfb.program = p;
     xfb.written = {};
-    xfb.primitivesWritten = 0;
+    xfb.primitivesWritten = {};
 }
 
 void EndTransformFeedback(Context& ctx) {
@@ -38,7 +38,8 @@ void EndTransformFeedback(Context& ctx) {
     xfb.program = nullptr;
     const uint64_t perPrimitive = xfb.primitiveMode == GL_POINTS ? 1 : xfb.primitiveMode == GL_LINES ? 2 : 3;
     xfb.everEnded = true;
-    xfb.streamVertices = {xfb.primitivesWritten * perPrimitive, 0, 0, 0};
+    for (size_t stream = 0; stream < xfb.streamVertices.size(); ++stream)
+        xfb.streamVertices[stream] = xfb.primitivesWritten[stream] * perPrimitive;
 }
 
 // ------------------------------------------- GL_ARB_transform_feedback2/3
@@ -128,6 +129,49 @@ void drawTransformFeedback(Context& ctx, GLenum mode, GLuint id, GLuint stream, 
 }
 
 }  // namespace
+
+// GL 4.5 / GL_ARB_direct_state_access queries of a transform feedback object.
+namespace {
+
+TransformFeedback* queriedTransformFeedback(Context& ctx, GLuint id, const char* command) {
+    if (ctx.version() < 45 && !ctx.hasExtension("GL_ARB_direct_state_access")) {
+        ctx.unimplemented(command);
+        return nullptr;
+    }
+    TransformFeedback* xfb = id ? ctx.transformFeedbacks.get(id) : ctx.defaultTransformFeedback.get();
+    if (!xfb) ctx.setError(GL_INVALID_OPERATION);
+    return xfb;
+}
+
+}  // namespace
+
+void GetTransformFeedbackiv(Context& ctx, GLuint id, GLenum pname, GLint* param) {
+    TransformFeedback* xfb = queriedTransformFeedback(ctx, id, "glGetTransformFeedbackiv");
+    if (!xfb || !param) return;
+    switch (pname) {
+    case GL_TRANSFORM_FEEDBACK_PAUSED: *param = xfb->paused ? GL_TRUE : GL_FALSE; return;
+    case GL_TRANSFORM_FEEDBACK_ACTIVE: *param = xfb->active ? GL_TRUE : GL_FALSE; return;
+    default: ctx.setError(GL_INVALID_ENUM); return;
+    }
+}
+
+void GetTransformFeedbacki_v(Context& ctx, GLuint id, GLenum pname, GLuint index, GLint* param) {
+    TransformFeedback* xfb = queriedTransformFeedback(ctx, id, "glGetTransformFeedbacki_v");
+    if (!xfb || !param) return;
+    if (pname != GL_TRANSFORM_FEEDBACK_BUFFER_BINDING) return ctx.setError(GL_INVALID_ENUM);
+    if (index >= static_cast<GLuint>(TransformFeedback::kMaxBuffers)) return ctx.setError(GL_INVALID_VALUE);
+    *param = xfb->buffers[index].buffer ? static_cast<GLint>(xfb->buffers[index].buffer->name) : 0;
+}
+
+void GetTransformFeedbacki64_v(Context& ctx, GLuint id, GLenum pname, GLuint index, GLint64* param) {
+    TransformFeedback* xfb = queriedTransformFeedback(ctx, id, "glGetTransformFeedbacki64_v");
+    if (!xfb || !param) return;
+    if (pname != GL_TRANSFORM_FEEDBACK_BUFFER_START && pname != GL_TRANSFORM_FEEDBACK_BUFFER_SIZE)
+        return ctx.setError(GL_INVALID_ENUM);
+    if (index >= static_cast<GLuint>(TransformFeedback::kMaxBuffers)) return ctx.setError(GL_INVALID_VALUE);
+    const TransformFeedback::Binding& b = xfb->buffers[index];
+    *param = pname == GL_TRANSFORM_FEEDBACK_BUFFER_START ? static_cast<GLint64>(b.offset) : static_cast<GLint64>(b.size);
+}
 
 void DrawTransformFeedback(Context& ctx, GLenum mode, GLuint id) {
     if (!transformFeedback2(ctx, "glDrawTransformFeedback")) return;
