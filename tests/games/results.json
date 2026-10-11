@@ -1,7 +1,7 @@
 {
  "path": "new",
- "commit": "efa7879",
- "date": "2026-10-10",
+ "commit": "1354a5a-dirty",
+ "date": "2026-10-11",
  "threshold": 8,
  "entries": [
   {
@@ -38,6 +38,20 @@
    "status": "PASS",
    "worst_fraction": 0.0,
    "min_psnr_db": 99.5
+  },
+  {
+   "name": "scene4x-core41",
+   "tier": "A",
+   "status": "PASS",
+   "worst_fraction": 5.6e-05,
+   "min_psnr_db": 54.3
+  },
+  {
+   "name": "scene4x-core42",
+   "tier": "B",
+   "status": "PASS",
+   "worst_fraction": 5.6e-05,
+   "min_psnr_db": 54.3
   },
   {
    "name": "legacy-gl21",
