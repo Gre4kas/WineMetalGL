@@ -70,6 +70,9 @@ generated from a committed result file.
 Also: the [game corpus](docs/games.md) results, [releasing](docs/release.md),
 and the [design decisions](docs/decisions/).
 
+Contributing: [CONTRIBUTING.md](CONTRIBUTING.md). Security reports:
+[SECURITY.md](SECURITY.md). Code of conduct: [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
+
 ## License
 
 Copyright (c) 2026 MetalSharp. WineMetalGL is licensed under the GNU Lesser

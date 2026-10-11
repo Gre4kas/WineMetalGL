@@ -1,0 +1,20 @@
+name: Feature request
+description: An OpenGL feature, extension or version that programs need
+labels: [enhancement]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What is needed
+      description: The GL version, extension or behaviour, and what it is for.
+    validations:
+      required: true
+  - type: textarea
+    id: programs
+    attributes:
+      label: Programs that need it
+      description: Games or applications that do not run, or run worse, without it.
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else

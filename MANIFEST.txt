@@ -1,8 +1,18 @@
+.github/CODEOWNERS
+.github/dependabot.yml
+.github/ISSUE_TEMPLATE/bug-report.yml
+.github/ISSUE_TEMPLATE/config.yml
+.github/ISSUE_TEMPLATE/feature-request.yml
+.github/ISSUE_TEMPLATE/game-compatibility.yml
+.github/PULL_REQUEST_TEMPLATE.md
 .github/workflows/build.yml
+.github/workflows/codeql.yml
 .github/workflows/gl33-conformance.yml
 .gitignore
 CMakeLists.txt
 CMakePresets.json
+CODE_OF_CONDUCT.md
+CONTRIBUTING.md
 DEPENDENCIES.md
 docs/api-coverage.json
 docs/building.md
@@ -41,6 +51,7 @@ scripts/traces/replay.py
 scripts/update-checksums.sh
 scripts/verify-release.sh
 scripts/verify-source.sh
+SECURITY.md
 SHA256SUMS
 src/core/api/blit.mm
 src/core/api/buffer.mm
