@@ -1238,6 +1238,7 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
         result.geometryInputType = geometry->inputType;
         result.geometryOutputType = geometry->outputType;
         result.geometryVerticesOut = geometry->maxVertices;
+        result.geometryInvocations = geometry->invocations;
     }
 
     // Program-wide interface, built from the first stage that declares each resource.
@@ -1658,6 +1659,7 @@ bool buildGeometryEmulation(const LinkInput& input, const GeometryShaderInfo& in
     g.outputType = info.outputType;
     g.verticesIn = info.verticesIn;
     g.maxVertices = info.maxVertices;
+    g.invocations = info.invocations;
     g.inputStride = captureLayout.xfbStride[0];
     g.outputStride = sources.outputStride;
     g.outputs = sources.fields;

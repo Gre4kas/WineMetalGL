@@ -201,8 +201,8 @@ std::vector<uint8_t> packTail(const ContextState& st, const Mat4& mvInv) {
     // wmgl_AlphaTest: function code (GL_NEVER..GL_ALWAYS -> 1..8, 0 = disabled) and reference.
     b.vec4(f.alphaTest ? static_cast<float>(f.alphaFunc - GL_NEVER + 1) : 0.0f, f.alphaRef, 0, 0);
     // wmgl_LineParams: half the line width and half the viewport size (window pixels per NDC unit).
-    b.vec4(std::clamp(st.lineWidth, 1.0f, kMaxLineWidth) * 0.5f, std::max(1, st.viewport[2]) * 0.5f,
-           std::max(1, st.viewport[3]) * 0.5f, 0);
+    b.vec4(std::clamp(st.lineWidth, 1.0f, kMaxLineWidth) * 0.5f, std::max(1.0f, st.viewports[0][2]) * 0.5f,
+           std::max(1.0f, st.viewports[0][3]) * 0.5f, 0);
     // wmgl_Stipple: 32 rows of 32 bits.
     for (int i = 0; i < 32; i += 4) {
         float row[4];
@@ -719,7 +719,7 @@ const std::vector<uint8_t>& fixedFunctionBlock(Context& ctx, uint64_t& generatio
     const ContextState& st = ctx.state;
     if (!cache.generation || cache.version != st.fixed.version || cache.pointSize != st.pointSize ||
         cache.fade != st.pointFadeThresholdSize || cache.lineWidth != st.lineWidth ||
-        !std::equal(st.viewport, st.viewport + 4, cache.viewport)) {
+        !std::equal(st.viewports[0], st.viewports[0] + 4, cache.viewport)) {
         if (cache.data.size() < kTailOffset) cache.data.assign(kTailOffset, 0);
         packMatrices(st.fixed, cache);
         const std::vector<uint8_t> tail = packTail(st, cache.modelviewInverse);
@@ -729,7 +729,7 @@ const std::vector<uint8_t>& fixedFunctionBlock(Context& ctx, uint64_t& generatio
         cache.pointSize = st.pointSize;
         cache.fade = st.pointFadeThresholdSize;
         cache.lineWidth = st.lineWidth;
-        std::copy(st.viewport, st.viewport + 4, cache.viewport);
+        std::copy(st.viewports[0], st.viewports[0] + 4, cache.viewport);
         cache.generation = ++generations;
     }
     generation = cache.generation;

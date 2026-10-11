@@ -212,6 +212,10 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
     case GL_MAX_GEOMETRY_OUTPUT_COMPONENTS: out = ints({128}); return true;
     case GL_MAX_FRAGMENT_INPUT_COMPONENTS: out = ints({128}); return true;
     case GL_MAX_GEOMETRY_OUTPUT_VERTICES: out = ints({256}); return true;
+    case GL_MAX_GEOMETRY_SHADER_INVOCATIONS:
+        if (ctx.version() < 40 && !ctx.hasExtension("GL_ARB_gpu_shader5")) return false;
+        out = ints({32});
+        return true;
     // --- tessellation (GL 4.0)
     case GL_PATCH_VERTICES: case GL_PATCH_DEFAULT_OUTER_LEVEL: case GL_PATCH_DEFAULT_INNER_LEVEL:
     case GL_MAX_PATCH_VERTICES: case GL_MAX_TESS_GEN_LEVEL: case GL_MAX_TESS_CONTROL_UNIFORM_COMPONENTS:
@@ -321,9 +325,22 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
     }
     case GL_MAX_TEXTURE_MAX_ANISOTROPY: out = floats({16.0}); return true;
     // --- rasterization and fragment state
-    case GL_VIEWPORT: out = ints({s.viewport[0], s.viewport[1], s.viewport[2], s.viewport[3]}); return true;
-    case GL_DEPTH_RANGE: out = floats({s.depthRange[0], s.depthRange[1]}, Value::NormFloat); return true;
-    case GL_SCISSOR_BOX: out = ints({s.scissor[0], s.scissor[1], s.scissor[2], s.scissor[3]}); return true;
+    case GL_VIEWPORT: out = floats({s.viewports[0][0], s.viewports[0][1], s.viewports[0][2], s.viewports[0][3]}); return true;
+    // GL 4.1 viewport arrays.
+    case GL_MAX_VIEWPORTS: case GL_VIEWPORT_SUBPIXEL_BITS: case GL_VIEWPORT_BOUNDS_RANGE: case GL_LAYER_PROVOKING_VERTEX:
+    case GL_VIEWPORT_INDEX_PROVOKING_VERTEX:
+        if (ctx.version() < 41 && !ctx.hasExtension("GL_ARB_viewport_array")) return false;
+        switch (pname) {
+        case GL_MAX_VIEWPORTS: out = ints({ContextState::kMaxViewports}); break;
+        case GL_VIEWPORT_SUBPIXEL_BITS: out = ints({8}); break;
+        case GL_VIEWPORT_BOUNDS_RANGE: out = floats({-32768.0, 32767.0}); break;
+        // Metal takes the layer and viewport of a primitive from one of its
+        // vertices without specifying which.
+        default: out = ints({GL_UNDEFINED_VERTEX}); break;
+        }
+        return true;
+    case GL_DEPTH_RANGE: out = floats({s.depthRanges[0][0], s.depthRanges[0][1]}, Value::NormFloat); return true;
+    case GL_SCISSOR_BOX: out = ints({s.scissors[0][0], s.scissors[0][1], s.scissors[0][2], s.scissors[0][3]}); return true;
     case GL_COLOR_CLEAR_VALUE:
         out = floats({s.clearColor[0], s.clearColor[1], s.clearColor[2], s.clearColor[3]}, Value::NormFloat);
         return true;
@@ -547,6 +564,21 @@ bool getIndexed(Context& ctx, GLenum pname, GLuint index, Value& out, bool& badI
                     : pname == GL_BLEND_EQUATION_RGB ? b.equationRGB : b.equationAlpha});
         return true;
     }
+    case GL_VIEWPORT: case GL_DEPTH_RANGE: case GL_SCISSOR_BOX: case GL_SCISSOR_TEST:
+        if (ctx.version() < 41 && !ctx.hasExtension("GL_ARB_viewport_array")) return false;
+        if (index >= static_cast<GLuint>(ContextState::kMaxViewports)) { badIndex = true; return true; }
+        if (pname == GL_VIEWPORT) {
+            const GLfloat* v = s.viewports[index];
+            out = floats({v[0], v[1], v[2], v[3]});
+        } else if (pname == GL_DEPTH_RANGE) {
+            out = floats({s.depthRanges[index][0], s.depthRanges[index][1]}, Value::NormFloat);
+        } else if (pname == GL_SCISSOR_BOX) {
+            const GLint* b = s.scissors[index];
+            out = ints({b[0], b[1], b[2], b[3]});
+        } else {
+            out = bools({((s.scissorTests >> index) & 1) != 0});
+        }
+        return true;
     case GL_SAMPLE_MASK_VALUE:
         if (index >= 1) { badIndex = true; return true; }
         out = uints({s.sampleMaskValue});

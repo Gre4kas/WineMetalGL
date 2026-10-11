@@ -157,6 +157,7 @@ struct GeometryEmulation {
     bool active = false;
     GLenum inputType = 0, outputType = 0;
     int verticesIn = 0, maxVertices = 0;
+    int invocations = 1;        // kernel threads per input primitive (gl_InvocationID)
     uint32_t inputStride = 0;   // 32-bit words per captured vertex
     uint32_t outputStride = 0;  // 32-bit words per emitted vertex
     struct Field {

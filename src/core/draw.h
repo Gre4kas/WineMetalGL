@@ -178,7 +178,7 @@ private:
     } ffBlock_;
     PipelineKey lastKey_{};
     TargetFormats lastFormats_{};
-    MTLScissorRect lastScissor_{};
+    MTLScissorRect lastScissors_[16] = {};  // ContextState::kMaxViewports
 };
 
 }  // namespace wmgl

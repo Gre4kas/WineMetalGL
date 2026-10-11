@@ -141,7 +141,7 @@ public:
     struct FixedFunctionBlockCache {
         uint64_t version = 0, generation = 0;
         float pointSize = -1, fade = -1, lineWidth = -1;
-        GLint viewport[4] = {};
+        GLfloat viewport[4] = {};
         std::vector<uint8_t> data;
         // The matrices the block's matrix section was computed from.
         bool matricesValid = false;

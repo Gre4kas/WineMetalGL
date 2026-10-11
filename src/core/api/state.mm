@@ -48,7 +48,7 @@ bool setCapability(Context& ctx, GLenum cap, bool on) {
     case GL_CULL_FACE: s.cullFace = on; ctx.markDirty(kDirtyRaster); return true;
     case GL_DEPTH_TEST: s.depthTest = on; ctx.markDirty(kDirtyDepthStencil); return true;
     case GL_STENCIL_TEST: s.stencilTest = on; ctx.markDirty(kDirtyDepthStencil); return true;
-    case GL_SCISSOR_TEST: s.scissorTest = on; ctx.markDirty(kDirtyScissor); return true;
+    case GL_SCISSOR_TEST: s.scissorTests = on ? 0xffffu : 0u; ctx.markDirty(kDirtyScissor); return true;
     case GL_POLYGON_OFFSET_FILL: s.polygonOffsetFill = on; ctx.markDirty(kDirtyRaster); return true;
     case GL_POLYGON_OFFSET_LINE: s.polygonOffsetLine = on; ctx.markDirty(kDirtyRaster); return true;
     case GL_POLYGON_OFFSET_POINT: s.polygonOffsetPoint = on; ctx.markDirty(kDirtyRaster); return true;
@@ -96,7 +96,7 @@ bool getCapability(Context& ctx, GLenum cap, bool& value) {
     case GL_CULL_FACE: value = s.cullFace; return true;
     case GL_DEPTH_TEST: value = s.depthTest; return true;
     case GL_STENCIL_TEST: value = s.stencilTest; return true;
-    case GL_SCISSOR_TEST: value = s.scissorTest; return true;
+    case GL_SCISSOR_TEST: value = (s.scissorTests & 1u); return true;
     case GL_POLYGON_OFFSET_FILL: value = s.polygonOffsetFill; return true;
     case GL_POLYGON_OFFSET_LINE: value = s.polygonOffsetLine; return true;
     case GL_POLYGON_OFFSET_POINT: value = s.polygonOffsetPoint; return true;
@@ -160,7 +160,12 @@ void Enablei(Context& ctx, GLenum target, GLuint index) {
         ctx.markDirty(kDirtyBlend);
         return;
     }
-    if (target == GL_SCISSOR_TEST && index == 0) return Enable(ctx, target);
+    if (target == GL_SCISSOR_TEST) {
+        if (index >= ContextState::kMaxViewports) return ctx.setError(GL_INVALID_VALUE);
+        ctx.state.scissorTests |= 1u << index;
+        ctx.markDirty(kDirtyScissor);
+        return;
+    }
     ctx.setError(GL_INVALID_ENUM);
 }
 
@@ -171,7 +176,12 @@ void Disablei(Context& ctx, GLenum target, GLuint index) {
         ctx.markDirty(kDirtyBlend);
         return;
     }
-    if (target == GL_SCISSOR_TEST && index == 0) return Disable(ctx, target);
+    if (target == GL_SCISSOR_TEST) {
+        if (index >= ContextState::kMaxViewports) return ctx.setError(GL_INVALID_VALUE);
+        ctx.state.scissorTests &= ~(1u << index);
+        ctx.markDirty(kDirtyScissor);
+        return;
+    }
     ctx.setError(GL_INVALID_ENUM);
 }
 
@@ -183,36 +193,131 @@ GLboolean IsEnabledi(Context& ctx, GLenum target, GLuint index) {
         }
         return (ctx.state.blendEnable >> index) & 1 ? GL_TRUE : GL_FALSE;
     }
-    if (target == GL_SCISSOR_TEST && index == 0) return IsEnabled(ctx, target);
+    if (target == GL_SCISSOR_TEST) {
+        if (index >= ContextState::kMaxViewports) {
+            ctx.setError(GL_INVALID_VALUE);
+            return GL_FALSE;
+        }
+        return (ctx.state.scissorTests >> index) & 1 ? GL_TRUE : GL_FALSE;
+    }
     ctx.setError(GL_INVALID_ENUM);
     return GL_FALSE;
 }
 
+// --- viewports, depth ranges and scissors (GL 4.1 viewport arrays; the
+// non-indexed commands set every index).
+
+namespace {
+
+constexpr GLfloat kMaxViewportDim = 16384.0f, kViewportBoundsMin = -32768.0f, kViewportBoundsMax = 32767.0f;
+
+void setViewport(Context& ctx, GLuint index, GLfloat x, GLfloat y, GLfloat w, GLfloat h) {
+    GLfloat* v = ctx.state.viewports[index];
+    v[0] = std::clamp(x, kViewportBoundsMin, kViewportBoundsMax);
+    v[1] = std::clamp(y, kViewportBoundsMin, kViewportBoundsMax);
+    v[2] = std::min(w, kMaxViewportDim);
+    v[3] = std::min(h, kMaxViewportDim);
+}
+
+bool viewportArrays(Context& ctx, const char* command) {
+    if (ctx.version() >= 41 || ctx.hasExtension("GL_ARB_viewport_array")) return true;
+    ctx.unimplemented(command);
+    return false;
+}
+
+}  // namespace
+
 void Viewport(Context& ctx, GLint x, GLint y, GLsizei width, GLsizei height) {
     if (width < 0 || height < 0) return ctx.setError(GL_INVALID_VALUE);
-    const GLsizei maxDim = 16384;
-    ctx.state.viewport[0] = x;
-    ctx.state.viewport[1] = y;
-    ctx.state.viewport[2] = std::min(width, maxDim);
-    ctx.state.viewport[3] = std::min(height, maxDim);
+    for (GLuint i = 0; i < ContextState::kMaxViewports; ++i)
+        setViewport(ctx, i, static_cast<GLfloat>(x), static_cast<GLfloat>(y), static_cast<GLfloat>(width), static_cast<GLfloat>(height));
     ctx.markDirty(kDirtyViewport);
 }
 
+void ViewportArrayv(Context& ctx, GLuint first, GLsizei count, const GLfloat* v) {
+    if (!viewportArrays(ctx, "glViewportArrayv")) return;
+    if (count < 0 || first + static_cast<uint64_t>(count) > ContextState::kMaxViewports) return ctx.setError(GL_INVALID_VALUE);
+    for (GLsizei i = 0; i < count; ++i)
+        if (v[i * 4 + 2] < 0 || v[i * 4 + 3] < 0) return ctx.setError(GL_INVALID_VALUE);
+    for (GLsizei i = 0; i < count; ++i) setViewport(ctx, first + static_cast<GLuint>(i), v[i * 4], v[i * 4 + 1], v[i * 4 + 2], v[i * 4 + 3]);
+    ctx.markDirty(kDirtyViewport);
+}
+
+void ViewportIndexedf(Context& ctx, GLuint index, GLfloat x, GLfloat y, GLfloat w, GLfloat h) {
+    if (!viewportArrays(ctx, "glViewportIndexedf")) return;
+    if (index >= ContextState::kMaxViewports || w < 0 || h < 0) return ctx.setError(GL_INVALID_VALUE);
+    setViewport(ctx, index, x, y, w, h);
+    ctx.markDirty(kDirtyViewport);
+}
+
+void ViewportIndexedfv(Context& ctx, GLuint index, const GLfloat* v) {
+    if (!viewportArrays(ctx, "glViewportIndexedfv")) return;
+    ViewportIndexedf(ctx, index, v[0], v[1], v[2], v[3]);
+}
+
 void DepthRange(Context& ctx, GLdouble n, GLdouble f) {
-    ctx.state.depthRange[0] = std::clamp(n, 0.0, 1.0);
-    ctx.state.depthRange[1] = std::clamp(f, 0.0, 1.0);
+    for (auto& range : ctx.state.depthRanges) {
+        range[0] = std::clamp(n, 0.0, 1.0);
+        range[1] = std::clamp(f, 0.0, 1.0);
+    }
     ctx.markDirty(kDirtyViewport);
 }
 
 void DepthRangef(Context& ctx, GLfloat n, GLfloat f) { DepthRange(ctx, n, f); }
 
+void DepthRangeArrayv(Context& ctx, GLuint first, GLsizei count, const GLdouble* v) {
+    if (!viewportArrays(ctx, "glDepthRangeArrayv")) return;
+    if (count < 0 || first + static_cast<uint64_t>(count) > ContextState::kMaxViewports) return ctx.setError(GL_INVALID_VALUE);
+    for (GLsizei i = 0; i < count; ++i) {
+        ctx.state.depthRanges[first + static_cast<GLuint>(i)][0] = std::clamp(v[i * 2], 0.0, 1.0);
+        ctx.state.depthRanges[first + static_cast<GLuint>(i)][1] = std::clamp(v[i * 2 + 1], 0.0, 1.0);
+    }
+    ctx.markDirty(kDirtyViewport);
+}
+
+void DepthRangeIndexed(Context& ctx, GLuint index, GLdouble n, GLdouble f) {
+    if (!viewportArrays(ctx, "glDepthRangeIndexed")) return;
+    if (index >= ContextState::kMaxViewports) return ctx.setError(GL_INVALID_VALUE);
+    ctx.state.depthRanges[index][0] = std::clamp(n, 0.0, 1.0);
+    ctx.state.depthRanges[index][1] = std::clamp(f, 0.0, 1.0);
+    ctx.markDirty(kDirtyViewport);
+}
+
 void Scissor(Context& ctx, GLint x, GLint y, GLsizei width, GLsizei height) {
     if (width < 0 || height < 0) return ctx.setError(GL_INVALID_VALUE);
-    ctx.state.scissor[0] = x;
-    ctx.state.scissor[1] = y;
-    ctx.state.scissor[2] = width;
-    ctx.state.scissor[3] = height;
+    for (auto& box : ctx.state.scissors) {
+        box[0] = x;
+        box[1] = y;
+        box[2] = width;
+        box[3] = height;
+    }
     ctx.markDirty(kDirtyScissor);
+}
+
+void ScissorArrayv(Context& ctx, GLuint first, GLsizei count, const GLint* v) {
+    if (!viewportArrays(ctx, "glScissorArrayv")) return;
+    if (count < 0 || first + static_cast<uint64_t>(count) > ContextState::kMaxViewports) return ctx.setError(GL_INVALID_VALUE);
+    for (GLsizei i = 0; i < count; ++i)
+        if (v[i * 4 + 2] < 0 || v[i * 4 + 3] < 0) return ctx.setError(GL_INVALID_VALUE);
+    for (GLsizei i = 0; i < count; ++i)
+        for (int c = 0; c < 4; ++c) ctx.state.scissors[first + static_cast<GLuint>(i)][c] = v[i * 4 + c];
+    ctx.markDirty(kDirtyScissor);
+}
+
+void ScissorIndexed(Context& ctx, GLuint index, GLint left, GLint bottom, GLsizei width, GLsizei height) {
+    if (!viewportArrays(ctx, "glScissorIndexed")) return;
+    if (index >= ContextState::kMaxViewports || width < 0 || height < 0) return ctx.setError(GL_INVALID_VALUE);
+    GLint* box = ctx.state.scissors[index];
+    box[0] = left;
+    box[1] = bottom;
+    box[2] = width;
+    box[3] = height;
+    ctx.markDirty(kDirtyScissor);
+}
+
+void ScissorIndexedv(Context& ctx, GLuint index, const GLint* v) {
+    if (!viewportArrays(ctx, "glScissorIndexedv")) return;
+    ScissorIndexed(ctx, index, v[0], v[1], v[2], v[3]);
 }
 
 void ClearColor(Context& ctx, GLfloat r, GLfloat g, GLfloat b, GLfloat a) {

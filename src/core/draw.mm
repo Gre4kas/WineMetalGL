@@ -85,7 +85,7 @@ bool attachmentTarget(Context& ctx, const Attachment& a, RenderTargetDesc::Targe
             out.texture = view;
         }
         out.level = static_cast<uint32_t>(a.level);
-        out.slice = tex->target == GL_TEXTURE_CUBE_MAP ? static_cast<uint32_t>(face) : static_cast<uint32_t>(a.layer);
+        out.slice = a.layered ? 0u : tex->target == GL_TEXTURE_CUBE_MAP ? static_cast<uint32_t>(face) : static_cast<uint32_t>(a.layer);
         width = static_cast<uint32_t>(image.width);
         // A 1D array image's height is its layer count; each layer is one row.
         height = tex->target == GL_TEXTURE_1D_ARRAY ? 1u : static_cast<uint32_t>(image.height);
@@ -95,6 +95,15 @@ bool attachmentTarget(Context& ctx, const Attachment& a, RenderTargetDesc::Targe
         return true;
     }
     return false;
+}
+
+// Layers of a layered attachment (glFramebufferTexture on an array, cube or
+// 3D texture): the render target array length it gives a pass.
+uint32_t attachmentLayers(const Attachment& a) {
+    const Texture* tex = a.texture.get();
+    if (a.type != GL_TEXTURE || !a.layered || !tex) return 0;
+    if (tex->target == GL_TEXTURE_CUBE_MAP) return 6;
+    return static_cast<uint32_t>(std::max(1, tex->image(0, a.level).depth));
 }
 
 }  // namespace
@@ -121,7 +130,7 @@ bool DrawState::drawTarget(RenderTargetDesc& target, TargetFormats& formats, boo
         }
         return true;
     }
-    uint32_t width = UINT32_MAX, height = UINT32_MAX, samples = 0;
+    uint32_t width = UINT32_MAX, height = UINT32_MAX, samples = 0, layers = UINT32_MAX;
     bool any = false;
     for (int i = 0; i < Framebuffer::kMaxColor; ++i) {
         const GLenum buffer = fb->drawBuffers[i];
@@ -137,6 +146,7 @@ bool DrawState::drawTarget(RenderTargetDesc& target, TargetFormats& formats, boo
             if (reportErrors) ctx_.setError(GL_INVALID_FRAMEBUFFER_OPERATION);
             return false;
         }
+        if (const uint32_t n = attachmentLayers(a)) layers = std::min(layers, n);
         formats.color[i] = format;
         formats.alphaIsOne[i] = info && info->storedAlphaIsOne;
         formats.integer[i] = info && info->isInteger();
@@ -157,6 +167,7 @@ bool DrawState::drawTarget(RenderTargetDesc& target, TargetFormats& formats, boo
             if (reportErrors) ctx_.setError(GL_INVALID_FRAMEBUFFER_OPERATION);
             return false;
         }
+        if (const uint32_t n = attachmentLayers(a)) layers = std::min(layers, n);
         if (which == 0) formats.depth = format;
         else formats.stencil = format;
         width = std::min(width, w);
@@ -182,6 +193,9 @@ bool DrawState::drawTarget(RenderTargetDesc& target, TargetFormats& formats, boo
     target.width = width;
     target.height = height;
     target.samples = std::max(1u, samples);
+    // A layered framebuffer (every attachment is layered, checked by
+    // completeness) renders to the layers its attachments have in common.
+    if (layers != UINT32_MAX) target.layers = layers;
     return true;
 }
 
@@ -824,14 +838,17 @@ void DrawState::bindTextures(id<MTLRenderCommandEncoder> encoder, LinkedProgram&
 
 void DrawState::applyDynamicState(id<MTLRenderCommandEncoder> encoder, const RenderTargetDesc& target) {
     const ContextState& st = ctx_.state;
-    MTLViewport viewport;
-    viewport.originX = st.viewport[0];
-    viewport.originY = st.viewport[1];
-    viewport.width = std::max(0, st.viewport[2]);
-    viewport.height = std::max(0, st.viewport[3]);
-    viewport.znear = st.depthRange[0];
-    viewport.zfar = st.depthRange[1];
-    [encoder setViewport:viewport];
+    // Every viewport of GL 4.1's array: shaders select one with gl_ViewportIndex.
+    MTLViewport viewports[ContextState::kMaxViewports];
+    for (int i = 0; i < ContextState::kMaxViewports; ++i) {
+        viewports[i].originX = st.viewports[i][0];
+        viewports[i].originY = st.viewports[i][1];
+        viewports[i].width = std::max(0.0f, st.viewports[i][2]);
+        viewports[i].height = std::max(0.0f, st.viewports[i][3]);
+        viewports[i].znear = st.depthRanges[i][0];
+        viewports[i].zfar = st.depthRanges[i][1];
+    }
+    [encoder setViewports:viewports count:ContextState::kMaxViewports];
     // Cull / winding (the vertex stage flips Y, so GL's CCW is Metal's CW).
     MTLCullMode cull = MTLCullModeNone;
     if (st.cullFace) cull = st.cullFaceMode == GL_FRONT ? MTLCullModeFront : MTLCullModeBack;
@@ -862,21 +879,30 @@ id<MTLRenderCommandEncoder> DrawState::prepare(GLenum mode, MTLPrimitiveType& pr
     TargetFormats formats;
     if (!drawTarget(target, formats)) return nil;
     const ContextState& st = ctx_.state;
-    // Scissor: an empty rectangle draws nothing.
-    MTLScissorRect scissor = {0, 0, target.width, target.height};
-    if (st.scissorTest) {
-        const int64_t x0 = std::clamp<int64_t>(st.scissor[0], 0, target.width);
-        const int64_t y0 = std::clamp<int64_t>(st.scissor[1], 0, target.height);
-        const int64_t x1 = std::clamp<int64_t>(static_cast<int64_t>(st.scissor[0]) + std::max(0, st.scissor[2]), 0, target.width);
-        const int64_t y1 = std::clamp<int64_t>(static_cast<int64_t>(st.scissor[1]) + std::max(0, st.scissor[3]), 0, target.height);
-        if (x1 <= x0 || y1 <= y0) return nil;
-        scissor = {static_cast<NSUInteger>(x0), static_cast<NSUInteger>(y0), static_cast<NSUInteger>(x1 - x0),
-                   static_cast<NSUInteger>(y1 - y0)};
-    }
     if (st.cullFace && st.cullFaceMode == GL_FRONT_AND_BACK && topologyClass(mode) == MTLPrimitiveTopologyClassTriangle)
         return nil;
     LinkedProgram* program = executable();
     if (!program) return nil;
+    // Scissor rectangles of every viewport index (an empty one clips
+    // everything). Without gl_ViewportIndex only index 0 is used, and an
+    // empty rectangle there draws nothing.
+    for (int i = 0; i < ContextState::kMaxViewports; ++i) {
+        MTLScissorRect& scissor = lastScissors_[i];
+        scissor = {0, 0, target.width, target.height};
+        if (!((st.scissorTests >> i) & 1u)) continue;
+        const GLint* box = st.scissors[i];
+        const int64_t x0 = std::clamp<int64_t>(box[0], 0, target.width);
+        const int64_t y0 = std::clamp<int64_t>(box[1], 0, target.height);
+        const int64_t x1 = std::clamp<int64_t>(static_cast<int64_t>(box[0]) + std::max(0, box[2]), 0, target.width);
+        const int64_t y1 = std::clamp<int64_t>(static_cast<int64_t>(box[1]) + std::max(0, box[3]), 0, target.height);
+        if (x1 <= x0 || y1 <= y0) {
+            if (i == 0 && !program->writesViewportIndex()) return nil;
+            scissor = {0, 0, 0, 0};
+            continue;
+        }
+        scissor = {static_cast<NSUInteger>(x0), static_cast<NSUInteger>(y0), static_cast<NSUInteger>(x1 - x0),
+                   static_cast<NSUInteger>(y1 - y0)};
+    }
 
     id<MTLRenderCommandEncoder> encoder = ctx_.stream().render(target);
     if (ctx_.stream().passGeneration() != lastPassGeneration_) {
@@ -906,7 +932,9 @@ id<MTLRenderCommandEncoder> DrawState::prepare(GLenum mode, MTLPrimitiveType& pr
         }
     }
     key.rasterization = !st.rasterizerDiscard;
-    key.topologyClass = 0;
+    // Metal requires the input topology class when the vertex function
+    // writes the layer or viewport index; otherwise it stays unspecified.
+    key.topologyClass = program->writesLayerOrViewport() ? static_cast<uint8_t>(topologyClass(mode)) : 0;
     for (int i = 0; i < 8; ++i) key.colorFormats[i] = static_cast<uint16_t>(formats.color[i]);
     // GL_COLOR_LOGIC_OP replaces blending on unsigned normalized and integer
     // attachments; the fragment function applies the operation (framebuffer
@@ -935,7 +963,6 @@ id<MTLRenderCommandEncoder> DrawState::prepare(GLenum mode, MTLPrimitiveType& pr
     (void)primitive;
     lastKey_ = key;
     lastFormats_ = formats;
-    lastScissor_ = scissor;
     return encoder;
 }
 
@@ -1242,7 +1269,7 @@ void DrawState::bindDrawState(id<MTLRenderCommandEncoder> encoder, LinkedProgram
     }
     [encoder setDepthStencilState:ctx_.share().pipelines().depthStencil(ds)];
     applyDynamicState(encoder, target);
-    [encoder setScissorRect:lastScissor_];
+    [encoder setScissorRects:lastScissors_ count:ContextState::kMaxViewports];
     bindUniforms(encoder, program);
     bindTextures(encoder, program);
 }
@@ -1575,6 +1602,8 @@ void DrawState::drawGeometry(GLenum mode, const std::vector<uint32_t>& vertices,
     if (!primitives) return;
     const uint32_t copies = static_cast<uint32_t>(std::max(1, instances));
     const uint64_t total = static_cast<uint64_t>(primitives) * copies;
+    // Kernel threads: one per input primitive and invocation (GS instancing).
+    const uint64_t threads = total * static_cast<uint64_t>(std::max(1, g.invocations));
     const uint32_t maxV = static_cast<uint32_t>(g.maxVertices);
     id<MTLComputePipelineState> kernel = lp.geometryKernel();
     if (!kernel || !lp.geometryPassthrough()) return;
@@ -1594,8 +1623,8 @@ void DrawState::drawGeometry(GLenum mode, const std::vector<uint32_t>& vertices,
         return;
 
     // 2. The geometry shader: one thread per input primitive.
-    const size_t indexCount = total * 2 * maxV;
-    TransientAllocation output = transient_.allocate(total * maxV * g.outputStride * 4, serial, 16);
+    const size_t indexCount = threads * 2 * maxV;
+    TransientAllocation output = transient_.allocate(threads * maxV * g.outputStride * 4, serial, 16);
     TransientAllocation indices = transient_.allocate(indexCount * 4, serial, 16);
     id<MTLComputeCommandEncoder> compute = ctx_.stream().compute();
     [compute setComputePipelineState:kernel];
@@ -1606,7 +1635,7 @@ void DrawState::drawGeometry(GLenum mode, const std::vector<uint32_t>& vertices,
     [compute setBuffer:indices.buffer offset:indices.offset atIndex:shader::kSlotFirstXfbBuffer + 2];
     [compute setBytes:control length:sizeof(control) atIndex:shader::kSlotFirstXfbBuffer + 3];
     const NSUInteger width = std::min<NSUInteger>(64, kernel.maxTotalThreadsPerThreadgroup);
-    [compute dispatchThreads:MTLSizeMake(total, 1, 1) threadsPerThreadgroup:MTLSizeMake(width, 1, 1)];
+    [compute dispatchThreads:MTLSizeMake(threads, 1, 1) threadsPerThreadgroup:MTLSizeMake(width, 1, 1)];
     primitiveBase += primitives;
 
     // Flat-shaded strips with GL's last-vertex convention are drawn as lists
@@ -1617,16 +1646,16 @@ void DrawState::drawGeometry(GLenum mode, const std::vector<uint32_t>& vertices,
         ctx_.state.provokingVertex == GL_LAST_VERTEX_CONVENTION && lp.stage(Stage::Fragment).flatInputs) {
         if (id<MTLComputePipelineState> rotate = stripsProvokingLastKernel()) {
             const uint32_t perThread = (g.outputType == GL_LINE_STRIP ? 2u : 3u) * maxV;
-            lastListCount = static_cast<size_t>(total) * perThread;
+            lastListCount = static_cast<size_t>(threads) * perThread;
             lastList = transient_.allocate(lastListCount * 4, serial, 16);
             const uint32_t params[4] = {2 * maxV, perThread, g.outputType == GL_LINE_STRIP ? 0u : 1u,
-                                        static_cast<uint32_t>(total)};
+                                        static_cast<uint32_t>(threads)};
             [compute setComputePipelineState:rotate];
             [compute setBuffer:indices.buffer offset:indices.offset atIndex:0];
             [compute setBuffer:lastList.buffer offset:lastList.offset atIndex:1];
             [compute setBytes:params length:sizeof(params) atIndex:2];
             const NSUInteger rotateWidth = std::min<NSUInteger>(64, rotate.maxTotalThreadsPerThreadgroup);
-            [compute dispatchThreads:MTLSizeMake(total, 1, 1) threadsPerThreadgroup:MTLSizeMake(rotateWidth, 1, 1)];
+            [compute dispatchThreads:MTLSizeMake(threads, 1, 1) threadsPerThreadgroup:MTLSizeMake(rotateWidth, 1, 1)];
         }
     }
 
@@ -1644,7 +1673,7 @@ void DrawState::drawGeometry(GLenum mode, const std::vector<uint32_t>& vertices,
                 bindDrawState(encoder, lp);
                 [encoder setVertexBuffer:output.buffer offset:output.offset atIndex:shader::kSlotFirstXfbBuffer];
                 if (g.outputType == GL_POINTS)
-                    [encoder drawPrimitives:MTLPrimitiveTypePoint vertexStart:0 vertexCount:total * maxV];
+                    [encoder drawPrimitives:MTLPrimitiveTypePoint vertexStart:0 vertexCount:threads * maxV];
                 else if (lastList.buffer)
                     [encoder drawIndexedPrimitives:g.outputType == GL_LINE_STRIP ? MTLPrimitiveTypeLine : MTLPrimitiveTypeTriangle
                                         indexCount:lastListCount
@@ -1674,7 +1703,7 @@ void DrawState::drawGeometry(GLenum mode, const std::vector<uint32_t>& vertices,
     const auto* records = static_cast<const uint32_t*>(output.data);
     std::vector<uint32_t> emitted;  // record slots of independent primitives, in order
     std::vector<uint32_t> strip;
-    for (uint64_t t = 0; t < total; ++t) {
+    for (uint64_t t = 0; t < threads; ++t) {
         for (uint32_t k = 0; k <= 2 * maxV; ++k) {
             const uint32_t slot = k < 2 * maxV ? slots[t * 2 * maxV + k] : 0xffffffffu;
             if (slot != 0xffffffffu) {
@@ -1943,7 +1972,9 @@ void DrawState::clear(GLbitfield mask) {
     bool fullMasks = true;
     if (mask & GL_COLOR_BUFFER_BIT) {
         for (int i = 0; i < 8; ++i) {
-            if (!target.color[i].texture || formats.integer[i]) continue;
+            // GL leaves Clear of integer buffers undefined; like other
+            // drivers, the float clear colour is converted to the integer type.
+            if (!target.color[i].texture) continue;
             clear.colorMask |= 1u << i;
             float c[4] = {st.clearColor[0], st.clearColor[1], st.clearColor[2], formats.alphaIsOne[i] ? 1.0f : st.clearColor[3]};
             clear.color[i] = MTLClearColorMake(c[0], c[1], c[2], c[3]);
@@ -1963,10 +1994,10 @@ void DrawState::clear(GLbitfield mask) {
     }
     if (!clear.any()) return;
     bool fullRect = true;
-    if (st.scissorTest) {
-        fullRect = st.scissor[0] <= 0 && st.scissor[1] <= 0 &&
-                   static_cast<int64_t>(st.scissor[0]) + st.scissor[2] >= static_cast<int64_t>(target.width) &&
-                   static_cast<int64_t>(st.scissor[1]) + st.scissor[3] >= static_cast<int64_t>(target.height);
+    if ((st.scissorTests & 1u)) {
+        fullRect = st.scissors[0][0] <= 0 && st.scissors[0][1] <= 0 &&
+                   static_cast<int64_t>(st.scissors[0][0]) + st.scissors[0][2] >= static_cast<int64_t>(target.width) &&
+                   static_cast<int64_t>(st.scissors[0][1]) + st.scissors[0][3] >= static_cast<int64_t>(target.height);
     }
     if (fullMasks && fullRect && ctx_.stream().clearWithLoadAction(target, clear)) return;
     clearWithDraw(target, formats, clear);
@@ -1976,20 +2007,27 @@ namespace {
 
 // Clear pipelines: the fragment shader's outputs are typed per attachment
 // (float, int or uint) to match the pass; values arrive as raw 32-bit words.
+// `layered`: one instance per layer of a layered framebuffer.
 id<MTLRenderPipelineState> clearPipeline(const TargetFormats& formats, const uint8_t writeMasks[8], uint32_t samples,
-                                         const char signature[9]) {
+                                         const char signature[9], bool layered) {
     static std::mutex mutex;
     static std::unordered_map<std::string, id<MTLRenderPipelineState>> cache;
     std::string key(signature, 8);
+    key += layered ? "L" : "-";
     for (int i = 0; i < 8; ++i) key += std::to_string(formats.color[i]) + ":" + std::to_string(writeMasks[i]) + ",";
     key += std::to_string(formats.depth) + "," + std::to_string(formats.stencil) + "," + std::to_string(samples);
     std::lock_guard<std::mutex> lock(mutex);
     auto it = cache.find(key);
     if (it != cache.end()) return it->second;
-    std::string source = "#include <metal_stdlib>\nusing namespace metal;\n"
-                         "struct V { float4 position [[position]]; };\n"
-                         "vertex V clear_vs(uint vid [[vertex_id]], constant float4& depth [[buffer(0)]]) {\n"
-                         "  float2 p = float2((vid << 1) & 2, vid & 2); V out; out.position = float4(p * 2.0 - 1.0, depth.x, 1.0); return out; }\n";
+    std::string source = layered ? "#include <metal_stdlib>\nusing namespace metal;\n"
+                                   "struct V { float4 position [[position]]; uint layer [[render_target_array_index]]; };\n"
+                                   "vertex V clear_vs(uint vid [[vertex_id]], uint iid [[instance_id]], constant float4& depth [[buffer(0)]]) {\n"
+                                   "  float2 p = float2((vid << 1) & 2, vid & 2); V out; out.position = float4(p * 2.0 - 1.0, depth.x, 1.0);\n"
+                                   "  out.layer = iid; return out; }\n"
+                                 : "#include <metal_stdlib>\nusing namespace metal;\n"
+                                   "struct V { float4 position [[position]]; };\n"
+                                   "vertex V clear_vs(uint vid [[vertex_id]], constant float4& depth [[buffer(0)]]) {\n"
+                                   "  float2 p = float2((vid << 1) & 2, vid & 2); V out; out.position = float4(p * 2.0 - 1.0, depth.x, 1.0); return out; }\n";
     std::string fields, body;
     for (int i = 0; i < 8; ++i) {
         if (signature[i] == '-') continue;
@@ -2017,6 +2055,7 @@ id<MTLRenderPipelineState> clearPipeline(const TargetFormats& formats, const uin
     desc.vertexFunction = [library newFunctionWithName:@"clear_vs"];
     desc.fragmentFunction = [library newFunctionWithName:@"clear_fs"];
     desc.rasterSampleCount = samples;
+    if (layered) desc.inputPrimitiveTopology = MTLPrimitiveTopologyClassTriangle;
     for (int i = 0; i < 8; ++i) {
         desc.colorAttachments[i].pixelFormat = formats.color[i];
         desc.colorAttachments[i].writeMask = writeMasks[i];
@@ -2033,11 +2072,11 @@ id<MTLRenderPipelineState> clearPipeline(const TargetFormats& formats, const uin
 void DrawState::clearWithDraw(const RenderTargetDesc& target, const TargetFormats& formats, const PendingClear& clear) {
     const ContextState& st = ctx_.state;
     MTLScissorRect scissor = {0, 0, target.width, target.height};
-    if (st.scissorTest) {
-        const int64_t x0 = std::clamp<int64_t>(st.scissor[0], 0, target.width);
-        const int64_t y0 = std::clamp<int64_t>(st.scissor[1], 0, target.height);
-        const int64_t x1 = std::clamp<int64_t>(static_cast<int64_t>(st.scissor[0]) + std::max(0, st.scissor[2]), 0, target.width);
-        const int64_t y1 = std::clamp<int64_t>(static_cast<int64_t>(st.scissor[1]) + std::max(0, st.scissor[3]), 0, target.height);
+    if ((st.scissorTests & 1u)) {
+        const int64_t x0 = std::clamp<int64_t>(st.scissors[0][0], 0, target.width);
+        const int64_t y0 = std::clamp<int64_t>(st.scissors[0][1], 0, target.height);
+        const int64_t x1 = std::clamp<int64_t>(static_cast<int64_t>(st.scissors[0][0]) + std::max(0, st.scissors[0][2]), 0, target.width);
+        const int64_t y1 = std::clamp<int64_t>(static_cast<int64_t>(st.scissors[0][1]) + std::max(0, st.scissors[0][3]), 0, target.height);
         if (x1 <= x0 || y1 <= y0) return;
         scissor = {static_cast<NSUInteger>(x0), static_cast<NSUInteger>(y0), static_cast<NSUInteger>(x1 - x0),
                    static_cast<NSUInteger>(y1 - y0)};
@@ -2073,7 +2112,7 @@ void DrawState::clearWithDraw(const RenderTargetDesc& target, const TargetFormat
                                                         (m[2] ? MTLColorWriteMaskBlue : 0) |
                                                         (m[3] && !formats.alphaIsOne[i] ? MTLColorWriteMaskAlpha : 0));
     }
-    id<MTLRenderPipelineState> pipeline = clearPipeline(formats, writeMasks, target.samples, signature);
+    id<MTLRenderPipelineState> pipeline = clearPipeline(formats, writeMasks, target.samples, signature, target.layers > 0);
     if (!pipeline) return;
     id<MTLRenderCommandEncoder> encoder = ctx_.stream().render(target);
     queriesSuspendVisibility(ctx_, encoder);  // clears do not count towards occlusion queries
@@ -2103,7 +2142,8 @@ void DrawState::clearWithDraw(const RenderTargetDesc& target, const TargetFormat
     const float depth[4] = {static_cast<float>(clear.depthValue), 0, 0, 0};
     [encoder setVertexBytes:depth length:sizeof(depth) atIndex:0];
     [encoder setFragmentBytes:values length:sizeof(values) atIndex:0];
-    [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+    // A layered framebuffer clears every layer (GL 4.x section 9.8).
+    [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3 instanceCount:std::max(1u, target.layers)];
     ctx_.stream().noteDraw();
 }
 
@@ -2135,10 +2175,10 @@ void DrawState::clearBuffer(GLenum buffer, GLint drawbuffer, const double color[
     }
     if (!clear.any()) return;
     bool fullRect = true;
-    if (st.scissorTest)
-        fullRect = st.scissor[0] <= 0 && st.scissor[1] <= 0 &&
-                   static_cast<int64_t>(st.scissor[0]) + st.scissor[2] >= static_cast<int64_t>(target.width) &&
-                   static_cast<int64_t>(st.scissor[1]) + st.scissor[3] >= static_cast<int64_t>(target.height);
+    if ((st.scissorTests & 1u))
+        fullRect = st.scissors[0][0] <= 0 && st.scissors[0][1] <= 0 &&
+                   static_cast<int64_t>(st.scissors[0][0]) + st.scissors[0][2] >= static_cast<int64_t>(target.width) &&
+                   static_cast<int64_t>(st.scissors[0][1]) + st.scissors[0][3] >= static_cast<int64_t>(target.height);
     if (fullMasks && fullRect && ctx_.stream().clearWithLoadAction(target, clear)) return;
     clearWithDraw(target, formats, clear);
 }

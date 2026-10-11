@@ -30,9 +30,12 @@ id<MTLRenderPipelineState> PipelineCache::render(const PipelineKey& key, LinkedP
     }
     stats::count(&stats::Frame::pipelineMisses);
     stats::Timer timer(&stats::Frame::pipelineNanos);
-    id<MTLFunction> vertex = key.geometryPass    ? program.geometryPassthrough()
-                             : key.rasterization ? program.function(shader::Stage::Vertex)
-                                                 : program.vertexNoRaster();
+    const bool pointSizeAllowed = key.topologyClass == MTLPrimitiveTopologyClassUnspecified ||
+                                  key.topologyClass == MTLPrimitiveTopologyClassPoint;
+    id<MTLFunction> vertex = !key.rasterization ? program.vertexNoRaster()
+                             : !pointSizeAllowed ? program.vertexWithoutPointSize(key.geometryPass)
+                             : key.geometryPass  ? program.geometryPassthrough()
+                                                 : program.function(shader::Stage::Vertex);
     id<MTLFunction> fragment = key.sampleMask || key.logicOp
                                    ? program.fragmentVariant(key.sampleMask, key.logicOp, key.colorFormats)
                                    : program.function(shader::Stage::Fragment);
