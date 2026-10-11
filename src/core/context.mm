@@ -79,7 +79,8 @@ void Context::initStrings() {
     std::snprintf(buffer, sizeof(buffer), "%d.%d.0 WineMetalGL %s", config_.major, config_.minor,
                   config_.coreProfile ? "Core Profile" : "Compatibility Profile");
     versionString_ = buffer;
-    glslVersionString_ = config_.major > 3 || (config_.major == 3 && config_.minor >= 3) ? "3.30"
+    glslVersionString_ = config_.major >= 4                                                ? "4." + std::to_string(config_.minor) + "0"
+                         : config_.major == 3 && config_.minor >= 3                       ? "3.30"
                          : config_.major == 3 && config_.minor == 2                       ? "1.50"
                          : config_.major == 3 && config_.minor == 1                       ? "1.40"
                          : config_.major == 3                                             ? "1.30"

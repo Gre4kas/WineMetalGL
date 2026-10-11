@@ -135,6 +135,11 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
         out = ints({ctx.isCore() ? GL_CONTEXT_CORE_PROFILE_BIT : GL_CONTEXT_COMPATIBILITY_PROFILE_BIT});
         return true;
     case GL_NUM_EXTENSIONS: out = ints({static_cast<int64_t>(ctx.extensions().size())}); return true;
+    case GL_NUM_SHADING_LANGUAGE_VERSIONS:
+        // The glGetStringi(GL_SHADING_LANGUAGE_VERSION) list (api/state.mm).
+        if (ctx.version() < 43) return false;
+        out = ints({ctx.version() - 43 + 11});
+        return true;
     case GL_RESET_NOTIFICATION_STRATEGY: out = ints({ctx.config().resetNotification}); return true;
     case 0x90F3:  // GL_CONTEXT_ROBUST_ACCESS (GL_KHR_robustness)
         out = bools({ctx.config().robustAccess});
@@ -207,6 +212,43 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
     case GL_MAX_GEOMETRY_OUTPUT_COMPONENTS: out = ints({128}); return true;
     case GL_MAX_FRAGMENT_INPUT_COMPONENTS: out = ints({128}); return true;
     case GL_MAX_GEOMETRY_OUTPUT_VERTICES: out = ints({256}); return true;
+    // --- tessellation (GL 4.0)
+    case GL_PATCH_VERTICES: case GL_PATCH_DEFAULT_OUTER_LEVEL: case GL_PATCH_DEFAULT_INNER_LEVEL:
+    case GL_MAX_PATCH_VERTICES: case GL_MAX_TESS_GEN_LEVEL: case GL_MAX_TESS_CONTROL_UNIFORM_COMPONENTS:
+    case GL_MAX_TESS_EVALUATION_UNIFORM_COMPONENTS: case GL_MAX_TESS_CONTROL_TEXTURE_IMAGE_UNITS:
+    case GL_MAX_TESS_EVALUATION_TEXTURE_IMAGE_UNITS: case GL_MAX_TESS_CONTROL_OUTPUT_COMPONENTS:
+    case GL_MAX_TESS_PATCH_COMPONENTS: case GL_MAX_TESS_CONTROL_TOTAL_OUTPUT_COMPONENTS:
+    case GL_MAX_TESS_EVALUATION_OUTPUT_COMPONENTS: case GL_MAX_TESS_CONTROL_INPUT_COMPONENTS:
+    case GL_MAX_TESS_EVALUATION_INPUT_COMPONENTS: case GL_MAX_TESS_CONTROL_UNIFORM_BLOCKS:
+    case GL_MAX_TESS_EVALUATION_UNIFORM_BLOCKS: case GL_MAX_COMBINED_TESS_CONTROL_UNIFORM_COMPONENTS:
+    case GL_MAX_COMBINED_TESS_EVALUATION_UNIFORM_COMPONENTS:
+        if (!ctx.tessellationShaders()) return false;
+        switch (pname) {
+        case GL_PATCH_VERTICES: out = ints({s.patchVertices}); break;
+        case GL_PATCH_DEFAULT_OUTER_LEVEL:
+            out = floats({s.patchDefaultOuterLevel[0], s.patchDefaultOuterLevel[1], s.patchDefaultOuterLevel[2],
+                          s.patchDefaultOuterLevel[3]});
+            break;
+        case GL_PATCH_DEFAULT_INNER_LEVEL: out = floats({s.patchDefaultInnerLevel[0], s.patchDefaultInnerLevel[1]}); break;
+        case GL_MAX_PATCH_VERTICES: out = ints({kMaxPatchVertices}); break;
+        case GL_MAX_TESS_GEN_LEVEL: out = ints({kMaxTessGenLevel}); break;
+        case GL_MAX_TESS_CONTROL_UNIFORM_COMPONENTS: case GL_MAX_TESS_EVALUATION_UNIFORM_COMPONENTS:
+            out = ints({kMaxDefaultUniformComponents});
+            break;
+        case GL_MAX_TESS_CONTROL_TEXTURE_IMAGE_UNITS: case GL_MAX_TESS_EVALUATION_TEXTURE_IMAGE_UNITS:
+            out = ints({kMaxTextureUnitsPerStage});
+            break;
+        case GL_MAX_TESS_PATCH_COMPONENTS: out = ints({120}); break;
+        case GL_MAX_TESS_CONTROL_TOTAL_OUTPUT_COMPONENTS: out = ints({4096}); break;
+        case GL_MAX_TESS_CONTROL_UNIFORM_BLOCKS: case GL_MAX_TESS_EVALUATION_UNIFORM_BLOCKS:
+            out = ints({kMaxUniformBlocksPerStage});
+            break;
+        case GL_MAX_COMBINED_TESS_CONTROL_UNIFORM_COMPONENTS: case GL_MAX_COMBINED_TESS_EVALUATION_UNIFORM_COMPONENTS:
+            out = ints({kMaxDefaultUniformComponents + static_cast<int64_t>(kMaxUniformBlocksPerStage) * kMaxUniformBlockSize / 4});
+            break;
+        default: out = ints({128}); break;  // input and output components
+        }
+        return true;
     case GL_MAX_GEOMETRY_TOTAL_OUTPUT_COMPONENTS: out = ints({1024}); return true;
     case GL_MAX_VERTEX_UNIFORM_BLOCKS: case GL_MAX_GEOMETRY_UNIFORM_BLOCKS: case GL_MAX_FRAGMENT_UNIFORM_BLOCKS:
         out = ints({kMaxUniformBlocksPerStage});
@@ -373,6 +415,18 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
     case GL_TRANSFORM_FEEDBACK_BINDING:
         if (ctx.version() < 40) return false;
         out = ints({s.transformFeedback->name});
+        return true;
+    case GL_TRANSFORM_FEEDBACK_BUFFER_ACTIVE: case GL_TRANSFORM_FEEDBACK_BUFFER_PAUSED:
+        if (ctx.version() < 40) return false;
+        out = bools({pname == GL_TRANSFORM_FEEDBACK_BUFFER_ACTIVE ? s.transformFeedback->active : s.transformFeedback->paused});
+        return true;
+    case GL_MIN_SAMPLE_SHADING_VALUE:
+        if (!ctx.sampleShading()) return false;
+        out = floats({s.minSampleShading});
+        return true;
+    case GL_MAX_TRANSFORM_FEEDBACK_BUFFERS: case GL_MAX_VERTEX_STREAMS:
+        if (ctx.version() < 40) return false;
+        out = ints({4});
         return true;
     case GL_DRAW_BUFFER: case GL_DRAW_BUFFER0:
         out = ints({s.drawFramebuffer ? s.drawFramebuffer->drawBuffers[0] : s.defaultDrawBuffer});

@@ -116,6 +116,10 @@ struct ContextState {
     bool primitiveRestartFixedIndex = false;
     bool textureCubeMapSeamless = false;
     uint32_t clipDistanceEnables = 0;
+    // Tessellation (GL 4.0): vertices per patch, and the levels used when no
+    // control shader writes them.
+    GLint patchVertices = 3;
+    GLfloat patchDefaultOuterLevel[4] = {1, 1, 1, 1}, patchDefaultInnerLevel[2] = {1, 1};
 
     bool depthTest = false;
     GLenum depthFunc = GL_LESS;
@@ -182,7 +186,7 @@ struct ContextState {
     GLenum defaultReadBuffer = GL_BACK;
 
     // Active queries by target index.
-    std::array<RefPtr<Query>, 8> activeQueries;
+    std::array<RefPtr<Query>, 12> activeQueries;  // by QueryIndex slot (core/query.h)
     struct {
         RefPtr<Query> query;
         GLenum mode = 0;

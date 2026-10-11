@@ -72,6 +72,7 @@ src/core/api/program.mm
 src/core/api/query.mm
 src/core/api/robustness.mm
 src/core/api/state.mm
+src/core/api/tessellation.mm
 src/core/api/texture.mm
 src/core/api/transform_feedback.mm
 src/core/api/vertex.mm
@@ -137,6 +138,8 @@ src/core/util/log.cpp
 src/core/util/log.h
 src/core/util/name_table.h
 src/core/util/ref.h
+src/core/util/version.h
+src/core/version.mm
 tests/cts/baseline/gl30-cfg1-native.txt
 tests/cts/baseline/gl30-cfg1-wine.txt
 tests/cts/baseline/gl30-cfg2-native.txt

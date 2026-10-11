@@ -9,6 +9,7 @@
 #include "core/context.h"
 #include "core/draw.h"
 #include "core/metal/device.h"
+#include "core/util/version.h"
 #include "gl_api.gen.h"
 
 namespace wmgl::api {
@@ -78,6 +79,11 @@ bool setCapability(Context& ctx, GLenum cap, bool on) {
         s.primitiveRestartFixedIndex = on;
         return true;
     }
+    if (ctx.sampleShading() && cap == GL_SAMPLE_SHADING) {
+        s.sampleShading = on;
+        ctx.markDirty(kDirtyMultisample);
+        return true;
+    }
     if (cap == GL_DEBUG_OUTPUT) { s.debugOutput = on; return true; }
     if (cap == GL_DEBUG_OUTPUT_SYNCHRONOUS) { s.debugOutputSynchronous = on; return true; }
     return setFixedCapability(ctx, cap, on);
@@ -119,6 +125,10 @@ bool getCapability(Context& ctx, GLenum cap, bool& value) {
     }
     if (ctx.version() >= 43 && cap == GL_PRIMITIVE_RESTART_FIXED_INDEX) {
         value = s.primitiveRestartFixedIndex;
+        return true;
+    }
+    if (ctx.sampleShading() && cap == GL_SAMPLE_SHADING) {
+        value = s.sampleShading;
         return true;
     }
     return getFixedCapability(ctx, cap, value) || getClientCapability(ctx, cap, value);
@@ -538,6 +548,13 @@ void PixelStoref(Context& ctx, GLenum pname, GLfloat param) {
     PixelStorei(ctx, pname, static_cast<GLint>(std::lround(param)));
 }
 
+// GL 4.0 / GL_ARB_sample_shading.
+void MinSampleShading(Context& ctx, GLfloat value) {
+    if (!ctx.sampleShading()) return ctx.unimplemented("glMinSampleShading");
+    ctx.state.minSampleShading = std::clamp(value, 0.0f, 1.0f);
+    ctx.markDirty(kDirtyMultisample);
+}
+
 GLenum GetError(Context& ctx) { return ctx.takeError(); }
 
 void Flush(Context& ctx) { ctx.stream().flush(); }
@@ -555,13 +572,7 @@ const GLubyte* GetString(Context& ctx, GLenum name) {
         }();
         return reinterpret_cast<const GLubyte*>(vendor.c_str());
     }
-    case GL_RENDERER: {
-        static const std::string renderer = [] {
-            const char* r = std::getenv("WINEMETALGL_RENDERER");
-            return r && *r ? std::string(r) : std::string(Device::get().name()) + " (WineMetalGL)";
-        }();
-        return reinterpret_cast<const GLubyte*>(renderer.c_str());
-    }
+    case GL_RENDERER: return reinterpret_cast<const GLubyte*>(rendererString().c_str());
     case GL_VERSION: return reinterpret_cast<const GLubyte*>(ctx.versionString().c_str());
     case GL_SHADING_LANGUAGE_VERSION: return reinterpret_cast<const GLubyte*>(ctx.glslVersionString().c_str());
     case GL_EXTENSIONS:
@@ -582,12 +593,16 @@ const GLubyte* GetStringi(Context& ctx, GLenum name, GLuint index) {
         return reinterpret_cast<const GLubyte*>(ctx.extensions()[index].c_str());
     }
     if (name == GL_SHADING_LANGUAGE_VERSION && ctx.version() >= 43) {
-        static const char* const versions[] = {"330 core", "150 core", "140", "130", "120", "110", ""};
-        if (index >= 7) {
+        // "4N0 core" for every 4.N up to the context's, then the 3.x and 1.x
+        // versions; "" is GLSL 1.10 without a #version directive.
+        static const char* const versions[] = {"460 core", "450 core", "440 core", "430 core", "420 core", "410 core",
+                                               "400 core", "330 core", "150 core", "140", "130", "120", "110", ""};
+        const GLuint skip = static_cast<GLuint>(46 - ctx.version());
+        if (index >= std::size(versions) - skip) {
             ctx.setError(GL_INVALID_VALUE);
             return nullptr;
         }
-        return reinterpret_cast<const GLubyte*>(versions[index]);
+        return reinterpret_cast<const GLubyte*>(versions[skip + index]);
     }
     ctx.setError(GL_INVALID_ENUM);
     return nullptr;

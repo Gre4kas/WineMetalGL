@@ -342,6 +342,11 @@ public:
     RefPtr<Program> program;
     std::array<GLsizeiptr, kMaxBuffers> written{};   // bytes written per buffer since Begin
     uint64_t primitivesWritten = 0;
+    // GL 4.0 (GL_ARB_transform_feedback2/3): whether EndTransformFeedback
+    // has run for this object, and the vertices each vertex stream captured
+    // the last time (glDrawTransformFeedback*).
+    bool everEnded = false;
+    std::array<uint64_t, 4> streamVertices{};
 };
 
 }  // namespace wmgl

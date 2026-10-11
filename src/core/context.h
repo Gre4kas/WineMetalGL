@@ -96,6 +96,10 @@ public:
     bool hasExtension(const char* name) const;
     // Compute shaders: GL 4.3 or GL_ARB_compute_shader.
     bool computeShaders() const { return version() >= 43 || hasExtension("GL_ARB_compute_shader"); }
+    // Tessellation shaders: GL 4.0 or GL_ARB_tessellation_shader.
+    bool tessellationShaders() const { return version() >= 40 || hasExtension("GL_ARB_tessellation_shader"); }
+    // Sample shading: GL 4.0 or GL_ARB_sample_shading.
+    bool sampleShading() const { return version() >= 40 || hasExtension("GL_ARB_sample_shading"); }
 
     // Occlusion-query slot of the current pass (see core/query.h).
     struct {

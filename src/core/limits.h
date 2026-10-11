@@ -16,6 +16,8 @@ constexpr GLint kMaxTextureBufferSize = 1 << 27;
 constexpr GLint kMaxComputeWorkGroupCount = 65535, kMaxComputeWorkGroupInvocations = 1024;
 constexpr GLint kMaxComputeWorkGroupSize[3] = {1024, 1024, 64};
 constexpr GLint kMaxComputeSharedMemorySize = 32768;
+// Tessellation (GL 4.0): Metal allows 32 control points and factors up to 64.
+constexpr GLint kMaxPatchVertices = 32, kMaxTessGenLevel = 64;
 constexpr GLfloat kMaxTextureLodBias = 15.0f, kMaxAnisotropy = 16.0f;
 
 }  // namespace wmgl::limits

@@ -19,9 +19,16 @@ enum QueryIndex {
     kQueryXfbPrimitivesWritten,
     kQueryTimeElapsed,
     kQueryAnySamplesPassedConservative,
-    kQueryIndexCount
+    kQueryIndexCount,
+    // GL 4.0 indexed queries: PRIMITIVES_GENERATED and
+    // TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN of vertex streams 1-3.
+    kQueryStreamFirst = kQueryIndexCount,
+    kQuerySlotCount = kQueryStreamFirst + 6
 };
+constexpr int kMaxVertexStreams = 4;
 int queryTargetIndex(Context& ctx, GLenum target);  // -1 if not a query target
+// The activeQueries slot of `target` for vertex stream `stream` (-1: invalid).
+int queryTargetIndex(Context& ctx, GLenum target, GLuint stream);
 
 // Draw-path hooks. queriesBeforeDraw points the encoder's visibility counter
 // at the active occlusion queries; queriesSuspendVisibility stops counting
