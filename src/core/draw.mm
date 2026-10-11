@@ -1828,6 +1828,8 @@ void DrawState::bindKernelResources(id<MTLComputeCommandEncoder> encoder, Linked
 }
 
 void DrawState::dispatch(GLuint x, GLuint y, GLuint z, Buffer* indirect, GLintptr offset) {
+    // Conditional rendering applies to dispatches too (KHR-GL43.compute_shader.conditional-dispatching).
+    if (!conditionalRenderAllows(ctx_)) return;
     ImageShadowScope shadows(*this);
     LinkedProgram* current = executable();
     if (!current) return;

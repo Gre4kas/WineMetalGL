@@ -75,6 +75,9 @@ Local changes to vendored sources (each marked `WineMetalGL:` in the code):
 - SPIRV-Cross `spirv_msl.cpp`, `add_composite_variable_to_interface_block`:
   a one-dimensional array of matrices (`in mat2x3 d[2]`) is flattened into one
   input or output per column instead of being rejected.
+- SPIRV-Cross `spirv_msl.cpp`, `emit_array_copy`: an array member of a struct
+  in threadgroup memory is an `spvUnsafeArray`, so copies to and from it pass
+  its `.elements`.
 - SPIRV-Cross `spirv_glsl.cpp`, `to_function_name` and `to_function_args`:
   GLSL has no `textureLod` for rectangle textures and their `texelFetch`
   takes no level, so a level-0 sample (glslang's `texture()` outside fragment

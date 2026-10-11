@@ -9574,6 +9574,21 @@ bool CompilerMSL::emit_array_copy(const char *expr, uint32_t lhs_id, uint32_t rh
 	         type_is_block_like(get<SPIRType>(rhs_var->basetype)))
 		rhs_is_array_template = false;
 
+	// WineMetalGL: an array member of a (non-block) struct in threadgroup
+	// memory is declared as spvUnsafeArray<>, so the copy needs .elements.
+	auto struct_member_in_workgroup = [&](SPIRVariable *var, uint32_t id, StorageClass storage) {
+		if (!var || storage != StorageClassWorkgroup || id == var->self)
+			return false;
+		const SPIRType *t = &get_variable_data_type(*var);
+		while (is_array(*t))
+			t = &get<SPIRType>(t->parent_type);
+		return t->basetype == SPIRType::Struct && !type_is_block_like(*t);
+	};
+	if (struct_member_in_workgroup(lhs_var, lhs_id, lhs_storage))
+		lhs_is_array_template = true;
+	if (struct_member_in_workgroup(rhs_var, rhs_id, rhs_storage))
+		rhs_is_array_template = true;
+
 	// If threadgroup storage qualifiers are *not* used:
 	// Avoid spvCopy* wrapper functions; Otherwise, spvUnsafeArray<> template cannot be used with that storage qualifier.
 	if (lhs_is_array_template && rhs_is_array_template && !using_builtin_array())

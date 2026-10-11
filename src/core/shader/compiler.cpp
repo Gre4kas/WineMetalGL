@@ -46,7 +46,7 @@ const TBuiltInResource* resources() {
         x.maxVaryingComponents = 64;
         x.maxVaryingVectors = 16;
         x.maxImageUnits = L::kMaxImageUnits;
-        x.maxCombinedImageUnitsAndFragmentOutputs = x.maxCombinedShaderOutputResources = L::kMaxCombinedImageUnitsAndFragmentOutputs;
+        x.maxCombinedImageUnitsAndFragmentOutputs = x.maxCombinedShaderOutputResources = L::kMaxCombinedShaderOutputResources;
         x.maxImageSamples = 0;
         x.maxVertexImageUniforms = x.maxTessControlImageUniforms = x.maxTessEvaluationImageUniforms = L::kMaxImageUniformsPerStage;
         x.maxGeometryImageUniforms = x.maxFragmentImageUniforms = x.maxComputeImageUniforms = L::kMaxImageUniformsPerStage;
@@ -66,6 +66,15 @@ const TBuiltInResource* resources() {
         x.maxPatchVertices = L::kMaxPatchVertices;
         x.maxTessGenLevel = L::kMaxTessGenLevel;
         x.maxSamples = 4;
+        // Default-block uniform components of every stage (GL_MAX_*_UNIFORM_COMPONENTS).
+        x.maxVertexUniformComponents = x.maxFragmentUniformComponents = x.maxGeometryUniformComponents =
+            x.maxTessControlUniformComponents = x.maxTessEvaluationUniformComponents = x.maxComputeUniformComponents =
+                L::kMaxDefaultUniformComponents;
+        x.maxComputeTextureImageUnits = L::kMaxTextureUnitsPerStage;
+        x.maxComputeWorkGroupCountX = x.maxComputeWorkGroupCountY = x.maxComputeWorkGroupCountZ = L::kMaxComputeWorkGroupCount;
+        x.maxComputeWorkGroupSizeX = L::kMaxComputeWorkGroupSize[0];
+        x.maxComputeWorkGroupSizeY = L::kMaxComputeWorkGroupSize[1];
+        x.maxComputeWorkGroupSizeZ = L::kMaxComputeWorkGroupSize[2];
         return x;
     }();
     return &r;

@@ -182,13 +182,24 @@ id<MTLFunction> LinkedProgram::vertexWithoutPointSize(bool geometryPass) {
 
 namespace {
 
-id<MTLComputePipelineState> computePipelineFor(const shader::StageOutput& output, int stage) {
+// `threads`: the work group size a compute program dispatches (0: any); the
+// compiler then fits the kernel to it (GL guarantees 1024 invocations).
+id<MTLComputePipelineState> computePipelineFor(const shader::StageOutput& output, int stage, NSUInteger threads = 0) {
     if (output.msl.empty()) return nil;
     id<MTLFunction> function = compileFunction(output.msl, output.entryPoint, stage);
     if (!function) return nil;
     NSError* error = nil;
-    id<MTLComputePipelineState> state = [Device::get().mtl() newComputePipelineStateWithFunction:function error:&error];
+    MTLComputePipelineDescriptor* desc = [[MTLComputePipelineDescriptor alloc] init];
+    desc.computeFunction = function;
+    if (threads) desc.maxTotalThreadsPerThreadgroup = threads;
+    id<MTLComputePipelineState> state = [Device::get().mtl() newComputePipelineStateWithDescriptor:desc
+                                                                                            options:MTLPipelineOptionNone
+                                                                                         reflection:nil
+                                                                                              error:&error];
     if (!state) WMGL_ERR("compute pipeline creation failed: %s", error.localizedDescription.UTF8String);
+    else if (threads && state.maxTotalThreadsPerThreadgroup < threads)
+        WMGL_ERR("compute pipeline fits %lu threads per group, the program needs %lu",
+                 static_cast<unsigned long>(state.maxTotalThreadsPerThreadgroup), static_cast<unsigned long>(threads));
     return state;
 }
 
@@ -214,7 +225,8 @@ id<MTLComputePipelineState> LinkedProgram::computePipeline() {
     std::lock_guard<std::mutex> lock(mutex_);
     if (compute_ || computeFailed_) return compute_;
     const int cs = static_cast<int>(shader::Stage::Compute);
-    if (link.stages[cs].present) compute_ = computePipelineFor(link.stages[cs], cs);
+    const NSUInteger threads = NSUInteger(link.computeLocalSize[0]) * link.computeLocalSize[1] * link.computeLocalSize[2];
+    if (link.stages[cs].present) compute_ = computePipelineFor(link.stages[cs], cs, threads);
     computeFailed_ = compute_ == nil;
     return compute_;
 }

@@ -218,3 +218,95 @@ void main() { o = c; })";
     glDeleteBuffers(2, buffers);
     glDeleteProgram(p);
 }
+
+// glTexBufferRange: a buffer texture over part of a buffer, read by a
+// compute shader (KHR-GL43.shader_image_size.advanced-nonMS-*).
+GPU_TEST_VERSION(gpu_gl43_texture_buffer_range, 43) {
+    const char* cs = R"(#version 430 core
+layout(local_size_x = 1) in;
+uniform usamplerBuffer t;
+layout(std430, binding = 0) buffer Out { uint size; uint first; } o;
+void main() { o.size = uint(textureSize(t)); o.first = texelFetch(t, 0).x; })";
+    GLuint p = computeProgram(cs);
+    std::vector<uint32_t> words(256);
+    for (size_t i = 0; i < words.size(); ++i) words[i] = static_cast<uint32_t>(i);
+    GLuint data = 0, tex = 0;
+    glGenBuffers(1, &data);
+    glBindBuffer(GL_TEXTURE_BUFFER, data);
+    glBufferData(GL_TEXTURE_BUFFER, static_cast<GLsizeiptr>(words.size() * 4), words.data(), GL_STATIC_DRAW);
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_BUFFER, tex);
+    GLint alignment = 0;
+    glGetIntegerv(GL_TEXTURE_BUFFER_OFFSET_ALIGNMENT, &alignment);
+    CHECK(alignment > 0 && alignment <= 256);
+    glTexBufferRange(GL_TEXTURE_BUFFER, GL_R32UI, data, 256, 128);  // texels 64..95
+    CHECK_GL();
+    glTexBufferRange(GL_TEXTURE_BUFFER, GL_R32UI, data, 4, 128);  // misaligned
+    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_INVALID_VALUE));
+    GLuint out = storageBuffer(0, {0, 0});
+    glUseProgram(p);
+    glDispatchCompute(1, 1, 1);
+    glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
+    const std::vector<uint32_t> got = readBuffer(out, 2);
+    CHECK_EQ(got[0], 32u);
+    CHECK_EQ(got[1], 64u);
+    CHECK_GL();
+    glDeleteTextures(1, &tex);
+    GLuint buffers[2] = {data, out};
+    glDeleteBuffers(2, buffers);
+    glDeleteProgram(p);
+}
+
+// Dispatches inside a failing conditional render block are skipped
+// (KHR-GL43.compute_shader.conditional-dispatching).
+GPU_TEST_VERSION(gpu_gl43_conditional_dispatch, 43) {
+    GLuint p = computeProgram(R"(#version 430 core
+layout(local_size_x = 1) in;
+layout(std430, binding = 0) buffer Out { uint count; };
+void main() { atomicAdd(count, 1u); })");
+    GLuint out = storageBuffer(0, {0});
+    GLuint query = 0;
+    glGenQueries(1, &query);
+    glBeginQuery(GL_ANY_SAMPLES_PASSED, query);
+    glEndQuery(GL_ANY_SAMPLES_PASSED);  // nothing drawn: no samples passed
+    glUseProgram(p);
+    glBeginConditionalRender(query, GL_QUERY_WAIT);
+    glDispatchCompute(1, 1, 1);
+    glEndConditionalRender();
+    glDispatchCompute(1, 1, 1);
+    glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
+    CHECK_EQ(readBuffer(out, 1)[0], 1u);
+    CHECK_GL();
+    glDeleteQueries(1, &query);
+    glDeleteBuffers(1, &out);
+    glDeleteProgram(p);
+}
+
+// A 1024-invocation work group copying arrays inside a shared struct
+// (SPIRV-Cross spvUnsafeArray members; KHR-GL43.compute_shader.shared-max).
+GPU_TEST_VERSION(gpu_gl43_shared_struct_arrays, 43) {
+    GLuint p = computeProgram(R"(#version 430 core
+layout(local_size_x = 1024) in;
+shared struct Type { vec4 v[2]; } s[1024];
+layout(std430, binding = 0) buffer Out { Type o[1024]; };
+void main() {
+    const int id = int(gl_LocalInvocationIndex);
+    s[id].v = vec4[2](vec4(1.0), vec4(2.0));
+    memoryBarrierShared();
+    barrier();
+    o[1023 - id] = s[1023 - id];
+})");
+    GLuint out = storageBuffer(0, std::vector<uint32_t>(1024 * 8, 0));
+    glUseProgram(p);
+    glDispatchCompute(1, 1, 1);
+    glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
+    const std::vector<uint32_t> got = readBuffer(out, 1024 * 8);
+    float first, last;
+    std::memcpy(&first, &got[0], 4);
+    std::memcpy(&last, &got[1023 * 8 + 4], 4);
+    CHECK(first == 1.0f);
+    CHECK(last == 2.0f);
+    CHECK_GL();
+    glDeleteBuffers(1, &out);
+    glDeleteProgram(p);
+}

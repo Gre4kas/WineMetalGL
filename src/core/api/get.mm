@@ -153,6 +153,10 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
     case GL_MAX_3D_TEXTURE_SIZE: out = ints({kMax3DTextureSize}); return true;
     case GL_MAX_ARRAY_TEXTURE_LAYERS: out = ints({kMaxArrayLayers}); return true;
     case GL_MAX_TEXTURE_BUFFER_SIZE: out = ints({kMaxTextureBufferSize}); return true;
+    case GL_TEXTURE_BUFFER_OFFSET_ALIGNMENT:
+        if (ctx.version() < 43 && !ctx.hasExtension("GL_ARB_texture_buffer_range")) return false;
+        out = ints({kTextureBufferOffsetAlignment});
+        return true;
     case GL_MAX_TEXTURE_LOD_BIAS: out = floats({kMaxTextureLodBias}); return true;
     case GL_MAX_COMPUTE_WORK_GROUP_INVOCATIONS: case GL_MAX_COMPUTE_UNIFORM_BLOCKS: case GL_MAX_COMPUTE_TEXTURE_IMAGE_UNITS:
     case GL_MAX_COMPUTE_UNIFORM_COMPONENTS: case GL_MAX_COMBINED_COMPUTE_UNIFORM_COMPONENTS:
@@ -287,8 +291,7 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
         if (!ctx.imageLoadStore()) return false;
         out = ints({pname == GL_MAX_IMAGE_UNITS ? kMaxImageUnits
                     // = GL_MAX_COMBINED_SHADER_OUTPUT_RESOURCES (GL 4.3), which counts storage blocks too
-                    : pname == GL_MAX_COMBINED_IMAGE_UNITS_AND_FRAGMENT_OUTPUTS
-                        ? (ctx.storageBuffers() ? kMaxCombinedShaderOutputResources : kMaxCombinedImageUnitsAndFragmentOutputs)
+                    : pname == GL_MAX_COMBINED_IMAGE_UNITS_AND_FRAGMENT_OUTPUTS ? kMaxCombinedShaderOutputResources  // = gl_MaxCombinedShaderOutputResources
                     : pname == GL_MAX_IMAGE_SAMPLES ? 0  // multisample images: Metal cannot write them
                     : pname == GL_MAX_COMBINED_IMAGE_UNIFORMS ? kMaxCombinedImageUniforms
                                                                : kMaxImageUniformsPerStage});
