@@ -21,10 +21,12 @@ Budgets (WineMetalGL 3.3 roadmap, W24):
 """
 
 import argparse
+import atexit
 import datetime
 import json
 import os
 import re
+import shutil
 import statistics
 import subprocess
 import sys
@@ -111,6 +113,14 @@ def git_head():
     return (head or "unknown") + ("-dirty" if dirty else "")
 
 
+def cleanup_prefix(wine, prefix, workdir):
+    if os.path.isdir(prefix):
+        env = dict(os.environ, WINEPREFIX=prefix)
+        subprocess.run([os.path.join(wine, "bin", "wineserver"), "-k"], env=env,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    shutil.rmtree(workdir, ignore_errors=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--wine", required=True)
@@ -139,6 +149,8 @@ def main():
     entries = [e for e in manifest["entries"] if not args.only or e["name"] in args.only]
     workdir = tempfile.mkdtemp(prefix="wmgl-bench-")
     prefix = os.path.join(workdir, "prefix")
+    # Each prefix is ~2 GB: stop its wineserver and delete it however the run ends.
+    atexit.register(cleanup_prefix, args.wine, prefix, workdir)
     env = dict(os.environ)
     if args.template:
         subprocess.run(["cp", "-c", "-R", args.template, prefix], check=True)
