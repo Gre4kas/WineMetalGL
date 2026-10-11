@@ -75,8 +75,8 @@ rejects the evidence. Run times from the committed results:
 | `KHR-GL30` | 878 | 26 s to 50 s | 12 s to 13 s | 3.7 min |
 | `KHR-GL31` | 888 | 27 s to 35 s | 3 s to 4 s | 2.4 min |
 | `KHR-GL32` | 5,661 | 4.2 min to 5.2 min | 2.2 min to 2.7 min | 27.9 min |
-| `KHR-GL33` | 9,886 | 6.8 min to 12.4 min | 5.1 min to 5.2 min | 53.9 min |
-| `KHR-GL40` | 11,862 | - | 4.2 min | 17.0 min |
+| `KHR-GL33` | 9,886 | 9.0 min to 11.0 min | 5.1 min to 5.2 min | 60.8 min |
+| `KHR-GL40` | 11,862 | 9.4 min to 11.0 min | 4.2 min | 58.7 min |
 | `KHR-GL41` | 11,883 | 8.9 min to 10.8 min | 4.2 min | 56.1 min |
 | `KHR-GL42` | 12,305 | 10.0 min to 11.3 min | 4.3 min to 4.5 min | 60.6 min |
 <!-- END GENERATED: cts-times -->

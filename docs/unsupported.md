@@ -101,10 +101,10 @@ Every NotSupported case in a committed result matches one entry of `tests/cts/no
 | `KHR-GL[34]?.transform_feedback_overflow_query_ARB.*` | extension | 0 | 0 | 13 | 13 | 13 | 13 | 13 | GL_ARB_transform_feedback_overflow_query is not advertised. |
 | `KHR-GL[34]?.pipeline_statistics_query_tests_ARB.*` | extension | 0 | 0 | 0 | 10 | 10 | 10 | 10 | GL_ARB_pipeline_statistics_query is not advertised. |
 | `KHR-GL[34]?.texture_filter_minmax_tests.*` | extension | 0 | 0 | 0 | 5 | 5 | 5 | 5 | GL_ARB_texture_filter_minmax is not advertised. |
-| `KHR-GL3?.transform_feedback2.*` | extension | 1 | 1 | 1 | 1 | 0 | 0 | 0 | GL_ARB_transform_feedback2 is not advertised. |
-| `KHR-GL3?.transform_feedback3.*` | extension | 3 | 3 | 3 | 3 | 0 | 0 | 0 | GL_ARB_transform_feedback3 is not advertised. |
-| `KHR-GL3?.gpu_shader5_gl.*` | extension | 0 | 0 | 3 | 3 | 0 | 0 | 0 | GL_ARB_gpu_shader5 is not advertised. |
-| `KHR-GL3?.shaders.shader_integer_mix.*` | extension | 0 | 0 | 0 | 5 | 0 | 0 | 0 | GL_EXT_shader_integer_mix is not advertised. |
+| `KHR-GL3?.transform_feedback2.*` | extension | 1 | 1 | 1 | 0 | 0 | 0 | 0 | GL_ARB_transform_feedback2 is not advertised. |
+| `KHR-GL3?.transform_feedback3.*` | extension | 3 | 3 | 3 | 0 | 0 | 0 | 0 | GL_ARB_transform_feedback3 is not advertised. |
+| `KHR-GL3?.gpu_shader5_gl.*` | extension | 0 | 0 | 3 | 0 | 0 | 0 | 0 | GL_ARB_gpu_shader5 is not advertised. |
+| `KHR-GL3?.shaders.shader_integer_mix.*` | extension | 0 | 0 | 0 | 0 | 0 | 0 | 0 | GL_EXT_shader_integer_mix is not advertised. |
 | `KHR-GL[34]?.pixelstoragemodes.compressedteximage*.rgba_astc_*` | extension | 0 | 0 | 0 | 80 | 80 | 80 | 80 | ASTC formats need GL_KHR_texture_compression_astc_ldr, which is not advertised. |
 | `KHR-GL[34]?.packed_depth_stencil.stencil_texturing.*` | version | 0 | 0 | 2 | 2 | 2 | 2 | 2 | Stencil texturing needs GL 4.3 (GL_ARB_stencil_texturing is not advertised). |
 | `KHR-GL[34]?.CommonBugs.CommonBug_PerVertexValidation` | version | 0 | 1 | 1 | 1 | 1 | 0 | 0 | The case runs only on OpenGL 4.1 or newer contexts. |

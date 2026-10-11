@@ -31,7 +31,7 @@ Dead Cells (Requires OpenGL 3.2+) running under MetalSharp Wine-11.17 Using Wine
 | 3.0 | 99.88% | GLSL 1.30, framebuffer objects, vertex array objects, transform feedback, integer textures | 2.28% |
 | 3.1 | 100% | Instancing, texture buffers, uniform buffers, primitive restart | 2.38% |
 | 3.2 | 100% | Profiles, geometry shaders, sync objects, multisample textures, base vertex | 0.69% |
-| 3.3 | 99.97% | GLSL 3.30, sampler objects, timer queries, instanced arrays, dual-source blending | 3.71% |
+| 3.3 | 99.97% | GLSL 3.30, sampler objects, timer queries, instanced arrays, dual-source blending | 3.59% |
 | 4.0 | 99.96% | Tessellation, GLSL 4.00, double precision, indirect draws, per-sample shading | 12.22% |
 | 4.1 | 99.96% | Separate shader objects, program binaries, viewport arrays, 64-bit attributes | 12.19% |
 | 4.2 | 99.95% | Image load/store, atomic counters, immutable texture storage | 11.83% |
