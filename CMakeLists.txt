@@ -89,6 +89,7 @@ add_library(wmgl_portable STATIC
     src/core/shader/glsl_upgrade.cpp
     src/core/shader/tessellation.cpp
     src/core/tess/tessellator.cpp
+    src/core/shader/spirv_passes.cpp
     src/core/util/log.cpp
     vendor/tessellator/tessellator.cpp
 )

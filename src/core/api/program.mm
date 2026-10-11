@@ -772,6 +772,11 @@ void GetProgramiv(Context& ctx, GLuint program, GLenum pname, GLint* params) {
                   : pname == GL_TESS_GEN_VERTEX_ORDER ? static_cast<GLint>(link->tess.order)
                                                       : (link->tess.pointMode ? GL_TRUE : GL_FALSE);
         return;
+    case GL_GEOMETRY_SHADER_INVOCATIONS:
+        if (ctx.version() < 40 && !ctx.hasExtension("GL_ARB_gpu_shader5")) break;
+        if (!link || !link->stages[static_cast<int>(shader::Stage::Geometry)].present) return ctx.setError(GL_INVALID_OPERATION);
+        *params = link->geometryInvocations;
+        return;
     case GL_COMPUTE_WORK_GROUP_SIZE:
         if (!ctx.computeShaders()) break;
         if (!link || !link->stages[static_cast<int>(shader::Stage::Compute)].present) return ctx.setError(GL_INVALID_OPERATION);

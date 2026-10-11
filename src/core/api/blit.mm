@@ -103,9 +103,9 @@ bool sameDirection(GLint a0, GLint a1, GLint b0, GLint b1) { return (a1 - a0) ==
 Rect writableRect(Context& ctx, const Rect& dst, uint32_t width, uint32_t height) {
     Rect r = intersect(dst, {0, 0, static_cast<int>(width), static_cast<int>(height)});
     const ContextState& st = ctx.state;
-    if (st.scissorTest)
-        r = intersect(r, {st.scissor[0], st.scissor[1], st.scissor[0] + std::max(0, st.scissor[2]),
-                          st.scissor[1] + std::max(0, st.scissor[3])});
+    if ((st.scissorTests & 1u))
+        r = intersect(r, {st.scissors[0][0], st.scissors[0][1], st.scissors[0][0] + std::max(0, st.scissors[0][2]),
+                          st.scissors[0][1] + std::max(0, st.scissors[0][3])});
     return r;
 }
 

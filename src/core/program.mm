@@ -138,6 +138,25 @@ id<MTLFunction> LinkedProgram::geometryPassthrough() {
     return passthrough_;
 }
 
+id<MTLFunction> LinkedProgram::vertexWithoutPointSize(bool geometryPass) {
+    if (pipeline) {
+        const auto& vs = stageExecutable[static_cast<int>(shader::Stage::Vertex)];
+        return vs ? vs->vertexWithoutPointSize(geometryPass) : nil;
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    const int v = geometryPass ? 1 : 0;
+    if (noPointSize_[v] || noPointSizeFailed_[v]) return noPointSize_[v];
+    const shader::StageOutput& output = geometryPass ? link.geometry.passthrough : link.stages[static_cast<int>(shader::Stage::Vertex)];
+    if (output.msl.empty()) return nil;
+    std::string msl = output.msl;
+    // The member stays (the code writing it is unchanged) as an unread varying.
+    const std::string from = "[[point_size]]", to = "[[user(wmgl_point_size)]]";
+    for (size_t at = msl.find(from); at != std::string::npos; at = msl.find(from, at + to.size())) msl.replace(at, from.size(), to);
+    noPointSize_[v] = compileFunction(msl, output.entryPoint, 0);
+    noPointSizeFailed_[v] = noPointSize_[v] == nil;
+    return noPointSize_[v];
+}
+
 namespace {
 
 id<MTLComputePipelineState> computePipelineFor(const shader::StageOutput& output, int stage) {

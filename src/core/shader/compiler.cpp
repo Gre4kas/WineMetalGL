@@ -18,6 +18,7 @@
 #include "core/shader/glsl_upgrade.h"
 #include "core/shader/geometry.h"
 #include "core/shader/tessellation.h"
+#include "core/shader/spirv_passes.h"
 #include "core/shader/transform_feedback.h"
 
 namespace wmgl::shader {
@@ -1315,17 +1316,21 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
             return result;
         }
         if (!parseGeometryGlsl(glsl, *geometry, result.log)) return result;
-        if (!stagePresent[static_cast<int>(Stage::Vertex)]) {
+        if (!stagePresent[static_cast<int>(Stage::Vertex)] && !input.separable) {
             result.log += "error: a geometry shader requires a vertex shader\n";
             return result;
         }
-        if (!layoutTransformFeedback(geometryCaptureVaryings(*geometry), GL_INTERLEAVED_ATTRIBS,
+        // A separable geometry-only program links; its emulation needs the
+        // vertex stage and is not built (program pipelines then report it).
+        if (stagePresent[static_cast<int>(Stage::Vertex)] &&
+            !layoutTransformFeedback(geometryCaptureVaryings(*geometry), GL_INTERLEAVED_ATTRIBS,
                                      captureableOutputs(program.getIntermediate(EShLangVertex)), *geometryCapture, result.log,
                                      UINT32_MAX))
             return result;
         result.geometryInputType = geometry->inputType;
         result.geometryOutputType = geometry->outputType;
         result.geometryVerticesOut = geometry->maxVertices;
+        result.geometryInvocations = geometry->invocations;
     }
 
     // Program-wide interface, built from the first stage that declares each resource.
@@ -1536,7 +1541,7 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
             continue;
         const bool noRaster = variant == 1;
         try {
-            spirv_cross::CompilerMSL msl(rectImagesAs2D(stage.spirv));
+            spirv_cross::CompilerMSL msl(lowerGatherOffsets(rectImagesAs2D(stage.spirv)));
             spirv_cross::CompilerMSL::Options mslOptions;
             mslOptions.disable_rasterization = noRaster;
             mslOptions.platform = spirv_cross::CompilerMSL::Options::macOS;
@@ -1751,6 +1756,7 @@ bool buildGeometryEmulation(const LinkInput& input, const GeometryShaderInfo& in
     g.outputType = info.outputType;
     g.verticesIn = info.verticesIn;
     g.maxVertices = info.maxVertices;
+    g.invocations = info.invocations;
     g.inputStride = captureLayout.xfbStride[0];
     g.outputStride = sources.outputStride;
     g.outputs = sources.fields;
@@ -1862,6 +1868,7 @@ LinkResult link(const LinkInput& input) {
     }
     if (result.stages[static_cast<int>(Stage::TessControl)].present) return result;  // separable control-only program
     if (result.stages[static_cast<int>(Stage::Geometry)].present) {
+        if (!result.stages[static_cast<int>(Stage::Vertex)].present) return result;  // separable, geometry only
         // Transform feedback (if any) captures the emitted vertices; the draw
         // path reads them back from the kernel output (DrawState).
         if (!buildGeometryEmulation(input, geometry, geometryCapture, result)) result.ok = false;

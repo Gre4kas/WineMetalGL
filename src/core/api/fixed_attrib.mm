@@ -102,8 +102,8 @@ void restore(GLbitfield mask, const ContextState& from, ContextState& to) {
         to.clearStencil = from.clearStencil;
     }
     if (mask & GL_VIEWPORT_BIT) {
-        std::copy(from.viewport, from.viewport + 4, to.viewport);
-        std::copy(from.depthRange, from.depthRange + 2, to.depthRange);
+        std::memcpy(to.viewports, from.viewports, sizeof(to.viewports));
+        std::memcpy(to.depthRanges, from.depthRanges, sizeof(to.depthRanges));
     }
     if (mask & GL_TRANSFORM_BIT) {
         f.matrixMode = g.matrixMode;
@@ -141,7 +141,7 @@ void restore(GLbitfield mask, const ContextState& from, ContextState& to) {
         to.polygonOffsetPoint = from.polygonOffsetPoint;
         to.polygonSmooth = from.polygonSmooth;
         f.polygonStipple = g.polygonStipple;
-        to.scissorTest = from.scissorTest;
+        to.scissorTests = from.scissorTests;
         to.stencilTest = from.stencilTest;
         f.textureEnables = g.textureEnables;
         for (int u = 0; u < FixedState::kTextureUnits; ++u)
@@ -186,8 +186,8 @@ void restore(GLbitfield mask, const ContextState& from, ContextState& to) {
         f.texGen = g.texGen;
     }
     if (mask & GL_SCISSOR_BIT) {
-        to.scissorTest = from.scissorTest;
-        std::copy(from.scissor, from.scissor + 4, to.scissor);
+        to.scissorTests = from.scissorTests;
+        std::memcpy(to.scissors, from.scissors, sizeof(to.scissors));
     }
     if (mask & GL_MULTISAMPLE_BIT) {
         to.multisample = from.multisample;

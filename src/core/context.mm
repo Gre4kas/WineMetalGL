@@ -230,8 +230,10 @@ void Context::bindSurfaces(Surface* draw, Surface* read) {
     readSurface_ = read;
     if (!everMadeCurrent && draw) {
         // The first MakeCurrent sets the viewport and scissor to the surface size.
-        state.viewport[2] = state.scissor[2] = draw->width();
-        state.viewport[3] = state.scissor[3] = draw->height();
+        for (int i = 0; i < ContextState::kMaxViewports; ++i) {
+            state.viewports[i][2] = static_cast<GLfloat>(state.scissors[i][2] = draw->width());
+            state.viewports[i][3] = static_cast<GLfloat>(state.scissors[i][3] = draw->height());
+        }
         everMadeCurrent = true;
     }
     markDirty(kDirtyFramebuffer | kDirtyViewport | kDirtyScissor);
