@@ -747,6 +747,14 @@ void DrawState::bindUniforms(id<MTLRenderCommandEncoder> encoder, LinkedProgram&
             if (vertex) [encoder setVertexBuffer:buffer offset:offset atIndex:static_cast<NSUInteger>(slot)];
             else [encoder setFragmentBuffer:buffer offset:offset atIndex:static_cast<NSUInteger>(slot)];
         }
+        for (size_t b = 0; b < program.link.atomicBuffers.size(); ++b) {
+            const int slot = program.link.atomicBuffers[b].stageSlot[s];
+            if (slot < 0 || vertex) continue;
+            id<MTLBuffer> buffer = nil;
+            NSUInteger offset = 0;
+            atomicCounterBuffer(program, b, buffer, offset);
+            [encoder setFragmentBuffer:buffer offset:offset atIndex:static_cast<NSUInteger>(slot)];
+        }
     }
 }
 
@@ -779,6 +787,21 @@ void DrawState::uniformBlockBuffer(LinkedProgram& program, size_t index, __stron
     buffer = ib.buffer->mtl;
     offset = static_cast<NSUInteger>(ib.offset);
     ib.buffer->lastUseSerial = ctx_.stream().serial();
+}
+
+void DrawState::atomicCounterBuffer(LinkedProgram& program, size_t index, __strong id<MTLBuffer>& buffer, NSUInteger& offset) {
+    static id<MTLBuffer> scratch = [Device::get().mtl() newBufferWithLength:65536 options:MTLResourceStorageModePrivate];
+    buffer = scratch;
+    offset = 0;
+    const GLuint binding = program.link.atomicBuffers[index].binding;
+    if (binding >= static_cast<GLuint>(ContextState::kMaxAtomicCounterBufferBindings)) return;
+    const IndexedBufferBinding& ib = ctx_.state.atomicCounterBufferBindings[binding];
+    if (!ib.buffer || !ib.buffer->mtl || ib.offset < 0 || static_cast<NSUInteger>(ib.offset) >= ib.buffer->mtl.length) return;
+    buffer = ib.buffer->mtl;
+    offset = static_cast<NSUInteger>(ib.offset);
+    // Counters change the buffer: CPU reads and later uploads wait for this draw.
+    ib.buffer->lastUseSerial = ib.buffer->lastWriteSerial = ctx_.stream().serial();
+    ++ib.buffer->version;
 }
 
 void DrawState::samplerBinding(LinkedProgram& program, size_t index, __strong id<MTLTexture>& view,
@@ -1508,6 +1531,14 @@ void DrawState::bindKernelResources(id<MTLComputeCommandEncoder> encoder, Linked
         samplerBinding(program, i, view, sampler);
         [encoder setTexture:view atIndex:static_cast<NSUInteger>(index)];
         [encoder setSamplerState:sampler atIndex:static_cast<NSUInteger>(index)];
+    }
+    for (size_t b = 0; b < program.link.atomicBuffers.size(); ++b) {
+        const int slot = program.link.atomicBuffers[b].stageSlot[cs];
+        if (slot < 0) continue;
+        id<MTLBuffer> buffer = nil;
+        NSUInteger offset = 0;
+        atomicCounterBuffer(program, b, buffer, offset);
+        [encoder setBuffer:buffer offset:offset atIndex:static_cast<NSUInteger>(slot)];
     }
 }
 

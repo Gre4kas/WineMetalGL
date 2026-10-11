@@ -14,6 +14,9 @@ Local changes to vendored sources (each marked `WineMetalGL:` in the code):
   Vulkan "every input has a matching output" check skips built-in blocks
   (`gl_PerVertex`) and redeclared built-in inputs (`gl_ClipDistance`), which
   GL provides implicitly.
+- glslang `glslang/MachineIndependent/ParseHelper.cpp`, `fixOffset`: an
+  atomic counter whose offset puts it past `gl_MaxAtomicCounterBufferSize` is
+  a compile-time error, as GLSL 4.20 requires.
 
 The built dylib dynamically links only Apple system frameworks and libraries
 (Metal, Foundation, QuartzCore, CoreFoundation, libc++, libSystem and
