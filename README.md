@@ -1,5 +1,9 @@
 # WineMetalGL
 
+[![Metal](https://github.com/metalsharp/WineMetalGL/actions/workflows/metal.yml/badge.svg)](https://github.com/metalsharp/WineMetalGL/actions/workflows/metal.yml)
+[![Build](https://github.com/metalsharp/WineMetalGL/actions/workflows/build.yml/badge.svg)](https://github.com/metalsharp/WineMetalGL/actions/workflows/build.yml)
+[![CodeQL](https://github.com/metalsharp/WineMetalGL/actions/workflows/codeql.yml/badge.svg)](https://github.com/metalsharp/WineMetalGL/actions/workflows/codeql.yml)
+
 WineMetalGL is an OpenGL implementation on Metal for Wine on macOS 15 or newer.
 It installs into an unmodified Wine 11.x as a Wine module of its own, and
 gives Windows programs OpenGL 4.6 contexts, core or compatibility profile,
