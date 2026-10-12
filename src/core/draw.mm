@@ -424,9 +424,10 @@ struct VertexFetch {
 
 VertexFetch vertexFetch(const shader::StageOutput::VertexInput& input, const VertexAttrib& a) {
     if (input.kind == 'd') {
-        const uint32_t element = a.isDouble ? a.elementBytes() : 0, start = 16u * static_cast<uint32_t>(input.part);
+        const uint32_t element = a.isDouble ? a.elementBytes() : 0,
+                       start = 16u * static_cast<uint32_t>(input.part) + static_cast<uint32_t>(input.byteOffset);
         if (element <= start) return {MTLVertexFormatInvalid, static_cast<NSUInteger>(a.offset), 0};
-        const uint32_t bytes = std::min(16u, element - start);
+        const uint32_t bytes = std::min({16u, element - start, static_cast<uint32_t>(input.components) * 4u});
         return {bytes == 8 ? MTLVertexFormatUInt2 : MTLVertexFormatUInt4, static_cast<NSUInteger>(a.offset) + start, bytes};
     }
     return {a.isDouble ? MTLVertexFormatInvalid : mtlVertexFormat(a.type, a.size, a.normalized, a.integer),
@@ -588,6 +589,7 @@ bool DrawState::bindVertexInputs(id<MTLRenderCommandEncoder> encoder, PipelineKe
         const std::vector<uint32_t>* order;  // gathered: the vertex fetched for each draw vertex
         char kind;
         int part;  // 'd': 16-byte part of the element
+        int byteOffset = 0;  // 'd': where in the part (layout(component) packing)
     };
     std::vector<Converted> converted;
     // Current values, one constant element each, packed into one buffer:
@@ -595,6 +597,7 @@ bool DrawState::bindVertexInputs(id<MTLRenderCommandEncoder> encoder, PipelineKe
     struct ConstantInput {
         int location, attrib, part;
         char kind;
+        int byteOffset = 0;
     };
     std::vector<ConstantInput> constants;
     for (const shader::StageOutput::VertexInput& input : program.stage(Stage::Vertex).vertexInputs) {
@@ -625,7 +628,7 @@ bool DrawState::bindVertexInputs(id<MTLRenderCommandEncoder> encoder, PipelineKe
                                               : input.kind == 'u' || input.kind == 'd' ? MTLVertexFormatUInt4
                                                                                        : MTLVertexFormatFloat4);
             out.offset = static_cast<uint16_t>(constants.size() * 16);
-            constants.push_back({location, input.source(), input.part, input.kind});
+            constants.push_back({location, input.source(), input.part, input.kind, input.byteOffset});
             break;
         case Plan::Direct: {
             const size_t g = static_cast<size_t>(plan.group[static_cast<size_t>(location)]);
@@ -640,7 +643,7 @@ bool DrawState::bindVertexInputs(id<MTLRenderCommandEncoder> encoder, PipelineKe
                 ctx_.setError(GL_INVALID_OPERATION);
                 return false;
             }
-            converted.push_back({location, &a, partner ? linePartners_ : gather, input.kind, input.part});
+            converted.push_back({location, &a, partner ? linePartners_ : gather, input.kind, input.part, input.byteOffset});
             break;
         case Plan::None: break;
         }
@@ -709,7 +712,7 @@ bool DrawState::bindVertexInputs(id<MTLRenderCommandEncoder> encoder, PipelineKe
                 if (group[m]->kind == 'd') {
                     // Raw 64-bit components (shader/fp64.h); anything but an L array reads zeros.
                     std::memset(to, 0, 16);
-                    const uint32_t start = 16u * static_cast<uint32_t>(group[m]->part);
+                    const uint32_t start = 16u * static_cast<uint32_t>(group[m]->part) + static_cast<uint32_t>(group[m]->byteOffset);
                     if (a.isDouble && elementBytes > start) std::memcpy(to, element + start, std::min(16u, elementBytes - start));
                 } else if (a.integer) {
                     int32_t values[4];
@@ -741,7 +744,11 @@ bool DrawState::bindVertexInputs(id<MTLRenderCommandEncoder> encoder, PipelineKe
         for (size_t c = 0; c < constants.size(); ++c) {
             const ContextState::GenericAttrib& g = ctx_.state.genericAttribs[static_cast<size_t>(constants[c].attrib)];
             uint8_t* dst = static_cast<uint8_t*>(alloc.data) + c * 16;
-            if (constants[c].kind == 'd') std::memcpy(dst, reinterpret_cast<const uint8_t*>(g.d) + 16 * constants[c].part, 16);
+            if (constants[c].kind == 'd') {
+                const size_t start = 16 * static_cast<size_t>(constants[c].part) + static_cast<size_t>(constants[c].byteOffset);
+                std::memset(dst, 0, 16);
+                if (start < sizeof(g.d)) std::memcpy(dst, reinterpret_cast<const uint8_t*>(g.d) + start, std::min<size_t>(16, sizeof(g.d) - start));
+            }
             else std::memcpy(dst, &g.value, 16);
         }
         const int layout = addLayout(alloc.buffer, alloc.offset, static_cast<uint32_t>(constants.size() * 16), 0, true);
@@ -1688,6 +1695,7 @@ void DrawState::captureTransformFeedback(GLenum mode, const std::vector<uint32_t
     // Whole primitives that fit in every bound buffer.
     uint64_t primitives = (list.size() / perPrimitive) * static_cast<uint64_t>(std::max(1, instances));
     for (int b = 0; b < link.xfbBufferCount; ++b) {
+        if (!link.xfbBufferUsed(b)) continue;
         const TransformFeedback::Binding& binding = xfb.buffers[b];
         if (!binding.buffer || !binding.buffer->mtl) return;
         // The bound range, clamped to the buffer's current size (it may have shrunk since binding).
@@ -1704,6 +1712,7 @@ void DrawState::captureTransformFeedback(GLenum mode, const std::vector<uint32_t
     id<MTLBuffer> buffers[4] = {};
     uint32_t baseWords[4] = {};
     for (int b = 0; b < link.xfbBufferCount; ++b) {
+        if (!link.xfbBufferUsed(b)) continue;
         buffers[b] = xfb.buffers[b].buffer->mtl;
         baseWords[b] = static_cast<uint32_t>((xfb.buffers[b].offset + xfb.written[b]) / 4);
     }
@@ -1712,6 +1721,7 @@ void DrawState::captureTransformFeedback(GLenum mode, const std::vector<uint32_t
         return;
     const uint64_t serial = ctx_.stream().serial();
     for (int b = 0; b < link.xfbBufferCount; ++b) {
+        if (!link.xfbBufferUsed(b)) continue;
         Buffer& buffer = *xfb.buffers[b].buffer;
         xfb.written[b] += static_cast<GLsizeiptr>(primitives * perPrimitive * link.xfbStride[b] * 4);
         buffer.lastUseSerial = buffer.lastWriteSerial = serial;
@@ -1757,7 +1767,8 @@ bool DrawState::runVertexCapture(LinkedProgram& lp, const std::vector<uint32_t>&
     for (int b = 0; b < bufferCount; ++b) {
         words[4 + b] = baseWords[b];
         words[8 + b] = strides[b];
-        [encoder setVertexBuffer:buffers[b] offset:0 atIndex:shader::kSlotFirstXfbBuffer + static_cast<NSUInteger>(b)];
+        static id<MTLBuffer> unused = [Device::get().mtl() newBufferWithLength:16 options:MTLResourceStorageModePrivate];
+        [encoder setVertexBuffer:buffers[b] ?: unused offset:0 atIndex:shader::kSlotFirstXfbBuffer + static_cast<NSUInteger>(b)];
     }
     std::memcpy(words + 12, list.data(), list.size() * 4);
     [encoder setVertexBuffer:control.buffer offset:control.offset atIndex:shader::kSlotXfbControl];
@@ -2120,6 +2131,7 @@ void DrawState::drawGeometry(GLenum mode, const std::vector<uint32_t>& vertices,
     bool captured[kMaxVertexStreams] = {};
     for (int s = 0; s < kMaxVertexStreams; ++s) written[s] = emitted[s].size() / perPrimitive;
     for (int b = 0; b < link.xfbBufferCount; ++b) {
+        if (!link.xfbBufferUsed(b)) continue;
         const TransformFeedback::Binding& binding = xfb.buffers[b];
         if (!binding.buffer || !binding.buffer->mtl) return;
         const int s = link.xfbStream[b];
@@ -2152,6 +2164,7 @@ void DrawState::drawGeometry(GLenum mode, const std::vector<uint32_t>& vertices,
         }
     }
     for (int b = 0; b < link.xfbBufferCount; ++b) {
+        if (!link.xfbBufferUsed(b)) continue;
         xfb.written[b] += static_cast<GLsizeiptr>(written[link.xfbStream[b]] * perPrimitive * link.xfbStride[b] * 4);
         ++xfb.buffers[b].buffer->version;
     }

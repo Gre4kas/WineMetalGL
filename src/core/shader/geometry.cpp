@@ -57,7 +57,7 @@ GLenum glslTypeEnum(const std::string& t) {
 }
 
 // "flat out vec4 name[3]" -> qualifiers stripped; returns direction ("in"/"out", or "").
-std::string parseVariable(const std::string& decl, std::string& type, std::string& name, int& arraySize) {
+std::string parseVariable(const std::string& decl, std::string& type, std::string& name, int& arraySize, int* innerSize = nullptr) {
     std::string d = decl;
     if (d.compare(0, 7, "layout(") == 0) d = trim(d.substr(d.find(')') + 1));
     std::istringstream words(d);
@@ -81,7 +81,12 @@ std::string parseVariable(const std::string& decl, std::string& type, std::strin
     const size_t open = name.find('[');
     if (open != std::string::npos) {
         arraySize = std::atoi(name.c_str() + open + 1);
+        // A second dimension (a geometry input's array per vertex).
+        const size_t second = name.find('[', open + 1);
+        if (innerSize) *innerSize = second != std::string::npos ? std::atoi(name.c_str() + second + 1) : 0;
         name = name.substr(0, open);
+    } else if (innerSize) {
+        *innerSize = 0;
     }
     return direction;
 }
@@ -286,8 +291,8 @@ bool parseGeometryGlsl(const std::string& glsl, GeometryShaderInfo& info, std::s
                 continue;
             }
             std::string type, name;
-            int arraySize = 0;
-            const std::string direction = parseVariable(flat, type, name, arraySize);
+            int arraySize = 0, innerSize = 0;
+            const std::string direction = parseVariable(flat, type, name, arraySize, &innerSize);
             if (direction.empty()) {
                 info.globals += flat + "\n";
                 continue;
@@ -303,7 +308,8 @@ bool parseGeometryGlsl(const std::string& glsl, GeometryShaderInfo& info, std::s
                 if (direction == "out" && name == "gl_CullDistance") info.outputCullDistances = arraySize;
                 continue;
             }
-            GeometryVar v{type, glType, name, "", "", direction == "out" ? arraySize : 0, flat};
+            // Inputs are arrays of vertices: their own array size is the second dimension.
+            GeometryVar v{type, glType, name, "", "", direction == "out" ? arraySize : innerSize, flat};
             if (direction == "out") v.stream = layoutStream(flat);
             (direction == "in" ? info.inputs : info.outputs).push_back(v);
             continue;
@@ -325,6 +331,8 @@ bool parseGeometryGlsl(const std::string& glsl, GeometryShaderInfo& info, std::s
         }
         std::string instance = tail;
         const size_t bracket = instance.find('[');
+        // Input blocks are arrays of vertices; an output block may be an array of blocks.
+        const int instanceSize = bracket != std::string::npos && direction == "out" ? std::atoi(instance.c_str() + bracket + 1) : 0;
         if (bracket != std::string::npos) instance = instance.substr(0, bracket);
         std::istringstream members(body);
         std::string member;
@@ -354,6 +362,7 @@ bool parseGeometryGlsl(const std::string& glsl, GeometryShaderInfo& info, std::s
             if (direction == "out") {
                 v.declaration = flat;  // whole block, emitted once by the pass-through
                 v.stream = layoutStream(member) ? layoutStream(member) : layoutStream(header);
+                v.instanceSize = instance.empty() ? 0 : instanceSize;
             }
             (direction == "in" ? info.inputs : info.outputs).push_back(v);
         }
@@ -443,9 +452,19 @@ GeometrySources geometrySources(const GeometryShaderInfo& info, const LinkResult
     if (info.outputCullDistances) addVar("gl_CullDistance", "wmgl_out_culldistance", GL_FLOAT, "float", info.outputCullDistances);
     if (info.writesLayer) addVar("gl_Layer", "wmgl_out_layer", GL_INT, "int", 0);
     if (info.writesViewportIndex) addVar("gl_ViewportIndex", "wmgl_out_viewport", GL_INT, "int", 0);
-    for (const GeometryVar& v : info.outputs)
-        addVar(v.member.empty() ? v.name : v.blockName + "." + v.member, v.member.empty() ? v.name : v.name + "." + v.member,
-               v.type, v.glslType, v.arraySize);
+    for (const GeometryVar& v : info.outputs) {
+        if (!v.instanceSize) {
+            addVar(v.member.empty() ? v.name : v.blockName + "." + v.member, v.member.empty() ? v.name : v.name + "." + v.member,
+                   v.type, v.glslType, v.arraySize);
+            continue;
+        }
+        // An array of blocks: each element's member ("Block[k].member").
+        for (int k = 0; k < v.instanceSize; ++k) {
+            const std::string element = "[" + std::to_string(k) + "].";
+            addVar(v.blockName + element + v.member, v.name + element + v.member, v.type, v.glslType, v.arraySize);
+            out.fields.back().stream = v.stream;
+        }
+    }
     // Vertex streams: the record ends with the stream it was emitted to.
     if (info.streams) out.streamOffset = words++;
     out.outputStride = words;
@@ -461,7 +480,8 @@ GeometrySources geometrySources(const GeometryShaderInfo& info, const LinkResult
     std::map<std::string, std::string> inputBlocks;  // instance -> struct name
     for (const GeometryVar& v : info.inputs) {
         if (v.member.empty()) {
-            c += v.glslType + " " + v.name + "[" + std::to_string(n) + "];\n";
+            c += v.glslType + " " + v.name + "[" + std::to_string(n) + "]" + (v.arraySize ? "[" + std::to_string(v.arraySize) + "]" : "") +
+                 ";\n";
         } else if (!inputBlocks.count(v.name)) {
             std::string structName = "wmgl_in_" + v.blockName;
             c += "struct " + structName + " {";
@@ -482,7 +502,8 @@ GeometrySources geometrySources(const GeometryShaderInfo& info, const LinkResult
             for (const GeometryVar& m : info.outputs)
                 if (m.name == v.name)
                     c += " " + m.glslType + " " + m.member + (m.arraySize ? "[" + std::to_string(m.arraySize) + "]" : "") + ";";
-            c += " };\nwmgl_out_" + v.blockName + " " + v.name + ";\n";
+            c += " };\nwmgl_out_" + v.blockName + " " + v.name + (v.instanceSize ? "[" + std::to_string(v.instanceSize) + "]" : "") +
+                 ";\n";
             outputBlocks[v.name] = true;
         }
     }

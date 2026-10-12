@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <set>
@@ -1298,6 +1299,69 @@ std::string raiseComputeVersion(Stage stage, const std::string& source) {
     return raised;
 }
 
+// Explicit locations of a stage's inputs and outputs must fit the stage's
+// interface (GL 4.6 section 11.1.2.1: a compile-time or link-time error):
+// GL_MAX_VERTEX_ATTRIBS for vertex inputs, GL_MAX_DRAW_BUFFERS for fragment
+// outputs, the GL_MAX_*_COMPONENTS limits / 4 between stages.
+std::string checkInterfaceLocations(glslang::TShader& shader, Stage stage) {
+    const glslang::TIntermediate* intermediate = shader.getIntermediate();
+    glslang::TIntermAggregate* root =
+        intermediate && intermediate->getTreeRoot() ? intermediate->getTreeRoot()->getAsAggregate() : nullptr;
+    if (!root) return {};
+    namespace L = wmgl::limits;
+    const EShLanguage lang = language(stage);
+    auto limit = [&](bool input) -> int {
+        switch (stage) {
+        case Stage::Vertex: return input ? L::kMaxVertexAttribs : L::kMaxVertexOutputComponents / 4;
+        case Stage::Geometry: return (input ? L::kMaxGeometryInputComponents : L::kMaxInterfaceComponents) / 4;
+        case Stage::Fragment: return input ? L::kMaxInterfaceComponents / 4 : L::kMaxDrawBuffers;
+        case Stage::Compute: return 0;
+        default: return L::kMaxInterfaceComponents / 4;
+        }
+    };
+    auto size = [&](const glslang::TType& type) {
+        if (type.isArray() && type.getQualifier().isArrayedIo(lang)) {
+            const glslang::TType element(type, 0);
+            return glslang::TIntermediate::computeTypeLocationSize(element, lang);
+        }
+        return glslang::TIntermediate::computeTypeLocationSize(type, lang);
+    };
+    for (TIntermNode* node : root->getSequence()) {
+        glslang::TIntermAggregate* objects = node->getAsAggregate();
+        if (!objects || objects->getOp() != glslang::EOpLinkerObjects) continue;
+        for (TIntermNode* object : objects->getSequence()) {
+            glslang::TIntermSymbol* symbol = object->getAsSymbolNode();
+            if (!symbol) continue;
+            const glslang::TType& type = symbol->getType();
+            const glslang::TQualifier& q = type.getQualifier();
+            const bool input = q.storage == glslang::EvqVaryingIn, output = q.storage == glslang::EvqVaryingOut;
+            if ((!input && !output) || q.builtIn != glslang::EbvNone || q.patch) continue;
+            const int max = limit(input);
+            if (type.getBasicType() == glslang::EbtBlock) {
+                // Members take the block's location onwards, or their own.
+                int next = q.hasLocation() ? static_cast<int>(q.layoutLocation) : -1;
+                for (const glslang::TTypeLoc& member : *type.getStruct()) {
+                    const glslang::TQualifier& mq = member.type->getQualifier();
+                    if (mq.builtIn != glslang::EbvNone) continue;
+                    if (mq.hasLocation()) next = static_cast<int>(mq.layoutLocation);
+                    if (next < 0) continue;
+                    next += glslang::TIntermediate::computeTypeLocationSize(*member.type, lang);
+                    if (next > max)
+                        return "ERROR: block '" + unescapeName(type.getTypeName().c_str()) +
+                               "': a member's location is outside the stage's interface\n";
+                }
+                continue;
+            }
+            if (!q.hasLocation()) continue;
+            if (static_cast<int>(q.layoutLocation) + size(type) > max)
+                return "ERROR: '" + unescapeName(symbol->getName().c_str()) + "': location " +
+                       std::to_string(q.layoutLocation) + " is outside the stage's interface (" + std::to_string(max) +
+                       " locations)\n";
+        }
+    }
+    return {};
+}
+
 // layout(binding) on a uniform block must leave every element of the block
 // within GL_MAX_UNIFORM_BUFFER_BINDINGS (a compile-time error in GLSL).
 // glslang checks opaque bindings itself but has no limit for blocks.
@@ -1370,10 +1434,11 @@ CompileResult compile(Stage stage, const std::string& original) {
         }
     }
     if (result.ok) {
-        const std::string bindings = checkBlockBindings(shader);
-        if (!bindings.empty()) {
+        std::string errors = checkBlockBindings(shader);
+        if (errors.empty()) errors = checkInterfaceLocations(shader, stage);
+        if (!errors.empty()) {
             result.ok = false;
-            result.log += bindings;
+            result.log += errors;
         }
     }
     if (result.ok) {
@@ -1448,7 +1513,18 @@ std::vector<StageOutputVar> captureableOutputs(glslang::TIntermediate* intermedi
                         }
                         if (field == "gl_CullDistance" && m.isSizedArray())
                             outputs.push_back({"gl_CullDistance", GL_FLOAT, m.getOuterArraySize()});
-                        if (blockName == "gl_PerVertex" || field.rfind("gl_", 0) == 0 || type.isArray()) continue;
+                        if (blockName == "gl_PerVertex" || field.rfind("gl_", 0) == 0) continue;
+                        if (type.isArray()) {
+                            // An array of blocks: "Block[k].member" (GL 4.6 section 7.3.1.1).
+                            if (anonymous || !type.isSizedArray()) continue;
+                            for (int k = 0; k < type.getOuterArraySize(); ++k) {
+                                const std::string element = "[" + std::to_string(k) + "].";
+                                outputs.push_back({blockName + element + field, glTypeOfAst(m),
+                                                   m.isSizedArray() ? m.getOuterArraySize() : 0,
+                                                   std::string(symbol->getName().c_str()) + element + m.getFieldName().c_str()});
+                            }
+                            continue;
+                        }
                         // User blocks: members are named "Block.member" (GL 3.3 section 2.15);
                         // members of a block without an instance name also by their own name.
                         const std::string expression = anonymous ? m.getFieldName().c_str()
@@ -1490,8 +1566,44 @@ bool layoutShaderTransformFeedback(glslang::TIntermediate* last, const std::vect
     glslang::TIntermAggregate* root = last->getTreeRoot() ? last->getTreeRoot()->getAsAggregate() : nullptr;
     if (!root) return false;
     std::vector<TransformFeedbackVarying> varyings;
-    auto add = [&](const std::string& name, const glslang::TType& type, const glslang::TQualifier& q) {
+    // A struct is captured member by member from its offset, each member
+    // aligned to its own size class (4 bytes, 8 for doubles).
+    std::function<void(const std::string&, const glslang::TType&, int, uint32_t&)> addStruct =
+        [&](const std::string& name, const glslang::TType& type, int buffer, uint32_t& offset) {
+            const int elements = type.isSizedArray() ? type.getOuterArraySize() : 1;
+            for (int k = 0; k < elements; ++k) {
+                const std::string element = type.isSizedArray() ? name + "[" + std::to_string(k) + "]" : name;
+                for (const glslang::TTypeLoc& member : *type.getStruct()) {
+                    const glslang::TType& m = *member.type;
+                    const std::string path = element + "." + unescapeName(m.getFieldName().c_str());
+                    if (m.getBasicType() == glslang::EbtStruct) {
+                        addStruct(path, m, buffer, offset);
+                        continue;
+                    }
+                    TransformFeedbackVarying v;
+                    v.name = path;
+                    v.type = glTypeOfAst(m);
+                    v.size = m.isSizedArray() ? m.getOuterArraySize() : 1;
+                    v.array = m.isSizedArray();
+                    v.components = glTypeWords(v.type) * v.size;
+                    const uint32_t align = m.getBasicType() == glslang::EbtDouble ? 8 : 4;
+                    offset = (offset + align - 1) / align * align;
+                    v.buffer = buffer;
+                    v.offset = offset / 4;
+                    v.expression = path;
+                    v.source = path;
+                    offset += static_cast<uint32_t>(v.components) * 4;
+                    varyings.push_back(v);
+                }
+            }
+        };
+    auto add = [&](const std::string& name, const glslang::TType& type, const glslang::TQualifier& q, uint32_t extraBytes = 0) {
         if (!q.hasXfbOffset()) return;
+        if (type.getBasicType() == glslang::EbtStruct) {
+            uint32_t offset = q.layoutXfbOffset + extraBytes;
+            addStruct(name, type, q.hasXfbBuffer() ? static_cast<int>(q.layoutXfbBuffer) : 0, offset);
+            return;
+        }
         TransformFeedbackVarying v;
         v.name = name;
         v.type = glTypeOfAst(type);
@@ -1499,7 +1611,7 @@ bool layoutShaderTransformFeedback(glslang::TIntermediate* last, const std::vect
         v.array = type.isSizedArray();
         v.components = glTypeWords(v.type) * v.size;
         v.buffer = q.hasXfbBuffer() ? static_cast<int>(q.layoutXfbBuffer) : 0;
-        v.offset = q.layoutXfbOffset / 4;
+        v.offset = (q.layoutXfbOffset + extraBytes) / 4;
         v.expression = name;
         v.source = name;
         for (const StageOutputVar& o : outputs)
@@ -1519,11 +1631,25 @@ bool layoutShaderTransformFeedback(glslang::TIntermediate* last, const std::vect
             if (type.getBasicType() == glslang::EbtBlock) {
                 const std::string blockName = unescapeName(type.getTypeName().c_str());
                 const bool anonymous = glslang::IsAnonymous(symbol->getName());
+                // An array of blocks is captured block after block: element
+                // k's members at their offsets plus k times the block's span.
+                const int elements = type.isSizedArray() && !anonymous ? type.getOuterArraySize() : 0;
+                uint32_t first = ~0u, end = 0;
                 for (const glslang::TTypeLoc& member : *type.getStruct()) {
-                    const std::string field = unescapeName(member.type->getFieldName().c_str());
-                    const std::string name = field.rfind("gl_", 0) == 0 || anonymous ? field : blockName + "." + field;
-                    add(name, *member.type, member.type->getQualifier());
+                    const glslang::TQualifier& q = member.type->getQualifier();
+                    if (!q.hasXfbOffset()) continue;
+                    const uint32_t words = static_cast<uint32_t>(glTypeWords(glTypeOfAst(*member.type))) *
+                                           (member.type->isSizedArray() ? member.type->getOuterArraySize() : 1);
+                    first = std::min(first, q.layoutXfbOffset);
+                    end = std::max(end, q.layoutXfbOffset + words * 4);
                 }
+                for (int k = 0; k < std::max(1, elements); ++k)
+                    for (const glslang::TTypeLoc& member : *type.getStruct()) {
+                        const std::string field = unescapeName(member.type->getFieldName().c_str());
+                        const std::string element = elements ? "[" + std::to_string(k) + "]" : "";
+                        const std::string name = field.rfind("gl_", 0) == 0 || anonymous ? field : blockName + element + "." + field;
+                        add(name, *member.type, member.type->getQualifier(), first == ~0u ? 0 : static_cast<uint32_t>(k) * (end - first));
+                    }
                 continue;
             }
             add(unescapeName(symbol->getName().c_str()), type, symbol->getQualifier());
@@ -1701,8 +1827,24 @@ struct TessellationLink {
     std::string geometryGlsl;
 };
 
+static LinkResult linkImplCore(const LinkInput& input, const CaptureCode* capture, GeometryShaderInfo* geometry,
+                               LinkResult* geometryCapture, TessellationLink* tessellation);
+
+// Internal programs (emulation kernels and stages) that fail to link are
+// WineMetalGL bugs: WINEMETALGL_DUMP_SHADERS=1 prints their sources.
 static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, GeometryShaderInfo* geometry = nullptr,
                            LinkResult* geometryCapture = nullptr, TessellationLink* tessellation = nullptr) {
+    LinkResult result = linkImplCore(input, capture, geometry, geometryCapture, tessellation);
+    if (!result.ok && input.internal)
+        if (const char* v = std::getenv("WINEMETALGL_DUMP_SHADERS"); v && v[0] == '1')
+            for (const ShaderSource& shader : input.shaders)
+                std::fprintf(stderr, "winemetalgl: internal stage %d failed to link:\n%s\n", static_cast<int>(shader.stage),
+                             shader.source.c_str());
+    return result;
+}
+
+static LinkResult linkImplCore(const LinkInput& input, const CaptureCode* capture, GeometryShaderInfo* geometry,
+                               LinkResult* geometryCapture, TessellationLink* tessellation) {
     initGlslang();
     LinkResult result;
     std::vector<ParsedShader> parsed(input.shaders.size());
@@ -1940,20 +2082,25 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
     struct PipeVar {
         std::string name; GLenum type; int size; unsigned location; uint32_t stages; int index; bool array = false;
         bool patch = false;
+        int component = 0;
     };
     std::vector<PipeVar> pipeInputs, pipeOutputs;
     for (int i = 0; i < program.getNumPipeInputs(); ++i) {
         const auto& v = program.getPipeInput(i);
+        const glslang::TType* type = v.getType();
         pipeInputs.push_back({unescapeName(v.name), static_cast<GLenum>(v.glDefineType), v.size, v.layoutLocation(),
-                              static_cast<uint32_t>(v.stages), 0, v.getType() && v.getType()->isArray(),
-                              v.getType() && v.getType()->getQualifier().patch});
+                              static_cast<uint32_t>(v.stages), 0, type && type->isArray(), type && type->getQualifier().patch,
+                              type && type->getQualifier().hasComponent() ? static_cast<int>(type->getQualifier().layoutComponent)
+                                                                          : 0});
     }
     for (int i = 0; i < program.getNumPipeOutputs(); ++i) {
         const auto& v = program.getPipeOutput(i);
         const glslang::TType* type = v.getType();
         const int index = type && type->getQualifier().hasIndex() ? static_cast<int>(type->getQualifier().layoutIndex) : 0;
         pipeOutputs.push_back({unescapeName(v.name), static_cast<GLenum>(v.glDefineType), v.size, v.layoutLocation(),
-                               static_cast<uint32_t>(v.stages), index, type && type->isArray(), type && type->getQualifier().patch});
+                               static_cast<uint32_t>(v.stages), index, type && type->isArray(), type && type->getQualifier().patch,
+                               type && type->getQualifier().hasComponent() ? static_cast<int>(type->getQualifier().layoutComponent)
+                                                                           : 0});
     }
     for (const PipeVar& v : pipeInputs)
         if (v.location != kNoLocation && !(v.stages & EShLangVertexMask)) explicitVaryings.insert(v.name);
@@ -2025,9 +2172,17 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
             result.geometryOutputType = info.outputType;
             result.geometryVerticesOut = info.maxVertices;
         }
-        if (!layoutTransformFeedback(tessellationCaptureVaryings(t.hasControl ? t.control : t.evaluation), GL_INTERLEAVED_ATTRIBS,
-                                     captureableOutputs(program.getIntermediate(EShLangVertex)), t.capture, result.log,
-                                     UINT32_MAX))
+        // Inputs the vertex stage does not write (allowed when the control
+        // or evaluation stage never reads them) are not captured.
+        const std::vector<StageOutputVar> vertexOutputs = captureableOutputs(program.getIntermediate(EShLangVertex));
+        std::vector<std::string> varyings;
+        for (const std::string& v : tessellationCaptureVaryings(t.hasControl ? t.control : t.evaluation))
+            for (const StageOutputVar& o : vertexOutputs)
+                if (o.name == v) {
+                    varyings.push_back(v);
+                    break;
+                }
+        if (!layoutTransformFeedback(varyings, GL_INTERLEAVED_ATTRIBS, vertexOutputs, t.capture, result.log, UINT32_MAX))
             return result;
     } else if (geometry && result.stages[static_cast<int>(Stage::Geometry)].present) {
         std::string glsl;
@@ -2476,6 +2631,7 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
         a.array = in.array;
         a.locationCount = glTypeLocations(a.type) * a.size;
         a.location = in.location != kNoLocation ? static_cast<GLint>(in.location) : -1;
+        a.component = in.component;
         // Lowered legacy attributes (gl_Vertex, ...) read the conventional arrays.
         const int conventional = conventionalAttribLocation(a.name);
         if (conventional >= 0) {
@@ -2513,14 +2669,22 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
         a.location = location;
         for (int l = 0; l < a.locationCount && location + l < 64; ++l) usedLocations[location + l] = true;
     }
-    int attribSlots = 0;
+    // Attributes packed by component or aliased share their locations; a
+    // location holding a dvec3 or dvec4 column counts twice.
+    int slotWeight[64] = {};
     for (const AttribInfo& a : result.attribs) {
         if (!a.conventional && a.location + a.locationCount > 16) {
             result.log += "error: vertex attribute '" + a.name + "' uses a location beyond GL_MAX_VERTEX_ATTRIBS\n";
             return result;
         }
-        if (!a.conventional) attribSlots += glTypeAttribSlots(a.type) * a.size;
+        if (a.conventional || a.location < 0) continue;
+        const int perElement = std::max(1, a.locationCount / std::max(1, a.size));
+        const int weight = std::max(1, glTypeAttribSlots(a.type) / perElement);
+        for (int l = 0; l < a.locationCount && a.location + l < 64; ++l)
+            slotWeight[a.location + l] = std::max(slotWeight[a.location + l], weight);
     }
+    int attribSlots = 0;
+    for (int w : slotWeight) attribSlots += w;
     // dvec3 and dvec4 columns count twice (GL_ARB_vertex_attrib_64bit).
     if (attribSlots > 16) {
         result.log += "error: vertex attributes exceed GL_MAX_VERTEX_ATTRIBS\n";
@@ -2575,6 +2739,7 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
         info.size = std::max(1, v.size);
         info.location = v.location != kNoLocation && v.name.rfind("gl_", 0) != 0 ? static_cast<GLint>(v.location) : -1;
         info.perPatch = v.patch;
+        info.component = v.component;
         info.stageMask = v.stages;
         return info;
     };
@@ -2848,7 +3013,11 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
                     const spirv_cross::SPIRType& type = msl.get_type(in.type_id);
                     const GLint attrib = it->location + column;
                     GLint metal = attrib;
-                    if (part == 1) {
+                    // Part 1, and a double packed by layout(component) into a location
+                    // another 64-bit input already reads, take a free Metal index.
+                    const bool shared = part == 0 && std::any_of(stage.vertexInputs.begin(), stage.vertexInputs.end(),
+                                                                 [&](const StageOutput::VertexInput& v) { return v.location == attrib; });
+                    if (part == 1 || shared) {
                         while (nextFree >= 0 && usedAttributes.count(nextFree)) --nextFree;
                         if (nextFree < 0) {
                             result.log += "error: too many 64-bit vertex attribute components\n";
@@ -2857,7 +3026,9 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
                         metal = nextFree--;
                     }
                     msl.set_decoration(in.id, spv::DecorationLocation, static_cast<uint32_t>(metal));
-                    stage.vertexInputs.push_back({metal, static_cast<int>(type.vecsize), 'd', attrib, part});
+                    StageOutput::VertexInput input{metal, static_cast<int>(type.vecsize), 'd', attrib, part};
+                    input.byteOffset = part == 0 ? it->component * 4 : 0;
+                    stage.vertexInputs.push_back(input);
                 }
                 for (const auto& in : resources.stage_inputs) {
                     const std::string name = unescapeName(msl.get_name(in.id));
@@ -2974,6 +3145,9 @@ bool useVertexCapture(const LinkInput& input, const LinkResult& layout, LinkResu
     LinkResult captured = linkImpl(again, &code);
     if (!captured.ok) {
         result.log += "error: internal error building vertex output capture:\n" + captured.log;
+        if (const char* v = std::getenv("WINEMETALGL_DUMP_SHADERS"); v && v[0] == '1')
+            std::fprintf(stderr, "winemetalgl: capture declarations:\n%s\ncapture epilogue:\n%s\n", code.declarations.c_str(),
+                         code.epilogue.c_str());
         return false;
     }
     const int vs = static_cast<int>(Stage::Vertex);
@@ -3089,8 +3263,13 @@ bool buildTessellationEmulation(const LinkInput& input, const TessellationLink& 
     }
     if (dump) std::fprintf(stderr, "winemetalgl: tessellation evaluation vertex GLSL:\n%s\n", vertex.c_str());
     LinkInput evaluationInput;
-    evaluationInput.shaders = {{Stage::Vertex, vertex}};
-    if (!t.geometryGlsl.empty()) evaluationInput.shaders.push_back({Stage::Geometry, t.geometryGlsl});
+    // A separable program's outputs have locations hashed from their names:
+    // the evaluation stage declares them without and is hashed the same way
+    // (as the geometry pass-through).
+    evaluationInput.separable = input.separable;
+    evaluationInput.shaders = {{Stage::Vertex, input.separable ? stripHashedLocations(vertex) : vertex}};
+    if (!t.geometryGlsl.empty())
+        evaluationInput.shaders.push_back({Stage::Geometry, input.separable ? stripHashedLocations(t.geometryGlsl) : t.geometryGlsl});
     // Varyings by their qualified names: the geometry stage here is GLSL
     // translated by SPIRV-Cross, which names anonymous blocks.
     for (const TransformFeedbackVarying& v : result.transformFeedback) {
@@ -3100,7 +3279,7 @@ bool buildTessellationEmulation(const LinkInput& input, const TessellationLink& 
                                                                    : v.source + (open == std::string::npos ? "" : v.name.substr(open)));
     }
     evaluationInput.transformFeedbackMode = input.transformFeedbackMode;
-    evaluationInput.internal = true;
+    evaluationInput.internal = !input.separable;
     auto evaluation = std::make_shared<LinkResult>(link(evaluationInput));
     if (!evaluation->ok) {
         result.log += "error: internal error building the tessellation evaluation stage:\n" + evaluation->log;

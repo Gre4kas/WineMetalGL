@@ -139,7 +139,7 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
     case GL_NUM_SHADING_LANGUAGE_VERSIONS:
         // The glGetStringi(GL_SHADING_LANGUAGE_VERSION) list (api/state.mm).
         if (ctx.version() < 43) return false;
-        out = ints({ctx.version() - 43 + 12});
+        out = ints({ctx.version() - 43 + 12 + (ctx.version() >= 45 ? 1 : 0)});
         return true;
     case GL_RESET_NOTIFICATION_STRATEGY: out = ints({ctx.config().resetNotification}); return true;
     case 0x90F3:  // GL_CONTEXT_ROBUST_ACCESS (GL_KHR_robustness)
@@ -258,10 +258,10 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
         out = ints({pname == GL_IMPLEMENTATION_COLOR_READ_FORMAT ? format : type});
         return true;
     }
-    case GL_MAX_VERTEX_OUTPUT_COMPONENTS: out = ints({64}); return true;
-    case GL_MAX_GEOMETRY_INPUT_COMPONENTS: out = ints({64}); return true;
-    case GL_MAX_GEOMETRY_OUTPUT_COMPONENTS: out = ints({128}); return true;
-    case GL_MAX_FRAGMENT_INPUT_COMPONENTS: out = ints({128}); return true;
+    case GL_MAX_VERTEX_OUTPUT_COMPONENTS: out = ints({kMaxVertexOutputComponents}); return true;
+    case GL_MAX_GEOMETRY_INPUT_COMPONENTS: out = ints({kMaxGeometryInputComponents}); return true;
+    case GL_MAX_GEOMETRY_OUTPUT_COMPONENTS: out = ints({kMaxInterfaceComponents}); return true;
+    case GL_MAX_FRAGMENT_INPUT_COMPONENTS: out = ints({kMaxInterfaceComponents}); return true;
     case GL_MAX_GEOMETRY_OUTPUT_VERTICES: out = ints({256}); return true;
     // Primitive restart is treated as disabled for GL_PATCHES (GL 4.3 section 10.3.5).
     case GL_PRIMITIVE_RESTART_FOR_PATCHES_SUPPORTED:
@@ -346,7 +346,7 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
         case GL_MAX_COMBINED_TESS_CONTROL_UNIFORM_COMPONENTS: case GL_MAX_COMBINED_TESS_EVALUATION_UNIFORM_COMPONENTS:
             out = ints({kMaxDefaultUniformComponents + static_cast<int64_t>(kMaxUniformBlocksPerStage) * kMaxUniformBlockSize / 4});
             break;
-        default: out = ints({128}); break;  // input and output components
+        default: out = ints({kMaxInterfaceComponents}); break;  // input and output components
         }
         return true;
     case GL_MAX_GEOMETRY_TOTAL_OUTPUT_COMPONENTS: out = ints({1024}); return true;

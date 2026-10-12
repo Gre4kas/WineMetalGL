@@ -718,12 +718,15 @@ const GLubyte* GetStringi(Context& ctx, GLenum name, GLuint index) {
     if (name == GL_SHADING_LANGUAGE_VERSION && ctx.version() >= 43) {
         // "4N0 core" for every 4.N up to the context's, then the 3.x and 1.x
         // versions; "" is GLSL 1.10 without a #version directive; "300 es"
-        // is GLSL ES 3.00 (GL_ARB_ES3_compatibility).
+        // is GLSL ES 3.00 (GL_ARB_ES3_compatibility) and "310 es" GLSL ES
+        // 3.10 (GL 4.5, GL_ARB_ES3_1_compatibility).
         static const char* const versions[] = {"460 core", "450 core", "440 core", "430 core", "420 core",
                                                "410 core", "400 core", "330 core", "150 core", "140",
-                                               "130",      "120",      "110",      "",         "300 es"};
+                                               "130",      "120",      "110",      "",         "300 es",
+                                               "310 es"};
         const GLuint skip = static_cast<GLuint>(46 - ctx.version());
-        if (index >= std::size(versions) - skip) {
+        const GLuint count = static_cast<GLuint>(std::size(versions)) - skip - (ctx.version() >= 45 ? 0 : 1);
+        if (index >= count) {
             ctx.setError(GL_INVALID_VALUE);
             return nullptr;
         }

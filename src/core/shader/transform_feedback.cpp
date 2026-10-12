@@ -1,5 +1,6 @@
 #include "core/shader/transform_feedback.h"
 
+#include <algorithm>
 #include <set>
 
 namespace wmgl::shader {
@@ -78,7 +79,8 @@ bool layoutTransformFeedback(const std::vector<std::string>& varyings, GLenum mo
         return false;
     }
     std::set<std::string> seen;
-    uint32_t interleavedWords = 0, totalWords = 0;
+    // Interleaved: the limit applies to each buffer (GL 4.6 section 11.1.2.1).
+    uint32_t interleavedWords = 0, mostWords = 0;
     int buffer = 0;  // interleaved: the buffer being filled (gl_NextBuffer advances it)
     for (const std::string& varying : varyings) {
         // GL_ARB_transform_feedback3: gl_SkipComponents1-4 leaves components
@@ -99,8 +101,8 @@ bool layoutTransformFeedback(const std::vector<std::string>& varyings, GLenum mo
             v.offset = interleavedWords;
             if (skip) {
                 interleavedWords += static_cast<uint32_t>(v.size);
-                totalWords += static_cast<uint32_t>(v.size);
             } else {
+                mostWords = std::max(mostWords, interleavedWords);
                 result.xfbStride[buffer] = interleavedWords;
                 if (++buffer >= TransformFeedbackBufferLimit) {
                     log += "error: too many transform feedback buffers\n";
@@ -153,12 +155,11 @@ bool layoutTransformFeedback(const std::vector<std::string>& varyings, GLenum mo
             v.buffer = buffer;
             v.offset = interleavedWords;
             interleavedWords += static_cast<uint32_t>(v.components);
-            totalWords += static_cast<uint32_t>(v.components);
         }
         result.transformFeedback.push_back(v);
     }
     if (!separate) {
-        if (totalWords > maxInterleavedComponents) {
+        if (std::max(mostWords, interleavedWords) > maxInterleavedComponents) {
             log += "error: transform feedback varyings exceed MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS\n";
             return false;
         }

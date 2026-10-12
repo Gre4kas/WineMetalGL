@@ -150,6 +150,7 @@ struct AttribInfo {
     GLint size = 1;
     GLint location = -1;
     int locationCount = 1;     // matrices use one location per column
+    int component = 0;         // layout(component) (GL 4.4): its first component in the location
     bool array = false;        // declared as an array ("name[i]" names its elements)
     // A lowered legacy attribute (wmgl_Vertex for gl_Vertex, ...) at its
     // conventional-array location; the API reports it as gl_* at location -1.
@@ -180,6 +181,7 @@ struct InterfaceVariableInfo {
     GLint size = 1;
     GLint location = -1;         // -1: a built-in
     GLint locationIndex = -1;    // fragment outputs: layout(index)
+    GLint component = 0;         // layout(component) (GL 4.4)
     bool perPatch = false;
     uint32_t stageMask = 0;
 };
@@ -221,6 +223,7 @@ struct StageOutput {
         char kind;  // 'f', 'i', 'u', 'd'
         GLint attrib = -1;  // GL attribute supplying the data (-1: `location`)
         int part = 0;
+        int byteOffset = 0;  // 'd': where the data starts in its part (layout(component) packing)
         GLint source() const { return attrib >= 0 ? attrib : location; }
     };
     std::vector<VertexInput> vertexInputs;
@@ -360,6 +363,13 @@ struct LinkResult {
     uint32_t xfbStride[4] = {};      // 32-bit words per captured vertex, per buffer
     int xfbStream[4] = {};           // the vertex stream each buffer captures (geometry streams)
     int xfbBufferCount = 0;
+    // Whether a varying is captured into buffer `b` (enhanced layouts may
+    // leave buffers below xfbBufferCount unused; they need no binding).
+    bool xfbBufferUsed(int b) const {
+        for (const TransformFeedbackVarying& v : transformFeedback)
+            if (v.buffer == b && v.type != GL_NONE) return true;
+        return false;
+    }
     bool xfbVertexCapture = false;   // the vertex stage MSL writes captured vertices
     uint32_t defaultBlockSize = 0;
     // The default block's initial contents: values of uniform initializers

@@ -657,10 +657,7 @@ std::string tessEvaluationVertexShader(const TessStageInfo& info, const TessCont
     for (const TessVar& in : info.inputs) {
         if (in.patch) continue;
         const TessRecordField* f = find(vertexFields, varKey(in), in.location);
-        if (!f) {
-            log += "error: tessellation evaluation input '" + varKey(in) + "' is not written by the previous stage\n";
-            return std::string();
-        }
+        if (!f) continue;  // not written by the previous stage: undefined (GL allows it while unread)
         for (int e = 0; e < std::max(1, std::min(in.arraySize, f->elements)); ++e)
             v += load(access(in, "wmgl_j", e), in.glslType, in.type, "wmgl_b", f->offset + static_cast<uint32_t>(e * words(in.type)));
     }
@@ -676,10 +673,7 @@ std::string tessEvaluationVertexShader(const TessStageInfo& info, const TessCont
         for (const TessVar& in : info.inputs) {
             if (!in.patch) continue;
             const TessRecordField* f = find(control->patchFields, varKey(in), in.location);
-            if (!f) {
-                log += "error: tessellation evaluation patch input '" + varKey(in) + "' is not written by the control stage\n";
-                return std::string();
-            }
+            if (!f) continue;  // not written by the control stage: undefined
             for (int e = 0; e < std::max(1, std::min(in.arraySize, f->elements)); ++e)
                 v += "    " + access(in, "", e) + " = " +
                      glslLoadValue(in.glslType, in.type, "wmgl_tes_p",

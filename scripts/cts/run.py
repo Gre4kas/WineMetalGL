@@ -36,6 +36,14 @@ import xml.etree.ElementTree as ET
 
 MAX_ABORTS = 20  # platform aborts tolerated per shard before cases are marked Crash
 MUSTPASS_REL = "external/openglcts/data/gl_cts/data/mustpass/gl/khronos_mustpass/main"
+# The single-configuration lists (KHR-Single-GL4x: enhanced layouts, arrays of arrays).
+SINGLE_MUSTPASS_REL = "external/openglcts/data/gl_cts/data/mustpass/gl/khronos_mustpass_single/main"
+
+
+def mustpass_dir(caselist_name):
+    return SINGLE_MUSTPASS_REL if caselist_name.endswith("-khr-single.txt") else MUSTPASS_REL
+
+
 CASE_BEGIN = re.compile(r"^#beginTestCaseResult (\S+)")
 CASE_END = re.compile(r"^#(endTestCaseResult|terminateTestCaseResult)")
 STATUS = re.compile(r'<Result StatusCode="(\w+)"')
@@ -52,7 +60,7 @@ def find_cts_root(cts_exe):
 
 def load_configs(cts_root, caselist_name):
     """Return the mustpass command lines for a case list, in mustpass.xml order."""
-    tree = ET.parse(os.path.join(cts_root, MUSTPASS_REL, "mustpass.xml"))
+    tree = ET.parse(os.path.join(cts_root, mustpass_dir(caselist_name), "mustpass.xml"))
     configs = []
     for node in tree.iter("Configuration"):
         if node.get("caseListFile") == caselist_name:
@@ -64,7 +72,7 @@ def read_cases(args, cts_root):
     if args.caselist:
         path = args.caselist
     else:
-        path = os.path.join(cts_root, MUSTPASS_REL, args.mustpass)
+        path = os.path.join(cts_root, mustpass_dir(args.mustpass), args.mustpass)
     cases = []
     with open(path) as handle:
         for line in handle:

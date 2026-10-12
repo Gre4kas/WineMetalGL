@@ -21,7 +21,7 @@ void BeginTransformFeedback(Context& ctx, GLenum primitiveMode) {
     Program* p = lp->pipeline ? lp->stageOwner[static_cast<int>(shader::Stage::Vertex)] : ctx.state.program.get();
     // Every buffer the program captures into must be bound.
     for (int b = 0; b < lp->link.xfbBufferCount; ++b)
-        if (!xfb.buffers[b].buffer) return ctx.setError(GL_INVALID_OPERATION);
+        if (lp->link.xfbBufferUsed(b) && !xfb.buffers[b].buffer) return ctx.setError(GL_INVALID_OPERATION);
     xfb.active = true;
     xfb.paused = false;
     xfb.primitiveMode = primitiveMode;

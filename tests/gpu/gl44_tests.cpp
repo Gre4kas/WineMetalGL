@@ -635,3 +635,92 @@ GPU_TEST_VERSION(gpu_gl44_clear_texture_multisample, 44) {
     glDeleteFramebuffers(2, fbo);
     glDeleteTextures(2, tex);
 }
+
+// GL 4.4 vertex inputs that alias one location (whole or by component):
+// each reads its components of the same attribute.
+GPU_TEST_VERSION(gpu_gl44_vertex_input_aliasing, 44) {
+    const char* vs = R"(#version 440 core
+layout(location = 0) in vec2 pos;
+layout(location = 1, component = 0) in float a;
+layout(location = 1, component = 0) in float b;
+layout(location = 1, component = 2) in vec2 zw;
+flat out vec4 v;
+void main() {
+    v = vec4(a, b, zw);
+    gl_Position = vec4(pos, 0.0, 1.0);
+})";
+    const char* fs = "#version 440 core\nflat in vec4 v;\nout vec4 o;\nvoid main() { o = v; }\n";
+    GLuint p = gpu::program(vs, fs);
+    GLuint vao = gpu::quad();
+    const float values[4] = {0.25f, 0.5f, 0.75f, 1.0f};
+    glVertexAttrib4fv(1, values);
+    glUseProgram(p);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    CHECK_GL();
+    const std::vector<uint8_t> px = gpu::readRGBA8(8, 8, 1, 1);
+    const uint8_t want[4] = {64, 64, 191, 255};
+    if (!gpu::near(px.data(), want, 2)) std::fprintf(stderr, "  got (%d, %d, %d, %d)\n", px[0], px[1], px[2], px[3]);
+    CHECK(gpu::near(px.data(), want, 2));
+    // The same from a vertex buffer.
+    GLuint vbo = 0;
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    const float array[16] = {0.25f, 0.5f, 0.75f, 1.0f, 0.25f, 0.5f, 0.75f, 1.0f,
+                             0.25f, 0.5f, 0.75f, 1.0f, 0.25f, 0.5f, 0.75f, 1.0f};
+    glBufferData(GL_ARRAY_BUFFER, sizeof(array), array, GL_STATIC_DRAW);
+    glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, 0, nullptr);
+    glEnableVertexAttribArray(1);
+    glClearColor(0, 0, 0, 0);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    CHECK_GL();
+    const std::vector<uint8_t> fromArray = gpu::readRGBA8(8, 8, 1, 1);
+    if (!gpu::near(fromArray.data(), want, 2))
+        std::fprintf(stderr, "  array: got (%d, %d, %d, %d)\n", fromArray[0], fromArray[1], fromArray[2], fromArray[3]);
+    CHECK(gpu::near(fromArray.data(), want, 2));
+    glDeleteBuffers(1, &vbo);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
+}
+
+// GL 4.4 enhanced layouts: an array of double matrices captured by
+// xfb_offset (each element's columns in order, low word first).
+GPU_TEST_VERSION(gpu_gl44_xfb_double_matrices, 44) {
+    const char* vs = R"(#version 440 core
+layout(std140, binding = 0) uniform Values { dmat2 values[3]; };
+layout(location = 0, xfb_offset = 0) flat out dmat2 goku[3];
+void main() {
+    goku = values;
+    gl_Position = vec4(0.0);
+})";
+    const char* fs = "#version 440 core\nout vec4 o;\nvoid main() { o = vec4(1.0); }\n";
+    GLuint p = gpu::program(vs, fs);
+    GLuint buffers[2], vao = 0;
+    glGenBuffers(2, buffers);
+    // std140: each dmat2 column is a dvec2 at a 16-byte stride (no padding to 32).
+    double ubo[12];
+    for (int i = 0; i < 12; ++i) ubo[i] = 1.5 + i;
+    glBindBufferBase(GL_UNIFORM_BUFFER, 0, buffers[0]);
+    glBufferData(GL_UNIFORM_BUFFER, sizeof(ubo), ubo, GL_STATIC_DRAW);
+    glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 0, buffers[1]);
+    std::vector<double> init(12, -1.0);
+    glBufferData(GL_TRANSFORM_FEEDBACK_BUFFER, init.size() * 8, init.data(), GL_DYNAMIC_READ);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glUseProgram(p);
+    glEnable(GL_RASTERIZER_DISCARD);
+    glBeginTransformFeedback(GL_POINTS);
+    glDrawArrays(GL_POINTS, 0, 1);
+    glEndTransformFeedback();
+    glDisable(GL_RASTERIZER_DISCARD);
+    CHECK_GL();
+    double out[12] = {};
+    glGetBufferSubData(GL_TRANSFORM_FEEDBACK_BUFFER, 0, sizeof(out), out);
+    for (int i = 0; i < 12; ++i) {
+        if (out[i] != ubo[i]) std::fprintf(stderr, "  element %d: %g, expected %g\n", i, out[i], ubo[i]);
+        CHECK(out[i] == ubo[i]);
+    }
+    glDeleteVertexArrays(1, &vao);
+    glDeleteBuffers(2, buffers);
+    glDeleteProgram(p);
+}

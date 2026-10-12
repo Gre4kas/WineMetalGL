@@ -43,6 +43,7 @@ struct GeometryVar {
     int arraySize = 0;        // array size (0 = not an array); for inputs, of a block member (not the vertex index)
     std::string declaration;  // outputs: the original declaration line(s)
     int stream = 0;           // outputs: layout(stream = N) (GL 4.0 vertex streams)
+    int instanceSize = 0;     // outputs: elements of an array of blocks (0 = not an array)
 };
 
 struct GeometryShaderInfo {
