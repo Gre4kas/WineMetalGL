@@ -60,6 +60,11 @@ Local changes to vendored sources (each marked `WineMetalGL:` in the code):
 - SPIRV-Cross `spirv_msl.cpp`, `InterpolateAtOffset`: the GLSL offset is
   biased by 1/2 (upstream uses 7/16 for Intel GPUs), so on Apple GPUs an
   offset of `gl_SamplePosition - 0.5` interpolates exactly at the sample.
+- glslang `glslang/MachineIndependent/Initialize.cpp`: the
+  `GL_EXT_texture_shadow_lod` lookups with a bias (`texture` of
+  `sampler2DArrayShadow` and `samplerCubeArrayShadow`, `textureOffset` of
+  `sampler2DArrayShadow`) are declared for fragment shaders only, as every
+  lookup with a bias is.
 - glslang `glslang/MachineIndependent/{Versions.h,Versions.cpp,Initialize.cpp}`:
   `GL_ARB_texture_query_levels` (`textureQueryLevels` from GLSL 1.30 with the
   extension, as before from 4.30 without).
