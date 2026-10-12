@@ -229,6 +229,60 @@ void BindBufferBase(Context& ctx, GLenum target, GLuint index, GLuint name) {
     }
 }
 
+// ------------------------------------------------------------ multi-bind (GL 4.4)
+
+namespace {
+
+GLuint indexedBindingCount(GLenum target) {
+    switch (target) {
+    case GL_SHADER_STORAGE_BUFFER: return ContextState::kMaxShaderStorageBufferBindings;
+    case GL_ATOMIC_COUNTER_BUFFER: return ContextState::kMaxAtomicCounterBufferBindings;
+    case GL_UNIFORM_BUFFER: return ContextState::kMaxUniformBufferBindings;
+    default: return TransformFeedback::kMaxBuffers;
+    }
+}
+
+RefPtr<Buffer>& genericBinding(Context& ctx, GLenum target) {
+    switch (target) {
+    case GL_SHADER_STORAGE_BUFFER: return ctx.state.shaderStorageBuffer;
+    case GL_ATOMIC_COUNTER_BUFFER: return ctx.state.atomicCounterBuffer;
+    case GL_UNIFORM_BUFFER: return ctx.state.uniformBuffer;
+    default: return ctx.state.transformFeedbackBuffer;
+    }
+}
+
+// glBindBuffersBase/Range (GL 4.4 section 6.1.1): a range of indexed bindings
+// at once. A range past the last binding changes nothing; otherwise an error
+// in one binding leaves that binding alone and the others are still made. The
+// generic binding point is not changed.
+void bindBuffers(Context& ctx, const char* command, GLenum target, GLuint first, GLsizei count, const GLuint* buffers,
+                 const GLintptr* offsets, const GLsizeiptr* sizes) {
+    if (ctx.version() < 44 && !ctx.hasExtension("GL_ARB_multi_bind")) return ctx.unimplemented(command);
+    if (!indexedTarget(ctx, target)) return ctx.setError(GL_INVALID_ENUM);
+    if (count < 0) return ctx.setError(GL_INVALID_VALUE);
+    if (static_cast<uint64_t>(first) + static_cast<uint64_t>(count) > indexedBindingCount(target))
+        return ctx.setError(GL_INVALID_OPERATION);
+    if (target == GL_TRANSFORM_FEEDBACK_BUFFER && ctx.state.transformFeedback->active) return ctx.setError(GL_INVALID_OPERATION);
+    const RefPtr<Buffer> generic = genericBinding(ctx, target);
+    for (GLsizei i = 0; i < count; ++i) {
+        const GLuint name = buffers ? buffers[i] : 0;
+        if (offsets && sizes && name) BindBufferRange(ctx, target, first + static_cast<GLuint>(i), name, offsets[i], sizes[i]);
+        else BindBufferBase(ctx, target, first + static_cast<GLuint>(i), name);
+    }
+    genericBinding(ctx, target) = generic;
+}
+
+}  // namespace
+
+void BindBuffersBase(Context& ctx, GLenum target, GLuint first, GLsizei count, const GLuint* buffers) {
+    bindBuffers(ctx, "glBindBuffersBase", target, first, count, buffers, nullptr, nullptr);
+}
+
+void BindBuffersRange(Context& ctx, GLenum target, GLuint first, GLsizei count, const GLuint* buffers, const GLintptr* offsets,
+                      const GLsizeiptr* sizes) {
+    bindBuffers(ctx, "glBindBuffersRange", target, first, count, buffers, buffers ? offsets : nullptr, buffers ? sizes : nullptr);
+}
+
 void BufferData(Context& ctx, GLenum target, GLsizeiptr size, const void* data, GLenum usage) {
     if (size < 0) return ctx.setError(GL_INVALID_VALUE);
     if (!validUsage(usage)) return ctx.setError(GL_INVALID_ENUM);

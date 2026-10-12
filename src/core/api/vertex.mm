@@ -268,6 +268,54 @@ void BindVertexBuffer(Context& ctx, GLuint bindingindex, GLuint buffer, GLintptr
     ctx.markDirty(kDirtyVertexInput);
 }
 
+// glBindVertexBuffers (GL 4.4, GL_ARB_multi_bind): a range of the current
+// vertex array's buffer bindings. A null array unbinds them (offset 0,
+// stride 16); an error in one binding leaves it alone.
+void BindVertexBuffers(Context& ctx, GLuint first, GLsizei count, const GLuint* buffers, const GLintptr* offsets,
+                       const GLsizei* strides) {
+    if (ctx.version() < 44 && !ctx.hasExtension("GL_ARB_multi_bind")) return ctx.unimplemented("glBindVertexBuffers");
+    if (!attribBindings(ctx, "glBindVertexBuffers") || !bindingStateWritable(ctx)) return;
+    if (count < 0) return ctx.setError(GL_INVALID_VALUE);
+    if (static_cast<uint64_t>(first) + static_cast<uint64_t>(count) > static_cast<uint64_t>(VertexArray::kMaxBindings))
+        return ctx.setError(GL_INVALID_OPERATION);
+    VertexArray& vao = *currentVao(ctx);
+    for (GLsizei i = 0; i < count; ++i) {
+        const GLuint index = first + static_cast<GLuint>(i);
+        VertexBinding& b = vao.bindings[index];
+        if (!buffers) {
+            b.buffer = nullptr;
+            b.offset = 0;
+            b.stride = 16;
+            vao.resolveBinding(index);
+            continue;
+        }
+        const GLintptr offset = offsets[i];
+        const GLsizei stride = strides[i];
+        if (offset < 0 || stride < 0 || stride > limits::kMaxVertexAttribStride) {
+            ctx.setError(GL_INVALID_VALUE);
+            continue;
+        }
+        RefPtr<Buffer> object;
+        if (buffers[i]) {
+            ShareLock lock(ctx);
+            object = ctx.share().buffers.getRef(buffers[i]);
+            if (!object && ctx.share().buffers.isGenerated(buffers[i])) {
+                object = makeRef<Buffer>(buffers[i]);
+                ctx.share().buffers.set(buffers[i], object);
+            }
+        }
+        if (buffers[i] && !object) {
+            ctx.setError(GL_INVALID_OPERATION);
+            continue;
+        }
+        b.buffer = object;
+        b.offset = offset;
+        b.stride = stride;
+        vao.resolveBinding(index);
+    }
+    ctx.markDirty(kDirtyVertexInput);
+}
+
 void VertexAttribFormat(Context& ctx, GLuint attribindex, GLint size, GLenum type, GLboolean normalized, GLuint relativeoffset) {
     setFormat(ctx, attribindex, size, type, normalized != GL_FALSE, false, false, relativeoffset, "glVertexAttribFormat");
 }

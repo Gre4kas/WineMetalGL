@@ -48,3 +48,60 @@ GPU_TEST_VERSION(gpu_gl44_clear_texture, 44) {
     CHECK_EQ(glGetError(), static_cast<GLenum>(GL_INVALID_VALUE));
     glDeleteTextures(2, tex);
 }
+
+// GL_ARB_multi_bind: ranges of texture, sampler, buffer and vertex buffer
+// bindings, the indexed binding queries, and a range past the last unit.
+GPU_TEST_VERSION(gpu_gl44_multi_bind, 44) {
+    GLuint tex[2], samplers[2], buffers[3], vao = 0;
+    glGenTextures(2, tex);
+    glBindTexture(GL_TEXTURE_2D, tex[0]);
+    glBindTexture(GL_TEXTURE_3D, tex[1]);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glBindTexture(GL_TEXTURE_3D, 0);
+    glGenSamplers(2, samplers);
+    glBindTextures(4, 2, tex);
+    glBindSamplers(4, 2, samplers);
+    CHECK_GL();
+    GLint binding = -1;
+    glGetIntegeri_v(GL_TEXTURE_BINDING_2D, 4, &binding);
+    CHECK_EQ(binding, static_cast<GLint>(tex[0]));
+    glGetIntegeri_v(GL_TEXTURE_BINDING_3D, 5, &binding);
+    CHECK_EQ(binding, static_cast<GLint>(tex[1]));
+    glGetIntegeri_v(GL_SAMPLER_BINDING, 5, &binding);
+    CHECK_EQ(binding, static_cast<GLint>(samplers[1]));
+    glBindTextures(4, 2, nullptr);  // unbind both units
+    glGetIntegeri_v(GL_TEXTURE_BINDING_2D, 4, &binding);
+    CHECK_EQ(binding, 0);
+    glGenBuffers(3, buffers);
+    for (GLuint b : buffers) {
+        glBindBuffer(GL_UNIFORM_BUFFER, b);
+        glBufferData(GL_UNIFORM_BUFFER, 512, nullptr, GL_STATIC_DRAW);
+    }
+    glBindBuffer(GL_UNIFORM_BUFFER, buffers[0]);
+    const GLintptr offsets[3] = {0, 256, 0};
+    const GLsizeiptr sizes[3] = {64, 128, 256};
+    glBindBuffersRange(GL_UNIFORM_BUFFER, 1, 3, buffers, offsets, sizes);
+    CHECK_GL();
+    GLint64 start = -1;
+    glGetIntegeri_v(GL_UNIFORM_BUFFER_BINDING, 2, &binding);
+    CHECK_EQ(binding, static_cast<GLint>(buffers[1]));
+    glGetInteger64i_v(GL_UNIFORM_BUFFER_START, 2, &start);
+    CHECK_EQ(start, static_cast<GLint64>(256));
+    glGetIntegerv(GL_UNIFORM_BUFFER_BINDING, &binding);  // the generic binding is unchanged
+    CHECK_EQ(binding, static_cast<GLint>(buffers[0]));
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    const GLintptr vOffsets[2] = {16, 32};
+    const GLsizei strides[2] = {12, 24};
+    glBindVertexBuffers(0, 2, buffers, vOffsets, strides);
+    glGetIntegeri_v(GL_VERTEX_BINDING_STRIDE, 1, &binding);
+    CHECK_EQ(binding, 24);
+    CHECK_GL();
+    // A range past the last unit binds nothing.
+    glBindTextures(79, 2, tex);
+    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_INVALID_OPERATION));
+    glDeleteVertexArrays(1, &vao);
+    glDeleteBuffers(3, buffers);
+    glDeleteSamplers(2, samplers);
+    glDeleteTextures(2, tex);
+}

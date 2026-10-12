@@ -644,6 +644,34 @@ bool getIndexed(Context& ctx, GLenum pname, GLuint index, Value& out, bool& badI
     const ContextState& s = ctx.state;
     badIndex = false;
     switch (pname) {
+    // The texture and sampler bindings of a unit (GL 4.4, GL_ARB_multi_bind).
+    case GL_TEXTURE_BINDING_1D: case GL_TEXTURE_BINDING_2D: case GL_TEXTURE_BINDING_3D: case GL_TEXTURE_BINDING_1D_ARRAY:
+    case GL_TEXTURE_BINDING_2D_ARRAY: case GL_TEXTURE_BINDING_RECTANGLE: case GL_TEXTURE_BINDING_CUBE_MAP:
+    case GL_TEXTURE_BINDING_BUFFER: case GL_TEXTURE_BINDING_CUBE_MAP_ARRAY: case GL_TEXTURE_BINDING_2D_MULTISAMPLE:
+    case GL_TEXTURE_BINDING_2D_MULTISAMPLE_ARRAY: case GL_SAMPLER_BINDING: {
+        if (ctx.version() < 44 && !ctx.hasExtension("GL_ARB_multi_bind")) return false;
+        if (index >= static_cast<GLuint>(limits::kMaxCombinedTextureUnits)) { badIndex = true; return true; }
+        const TextureUnit& unit = s.textureUnits[index];
+        if (pname == GL_SAMPLER_BINDING) {
+            out = ints({unit.sampler ? static_cast<int64_t>(unit.sampler->name) : 0});
+            return true;
+        }
+        static const std::pair<GLenum, GLenum> kTargets[] = {
+            {GL_TEXTURE_BINDING_1D, GL_TEXTURE_1D}, {GL_TEXTURE_BINDING_2D, GL_TEXTURE_2D},
+            {GL_TEXTURE_BINDING_3D, GL_TEXTURE_3D}, {GL_TEXTURE_BINDING_1D_ARRAY, GL_TEXTURE_1D_ARRAY},
+            {GL_TEXTURE_BINDING_2D_ARRAY, GL_TEXTURE_2D_ARRAY}, {GL_TEXTURE_BINDING_RECTANGLE, GL_TEXTURE_RECTANGLE},
+            {GL_TEXTURE_BINDING_CUBE_MAP, GL_TEXTURE_CUBE_MAP}, {GL_TEXTURE_BINDING_BUFFER, GL_TEXTURE_BUFFER},
+            {GL_TEXTURE_BINDING_CUBE_MAP_ARRAY, GL_TEXTURE_CUBE_MAP_ARRAY},
+            {GL_TEXTURE_BINDING_2D_MULTISAMPLE, GL_TEXTURE_2D_MULTISAMPLE},
+            {GL_TEXTURE_BINDING_2D_MULTISAMPLE_ARRAY, GL_TEXTURE_2D_MULTISAMPLE_ARRAY}};
+        for (const auto& [binding, target] : kTargets) {
+            if (binding != pname) continue;
+            const int t = textureTargetIndex(target);
+            const Texture* tex = t >= 0 ? unit.bound[static_cast<size_t>(t)].get() : nullptr;
+            out = ints({tex ? static_cast<int64_t>(tex->name) : 0});
+        }
+        return true;
+    }
     case GL_MAX_COMPUTE_WORK_GROUP_COUNT: case GL_MAX_COMPUTE_WORK_GROUP_SIZE:
         if (!ctx.computeShaders()) return false;
         if (index >= 3) { badIndex = true; return true; }

@@ -2064,6 +2064,58 @@ void BindSampler(Context& ctx, GLuint unit, GLuint sampler) {
     ctx.markDirty(kDirtyTextures);
 }
 
+// glBindTextures and glBindSamplers (GL 4.4, GL_ARB_multi_bind): a range of
+// units at once. Zero (or a null array) resets every target of a unit to its
+// default texture, or removes its sampler. An error in one unit leaves it
+// alone; a range past the last unit changes nothing.
+void BindTextures(Context& ctx, GLuint first, GLsizei count, const GLuint* textures) {
+    if (ctx.version() < 44 && !ctx.hasExtension("GL_ARB_multi_bind")) return ctx.unimplemented("glBindTextures");
+    if (count < 0) return ctx.setError(GL_INVALID_VALUE);
+    if (static_cast<uint64_t>(first) + static_cast<uint64_t>(count) > static_cast<uint64_t>(kMaxCombinedTextureUnits))
+        return ctx.setError(GL_INVALID_OPERATION);
+    for (GLsizei i = 0; i < count; ++i) {
+        TextureUnit& unit = ctx.state.textureUnits[first + static_cast<GLuint>(i)];
+        const GLuint name = textures ? textures[i] : 0;
+        if (!name) {
+            for (size_t t = 0; t < unit.bound.size(); ++t) unit.bound[t] = ctx.defaultTextures[t];
+            continue;
+        }
+        RefPtr<Texture> tex;
+        {
+            ShareLock lock(ctx);
+            tex = ctx.share().textures.getRef(name);
+        }
+        const int index = tex ? textureTargetIndex(tex->target) : -1;
+        if (index < 0) {
+            ctx.setError(GL_INVALID_OPERATION);
+            continue;
+        }
+        unit.bound[static_cast<size_t>(index)] = tex;
+    }
+    ctx.markDirty(kDirtyTextures);
+}
+
+void BindSamplers(Context& ctx, GLuint first, GLsizei count, const GLuint* samplers) {
+    if (ctx.version() < 44 && !ctx.hasExtension("GL_ARB_multi_bind")) return ctx.unimplemented("glBindSamplers");
+    if (count < 0) return ctx.setError(GL_INVALID_VALUE);
+    if (static_cast<uint64_t>(first) + static_cast<uint64_t>(count) > static_cast<uint64_t>(kMaxCombinedTextureUnits))
+        return ctx.setError(GL_INVALID_OPERATION);
+    for (GLsizei i = 0; i < count; ++i) {
+        const GLuint name = samplers ? samplers[i] : 0;
+        RefPtr<Sampler> object;
+        if (name) {
+            ShareLock lock(ctx);
+            object = ctx.share().samplers.getRef(name);
+        }
+        if (name && !object) {
+            ctx.setError(GL_INVALID_OPERATION);
+            continue;
+        }
+        ctx.state.textureUnits[first + static_cast<GLuint>(i)].sampler = object;
+    }
+    ctx.markDirty(kDirtyTextures);
+}
+
 namespace {
 
 void samplerParameter(Context& ctx, GLuint sampler, GLenum pname, const ParamValues& v, bool vectorCall) {
