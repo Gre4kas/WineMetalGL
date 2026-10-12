@@ -326,6 +326,7 @@ tests/wine/fixture_version.h
 tests/wine/fixtures.txt
 tests/wine/opengl_1d.c
 tests/wine/opengl_blend.c
+tests/wine/opengl_buffer_storage.c
 tests/wine/opengl_clear_metal.c
 tests/wine/opengl_compute.c
 tests/wine/opengl_contexts.c

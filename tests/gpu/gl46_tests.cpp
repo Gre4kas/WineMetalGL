@@ -337,3 +337,83 @@ GPU_TEST_VERSION(gpu_gl46_many_images, 46) {
     glDeleteTextures(13, textures);
     glDeleteProgram(p);
 }
+
+// GL_ARB_shader_viewport_layer_array: a vertex shader picks the layer of a
+// layered framebuffer and the viewport.
+GPU_TEST_VERSION(gpu_gl46_vertex_layer_viewport, 46) {
+    GLuint p = gpu::program("#version 460 core\n#extension GL_ARB_shader_viewport_layer_array : require\n"
+                            "layout(location = 0) in vec2 position;\n"
+                            "uniform int layer;\n"
+                            "void main() {\n"
+                            "    gl_Position = vec4(position, 0.0, 1.0);\n"
+                            "    gl_Layer = layer;\n"
+                            "    gl_ViewportIndex = layer;\n"
+                            "}\n",
+                            "#version 460 core\nuniform vec4 color;\nout vec4 o;\nvoid main() { o = color; }\n");
+    glUseProgram(p);
+    GLuint tex = 0, fbo = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D_ARRAY, tex);
+    glTexStorage3D(GL_TEXTURE_2D_ARRAY, 1, GL_RGBA8, 64, 64, 2);
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, tex, 0);
+    CHECK_EQ(glCheckFramebufferStatus(GL_FRAMEBUFFER), static_cast<GLenum>(GL_FRAMEBUFFER_COMPLETE));
+    glClearColor(0, 0, 0, 0);
+    glClear(GL_COLOR_BUFFER_BIT);
+    // Viewport 0 is the left half, viewport 1 the right half.
+    glViewportIndexedf(0, 0, 0, 32, 64);
+    glViewportIndexedf(1, 32, 0, 32, 64);
+    GLuint vao = gpu::quad();
+    const GLint layer = glGetUniformLocation(p, "layer"), color = glGetUniformLocation(p, "color");
+    glUniform1i(layer, 0);
+    glUniform4f(color, 1, 0, 0, 1);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glUniform1i(layer, 1);
+    glUniform4f(color, 0, 1, 0, 1);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    CHECK_GL();
+    for (int l = 0; l < 2; ++l) {
+        glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, tex, 0, l);
+        CHECK(pixelIs(16, 32, l == 0 ? 255 : 0, 0, 0, l == 0 ? 255 : 0));
+        CHECK(pixelIs(48, 32, 0, l == 1 ? 255 : 0, 0, l == 1 ? 255 : 0));
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &tex);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
+}
+
+// GL_EXT_texture_shadow_lod: textureLod and texture with a bias on a 2D
+// array shadow sampler.
+GPU_TEST_VERSION(gpu_gl46_texture_shadow_lod, 46) {
+    GLuint p = gpu::program("#version 460 core\nlayout(location = 0) in vec2 position;\n"
+                            "void main() { gl_Position = vec4(position, 0.0, 1.0); }\n",
+                            "#version 460 core\n#extension GL_EXT_texture_shadow_lod : require\n"
+                            "uniform sampler2DArrayShadow t;\nout vec4 o;\n"
+                            "void main() {\n"
+                            "    float lod = textureLod(t, vec4(0.5, 0.5, 1.0, 0.5), 0.0);\n"
+                            "    float biased = texture(t, vec4(0.5, 0.5, 0.0, 0.5), 0.0);\n"
+                            "    o = vec4(lod, biased, 0.0, 1.0);\n"
+                            "}\n");
+    glUseProgram(p);
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D_ARRAY, tex);
+    // Layer 0 at depth 0.25, layer 1 at 0.75: a reference of 0.5 passes
+    // GL_LEQUAL against layer 1 only.
+    const float depths[2] = {0.25f, 0.75f};
+    glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_DEPTH_COMPONENT32F, 1, 1, 2, 0, GL_DEPTH_COMPONENT, GL_FLOAT, depths);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_REF_TO_TEXTURE);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_COMPARE_FUNC, GL_LEQUAL);
+    GLuint vao = gpu::quad();
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    CHECK_GL();
+    CHECK(pixelIs(32, 32, 255, 0, 0));
+    glDeleteVertexArrays(1, &vao);
+    glDeleteTextures(1, &tex);
+    glDeleteProgram(p);
+}

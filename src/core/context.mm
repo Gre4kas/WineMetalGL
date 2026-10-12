@@ -209,6 +209,11 @@ void Context::initStrings() {
     if (version >= 40)
         for (const char* name : {"GL_EXT_shader_integer_mix", "GL_ARB_polygon_offset_clamp", "GL_EXT_polygon_offset_clamp"})
             extensions_.push_back(name);
+    // gl_Layer and gl_ViewportIndex from vertex and tessellation evaluation
+    // shaders, which Metal vertex functions write natively (the geometry
+    // emulation's pass-through vertex function already does).
+    if (version >= 41) extensions_.push_back("GL_ARB_shader_viewport_layer_array");
+    if (version >= 40) extensions_.push_back("GL_EXT_texture_shadow_lod");
     extensionString_.clear();
     for (const std::string& ext : extensions_) {
         if (!extensionString_.empty()) extensionString_ += ' ';

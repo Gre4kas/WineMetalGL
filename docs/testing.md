@@ -43,7 +43,7 @@ The script puts the module's `opengl32.dll` into its prefix
 (`WINEMETALGL_MODULE_DIR`, default `build/wine-module`). The gate runs on
 stock Wine 11.0 and on MetalSharp's Wine 11.17.
 
-All 69 fixtures are in the gate (the 10 that need GL 4.4 to 4.6 features
+All 70 fixtures are in the gate (the 10 that need GL 4.4 to 4.6 features
 joined it with GL 4.6), each run as an x86_64 and an i386 guest.
 
 ## Khronos CTS
