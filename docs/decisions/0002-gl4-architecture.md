@@ -107,3 +107,26 @@ The errors only the named commands have (the GL 4.5 rules on names, targets and 
 - **Fallback.** That capture-while-drawing path is skipped when something else rewrites the list: provoking-vertex rotation for flat inputs, polygon-mode points, wide lines, tessellation. Those draws keep two passes.
 
 **Cost and limits.** Those remaining two-pass draws still run a memory-writing vertex shader twice.
+
+## SPIR-V shaders (GL 4.6, `ARB_gl_spirv`)
+
+**Question.** The compiler and every emulation (geometry, tessellation, transform feedback capture, fp64, border colours) start from GLSL. Should SPIR-V get its own path into Metal?
+
+**Decision.** No. `glSpecializeShader` turns the module into GLSL, and the existing path takes it as application source (`src/core/shader/spirv_input.cpp`). The translation:
+1. checks the entry point and specialization constant IDs (`INVALID_VALUE` otherwise);
+2. writes the constants into the module;
+3. emits GLSL 4.60 with SPIRV-Cross. A subclass declares GL atomic counters (`uniform atomic_uint`, the `atomicCounter*` functions) and `gl_PatchVerticesIn`, which SPIRV-Cross's GLSL lacks.
+
+Naming:
+- SPIR-V matches stage interfaces by location; GLSL by name.
+- Every inter-stage variable is named after its location (`wmgl_spv_<stage>_l<location>`).
+- At link time, a stage's inputs are renamed after the closest earlier stage's outputs.
+- Unnamed resources are named after their location or binding.
+- Program queries report those names as empty, and every name of a module without debug names (`spirvDisplayName`).
+
+The program binary keeps the translated GLSL, as for GLSL programs.
+
+**Cost and limits.**
+- A translation per `glSpecializeShader`.
+- Transform feedback varyings of a SPIR-V program report empty names even when the module names them.
+- Modules are not validated beyond what the translation and the GLSL compiler reject. `GL_SPIR_V_EXTENSIONS` lists the extensions the translation handles; others are refused.

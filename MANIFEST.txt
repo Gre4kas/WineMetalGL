@@ -137,6 +137,8 @@ src/core/shader/geometry.cpp
 src/core/shader/geometry.h
 src/core/shader/glsl_upgrade.cpp
 src/core/shader/glsl_upgrade.h
+src/core/shader/spirv_input.cpp
+src/core/shader/spirv_input.h
 src/core/shader/spirv_passes.cpp
 src/core/shader/spirv_passes.h
 src/core/shader/subroutines.cpp

@@ -1849,6 +1849,8 @@ static LinkResult linkImplCore(const LinkInput& input, const CaptureCode* captur
 static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, GeometryShaderInfo* geometry = nullptr,
                            LinkResult* geometryCapture = nullptr, TessellationLink* tessellation = nullptr) {
     LinkResult result = linkImplCore(input, capture, geometry, geometryCapture, tessellation);
+    result.spirv = input.spirv;
+    result.spirvUnnamed = input.spirvUnnamed;
     if (!result.ok && input.internal)
         if (const char* v = std::getenv("WINEMETALGL_DUMP_SHADERS"); v && v[0] == '1')
             for (const ShaderSource& shader : input.shaders)
@@ -2571,6 +2573,16 @@ static LinkResult linkImplCore(const LinkInput& input, const CaptureCode* captur
             for (auto& [name, index] : samplerUniformByName) index = map[static_cast<size_t>(index)];
             for (auto& [name, index] : imageUniformByName) index = map[static_cast<size_t>(index)];
             result.uniforms = std::move(kept);
+        }
+    }
+    // GL_MAX_COMBINED_IMAGE_UNIFORMS: an image uniform counts once per stage that uses it.
+    {
+        uint64_t combinedImages = 0;
+        for (const UniformInfo& u : result.uniforms)
+            if (u.imageSlot >= 0) combinedImages += static_cast<uint64_t>(u.size) * static_cast<uint64_t>(__builtin_popcount(u.stageMask));
+        if (combinedImages > static_cast<uint64_t>(wmgl::limits::kMaxCombinedImageUniforms)) {
+            result.log += "error: too many image uniforms in the program (GL_MAX_COMBINED_IMAGE_UNIFORMS)\n";
+            return result;
         }
     }
     for (SubroutineStageInfo& info : result.subroutines) {

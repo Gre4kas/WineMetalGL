@@ -298,6 +298,11 @@ public:
     bool compiled = false;   // glCompileShader has been called since the last source change
     bool compileStatus = false;
     std::string infoLog;
+    // GL_ARB_gl_spirv: the module glShaderBinary gave (SPIR_V_BINARY) and the
+    // GLSL glSpecializeShader made of it (shader/spirv_input.h).
+    bool spirv = false, specialized = false, spirvNamed = false;
+    std::vector<uint32_t> spirvWords;
+    std::string spirvGlsl;
     bool deletePending = false;
     int attachCount = 0;
 };

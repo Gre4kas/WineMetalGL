@@ -48,7 +48,8 @@ constexpr uint32_t kSlotTessVertices = 20, kSlotTessPatches = 21, kSlotTessContr
 // argument buffer (kSlotStorageBlocks), after or between its storage blocks.
 constexpr uint32_t kSlotFirstAtomicCounterBuffer = 20;
 constexpr uint32_t kMaxVertexAtomicCounterBuffers = 8;
-// Image uniforms (GL 4.2 image load/store): textures 16..23 of every stage.
+// Image uniforms (GL 4.2 image load/store): textures 16..23 of every stage
+// (Metal allows 8 read_write textures per function).
 constexpr uint32_t kSlotFirstImage = 16;
 constexpr uint32_t kMaxStageImages = 8;
 constexpr uint32_t kMaxStageAtomicCounterBuffers = 8;
@@ -84,6 +85,9 @@ struct LinkInput {
     // transformFeedbackVaryings list the outputs an emulation captures: no
     // MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS limit.
     bool captureLayout = false;
+    // GL_ARB_gl_spirv: the shaders are SPIR-V modules translated to GLSL
+    // (spirv_input.h); `spirvUnnamed`: one of them has no debug names.
+    bool spirv = false, spirvUnnamed = false;
 };
 
 struct UniformInfo {
@@ -375,6 +379,7 @@ struct LinkResult {
         return false;
     }
     bool xfbVertexCapture = false;   // the vertex stage MSL writes captured vertices
+    bool spirv = false, spirvUnnamed = false;  // LinkInput's: names as spirvDisplayName reports them
     uint32_t defaultBlockSize = 0;
     // The default block's initial contents: values of uniform initializers
     // ("uniform vec4 v = vec4(1.0);"), zero elsewhere.

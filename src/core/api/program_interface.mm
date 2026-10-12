@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "core/context.h"
+#include "core/shader/spirv_input.h"
 #include "core/program.h"
 #include "gl_api.gen.h"
 
@@ -174,7 +175,7 @@ bool resourceProperty(const Program& p, const LinkResult& link, Kind kind, Stage
     const bool referencedProp = referencedProperty(prop, referenced);
     if (prop == GL_NAME_LENGTH) {
         if (kind == Kind::AtomicCounterBuffer || kind == Kind::TransformFeedbackBuffer) return false;
-        out.push_back(static_cast<GLint>(resourceName(link, kind, stage, index).size() + 1));
+        out.push_back(static_cast<GLint>(shader::spirvDisplayName(link, resourceName(link, kind, stage, index)).size() + 1));
         return true;
     }
     switch (kind) {
@@ -346,7 +347,8 @@ void GetProgramInterfaceiv(Context& ctx, GLuint program, GLenum programInterface
         if (kind == Kind::Subroutine && link)
             for (const auto& f : link->subroutines[static_cast<int>(stage)].functions) n = std::max(n, static_cast<GLint>(f.name.size() + 1));
         else if (kind != Kind::Subroutine)
-            for (size_t i = 0; i < count; ++i) n = std::max(n, static_cast<GLint>(resourceName(*link, kind, stage, i).size() + 1));
+            for (size_t i = 0; i < count; ++i)
+                n = std::max(n, static_cast<GLint>(shader::spirvDisplayName(*link, resourceName(*link, kind, stage, i)).size() + 1));
         *params = n;
         return;
     }
@@ -418,7 +420,7 @@ void GetProgramResourceName(Context& ctx, GLuint program, GLenum programInterfac
     if (bufSize < 0) return ctx.setError(GL_INVALID_VALUE);
     const LinkResult* link = linkOf(*p);
     if (!validIndex(link, kind, stage, index)) return ctx.setError(GL_INVALID_VALUE);
-    const std::string s = resourceName(*link, kind, stage, index);
+    const std::string s = shader::spirvDisplayName(*link, resourceName(*link, kind, stage, index));
     if (length) *length = 0;
     if (bufSize <= 0 || !name) return;
     const GLsizei n = std::min<GLsizei>(bufSize - 1, static_cast<GLsizei>(s.size()));

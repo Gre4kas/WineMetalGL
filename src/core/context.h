@@ -105,6 +105,8 @@ public:
     bool atomicCounters() const { return version() >= 42 || hasExtension("GL_ARB_shader_atomic_counters"); }
     // Sample shading: GL 4.0 or GL_ARB_sample_shading.
     bool sampleShading() const { return version() >= 40 || hasExtension("GL_ARB_sample_shading"); }
+    // SPIR-V shaders: GL 4.6 or GL_ARB_gl_spirv.
+    bool glSpirv() const { return version() >= 46 || hasExtension("GL_ARB_gl_spirv"); }
     // Draw counts from PARAMETER_BUFFER: GL 4.6 or GL_ARB_indirect_parameters.
     bool indirectParameters() const { return version() >= 46 || hasExtension("GL_ARB_indirect_parameters"); }
 

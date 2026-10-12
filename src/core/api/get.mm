@@ -11,6 +11,7 @@
 #include "core/limits.h"
 #include "core/metal/device.h"
 #include "core/program.h"
+#include "core/shader/spirv_input.h"
 #include "gl_api.gen.h"
 
 namespace wmgl::api {
@@ -245,12 +246,19 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
     case GL_MAX_VARYING_VECTORS: out = ints({16}); return true;
     // GL_ARB_ES2_compatibility.
     case GL_SHADER_COMPILER: out = bools({true}); return true;
-    case GL_NUM_SHADER_BINARY_FORMATS: out = ints({0}); return true;
+    // GL 4.6 / GL_ARB_gl_spirv: SPIR-V is the one shader binary format.
+    case GL_NUM_SHADER_BINARY_FORMATS: out = ints({ctx.glSpirv() ? 1 : 0}); return true;
+    case GL_NUM_SPIR_V_EXTENSIONS:
+        if (!ctx.glSpirv()) return false;
+        out = ints({static_cast<int64_t>(shader::spirvExtensions().size())});
+        return true;
     case GL_NUM_PROGRAM_BINARY_FORMATS: case GL_PROGRAM_BINARY_FORMATS:
         if (ctx.version() < 41 && !ctx.hasExtension("GL_ARB_get_program_binary")) return false;
         out = pname == GL_NUM_PROGRAM_BINARY_FORMATS ? ints({1}) : ints({kProgramBinaryFormat});
         return true;
-    case GL_SHADER_BINARY_FORMATS: out = ints({}); return true;
+    case GL_SHADER_BINARY_FORMATS:
+        out = ctx.glSpirv() ? ints({GL_SHADER_BINARY_FORMAT_SPIR_V}) : ints({});
+        return true;
     case GL_IMPLEMENTATION_COLOR_READ_FORMAT:
     case GL_IMPLEMENTATION_COLOR_READ_TYPE: {
         GLenum format = GL_RGBA, type = GL_UNSIGNED_BYTE;

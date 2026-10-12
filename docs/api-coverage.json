@@ -190,6 +190,8 @@
   "GL_ARB_get_texture_sub_image",
   "GL_ARB_shader_texture_image_samples",
   "GL_KHR_context_flush_control",
+  "GL_ARB_gl_spirv",
+  "GL_ARB_spirv_extensions",
   "GL_ARB_indirect_parameters",
   "GL_ARB_pipeline_statistics_query",
   "GL_ARB_shader_atomic_counter_ops",

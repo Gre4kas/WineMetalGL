@@ -9,6 +9,7 @@
 #include "core/context.h"
 #include "core/draw.h"
 #include "core/metal/device.h"
+#include "core/shader/spirv_input.h"
 #include "core/util/version.h"
 #include "gl_api.gen.h"
 
@@ -714,6 +715,14 @@ const GLubyte* GetStringi(Context& ctx, GLenum name, GLuint index) {
             return nullptr;
         }
         return reinterpret_cast<const GLubyte*>(ctx.extensions()[index].c_str());
+    }
+    if (name == GL_SPIR_V_EXTENSIONS && ctx.glSpirv()) {
+        const auto& extensions = shader::spirvExtensions();
+        if (index >= extensions.size()) {
+            ctx.setError(GL_INVALID_VALUE);
+            return nullptr;
+        }
+        return reinterpret_cast<const GLubyte*>(extensions[index]);
     }
     if (name == GL_SHADING_LANGUAGE_VERSION && ctx.version() >= 43) {
         // "4N0 core" for every 4.N up to the context's, then the 3.x and 1.x
