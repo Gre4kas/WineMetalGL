@@ -122,6 +122,54 @@
    "notes": "The same frame from a 4.3 core context: the terrain from a multi-draw indirect command, tonemapped by a compute shader that stores the image and counts its pixels in a shader storage block (GL 4.3, beyond Apple's OpenGL), then displayed by a second pass."
   },
   {
+   "name": "scene4x-core44",
+   "tier": "B",
+   "kind": "demo",
+   "binary": "demos/scene4x.exe",
+   "args": [
+    "--frames",
+    "60",
+    "--profile",
+    "core44"
+   ],
+   "reference": "scene4x-core41",
+   "tolerance": 0.005,
+   "apple": false,
+   "notes": "The same frame from a 4.4 core context: immutable buffer storage, the pixel count persistently mapped (reset and read through the mapping behind a fence), multi-bind, texture clears in place of glClear, and enhanced layouts (normal and height packed by component, an explicit block offset)."
+  },
+  {
+   "name": "scene4x-core45",
+   "tier": "B",
+   "kind": "demo",
+   "binary": "demos/scene4x.exe",
+   "args": [
+    "--frames",
+    "60",
+    "--profile",
+    "core45"
+   ],
+   "reference": "scene4x-core41",
+   "tolerance": 0.005,
+   "apple": false,
+   "notes": "The same frame from a 4.5 core context: every object created with direct state access, a cull distance culling triangles beyond the left clip plane, and the stored image's centre read back with glGetTextureSubImage and compared with the displayed pixel."
+  },
+  {
+   "name": "scene4x-core46",
+   "tier": "B",
+   "kind": "demo",
+   "binary": "demos/scene4x.exe",
+   "args": [
+    "--frames",
+    "60",
+    "--profile",
+    "core46"
+   ],
+   "reference": "scene4x-core41",
+   "tolerance": 0.005,
+   "apple": false,
+   "notes": "The same frame from a 4.6 core context: four indirect draws whose count comes from a parameter buffer, with gl_DrawID and gl_BaseInstance cancelling out in the vertex shader; statistics queries checking the submitted vertices and patches and the compute invocations; a vote in the compute shader; the display pass in SPIR-V."
+  },
+  {
    "name": "legacy-gl21",
    "tier": "C",
    "kind": "demo",

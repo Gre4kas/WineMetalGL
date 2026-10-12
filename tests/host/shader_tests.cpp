@@ -563,3 +563,12 @@ TEST(shader_unsized_arrays_of_arrays_with_initializer) {
     if (!r.ok) std::fprintf(stderr, "%s\n", r.log.c_str());
     CHECK(r.ok);
 }
+
+// Draw parameters and gl_DepthRange become hidden uniforms declared before
+// the first code, never inside a #define line before it.
+TEST(shader_builtin_uniforms_after_defines) {
+    CHECK(compile(Stage::Vertex, "#version 460 core\n#define CULL 1\n#define SHIFT \\\n  7\n"
+                                 "layout(location = 0) in vec2 grid;\nout vec2 v;\n"
+                                 "void main() { v = grid + vec2(float(gl_BaseInstance - SHIFT * gl_DrawID));\n"
+                                 "#if CULL\n  gl_Position = vec4(gl_DepthRange.near);\n#endif\n}\n").ok);
+}

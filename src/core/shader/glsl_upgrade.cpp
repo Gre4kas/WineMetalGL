@@ -647,6 +647,7 @@ std::string lowerBuiltinUniforms(Stage stage, const std::string& source) {
     std::string out;
     out.reserve(source.size() + 256);
     bool depthRange = false, numSamples = false, lineStart = true;
+    bool inDefine = false;  // in a #define line: its body is rewritten, but declarations never go there
     std::set<std::string> parameters;  // draw parameters used: "BaseVertex", "BaseInstance", "DrawID"
     size_t insertAt = std::string::npos;  // before the first token, outside any #if block
     int conditionalDepth = 0;
@@ -659,6 +660,12 @@ std::string lowerBuiltinUniforms(Stage stage, const std::string& source) {
             out += c;
             ++i;
             lineStart = true;
+            inDefine = false;
+            continue;
+        }
+        if (c == '\\' && i + 1 < n && source[i + 1] == '\n') {  // a continued line
+            out.append(source, i, 2);
+            i += 2;
             continue;
         }
         if (std::isspace(static_cast<unsigned char>(c))) {
@@ -702,10 +709,11 @@ std::string lowerBuiltinUniforms(Stage stage, const std::string& source) {
             out.append(source, i, nameEnd - i);
             i = nameEnd;
             lineStart = false;
+            inDefine = true;
             continue;
         }
-        if (insertAt == std::string::npos && conditionalDepth == 0) insertAt = out.size();
-        if (insertAt == std::string::npos && conditionalDepth > 0) insertAt = conditionalStart;
+        if (insertAt == std::string::npos && !inDefine && conditionalDepth == 0) insertAt = out.size();
+        if (insertAt == std::string::npos && !inDefine && conditionalDepth > 0) insertAt = conditionalStart;
         lineStart = false;
         if (isIdentStart(c)) {
             size_t end = i;
