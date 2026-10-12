@@ -662,8 +662,10 @@ bool DrawState::bindVertexInputs(id<MTLRenderCommandEncoder> encoder, PipelineKe
         if (gathered) {
             count = static_cast<uint32_t>(group.front()->order->size());
         } else if (divisor) {
-            // One element per `divisor` instances, from the base instance.
-            count = baseInstance_ + static_cast<uint32_t>((std::max<GLsizei>(1, instances) + divisor - 1) / divisor);
+            // One element per `divisor` instances, from the base instance (in 64
+            // bits: wined3d's per-instance elements of step rate 0 use UINT_MAX).
+            count = baseInstance_ +
+                    static_cast<uint32_t>((static_cast<uint64_t>(std::max<GLsizei>(1, instances)) + divisor - 1) / divisor);
         } else {
             first = static_cast<uint32_t>(std::max(0, firstVertex));
             count = static_cast<uint32_t>(std::max(0, vertexCount));
@@ -1073,8 +1075,8 @@ void DrawState::samplerBinding(LinkedProgram& program, size_t index, __strong id
                                  ? ctx_.state.textureUnits[unit].sampler.get()
                                  : nullptr;
     if (texture && textureComplete(ctx_, *texture, samplerObject ? &samplerObject->params : &texture->sampler)) {
-        view = samplingView(ctx_, *texture);
         SamplerParams params = samplerObject ? samplerObject->params : texture->sampler;
+        view = samplingView(ctx_, *texture, params.srgbDecode == GL_SKIP_DECODE_EXT);
         params.lodBias += compat::textureUnitLodBias(ctx_, unit);  // glTexEnv(GL_TEXTURE_FILTER_CONTROL)
         sampler = samplerState(ctx_, *texture, params, slot.shadow);
         texture->lastUseSerial = ctx_.stream().serial();

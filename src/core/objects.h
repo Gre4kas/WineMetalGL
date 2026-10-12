@@ -88,6 +88,7 @@ struct SamplerParams {
     GLenum compareMode = GL_NONE;
     GLenum compareFunc = GL_LEQUAL;
     GLfloat maxAnisotropy = 1.0f;
+    GLenum srgbDecode = GL_DECODE_EXT;  // GL_EXT_texture_sRGB_decode
     union {
         GLfloat f[4];
         GLint i[4];

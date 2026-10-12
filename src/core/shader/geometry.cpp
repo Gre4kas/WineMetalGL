@@ -4,6 +4,7 @@
 #include <cctype>
 #include <cstdlib>
 #include <map>
+#include <regex>
 #include <sstream>
 
 #include "core/shader/glsl_upgrade.h"
@@ -304,7 +305,10 @@ bool parseGeometryGlsl(const std::string& glsl, GeometryShaderInfo& info, std::s
             int arraySize = 0, innerSize = 0;
             const std::string direction = parseVariable(flat, type, name, arraySize, &innerSize);
             if (direction.empty()) {
-                info.globals += flat + "\n";
+                // "invariant gl_Position;" (wined3d) names a built-in output the
+                // kernel, a compute shader, does not have.
+                static const std::regex kBuiltinQualifier(R"(^\s*(invariant|precise)\s+gl_\w+(\s*,\s*gl_\w+)*\s*;?\s*$)");
+                if (!std::regex_match(flat, kBuiltinQualifier)) info.globals += flat + "\n";
                 continue;
             }
             const GLenum glType = glslTypeEnum(type);

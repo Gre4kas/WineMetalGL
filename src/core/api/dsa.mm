@@ -457,6 +457,7 @@ bool parameterTarget(Context& ctx, const Texture& tex, GLenum pname) {
     case GL_TEXTURE_MIN_FILTER: case GL_TEXTURE_MAG_FILTER: case GL_TEXTURE_WRAP_S: case GL_TEXTURE_WRAP_T:
     case GL_TEXTURE_WRAP_R: case GL_TEXTURE_MIN_LOD: case GL_TEXTURE_MAX_LOD: case GL_TEXTURE_LOD_BIAS:
     case GL_TEXTURE_COMPARE_MODE: case GL_TEXTURE_COMPARE_FUNC: case GL_TEXTURE_BORDER_COLOR: case GL_TEXTURE_MAX_ANISOTROPY:
+    case GL_TEXTURE_SRGB_DECODE_EXT:
         if (multisample) return ctx.setError(GL_INVALID_OPERATION), false;
         break;
     default: break;

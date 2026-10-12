@@ -213,6 +213,9 @@ void Context::initStrings() {
     // shaders, which Metal vertex functions write natively (the geometry
     // emulation's pass-through vertex function already does).
     if (version >= 41) extensions_.push_back("GL_ARB_shader_viewport_layer_array");
+    // Sampling sRGB textures without decoding: wined3d renders to sRGB
+    // targets (GL_ARB_framebuffer_sRGB) only with it.
+    extensions_.push_back("GL_EXT_texture_sRGB_decode");
     if (version >= 40) extensions_.push_back("GL_EXT_texture_shadow_lod");
     extensionString_.clear();
     for (const std::string& ext : extensions_) {

@@ -418,13 +418,15 @@ bool textureTransferCompatible(GLenum format, GLenum type, const FormatInfo& inf
 }
 
 // Whether an internal format may be used with a target (depth formats only
-// on 1D/2D-like targets; compressed formats only on 2D-like targets).
+// on 1D/2D-like targets; compressed formats only on 2D-like targets, and
+// BPTC on 3D textures too: GL 4.6 table 8.14).
 bool formatAllowedOnTarget(const FormatInfo& info, GLenum target) {
     if (info.isDepthOrStencil())
         return target != GL_TEXTURE_3D;
     if (info.compressed)
         return target == GL_TEXTURE_2D || target == GL_TEXTURE_2D_ARRAY || target == GL_TEXTURE_CUBE_MAP ||
-               target == GL_TEXTURE_CUBE_MAP_ARRAY;
+               target == GL_TEXTURE_CUBE_MAP_ARRAY || (target == GL_TEXTURE_3D && info.storage >= Storage::BC6H_RGBFloat &&
+                                                       info.storage <= Storage::BC7_RGBAUnorm_sRGB);
     return true;
 }
 
@@ -878,6 +880,10 @@ GLenum setSamplerParam(SamplerParams& p, GLenum pname, const ParamValues& v, GLe
         if (v.f[0] < 1.0) return GL_INVALID_VALUE;
         p.maxAnisotropy = static_cast<GLfloat>(std::min<double>(v.f[0], kMaxAnisotropy));
         return GL_NO_ERROR;
+    case GL_TEXTURE_SRGB_DECODE_EXT:  // GL_EXT_texture_sRGB_decode
+        if (!enumValue(v, e) || (e != GL_DECODE_EXT && e != GL_SKIP_DECODE_EXT)) return GL_INVALID_ENUM;
+        p.srgbDecode = e;
+        return GL_NO_ERROR;
     case GL_TEXTURE_BORDER_COLOR:
         for (int i = 0; i < 4; ++i) {
             switch (v.kind) {
@@ -899,7 +905,7 @@ bool isSamplerParam(GLenum pname) {
     case GL_TEXTURE_MIN_FILTER: case GL_TEXTURE_MAG_FILTER: case GL_TEXTURE_WRAP_S: case GL_TEXTURE_WRAP_T:
     case GL_TEXTURE_WRAP_R: case GL_TEXTURE_MIN_LOD: case GL_TEXTURE_MAX_LOD: case GL_TEXTURE_LOD_BIAS:
     case GL_TEXTURE_COMPARE_MODE: case GL_TEXTURE_COMPARE_FUNC: case GL_TEXTURE_MAX_ANISOTROPY:
-    case GL_TEXTURE_BORDER_COLOR:
+    case GL_TEXTURE_BORDER_COLOR: case GL_TEXTURE_SRGB_DECODE_EXT:
         return true;
     default: return false;
     }
@@ -980,6 +986,7 @@ bool getSamplerParam(const SamplerParams& p, GLenum pname, ParamValues& out) {
     case GL_TEXTURE_COMPARE_MODE: setEnum(p.compareMode); return true;
     case GL_TEXTURE_COMPARE_FUNC: setEnum(p.compareFunc); return true;
     case GL_TEXTURE_MAX_ANISOTROPY: setFloat(p.maxAnisotropy); return true;
+    case GL_TEXTURE_SRGB_DECODE_EXT: setEnum(p.srgbDecode); return true;
     case GL_TEXTURE_BORDER_COLOR:
         out.count = 4;
         if (p.borderIsInteger) {
@@ -1544,6 +1551,11 @@ int viewClass(GLenum f) {
     case GL_COMPRESSED_RG_RGTC2: case GL_COMPRESSED_SIGNED_RG_RGTC2: return 1002;
     case GL_COMPRESSED_RGBA_BPTC_UNORM: case GL_COMPRESSED_SRGB_ALPHA_BPTC_UNORM: return 1003;
     case GL_COMPRESSED_RGB_BPTC_SIGNED_FLOAT: case GL_COMPRESSED_RGB_BPTC_UNSIGNED_FLOAT: return 1004;
+    // GL_ARB_texture_view with S3TC and sRGB: wined3d's sRGB views of typeless BC textures.
+    case GL_COMPRESSED_RGB_S3TC_DXT1_EXT: case GL_COMPRESSED_SRGB_S3TC_DXT1_EXT: return 1005;
+    case GL_COMPRESSED_RGBA_S3TC_DXT1_EXT: case GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT1_EXT: return 1006;
+    case GL_COMPRESSED_RGBA_S3TC_DXT3_EXT: case GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT3_EXT: return 1007;
+    case GL_COMPRESSED_RGBA_S3TC_DXT5_EXT: case GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT5_EXT: return 1008;
     default: return 0;
     }
 }

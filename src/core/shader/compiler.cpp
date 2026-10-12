@@ -678,6 +678,7 @@ std::string insertAfterDirectives(const std::string& source, const std::string& 
 }
 
 std::string raiseComputeVersion(Stage stage, const std::string& source);
+std::string relaxBitcastConstants(const std::string& source);
 
 // Whether a shader object defines main() (one of several objects per stage
 // may only hold helper functions). Comments and directives are skipped.
@@ -740,7 +741,8 @@ bool parseForCodegen(Stage stage, const std::string& original, ParsedShader& out
         return false;
     }
     UpgradeResult upgraded =
-        upgradeLegacyGlsl(stage, lowerBuiltinUniforms(stage, raiseComputeVersion(stage, subroutines.source)), upgrade);
+        upgradeLegacyGlsl(stage, lowerBuiltinUniforms(stage, raiseComputeVersion(stage, relaxBitcastConstants(subroutines.source))),
+                          upgrade);
     if (!upgraded.ok) {
         log += upgraded.log;
         return false;
@@ -1279,6 +1281,58 @@ namespace {
 // Extensions glslang takes only in a later GLSL version. GL_ARB_compute_shader
 // makes compute shaders available to any GLSL version; glslang only accepts
 // them from 4.20, so such sources are compiled as 4.30.
+// Global constants initialized from bit casts ("const vec4 c =
+// intBitsToFloat(ivec4(...));", which wined3d writes for literal constants):
+// GLSL counts built-in calls on constant expressions as constant expressions,
+// but glslang does not fold the bit casts and rejects the declaration. The
+// const goes, so the value is computed with its exact bits (NaN payloads
+// included) when the shader starts.
+std::string relaxBitcastConstants(const std::string& source) {
+    if (source.find("BitsTo") == std::string::npos) return source;
+    std::string out = source;
+    const size_t n = out.size();
+    int depth = 0;
+    bool statementStart = true;
+    for (size_t i = 0; i < n;) {
+        const char c = out[i];
+        if (out.compare(i, 2, "//") == 0) {
+            while (i < n && out[i] != '\n') ++i;
+            continue;
+        }
+        if (out.compare(i, 2, "/*") == 0) {
+            const size_t end = out.find("*/", i + 2);
+            i = end == std::string::npos ? n : end + 2;
+            continue;
+        }
+        if (c == '#' && statementStart) {  // directives end at their line
+            while (i < n && out[i] != '\n') ++i;
+            continue;
+        }
+        if (c == '{') ++depth;
+        if (c == '}') --depth;
+        if (c == ';' || c == '{' || c == '}') {
+            statementStart = true;
+            ++i;
+            continue;
+        }
+        if (std::isspace(static_cast<unsigned char>(c))) {
+            ++i;
+            continue;
+        }
+        if (depth == 0 && statementStart && out.compare(i, 5, "const") == 0 && i + 5 < n &&
+            std::isspace(static_cast<unsigned char>(out[i + 5]))) {
+            const size_t end = out.find(';', i);
+            const size_t equals = out.find('=', i);
+            if (end != std::string::npos && equals != std::string::npos && equals < end &&
+                out.substr(equals, end - equals).find("BitsTo") != std::string::npos)
+                out.replace(i, 5, "     ");  // same length: line and column numbers stay
+        }
+        statementStart = false;
+        ++i;
+    }
+    return out;
+}
+
 std::string raiseComputeVersion(Stage stage, const std::string& source) {
     std::string raised = source;
     // GL_ARB_cull_distance (GLSL 4.50 core): glslang has gl_CullDistance in
@@ -1417,7 +1471,8 @@ CompileResult compile(Stage stage, const std::string& original) {
         result.log = subroutines.log;
         return result;
     }
-    const std::string source = lowerBuiltinUniforms(stage, raiseComputeVersion(stage, subroutines.source));
+    const std::string source =
+        lowerBuiltinUniforms(stage, raiseComputeVersion(stage, relaxBitcastConstants(subroutines.source)));
     // Status and log come from a plain GL parse, which accepts every GLSL
     // version and profile with GL's own rules.
     const EShLanguage lang = language(stage);

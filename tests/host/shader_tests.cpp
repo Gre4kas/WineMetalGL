@@ -572,3 +572,14 @@ TEST(shader_builtin_uniforms_after_defines) {
                                  "void main() { v = grid + vec2(float(gl_BaseInstance - SHIFT * gl_DrawID));\n"
                                  "#if CULL\n  gl_Position = vec4(gl_DepthRange.near);\n#endif\n}\n").ok);
 }
+
+// wined3d's literal constants: a global const initialized from a bit cast.
+TEST(shader_bitcast_global_constants) {
+    CHECK(compile(Stage::Fragment, "#version 440\n"
+                                   "const vec4 lc0 = intBitsToFloat(ivec4(0x3f800000 /* 1.0 */, 0, 0, 0x3f000000));\n"
+                                   "const uvec2 lc1 = floatBitsToUint(vec2(1.0, 2.0));\nout vec4 o;\n"
+                                   "void main() { o = lc0 + vec4(lc1.xyxy); }\n").ok);
+    // A const used where a constant expression is required keeps its const.
+    CHECK(compile(Stage::Fragment, "#version 440\nconst int n = 2;\nuniform vec4 v[n];\nout vec4 o;\n"
+                                   "void main() { o = v[1]; }\n").ok);
+}

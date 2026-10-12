@@ -339,7 +339,12 @@ void CompileShader(Context& ctx, GLuint shader) {
     s->compiled = true;
     s->compileStatus = result.ok;
     s->infoLog = result.log;
-    if (!result.ok) WMGL_INFO("shader %u failed to compile:\n%s", shader, result.log.c_str());
+    if (!result.ok) {
+        WMGL_INFO("shader %u failed to compile:\n%s", shader, result.log.c_str());
+        // WINEMETALGL_DUMP_SHADERS=1 also prints the source.
+        if (const char* v = std::getenv("WINEMETALGL_DUMP_SHADERS"); v && v[0] == '1')
+            std::fprintf(stderr, "winemetalgl: shader %u source:\n%s\n", shader, s->source.c_str());
+    }
 }
 
 void DeleteShader(Context& ctx, GLuint shader) {

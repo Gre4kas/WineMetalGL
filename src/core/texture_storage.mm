@@ -402,7 +402,28 @@ bool textureComplete(Context& ctx, Texture& tex, const SamplerParams* params) {
     return ensureTextureStorage(ctx, tex);
 }
 
-id<MTLTexture> samplingView(Context& ctx, Texture& tex) {
+namespace {
+
+// The format an sRGB format's texels are read as without decoding
+// (GL_SKIP_DECODE_EXT); other formats are their own.
+MTLPixelFormat withoutSrgb(MTLPixelFormat f) {
+    switch (f) {
+    case MTLPixelFormatRGBA8Unorm_sRGB: return MTLPixelFormatRGBA8Unorm;
+    case MTLPixelFormatBGRA8Unorm_sRGB: return MTLPixelFormatBGRA8Unorm;
+    case MTLPixelFormatBC1_RGBA_sRGB: return MTLPixelFormatBC1_RGBA;
+    case MTLPixelFormatBC2_RGBA_sRGB: return MTLPixelFormatBC2_RGBA;
+    case MTLPixelFormatBC3_RGBA_sRGB: return MTLPixelFormatBC3_RGBA;
+    case MTLPixelFormatBC7_RGBAUnorm_sRGB: return MTLPixelFormatBC7_RGBAUnorm;
+    case MTLPixelFormatETC2_RGB8_sRGB: return MTLPixelFormatETC2_RGB8;
+    case MTLPixelFormatETC2_RGB8A1_sRGB: return MTLPixelFormatETC2_RGB8A1;
+    case MTLPixelFormatEAC_RGBA8_sRGB: return MTLPixelFormatEAC_RGBA8;
+    default: return f;
+    }
+}
+
+}  // namespace
+
+id<MTLTexture> samplingView(Context& ctx, Texture& tex, bool skipSrgbDecode) {
     if (tex.target == GL_TEXTURE_BUFFER) return bufferTextureView(ctx, tex);
     const TextureImage& baseImage = tex.baseImage();
     const FormatInfo* format = baseImage.format;
@@ -417,6 +438,7 @@ id<MTLTexture> samplingView(Context& ctx, Texture& tex) {
     // Depth/stencil textures sample depth by default; stencil sampling (GL 4.3) uses the stencil view.
     if (viewFormat == MTLPixelFormatDepth32Float_Stencil8 && tex.depthStencilMode == GL_STENCIL_INDEX)
         viewFormat = MTLPixelFormatX32_Stencil8;
+    if (skipSrgbDecode) viewFormat = withoutSrgb(viewFormat);
     const uint64_t key = (static_cast<uint64_t>(base) << 56) | (static_cast<uint64_t>(levelCount) << 48) |
                          (static_cast<uint64_t>(viewFormat) << 32) | (static_cast<uint64_t>(swizzle[0] & 0xff) << 24) |
                          (static_cast<uint64_t>(swizzle[1] & 0xff) << 16) | (static_cast<uint64_t>(swizzle[2] & 0xff) << 8) |

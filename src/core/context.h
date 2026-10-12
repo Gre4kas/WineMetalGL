@@ -126,6 +126,7 @@ public:
     // Occlusion-query slot of the current pass (see core/query.h).
     struct {
         uint64_t pass = 0, epoch = 0;
+        uint64_t samplesBound = 0;  // samples the slot's draws can have counted
         bool valid = false;
     } occlusionSlot;
     uint64_t occlusionEpoch = 1;

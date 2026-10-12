@@ -205,6 +205,7 @@
   "GL_ARB_polygon_offset_clamp",
   "GL_EXT_polygon_offset_clamp",
   "GL_ARB_shader_viewport_layer_array",
+  "GL_EXT_texture_sRGB_decode",
   "GL_EXT_texture_shadow_lod"
  ]
 }

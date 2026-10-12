@@ -224,14 +224,26 @@ void queriesBeforeDraw(Context& ctx, id<MTLRenderCommandEncoder> encoder) {
     if (!anyOcclusionActive(ctx)) return;
     auto& slot = ctx.occlusionSlot;
     const uint64_t pass = ctx.stream().passGeneration();
-    if (slot.valid && slot.pass == pass && slot.epoch == ctx.occlusionEpoch) return;
+    // Apple GPUs count a slot's samples in 32 bits: a slot takes draws while
+    // the samples they can cover (the whole target once each) fit in 31 bits,
+    // then the pass moves on to a new slot.
+    const RenderTargetDesc& target = ctx.stream().currentTarget();
+    const uint64_t drawBound = static_cast<uint64_t>(target.width) * target.height * std::max(1u, target.samples) *
+                               std::max(1u, target.layers);
+    const bool current = slot.valid && slot.pass == pass && slot.epoch == ctx.occlusionEpoch;
+    if (current && slot.samplesBound + drawBound < (1ull << 31)) {
+        slot.samplesBound += drawBound;
+        return;
+    }
     id<MTLBuffer> buffer = nil;
     NSUInteger offset = 0;
     if (!ctx.stream().allocateVisibilitySlot(buffer, offset)) {
+        if (current) return;  // the pass's last slot keeps counting
         logOnce(LogLevel::Warn, "visibility-slots", "occlusion query slots exhausted; samples not counted");
         return;
     }
     [encoder setVisibilityResultMode:MTLVisibilityResultModeCounting offset:offset];
+    slot.samplesBound = drawBound;
     slot.valid = true;
     slot.pass = pass;
     slot.epoch = ctx.occlusionEpoch;

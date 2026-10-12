@@ -1,5 +1,6 @@
 // GL 4.6 features (contexts above 4.5 go through the development override
 // until the version is advertised).
+#include <cstdlib>
 #include <cstring>
 #include <string>
 
@@ -415,5 +416,360 @@ GPU_TEST_VERSION(gpu_gl46_texture_shadow_lod, 46) {
     CHECK(pixelIs(32, 32, 255, 0, 0));
     glDeleteVertexArrays(1, &vao);
     glDeleteTextures(1, &tex);
+    glDeleteProgram(p);
+}
+
+// wined3d's sRGB views of typeless BC textures: a GL_COMPRESSED_RGBA_S3TC_DXT1
+// texture viewed as GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT1 samples its texels.
+GPU_TEST_VERSION(gpu_gl46_compressed_srgb_view, 46) {
+    GLuint p = gpu::program("#version 460 core\nlayout(location = 0) in vec2 position;\n"
+                            "void main() { gl_Position = vec4(position, 0.0, 1.0); }\n",
+                            "#version 460 core\nuniform sampler2D t;\nout vec4 o;\n"
+                            "void main() { o = texelFetch(t, ivec2(1, 1), 0); }\n");
+    glUseProgram(p);
+    // One DXT1 block: colour 0 white, colour 1 black, every index 0 (white).
+    const uint8_t block[8] = {0xff, 0xff, 0x00, 0x00, 0, 0, 0, 0};
+    for (GLenum viewFormat : {GL_COMPRESSED_RGBA_S3TC_DXT1_EXT, GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT1_EXT}) {
+        GLuint parent = 0, view = 0;
+        glGenTextures(1, &parent);
+        glBindTexture(GL_TEXTURE_2D, parent);
+        glTexStorage2D(GL_TEXTURE_2D, 1, GL_COMPRESSED_RGBA_S3TC_DXT1_EXT, 4, 4);
+        glCompressedTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 4, 4, GL_COMPRESSED_RGBA_S3TC_DXT1_EXT, sizeof(block), block);
+        glGenTextures(1, &view);
+        glTextureView(view, GL_TEXTURE_2D, parent, viewFormat, 0, 1, 0, 1);
+        glBindTexture(GL_TEXTURE_2D, view);
+        GLuint vao = gpu::quad();
+        glClearColor(1, 0, 0, 1);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        CHECK_GL();
+        const std::vector<uint8_t> px = gpu::readRGBA8(32, 32, 1, 1);
+        if (px[0] != 255 || px[1] != 255 || px[2] != 255)
+            std::fprintf(stderr, "  view 0x%x: %u %u %u %u\n", viewFormat, px[0], px[1], px[2], px[3]);
+        CHECK(pixelIs(32, 32, 255, 255, 255));
+        glDeleteVertexArrays(1, &vao);
+        glDeleteTextures(1, &view);
+        glDeleteTextures(1, &parent);
+    }
+    glDeleteProgram(p);
+}
+
+// wined3d's per-instance elements with step rate 0: divisor UINT_MAX, so
+// every instance reads the element at the base instance.
+GPU_TEST_VERSION(gpu_gl46_divisor_uint_max, 46) {
+    GLuint p = gpu::program("#version 460 core\nlayout(location = 1) in float value;\nout float v;\n"
+                            "uniform int row;\n"
+                            "void main() {\n"
+                            "    v = value;\n"
+                            "    gl_Position = vec4((vec2(8 + 16 * gl_InstanceID, 8 + 16 * row) + 0.5) / 32.0 - 1.0, 0.0, 1.0);\n"
+                            "}\n",
+                            "#version 460 core\nin float v;\nout vec4 o;\nvoid main() { o = vec4(v, 0.0, 0.0, 1.0); }\n");
+    glUseProgram(p);
+    GLuint vao = 0, buffer = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(1, &buffer);
+    glBindBuffer(GL_ARRAY_BUFFER, buffer);
+    // One normalized byte per instance (stride 1, which Metal cannot fetch:
+    // the attribute is converted).
+    const uint8_t values[8] = {64, 128, 192, 255, 32, 96, 160, 224};
+    glBufferData(GL_ARRAY_BUFFER, sizeof(values), values, GL_STATIC_DRAW);
+    glVertexAttribPointer(1, 1, GL_UNSIGNED_BYTE, GL_TRUE, 1, nullptr);
+    glEnableVertexAttribArray(1);
+    glVertexAttribDivisor(1, 0xffffffffu);
+    glClearColor(0, 0, 0, 0);
+    glClear(GL_COLOR_BUFFER_BIT);
+    const GLint row = glGetUniformLocation(p, "row");
+    glUniform1i(row, 0);
+    glDrawArraysInstancedBaseInstance(GL_POINTS, 0, 1, 4, 0);
+    glUniform1i(row, 1);
+    glDrawArraysInstancedBaseInstance(GL_POINTS, 0, 1, 4, 4);
+    CHECK_GL();
+    for (int i = 0; i < 4; ++i) {
+        const int got0 = gpu::readRGBA8(8 + 16 * i, 8, 1, 1)[0], got1 = gpu::readRGBA8(8 + 16 * i, 24, 1, 1)[0];
+        if (got0 != 64 || got1 != 32) std::fprintf(stderr, "  instance %d: %d %d\n", i, got0, got1);
+        CHECK(got0 == 64 && got1 == 32);
+    }
+    glDeleteBuffers(1, &buffer);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
+}
+
+// BPTC 3D textures (GL 4.6 table 8.14; wined3d's BC7 3D textures): two
+// slices, red and green, each sampled back.
+GPU_TEST_VERSION(gpu_gl46_bptc_3d, 46) {
+    GLuint p = gpu::program("#version 460 core\nlayout(location = 0) in vec2 position;\n"
+                            "void main() { gl_Position = vec4(position, 0.0, 1.0); }\n",
+                            "#version 460 core\nuniform sampler3D t;\nuniform int slice;\nout vec4 o;\n"
+                            "void main() { o = texelFetch(t, ivec3(1, 1, slice), 0); }\n");
+    glUseProgram(p);
+    uint8_t texels[2][16][4];
+    for (int i = 0; i < 16; ++i) {
+        const uint8_t red[4] = {255, 0, 0, 255}, green[4] = {0, 255, 0, 255};
+        std::memcpy(texels[0][i], red, 4);
+        std::memcpy(texels[1][i], green, 4);
+    }
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_3D, tex);
+    glTexImage3D(GL_TEXTURE_3D, 0, GL_COMPRESSED_RGBA_BPTC_UNORM, 4, 4, 2, 0, GL_RGBA, GL_UNSIGNED_BYTE, texels);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    CHECK_GL();
+    GLint compressed = 0;
+    glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_COMPRESSED, &compressed);
+    CHECK(compressed);
+    uint8_t blocks[32] = {};
+    glGetCompressedTexImage(GL_TEXTURE_3D, 0, blocks);
+    CHECK(blocks[0] || blocks[1] || blocks[16] || blocks[17]);
+    GLuint vao = gpu::quad();
+    for (int slice = 0; slice < 2; ++slice) {
+        glUniform1i(glGetUniformLocation(p, "slice"), slice);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        const uint8_t want[4] = {static_cast<uint8_t>(slice ? 0 : 255), static_cast<uint8_t>(slice ? 255 : 0), 0, 255};
+        CHECK(gpu::near(gpu::readRGBA8(32, 32, 1, 1).data(), want, 2));
+    }
+    CHECK_GL();
+    glDeleteVertexArrays(1, &vao);
+    glDeleteTextures(1, &tex);
+    glDeleteProgram(p);
+}
+
+// wined3d's geometry shaders redeclare "invariant gl_Position;". Layered
+// rendering from an instanced geometry shader: invocation i draws layer i.
+GPU_TEST_VERSION(gpu_gl46_geometry_invariant_layers, 46) {
+    const char* const sources[3] = {
+        "#version 460 core\nlayout(location = 0) in vec2 position;\n"
+        "void main() { gl_Position = vec4(position, 0.0, 1.0); }\n",
+        "#version 460 core\nlayout(triangles, invocations = 2) in;\nlayout(triangle_strip, max_vertices = 3) out;\n"
+        "invariant gl_Position;\nout float value;\n"
+        "void main() {\n"
+        "    for (int i = 0; i < 3; ++i) {\n"
+        "        gl_Position = gl_in[i].gl_Position;\n"
+        "        gl_Layer = gl_InvocationID;\n"
+        "        value = float(gl_InvocationID + 1) * 0.25;\n"
+        "        EmitVertex();\n"
+        "    }\n"
+        "}\n",
+        "#version 460 core\nin float value;\nout vec4 o;\nvoid main() { o = vec4(value, 0.0, 0.0, 1.0); }\n"};
+    const GLenum types[3] = {GL_VERTEX_SHADER, GL_GEOMETRY_SHADER, GL_FRAGMENT_SHADER};
+    GLuint p = glCreateProgram();
+    for (int i = 0; i < 3; ++i) {
+        GLuint s = glCreateShader(types[i]);
+        glShaderSource(s, 1, &sources[i], nullptr);
+        glCompileShader(s);
+        glAttachShader(p, s);
+        glDeleteShader(s);
+    }
+    glLinkProgram(p);
+    GLint linked = 0;
+    glGetProgramiv(p, GL_LINK_STATUS, &linked);
+    if (!linked) {
+        char log[4096] = {};
+        glGetProgramInfoLog(p, sizeof(log), nullptr, log);
+        std::fprintf(stderr, "  link failed:\n%s\n", log);
+    }
+    CHECK(linked);
+    glUseProgram(p);
+    GLuint tex = 0, fbo = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D_ARRAY, tex);
+    glTexStorage3D(GL_TEXTURE_2D_ARRAY, 1, GL_RGBA8, 64, 64, 2);
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, tex, 0);
+    glClearColor(0, 0, 0, 0);
+    glClear(GL_COLOR_BUFFER_BIT);
+    GLuint vao = gpu::quad();
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    CHECK_GL();
+    for (int l = 0; l < 2; ++l) {
+        glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, tex, 0, l);
+        const uint8_t want[4] = {static_cast<uint8_t>(l ? 128 : 64), 0, 0, 255};
+        CHECK(gpu::near(gpu::readRGBA8(32, 32, 1, 1).data(), want, 1));
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &tex);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
+}
+
+// wined3d's literal constants: global consts initialized from bit casts keep
+// their exact values.
+GPU_TEST_VERSION(gpu_gl46_bitcast_constants, 46) {
+    GLuint p = gpu::program("#version 460 core\nlayout(location = 0) in vec2 position;\n"
+                            "void main() { gl_Position = vec4(position, 0.0, 1.0); }\n",
+                            "#version 440\nconst vec4 lc0 = intBitsToFloat(ivec4(0x3f800000, 0, 0x3f000000, 0x3f800000));\n"
+                            "out vec4 o;\nvoid main() { o = lc0; }\n");
+    glUseProgram(p);
+    GLuint vao = gpu::quad();
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    CHECK_GL();
+    const uint8_t want[4] = {255, 0, 128, 255};
+    CHECK(gpu::near(gpu::readRGBA8(32, 32, 1, 1).data(), want, 1));
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
+}
+
+// A multisample sRGB resolve (glBlitFramebuffer, wined3d's ResolveSubresource)
+// with GL_FRAMEBUFFER_SRGB averages linear values: half the samples white,
+// half black, resolves to sRGB(0.5) = 188, not 128.
+GPU_TEST_VERSION(gpu_gl46_srgb_resolve, 46) {
+    GLuint p = gpu::program("#version 460 core\nlayout(location = 0) in vec2 position;\n"
+                            "void main() { gl_Position = vec4(position, 0.0, 1.0); }\n",
+                            "#version 460 core\nout vec4 o;\nvoid main() { o = vec4(1.0); }\n");
+    GLuint rb[2], fbo[2];
+    glGenRenderbuffers(2, rb);
+    glGenFramebuffers(2, fbo);
+    glBindRenderbuffer(GL_RENDERBUFFER, rb[0]);
+    glRenderbufferStorageMultisample(GL_RENDERBUFFER, 4, GL_SRGB8_ALPHA8, 64, 64);
+    glBindRenderbuffer(GL_RENDERBUFFER, rb[1]);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_SRGB8_ALPHA8, 64, 64);
+    for (int i = 0; i < 2; ++i) {
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo[i]);
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, rb[i]);
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo[0]);
+    glClearColor(0, 0, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glEnable(GL_SAMPLE_MASK);
+    glSampleMaski(0, 0x3);
+    glUseProgram(p);
+    GLuint vao = gpu::quad();
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glDisable(GL_SAMPLE_MASK);
+    glEnable(GL_FRAMEBUFFER_SRGB);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo[0]);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo[1]);
+    glBlitFramebuffer(0, 0, 64, 64, 0, 0, 64, 64, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    glDisable(GL_FRAMEBUFFER_SRGB);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo[1]);
+    CHECK_GL();
+    const std::vector<uint8_t> px = gpu::readRGBA8(32, 32, 1, 1);
+    if (px[0] < 186 || px[0] > 190) std::fprintf(stderr, "  resolved %u\n", px[0]);
+    CHECK(px[0] >= 186 && px[0] <= 190);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(2, fbo);
+    glDeleteRenderbuffers(2, rb);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
+}
+
+// GL_EXT_texture_sRGB_decode: an sRGB texel 188 samples as 0.5 (decoded) or
+// as 188 / 255 with GL_SKIP_DECODE_EXT, set on the texture or a sampler.
+GPU_TEST_VERSION(gpu_gl46_srgb_decode, 46) {
+    GLuint p = gpu::program("#version 460 core\nlayout(location = 0) in vec2 position;\n"
+                            "void main() { gl_Position = vec4(position, 0.0, 1.0); }\n",
+                            "#version 460 core\nuniform sampler2D t;\nout vec4 o;\n"
+                            "void main() { o = vec4(texture(t, vec2(0.5)).rgb, 1.0); }\n");
+    glUseProgram(p);
+    GLuint tex = 0, sampler = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    const uint8_t texel[4] = {188, 188, 188, 255};
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_SRGB8_ALPHA8, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, texel);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    GLuint vao = gpu::quad();
+    auto red = [&]() {
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        return static_cast<int>(gpu::readRGBA8(32, 32, 1, 1)[0]);
+    };
+    CHECK(std::abs(red() - 128) <= 1);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SRGB_DECODE_EXT, GL_SKIP_DECODE_EXT);
+    GLint value = 0;
+    glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_SRGB_DECODE_EXT, &value);
+    CHECK_EQ(value, GL_SKIP_DECODE_EXT);
+    CHECK(std::abs(red() - 188) <= 1);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SRGB_DECODE_EXT, GL_DECODE_EXT);
+    glGenSamplers(1, &sampler);
+    glSamplerParameteri(sampler, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glSamplerParameteri(sampler, GL_TEXTURE_SRGB_DECODE_EXT, GL_SKIP_DECODE_EXT);
+    glBindSampler(0, sampler);
+    CHECK(std::abs(red() - 188) <= 1);
+    glBindSampler(0, 0);
+    CHECK(std::abs(red() - 128) <= 1);
+    CHECK_GL();
+    glDeleteSamplers(1, &sampler);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteTextures(1, &tex);
+    glDeleteProgram(p);
+}
+
+// Occlusion queries count every draw between Begin and End (wined3d's
+// test_occlusion_query: 100 draws over an 8192 x 8192 target, a uniform
+// buffer update before each, more samples than 32 bits hold).
+GPU_TEST_VERSION(gpu_gl46_occlusion_many_draws, 46) {
+    GLuint p = gpu::program("#version 460 core\nlayout(location = 0) in vec2 position;\n"
+                            "void main() { gl_Position = vec4(position, 0.0, 1.0); }\n",
+                            "#version 460 core\nlayout(std140, binding = 0) uniform C { vec4 color; };\nout vec4 o;\n"
+                            "void main() { o = color; }\n");
+    glUseProgram(p);
+    GLuint tex = 0, fbo = 0, ubo = 0, vao = gpu::quad(), query = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexStorage2D(GL_TEXTURE_2D, 1, GL_R8, 8192, 8192);
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+    glViewport(0, 0, 8192, 8192);
+    glGenBuffers(1, &ubo);
+    glBindBufferBase(GL_UNIFORM_BUFFER, 0, ubo);
+    const float red[4] = {1, 0, 0, 1};
+    glBufferData(GL_UNIFORM_BUFFER, sizeof(red), red, GL_DYNAMIC_DRAW);
+    glGenQueries(1, &query);
+    glBeginQuery(GL_SAMPLES_PASSED, query);
+    for (int i = 0; i < 100; ++i) {
+        glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(red), red);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    }
+    glEndQuery(GL_SAMPLES_PASSED);
+    GLuint64 samples = 0;
+    glGetQueryObjectui64v(query, GL_QUERY_RESULT, &samples);
+    const GLuint64 want = 100ull * 8192 * 8192;
+    if (samples != want) std::fprintf(stderr, "  %llu, expected %llu\n", (unsigned long long)samples, (unsigned long long)want);
+    CHECK(samples == want);
+    CHECK_GL();
+    glViewport(0, 0, 64, 64);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &tex);
+    glDeleteBuffers(1, &ubo);
+    glDeleteQueries(1, &query);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
+}
+
+// textureSize and imageSize of a 100-byte GL_R16F buffer texture: 50 texels
+// (wined3d's bufinfo of typed R16_FLOAT views).
+GPU_TEST_VERSION(gpu_gl46_r16f_buffer_size, 46) {
+    const char* source = "#version 460 core\nlayout(local_size_x = 1) in;\n"
+                         "uniform samplerBuffer t;\nlayout(r16f, binding = 0) uniform imageBuffer img;\n"
+                         "layout(std430, binding = 0) buffer Out { int sizes[2]; };\n"
+                         "void main() { sizes[0] = textureSize(t); sizes[1] = imageSize(img); }\n";
+    GLuint p = glCreateShaderProgramv(GL_COMPUTE_SHADER, 1, &source);
+    GLint linked = 0;
+    glGetProgramiv(p, GL_LINK_STATUS, &linked);
+    CHECK(linked);
+    glUseProgram(p);
+    GLuint buffers[2], tex = 0;
+    glGenBuffers(2, buffers);
+    glBindBuffer(GL_TEXTURE_BUFFER, buffers[0]);
+    glBufferData(GL_TEXTURE_BUFFER, 100, nullptr, GL_STATIC_DRAW);
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_BUFFER, tex);
+    glTexBuffer(GL_TEXTURE_BUFFER, GL_R16F, buffers[0]);
+    glBindImageTexture(0, tex, 0, GL_FALSE, 0, GL_READ_WRITE, GL_R16F);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, buffers[1]);
+    const GLint zero[2] = {0, 0};
+    glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(zero), zero, GL_DYNAMIC_READ);
+    glDispatchCompute(1, 1, 1);
+    glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
+    GLint sizes[2] = {};
+    glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(sizes), sizes);
+    if (sizes[0] != 50 || sizes[1] != 50) std::fprintf(stderr, "  textureSize %d, imageSize %d\n", sizes[0], sizes[1]);
+    CHECK(sizes[0] == 50 && sizes[1] == 50);
+    CHECK_GL();
+    glDeleteTextures(1, &tex);
+    glDeleteBuffers(2, buffers);
     glDeleteProgram(p);
 }

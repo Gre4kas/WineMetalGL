@@ -29,8 +29,9 @@ bool textureComplete(Context& ctx, Texture& tex, const SamplerParams* params);
 bool borderEmulation(const Texture& tex, const SamplerParams& params, bool shadow, shader::BorderSlot& out);
 
 // View for sampling: levels [base, max], composed swizzle, linear view of
-// stencil/depth as appropriate.
-id<MTLTexture> samplingView(Context& ctx, Texture& tex);
+// stencil/depth as appropriate, and the undecoded view of an sRGB format
+// (GL_SKIP_DECODE_EXT).
+id<MTLTexture> samplingView(Context& ctx, Texture& tex, bool skipSrgbDecode = false);
 
 id<MTLSamplerState> samplerState(Context& ctx, Texture& tex, const SamplerParams& params, bool shadow);
 id<MTLSamplerState> samplerState(Context& ctx, const SamplerParams& params, bool shadow);
