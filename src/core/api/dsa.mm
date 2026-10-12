@@ -99,8 +99,9 @@ void CreateFramebuffers(Context& ctx, GLsizei n, GLuint* framebuffers) {
     if (!dsa(ctx, "glCreateFramebuffers")) return;
     if (n < 0) return ctx.setError(GL_INVALID_VALUE);
     if (!framebuffers) return;
-    ctx.framebuffers.generate(n, framebuffers);
-    for (GLsizei i = 0; i < n; ++i) ctx.framebuffers.set(framebuffers[i], makeRef<Framebuffer>(framebuffers[i]));
+    ShareLock lock(ctx);
+    ctx.share().framebuffers.generate(n, framebuffers);
+    for (GLsizei i = 0; i < n; ++i) ctx.share().framebuffers.set(framebuffers[i], makeRef<Framebuffer>(framebuffers[i]));
 }
 
 void CreateRenderbuffers(Context& ctx, GLsizei n, GLuint* renderbuffers) {
@@ -625,7 +626,10 @@ bool namedFramebuffer(Context& ctx, const char* command, GLuint name, bool allow
         out = nullptr;
         return true;
     }
-    out = ctx.framebuffers.getRef(name);
+    {
+        ShareLock lock(ctx);
+        out = ctx.share().framebuffers.getRef(name);
+    }
     if (!out) ctx.setError(GL_INVALID_OPERATION);
     return out != nullptr;
 }

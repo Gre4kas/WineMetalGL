@@ -82,7 +82,7 @@ std::string* labelOf(Context& ctx, GLenum identifier, GLuint name) {
         if (!tex) return ctx.setError(GL_INVALID_VALUE), nullptr;
         return &tex->label;
     }
-    case GL_FRAMEBUFFER: return shared(ctx.framebuffers, [&] { return makeRef<Framebuffer>(name); });
+    case GL_FRAMEBUFFER: return shared(share.framebuffers, [&] { return makeRef<Framebuffer>(name); });
     case GL_VERTEX_ARRAY: return shared(ctx.vertexArrays, [&] { return makeRef<VertexArray>(name); });
     case GL_TRANSFORM_FEEDBACK: return shared(ctx.transformFeedbacks, [&] { return makeRef<TransformFeedback>(name); });
     case GL_PROGRAM_PIPELINE: return shared(ctx.programPipelines, [&] { return makeRef<ProgramPipeline>(name); });

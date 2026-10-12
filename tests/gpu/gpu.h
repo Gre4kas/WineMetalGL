@@ -77,7 +77,7 @@
     X(glEndQueryIndexed) X(glGetProgramInterfaceiv) X(glCompressedTexSubImage2D) X(glSampleMaski) X(glDeleteRenderbuffers) \
     X(glCopyBufferSubData) X(glCompressedTexImage3D) X(glTexStorage2DMultisample) X(glNamedFramebufferTextureLayer) \
     X(glGetTextureParameteriv) X(glTransformFeedbackBufferBase) X(glCreateTransformFeedbacks) X(glGetVertexArrayIndexed64iv) \
-    X(glDisableVertexArrayAttrib) X(glShaderBinary) X(glSpecializeShader)
+    X(glDisableVertexArrayAttrib) X(glShaderBinary) X(glSpecializeShader) X(glIsFramebuffer)
 
 #define WMGL_DECLARE_FUNC(name) extern PFN_##name name;
 WMGL_GPU_FUNCS(WMGL_DECLARE_FUNC)
@@ -94,6 +94,7 @@ struct Fixture {
     bool ok = false;
     wmgl_context* context = nullptr;
     wmgl_surface* surface = nullptr;
+    int format = 0;
 };
 
 // Compiles and links; records a check failure (with the log) on error.

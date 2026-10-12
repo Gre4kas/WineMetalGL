@@ -1501,3 +1501,45 @@ void main() { atomicCounterIncrement(c[1][2]); atomicCounterIncrement(c[0][1]); 
     glDeleteBuffers(1, &buffer);
     glDeleteProgram(p);
 }
+
+// Framebuffers are shared between contexts that share objects, as desktop
+// drivers (Mesa, NVIDIA, AMD) share them: DOOM (2016) attaches its targets on
+// one context and draws with another.
+TEST(gpu_shared_framebuffers) {
+    gpu::Fixture first(64, 64, false, 46);
+    CHECK(first.ok);
+    if (!first.ok) return;
+    GLuint tex = 0, fbo = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, 16, 16);
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glFinish();
+    const int attribs[] = {0x2091, 4, 0x2092, 6, 0x9126, 2, 0};
+    int error = 0;
+    wmgl_context* second = wmgl_context_create(first.format, first.context, attribs, &error);
+    CHECK(second != nullptr);
+    if (!second) return;
+    CHECK(wmgl_make_current(second, first.surface, first.surface));
+    CHECK(glIsFramebuffer(fbo));
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    CHECK_EQ(glCheckFramebufferStatus(GL_FRAMEBUFFER), static_cast<GLenum>(GL_FRAMEBUFFER_COMPLETE));
+    glViewport(0, 0, 16, 16);
+    glClearColor(1, 0, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+    uint8_t pixel[4] = {};
+    glReadPixels(4, 4, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, pixel);
+    const uint8_t red[4] = {255, 0, 0, 255};
+    CHECK(gpu::near(pixel, red, 0));
+    CHECK_GL();
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    // Deleted on one context, gone on the other.
+    glDeleteFramebuffers(1, &fbo);
+    CHECK(wmgl_make_current(first.context, first.surface, first.surface));
+    CHECK(!glIsFramebuffer(fbo));
+    glDeleteTextures(1, &tex);
+    wmgl_context_destroy(second);
+}

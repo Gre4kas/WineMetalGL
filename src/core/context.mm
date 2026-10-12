@@ -231,6 +231,13 @@ bool Context::hasExtension(const char* name) const {
 void Context::setError(GLenum error) {
     if (error_ == GL_NO_ERROR) error_ = error;
     if (logEnabled(LogLevel::Trace)) WMGL_TRACE("GL error 0x%04x in %s", error, currentCommand);
+    // Each command's error once: an application that ignores errors shows
+    // what failed (a refused attachment later drops every draw).
+    if (logEnabled(LogLevel::Warn)) {
+        char key[96];
+        std::snprintf(key, sizeof(key), "error-%s-%04x", currentCommand, error);
+        logOnce(LogLevel::Warn, key, "GL error 0x%04x in %s (reported once per command and error)", error, currentCommand);
+    }
     if (state.debugOutput) {
         const char* name = error == GL_INVALID_ENUM        ? "GL_INVALID_ENUM"
                            : error == GL_INVALID_VALUE     ? "GL_INVALID_VALUE"

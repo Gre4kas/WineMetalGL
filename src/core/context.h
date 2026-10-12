@@ -61,7 +61,6 @@ public:
     ShareGroup& share() { return *share_; }
     RefPtr<ShareGroup> shareRef() const { return share_; }
     NameTable<VertexArray> vertexArrays;
-    NameTable<Framebuffer> framebuffers;
     NameTable<Query> queries;
     NameTable<TransformFeedback> transformFeedbacks;
     NameTable<ProgramPipeline> programPipelines;

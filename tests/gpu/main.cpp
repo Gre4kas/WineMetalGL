@@ -47,7 +47,7 @@ bool loadFunctions() {
 Fixture::Fixture(int width, int height, bool core, int version) {
     static const bool initialized = wmgl_initialize(WMGL_DRIVER_ABI_VERSION) == 0 && loadFunctions();
     if (!initialized) return;
-    const int format = pickFormat();
+    format = pickFormat();
     if (!format) return;
     surface = wmgl_surface_create_pbuffer(format, width, height);
     const int attribs[] = {0x2091 /* MAJOR */, version / 10, 0x2092 /* MINOR */, version % 10, 0x9126 /* PROFILE_MASK */,

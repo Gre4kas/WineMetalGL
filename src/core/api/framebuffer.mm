@@ -205,7 +205,9 @@ void attachTexture(Context& ctx, GLenum target, GLenum attachment, GLenum textar
 
 void GenFramebuffers(Context& ctx, GLsizei n, GLuint* framebuffers) {
     if (n < 0) return ctx.setError(GL_INVALID_VALUE);
-    if (framebuffers) ctx.framebuffers.generate(n, framebuffers);
+    if (!framebuffers) return;
+    ShareLock lock(ctx);
+    ctx.share().framebuffers.generate(n, framebuffers);
 }
 
 void DeleteFramebuffers(Context& ctx, GLsizei n, const GLuint* framebuffers) {
@@ -213,7 +215,11 @@ void DeleteFramebuffers(Context& ctx, GLsizei n, const GLuint* framebuffers) {
     if (!framebuffers) return;
     for (GLsizei i = 0; i < n; ++i) {
         if (!framebuffers[i]) continue;
-        RefPtr<Framebuffer> fb = ctx.framebuffers.remove(framebuffers[i]);
+        RefPtr<Framebuffer> fb;
+        {
+            ShareLock lock(ctx);
+            fb = ctx.share().framebuffers.remove(framebuffers[i]);
+        }
         if (!fb) continue;
         if (ctx.state.drawFramebuffer == fb) ctx.state.drawFramebuffer.reset();
         if (ctx.state.readFramebuffer == fb) ctx.state.readFramebuffer.reset();
@@ -221,7 +227,10 @@ void DeleteFramebuffers(Context& ctx, GLsizei n, const GLuint* framebuffers) {
     }
 }
 
-GLboolean IsFramebuffer(Context& ctx, GLuint framebuffer) { return ctx.framebuffers.exists(framebuffer) ? GL_TRUE : GL_FALSE; }
+GLboolean IsFramebuffer(Context& ctx, GLuint framebuffer) {
+    ShareLock lock(ctx);
+    return ctx.share().framebuffers.exists(framebuffer) ? GL_TRUE : GL_FALSE;
+}
 
 namespace {
 
@@ -232,14 +241,16 @@ void bindFramebuffer(Context& ctx, GLenum target, GLuint name, bool createUnused
         return ctx.setError(GL_INVALID_ENUM);
     RefPtr<Framebuffer> fb;
     if (name) {
-        if (!ctx.framebuffers.isGenerated(name)) {
+        ShareLock lock(ctx);
+        NameTable<Framebuffer>& table = ctx.share().framebuffers;
+        if (!table.isGenerated(name)) {
             if (!createUnused) return ctx.setError(GL_INVALID_OPERATION);
-            ctx.framebuffers.reserve(name);
+            table.reserve(name);
         }
-        fb = ctx.framebuffers.getRef(name);
+        fb = table.getRef(name);
         if (!fb) {
             fb = makeRef<Framebuffer>(name);
-            ctx.framebuffers.set(name, fb);
+            table.set(name, fb);
         }
     }
     if (target != GL_READ_FRAMEBUFFER) ctx.state.drawFramebuffer = fb;

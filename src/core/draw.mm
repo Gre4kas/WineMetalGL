@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -110,6 +111,40 @@ uint32_t attachmentLayers(const Attachment& a) {
 
 }  // namespace
 
+namespace {
+
+// Why a framebuffer cannot be drawn to, logged once per framebuffer and
+// attachment point: the draws it rejects (INVALID_FRAMEBUFFER_OPERATION)
+// otherwise fail without a trace.
+void warnUndrawable(const Framebuffer& fb, const char* point, const Attachment* a) {
+    char key[64], what[320];
+    std::snprintf(key, sizeof(key), "undrawable-%u-%s", fb.name, point);
+    if (!a) {
+        std::snprintf(what, sizeof(what), "no attachment to draw to (draw buffer 0 %#x)", fb.drawBuffers[0]);
+    } else if (a->type == GL_RENDERBUFFER) {
+        const Renderbuffer* rb = a->renderbuffer.get();
+        std::snprintf(what, sizeof(what), "renderbuffer %u (format %#x, %dx%d, %d samples) has no storage", rb ? rb->name : 0,
+                      rb ? rb->internalFormat : 0, rb ? rb->width : 0, rb ? rb->height : 0, rb ? rb->samples : 0);
+    } else {
+        Texture* tex = a->texture.get();
+        const int face = a->cubeFace ? static_cast<int>(a->cubeFace - GL_TEXTURE_CUBE_MAP_POSITIVE_X) : 0;
+        const TextureImage* image = tex ? &tex->image(face, a->level) : nullptr;
+        std::snprintf(what, sizeof(what),
+                      "texture %u (target %#x, level %d, format %#x, %dx%dx%d, %d samples, %s %d levels): %s",
+                      tex ? tex->name : 0, tex ? tex->target : 0, a->level, image ? image->internalFormat : 0,
+                      image ? image->width : 0, image ? image->height : 0, image ? image->depth : 0,
+                      image ? image->samples : 0, tex && tex->immutable ? "immutable" : "mutable",
+                      tex ? (tex->immutable ? tex->immutableLevels : 0) : 0,
+                      !tex                       ? "no texture"
+                      : !tex->mtl                ? "no storage could be made"
+                      : !image->defined()        ? "the level is not defined"
+                                                 : "the level has no storage");
+    }
+    logOnce(LogLevel::Warn, key, "framebuffer %u %s: %s; its draws are dropped", fb.name, point, what);
+}
+
+}  // namespace
+
 bool DrawState::drawTarget(RenderTargetDesc& target, TargetFormats& formats, bool reportErrors) {
     target = RenderTargetDesc();
     formats = TargetFormats();
@@ -145,6 +180,9 @@ bool DrawState::drawTarget(RenderTargetDesc& target, TargetFormats& formats, boo
         MTLPixelFormat format;
         const FormatInfo* info = nullptr;
         if (!attachmentTarget(ctx_, a, target.color[i], format, w, h, s, info)) {
+            static const char* const kColor[] = {"color 0", "color 1", "color 2", "color 3",
+                                                 "color 4", "color 5", "color 6", "color 7"};
+            warnUndrawable(*fb, kColor[index], &a);
             if (reportErrors) ctx_.setError(GL_INVALID_FRAMEBUFFER_OPERATION);
             return false;
         }
@@ -166,6 +204,7 @@ bool DrawState::drawTarget(RenderTargetDesc& target, TargetFormats& formats, boo
         MTLPixelFormat format;
         const FormatInfo* info = nullptr;
         if (!attachmentTarget(ctx_, a, t, format, w, h, s, info)) {
+            warnUndrawable(*fb, which == 0 ? "depth" : "stencil", &a);
             if (reportErrors) ctx_.setError(GL_INVALID_FRAMEBUFFER_OPERATION);
             return false;
         }
@@ -189,6 +228,7 @@ bool DrawState::drawTarget(RenderTargetDesc& target, TargetFormats& formats, boo
         return true;
     }
     if (!any) {
+        warnUndrawable(*fb, "draw buffers", nullptr);
         if (reportErrors) ctx_.setError(GL_INVALID_FRAMEBUFFER_OPERATION);
         return false;
     }
