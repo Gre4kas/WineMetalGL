@@ -54,6 +54,8 @@ PY
 done
 
 # -------------------------------------------------------------- unix side
+# Apple's clang: llvm-mingw's plain clang may come first on PATH.
+UNIX_CC=${UNIX_CC:-/usr/bin/clang}
 CFLAGS="-arch x86_64 -mmacosx-version-min=15.0 -O2 -fPIC -Wall -DWINE_UNIX_LIB -D__WINESRC__ -D_WIN64"
 if test -d "$WINE/include/wine/windows"; then WINEINC="-I$WINE/include/wine/windows -I$WINE/include"
 elif test -f "$WINE/include/windef.h"; then WINEINC="-I$WINE/include"
@@ -63,12 +65,12 @@ uobjs=
 for src in "$ROOT"/src/wine/unix/*.c "$GEN/wine_gl_unix.gen.c"; do
     obj="$OBJ/unix/$(basename "${src%.c}").o"
     # shellcheck disable=SC2086
-    clang $CFLAGS $INCS -c "$src" -o "$obj"
+    "$UNIX_CC" $CFLAGS $INCS -c "$src" -o "$obj"
     uobjs="$uobjs $obj"
 done
-clang -arch x86_64 -mmacosx-version-min=15.0 -O2 -fPIC -fobjc-arc -Wall -c "$ROOT/src/wine/unix/unix_window.m" \
+"$UNIX_CC" -arch x86_64 -mmacosx-version-min=15.0 -O2 -fPIC -fobjc-arc -Wall -c "$ROOT/src/wine/unix/unix_window.m" \
     -o "$OBJ/unix/unix_window.o"
 # shellcheck disable=SC2086
-clang -arch x86_64 -mmacosx-version-min=15.0 -shared -o "$OUT/x86_64-unix/winemetalgl.so" $uobjs "$OBJ/unix/unix_window.o" \
+"$UNIX_CC" -arch x86_64 -mmacosx-version-min=15.0 -shared -o "$OUT/x86_64-unix/winemetalgl.so" $uobjs "$OBJ/unix/unix_window.o" \
     -framework AppKit -framework Metal -framework QuartzCore -Wl,-undefined,dynamic_lookup
 echo "Built: $OUT/{x86_64,i386}-windows/{winemetalgl,opengl32}.dll, $OUT/x86_64-unix/winemetalgl.so"
