@@ -121,15 +121,12 @@ void CommandStream::startRender(const RenderTargetDesc& target) {
         if (!visibility_) {
             visibility_ = [Device::get().mtl() newBufferWithLength:kVisibilitySlots * 8 options:MTLResourceStorageModeShared];
             std::memset(visibility_.contents, 0, kVisibilitySlots * 8);
-            // Slot 0 is never a query's: every pass starts at offset 0, and
-            // disabled counting points there too.
+            // Slot 0 is never a query's: every pass starts counting at offset
+            // 0 (and disabled counting points there), and a later pass in the
+            // command buffer resets what an earlier one counted there.
             visibilityUsed_ = 1;
         }
         pass.visibilityResultBuffer = visibility_;
-        // With the default (Reset), a later pass in the command buffer reset
-        // what an earlier pass had counted at offset 0. The buffer is zeroed
-        // once per command buffer, and each slot belongs to one pass.
-        pass.visibilityResultType = MTLVisibilityResultTypeAccumulate;
         passVisibility_ = true;
     }
     if (clearsApply) pending_ = PendingClear();
