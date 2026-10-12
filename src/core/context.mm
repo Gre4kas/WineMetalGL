@@ -147,6 +147,9 @@ void Context::initStrings() {
     extensions_.push_back("GL_ARB_clip_control");
     extensions_.push_back("GL_ARB_get_program_binary");
     extensions_.push_back("GL_ARB_buffer_storage");
+    // Client memory as buffer storage: Wine maps 32-bit (WoW64) guests'
+    // buffers through it, and limits them to GL 4.3 without it.
+    extensions_.push_back("GL_AMD_pinned_memory");
     extensions_.push_back("GL_KHR_debug");
     extensions_.push_back("GL_ARB_debug_output");
     extensions_.push_back("GL_ARB_separate_shader_objects");
@@ -312,6 +315,7 @@ RefPtr<Buffer>* Context::bufferBinding(GLenum target) {
     if (storageBuffers() && target == GL_SHADER_STORAGE_BUFFER) return &state.shaderStorageBuffer;
     if (atomicCounters() && target == GL_ATOMIC_COUNTER_BUFFER) return &state.atomicCounterBuffer;
     if (version() >= 44 && target == GL_QUERY_BUFFER) return &state.queryBuffer;
+    if (target == GL_EXTERNAL_VIRTUAL_MEMORY_BUFFER_AMD) return &state.externalVirtualMemoryBuffer;
     return nullptr;
 }
 

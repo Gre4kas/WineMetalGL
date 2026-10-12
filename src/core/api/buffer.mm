@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <unistd.h>
 
 #include "core/context.h"
 #include "core/draw.h"
@@ -290,6 +291,28 @@ void BufferData(Context& ctx, GLenum target, GLsizeiptr size, const void* data, 
     if (!buffer) return;
     if (buffer->immutable) return ctx.setError(GL_INVALID_OPERATION);
     if (buffer->mapped) unmapBuffer(*buffer);
+    if (target == GL_EXTERNAL_VIRTUAL_MEMORY_BUFFER_AMD) {
+        // GL_AMD_pinned_memory: `data` (page aligned, owned by the
+        // application while the buffer uses it) is the storage itself.
+        const uintptr_t page = static_cast<uintptr_t>(getpagesize());
+        if (!data || reinterpret_cast<uintptr_t>(data) % page) return ctx.setError(GL_INVALID_OPERATION);
+        const NSUInteger length = (static_cast<NSUInteger>(size) + page - 1) & ~static_cast<NSUInteger>(page - 1);
+        id<MTLBuffer> storage = size ? [Device::get().mtl() newBufferWithBytesNoCopy:const_cast<void*>(data)
+                                                                               length:length
+                                                                              options:MTLResourceStorageModeShared
+                                                                          deallocator:nil]
+                                     : nil;
+        if (size && !storage) return ctx.setError(GL_INVALID_OPERATION);
+        buffer->mtl = storage;
+        buffer->size = size;
+        buffer->usage = usage;
+        buffer->pinned = true;
+        buffer->lastUseSerial = buffer->lastWriteSerial = 0;
+        ++buffer->version;
+        ctx.markDirty(kDirtyVertexInput | kDirtyUniformBuffers);
+        return;
+    }
+    buffer->pinned = false;
     // Reuse the storage only when no queued work references it (orphaning).
     if (buffer->mtl && buffer->size == size && !gpuBusy(ctx, *buffer)) {
         ++buffer->version;
@@ -324,6 +347,7 @@ void BufferStorage(Context& ctx, GLenum target, GLsizeiptr size, const void* dat
     if (!storage) return ctx.setError(GL_OUT_OF_MEMORY);
     if (data) std::memcpy(storage.contents, data, static_cast<size_t>(size));
     buffer->mtl = storage;
+    buffer->pinned = false;
     buffer->size = size;
     buffer->usage = GL_DYNAMIC_DRAW;
     buffer->immutable = true;
@@ -344,7 +368,7 @@ void BufferSubData(Context& ctx, GLenum target, GLintptr offset, GLsizeiptr size
     if (gpuBusy(ctx, *buffer)) {
         // Immutable storage keeps its memory (it may be persistently mapped),
         // and so does a mapped buffer.
-        if (!buffer->immutable && !buffer->mapped && (size == buffer->size || buffer->size <= (256 << 10))) {
+        if (!buffer->immutable && !buffer->pinned && !buffer->mapped && (size == buffer->size || buffer->size <= (256 << 10))) {
             // Small or whole-buffer updates: copy-on-write.
             rename(ctx, *buffer, size != buffer->size);
         } else {
@@ -464,8 +488,8 @@ void* MapBufferRange(Context& ctx, GLenum target, GLintptr offset, GLsizeiptr le
     }
     if (!(access & GL_MAP_UNSYNCHRONIZED_BIT) && gpuBusy(ctx, *buffer)) {
         // Immutable storage is never renamed: an invalidating map just waits.
-        if ((access & GL_MAP_INVALIDATE_BUFFER_BIT) && !buffer->immutable) rename(ctx, *buffer, false);
-        else if ((access & GL_MAP_INVALIDATE_RANGE_BIT) && !read && !buffer->immutable) rename(ctx, *buffer, true);
+        if ((access & GL_MAP_INVALIDATE_BUFFER_BIT) && !buffer->immutable && !buffer->pinned) rename(ctx, *buffer, false);
+        else if ((access & GL_MAP_INVALIDATE_RANGE_BIT) && !read && !buffer->immutable && !buffer->pinned) rename(ctx, *buffer, true);
         else waitForGpuUnlocked(ctx, buffer->lastUseSerial);
     }
     // Another context may have respecified or mapped the buffer during a wait.

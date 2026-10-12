@@ -3,6 +3,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "fixture_version.h"
+
 #define GL_VERTEX_SHADER 0x8b31
 #define GL_FRAGMENT_SHADER 0x8b30
 #define GL_COMPILE_STATUS 0x8b81
@@ -59,11 +61,11 @@ static int compile_one(GLuint shader, const char *source,
 int main(void)
 {
 /* GL_SHADING_LANGUAGE_VERSION of the context the fixture targets (a legacy
-   context gets the highest version: 4.3, GLSL 4.30). */
+   context gets the highest version, fixture_version.h). */
 #ifdef WINEMETALGL_GLSL450
 #define EXPECTED_GLSL_VERSION "4.50"
 #else
-#define EXPECTED_GLSL_VERSION "4.30"
+#define EXPECTED_GLSL_VERSION WINEMETALGL_FIXTURE_GLSL_VERSION
 #endif
 #ifdef WINEMETALGL_GLSL450
     static const char version_name[] = "GLSL450";

@@ -37,6 +37,9 @@ public:
     GLsizeiptr size = 0;
     GLenum usage = GL_STATIC_DRAW;
     bool immutable = false;
+    // GL_AMD_pinned_memory: the storage is the application's memory (never
+    // replaced behind its back).
+    bool pinned = false;
     GLbitfield storageFlags = 0;
     // Mapping state (glMapBuffer*).
     bool mapped = false;

@@ -1,7 +1,9 @@
 // GL 4.4 features (contexts above 4.3 go through the development override
 // until the version is advertised).
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
+#include <unistd.h>
 
 #include "gpu.h"
 
@@ -723,4 +725,48 @@ void main() {
     glDeleteVertexArrays(1, &vao);
     glDeleteBuffers(2, buffers);
     glDeleteProgram(p);
+}
+
+// GL_AMD_pinned_memory: page-aligned application memory as a buffer's
+// storage (Wine maps WoW64 guests' buffers this way): the GPU reads what
+// the application writes there, and the buffer reads back through it.
+GPU_TEST_VERSION(gpu_gl44_amd_pinned_memory, 44) {
+    const size_t page = static_cast<size_t>(getpagesize());
+    void* memory = nullptr;
+    CHECK(posix_memalign(&memory, page, page) == 0);
+    auto* values = static_cast<float*>(memory);
+    for (int i = 0; i < 4; ++i) values[i] = 0.25f * static_cast<float>(i + 1);
+    GLuint buffer = 0;
+    glGenBuffers(1, &buffer);
+    glBindBuffer(GL_EXTERNAL_VIRTUAL_MEMORY_BUFFER_AMD, buffer);
+    glBufferData(GL_EXTERNAL_VIRTUAL_MEMORY_BUFFER_AMD, 16, memory, GL_DYNAMIC_COPY);
+    CHECK_GL();
+    // Unaligned memory is refused.
+    GLuint other = 0;
+    glGenBuffers(1, &other);
+    glBindBuffer(GL_EXTERNAL_VIRTUAL_MEMORY_BUFFER_AMD, other);
+    glBufferData(GL_EXTERNAL_VIRTUAL_MEMORY_BUFFER_AMD, 16, static_cast<char*>(memory) + 4, GL_DYNAMIC_COPY);
+    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_INVALID_OPERATION));
+    // The pinned buffer as a uniform buffer.
+    GLuint p = gpu::program("#version 440 core\nlayout(location = 0) in vec2 pos;\nvoid main() { gl_Position = vec4(pos, 0.0, 1.0); }\n",
+                            "#version 440 core\nlayout(std140, binding = 3) uniform U { vec4 color; };\nout vec4 o;\n"
+                            "void main() { o = color; }\n");
+    GLuint vao = gpu::quad();
+    glBindBufferBase(GL_UNIFORM_BUFFER, 3, buffer);
+    glUseProgram(p);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    CHECK_GL();
+    const uint8_t want[4] = {64, 128, 191, 255};
+    CHECK(gpu::near(gpu::readRGBA8(4, 4, 1, 1).data(), want, 2));
+    // A write through the GL lands in the application's memory.
+    const float zero[4] = {0, 0, 0, 0};
+    glBindBuffer(GL_UNIFORM_BUFFER, buffer);
+    glBufferSubData(GL_UNIFORM_BUFFER, 0, 16, zero);
+    glFinish();
+    CHECK(values[0] == 0.0f && values[3] == 0.0f);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
+    glDeleteBuffers(1, &buffer);
+    glDeleteBuffers(1, &other);
+    free(memory);
 }

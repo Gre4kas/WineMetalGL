@@ -7,6 +7,8 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "fixture_version.h"
+
 #define VERTEX_SHADER 0x8b31
 #define FRAGMENT_SHADER 0x8b30
 #define COMPILE_STATUS 0x8b81
@@ -141,8 +143,10 @@ int main(void) {
     const char *version = (const char *)glGetString(GL_VERSION);
     const char *glsl = (const char *)glGetString(SHADING_LANGUAGE_VERSION);
     printf("GL_VERSION=%s GLSL=%s\n", version ? version : "(null)", glsl ? glsl : "(null)");
-    /* The highest compatible version: 4.3, GLSL 4.30 (WGL_ARB_create_context). */
-    if (!version || strncmp(version, "4.3", 3) != 0 || !glsl || strncmp(glsl, "4.30", 4) != 0) return 16;
+    /* The highest compatible version (WGL_ARB_create_context). */
+    if (!version || strncmp(version, WINEMETALGL_FIXTURE_GL_VERSION, 3) != 0 || !glsl ||
+        strncmp(glsl, WINEMETALGL_FIXTURE_GLSL_VERSION, 4) != 0)
+        return 16;
     printf("WINEMETALGL_GL42_CONTEXT_OK\n");
 
     createShader = (CreateShader)proc("glCreateShader");
