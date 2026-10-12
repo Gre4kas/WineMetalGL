@@ -450,6 +450,97 @@ id<MTLTexture> samplingView(Context& ctx, Texture& tex) {
     return view;
 }
 
+bool borderEmulation(const Texture& tex, const SamplerParams& p, bool shadow, shader::BorderSlot& out) {
+    int dims = 0;
+    switch (tex.target) {
+    case GL_TEXTURE_1D: case GL_TEXTURE_1D_ARRAY: dims = 1; break;
+    case GL_TEXTURE_2D: case GL_TEXTURE_2D_ARRAY: case GL_TEXTURE_RECTANGLE: dims = 2; break;
+    case GL_TEXTURE_3D: dims = 3; break;
+    default: return false;  // cube maps filter seamlessly; buffers and multisample textures are not filtered
+    }
+    const GLenum wraps[3] = {p.wrapS, p.wrapT, p.wrapR};
+    out = {};
+    for (int a = 0; a < dims; ++a) {
+        uint32_t mode = 3;
+        switch (wraps[a]) {
+        case GL_CLAMP_TO_BORDER: mode = 0; out.axes |= 1u << a; break;
+        case GL_REPEAT: mode = 1; break;
+        case GL_MIRRORED_REPEAT: mode = 2; break;
+        case GL_MIRROR_CLAMP_TO_EDGE: mode = 4; break;
+        default: break;
+        }
+        out.wrap |= mode << (4 * a);
+    }
+    if (!out.axes) return false;
+    const FormatInfo* format = tex.baseImage().format;
+    if (!format) return false;
+    const bool stencil = format->isStencil() && (!format->isDepth() || tex.depthStencilMode == GL_STENCIL_INDEX);
+    out.kind = stencil || format->type == ComponentType::UnsignedInt ? 'u' : format->type == ComponentType::Int ? 'i' : 'f';
+    // The border as the texel of the image's base format (GL 4.6 section
+    // 8.14.2, table 8.11), then the texture's swizzle.
+    float f[4];
+    int32_t n[4];
+    for (int k = 0; k < 4; ++k) {
+        f[k] = p.borderIsInteger ? static_cast<float>(p.borderColor.i[k]) : p.borderColor.f[k];
+        n[k] = p.borderIsInteger ? p.borderColor.i[k] : static_cast<int32_t>(p.borderColor.f[k]);
+    }
+    int source[4] = {0, 1, 2, 3};  // 0-3: component, 4: zero, 5: one
+    switch (format->isDepthOrStencil() ? GL_RED : format->baseFormat) {
+    case GL_RED: source[1] = source[2] = 4; source[3] = 5; break;
+    case GL_RG: source[2] = 4; source[3] = 5; break;
+    case GL_RGB: source[3] = 5; break;
+    case GL_ALPHA: source[0] = source[1] = source[2] = 4; break;
+    case GL_LUMINANCE: source[1] = source[2] = 0; source[3] = 5; break;
+    case GL_LUMINANCE_ALPHA: source[1] = source[2] = 0; break;
+    case GL_INTENSITY: source[1] = source[2] = source[3] = 0; break;
+    default: break;
+    }
+    bool identity = format->baseFormat == GL_RGBA || format->baseFormat == GL_BGRA;
+    for (int k = 0; k < 4; ++k) {
+        int s = 4;
+        switch (tex.swizzle[k]) {
+        case GL_RED: s = source[0]; break;
+        case GL_GREEN: s = source[1]; break;
+        case GL_BLUE: s = source[2]; break;
+        case GL_ALPHA: s = source[3]; break;
+        case GL_ONE: s = 5; break;
+        default: break;
+        }
+        identity = identity && s == k;
+        if (out.kind == 'f') {
+            const float v = s == 4 ? 0.0f : s == 5 ? 1.0f : f[s];
+            std::memcpy(&out.border[k], &v, 4);
+        } else {
+            const int32_t v = s == 4 ? 0 : s == 5 ? 1 : n[s];
+            std::memcpy(&out.border[k], &v, 4);
+        }
+    }
+    // What the Metal sampler gives (samplerState): exact for these RGBA
+    // borders, and for shadow lookups whose border depth it has.
+    const bool rect = tex.target == GL_TEXTURE_RECTANGLE;
+    const float metal = f[3] == 0.0f ? 0.0f : (f[0] + f[1] + f[2]) > 1.5f ? 1.0f : 0.0f;
+    if (!rect && out.kind == 'f') {
+        if (shadow && f[0] == metal) return false;
+        const bool black = f[0] == 0.0f && f[1] == 0.0f && f[2] == 0.0f, white = f[0] == 1.0f && f[1] == 1.0f && f[2] == 1.0f;
+        if (!shadow && identity && ((black && (f[3] == 0.0f || f[3] == 1.0f)) || (white && f[3] == 1.0f))) return false;
+    }
+    if (!rect && out.kind != 'f' && !shadow && n[0] == 0 && n[1] == 0 && n[2] == 0 && n[3] == 0 && identity) return false;
+    const auto linear = [](GLenum filter) {
+        return filter == GL_LINEAR || filter == GL_LINEAR_MIPMAP_NEAREST || filter == GL_LINEAR_MIPMAP_LINEAR;
+    };
+    out.magLinear = linear(p.magFilter);
+    out.minLinear = linear(p.minFilter);
+    out.mip = p.minFilter == GL_NEAREST_MIPMAP_NEAREST || p.minFilter == GL_LINEAR_MIPMAP_NEAREST  ? 1
+              : p.minFilter == GL_NEAREST_MIPMAP_LINEAR || p.minFilter == GL_LINEAR_MIPMAP_LINEAR ? 2
+                                                                                                  : 0;
+    out.rect = rect;
+    out.minLod = std::max(0.0f, p.minLod);
+    out.maxLod = std::max(out.minLod, p.maxLod);
+    out.lodBias = p.lodBias;
+    out.compare = shadow && p.compareMode == GL_COMPARE_REF_TO_TEXTURE ? p.compareFunc : 0;
+    return true;
+}
+
 id<MTLSamplerState> samplerState(Context& ctx, const SamplerParams& p, bool shadow) {
     SamplerKey key;
     std::memset(&key, 0, sizeof(key));

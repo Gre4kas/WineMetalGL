@@ -16,6 +16,7 @@
 #include <set>
 #include <sstream>
 
+#include "core/shader/border.h"
 #include "core/shader/fp64.h"
 #include "core/shader/glsl_upgrade.h"
 #include "core/limits.h"
@@ -178,7 +179,10 @@ void addCullDistances(std::string& msl) {
     } else if (const size_t native = msl.find("float gl_CullDistance[", fn); native != std::string::npos) {
         count = std::atoi(msl.c_str() + native + 22);
     }
-    if (count <= 0) return;
+    // gl_PerVertex declares the array whether or not the shader writes it.
+    size_t uses = 0;
+    for (size_t at = msl.find("gl_CullDistance", fn); at != std::string::npos; at = msl.find("gl_CullDistance", at + 1)) ++uses;
+    if (count <= 0 || uses < 2) return;
     // A second varying per distance is 0 at vertices where it is negative and
     // 1e30 elsewhere. Interpolated, it is exactly 0 only where every vertex
     // of the primitive has it negative (or at a fragment on an edge or
@@ -442,8 +446,10 @@ std::string fragmentWithCullDistances(const std::string& msl, int count) {
         const size_t open = out.find('(', fn);
         const bool noParameters = out[open + 1] == ')';
         out.insert(open + 1, std::string("main0_in in [[stage_in]]") + (noParameters ? "" : ", "));
-        out.insert(fn, inStruct + "};\n\n");
-        structAt = fn;
+        // Before the function's line, which may start with [[early_fragment_tests]].
+        const size_t line = out.rfind('\n', fn) + 1;
+        out.insert(line, inStruct + "};\n\n");
+        structAt = line;
     }
     std::string members, test = "\n    if (";
     for (int k = 0; k < count; ++k) {
@@ -2620,7 +2626,7 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
             // Doubles become soft-float code (fp64.h); no-op without them.
             std::vector<uint32_t> spirv = cubeStorageImagesAs2DArrays(lowerGatherOffsets(rectImagesAs2D(stage.spirv)));
             if (!lowerFp64(spirv, result.log)) return result;
-            spirv_cross::CompilerMSL msl(std::move(spirv));
+            BorderMsl msl(std::move(spirv));
             spirv_cross::CompilerMSL::Options mslOptions;
             mslOptions.disable_rasterization = noRaster;
             mslOptions.platform = spirv_cross::CompilerMSL::Options::macOS;
@@ -2783,6 +2789,7 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
                 b.msl_texture = nextTexture;
                 b.msl_sampler = nextTexture;
                 msl.add_msl_resource_binding(b);
+                if (type.array.empty()) msl.textureSlots[image.id] = nextTexture;
                 auto it = samplerUniformByName.find(name);
                 if (it != samplerUniformByName.end()) {
                     const int first = result.uniforms[it->second].samplerSlot;
@@ -2883,12 +2890,14 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
             }
             if (noRaster) {
                 stage.mslNoRaster = finishFp64Msl(msl.compile());
+                addDefaultBorderMacros(stage.mslNoRaster);
                 if (const char* v = std::getenv("WINEMETALGL_DUMP_SHADERS"); v && v[0] == '1')
                     std::fprintf(stderr, "winemetalgl: MSL vertex stage without rasterization:\n%s\n", stage.mslNoRaster.c_str());
                 instanceIdFromZero(stage.mslNoRaster);
                 continue;
             }
             stage.msl = finishFp64Msl(msl.compile());
+            addDefaultBorderMacros(stage.msl);
             if (s == static_cast<int>(Stage::Vertex)) {
                 ensureVertexOutput(stage.msl);
                 addCullDistances(stage.msl);

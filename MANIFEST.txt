@@ -125,6 +125,8 @@ src/core/proc_table.h
 src/core/program.h
 src/core/program.mm
 src/core/query.h
+src/core/shader/border.cpp
+src/core/shader/border.h
 src/core/shader/compiler.cpp
 src/core/shader/compiler.h
 src/core/shader/fp64_library.inc

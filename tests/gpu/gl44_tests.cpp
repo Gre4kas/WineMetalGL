@@ -498,3 +498,108 @@ GPU_TEST_VERSION(gpu_gl45_conditional_render_inverted, 45) {
     glDeleteVertexArrays(1, &vao);
     glDeleteProgram(p);
 }
+
+// Sampler border colours Metal does not have, and integer, shadow and
+// rectangle textures' borders (clamp-to-border emulated in the shader):
+// nearest and linear samples, a gather and depth comparisons, from a
+// compute shader.
+GPU_TEST_VERSION(gpu_gl44_border_colors, 44) {
+    const char* cs = R"(#version 450 core
+layout(local_size_x = 1) in;
+layout(binding = 0) uniform sampler2D colorTex;
+layout(binding = 1) uniform isampler2D intTex;
+layout(binding = 2) uniform sampler2D linearTex;
+layout(binding = 3) uniform sampler2DShadow depthTex;
+layout(binding = 4) uniform sampler2DRect rectTex;
+layout(std430, binding = 0) buffer Out { vec4 f[6]; ivec4 i[2]; };
+void main() {
+    f[0] = textureLod(colorTex, vec2(-0.5, 0.5), 0.0);
+    f[1] = textureLod(colorTex, vec2(0.25, 0.25), 0.0);
+    f[2] = textureLod(linearTex, vec2(0.0, 0.5), 0.0);
+    f[3] = vec4(texture(depthTex, vec3(-0.5, 0.5, 0.25)));
+    f[4] = vec4(texture(depthTex, vec3(-0.5, 0.5, 0.75)));
+    f[5] = texture(rectTex, vec2(-1.0, 0.5));
+    i[0] = texture(intTex, vec2(1.5, 0.5));
+    i[1] = textureGather(intTex, vec2(0.0, 0.5), 0);
+})";
+    GLuint shader = glCreateShader(GL_COMPUTE_SHADER);
+    glShaderSource(shader, 1, &cs, nullptr);
+    glCompileShader(shader);
+    GLuint p = glCreateProgram();
+    glAttachShader(p, shader);
+    glLinkProgram(p);
+    glDeleteShader(shader);
+    GLint linked = 0;
+    glGetProgramiv(p, GL_LINK_STATUS, &linked);
+    CHECK(linked);
+    GLuint tex[5];
+    glGenTextures(5, tex);
+    const auto setup = [&](int unit, GLenum target, GLenum filter) {
+        glActiveTexture(GL_TEXTURE0 + unit);
+        glBindTexture(target, tex[unit]);
+        glTexParameteri(target, GL_TEXTURE_MIN_FILTER, filter);
+        glTexParameteri(target, GL_TEXTURE_MAG_FILTER, filter);
+        glTexParameteri(target, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
+        glTexParameteri(target, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
+    };
+    const uint8_t rgba[16] = {255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255};
+    const uint8_t white[16] = {255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255};
+    setup(0, GL_TEXTURE_2D, GL_NEAREST);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 2, 2, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+    const float color[4] = {0.25f, 0.5f, 0.75f, 1.0f};
+    glTexParameterfv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, color);
+    setup(1, GL_TEXTURE_2D, GL_NEAREST);
+    int32_t ints[16] = {};
+    for (int y = 0; y < 2; ++y)
+        for (int x = 0; x < 2; ++x) ints[(y * 2 + x) * 4] = 10 * y + x + 1;
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32I, 2, 2, 0, GL_RGBA_INTEGER, GL_INT, ints);
+    const GLint intBorder[4] = {-5, 7, -9, 11};
+    glTexParameterIiv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, intBorder);
+    setup(2, GL_TEXTURE_2D, GL_LINEAR);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 2, 2, 0, GL_RGBA, GL_UNSIGNED_BYTE, white);
+    const float grey[4] = {0.5f, 0.5f, 0.5f, 0.5f};
+    glTexParameterfv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, grey);
+    setup(3, GL_TEXTURE_2D, GL_NEAREST);
+    const float depths[4] = {0.9f, 0.9f, 0.9f, 0.9f};
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32F, 2, 2, 0, GL_DEPTH_COMPONENT, GL_FLOAT, depths);
+    const float depthBorder[4] = {0.5f, 0.0f, 0.0f, 0.0f};
+    glTexParameterfv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, depthBorder);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_REF_TO_TEXTURE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_FUNC, GL_LEQUAL);
+    setup(4, GL_TEXTURE_RECTANGLE, GL_NEAREST);
+    glTexImage2D(GL_TEXTURE_RECTANGLE, 0, GL_RGBA8, 2, 2, 0, GL_RGBA, GL_UNSIGNED_BYTE, white);
+    CHECK_GL();
+    GLuint buffer = 0;
+    glGenBuffers(1, &buffer);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, buffer);
+    std::vector<float> init(32, -1.0f);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, init.size() * 4, init.data(), GL_DYNAMIC_READ);
+    glUseProgram(p);
+    glDispatchCompute(1, 1, 1);
+    glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
+    CHECK_GL();
+    float out[32];
+    glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(out), out);
+    const auto close = [](const float* got, std::initializer_list<float> want) {
+        int k = 0;
+        bool ok = true;
+        for (float w : want) ok = ok && std::fabs(got[k++] - w) < 0.02f;
+        if (!ok) std::fprintf(stderr, "  got (%g, %g, %g, %g)\n", got[0], got[1], got[2], got[3]);
+        return ok;
+    };
+    CHECK(close(&out[0], {0.25f, 0.5f, 0.75f, 1.0f}));  // nearest, outside
+    CHECK(close(&out[4], {1.0f, 0.0f, 0.0f, 1.0f}));    // nearest, inside
+    CHECK(close(&out[8], {0.75f, 0.75f, 0.75f, 0.75f}));  // linear, half outside
+    CHECK(close(&out[12], {1.0f, 1.0f, 1.0f, 1.0f}));   // 0.25 <= border depth 0.5
+    CHECK(close(&out[16], {0.0f, 0.0f, 0.0f, 0.0f}));   // 0.75 > 0.5
+    CHECK(close(&out[20], {0.0f, 0.0f, 0.0f, 0.0f}));   // rectangle, outside
+    int32_t is[8];
+    std::memcpy(is, &out[24], sizeof(is));
+    CHECK(is[0] == -5 && is[1] == 7 && is[2] == -9 && is[3] == 11);
+    CHECK(is[4] == -5 && is[5] == 11 && is[6] == 1 && is[7] == -5);
+    if (!(is[4] == -5 && is[5] == 11 && is[6] == 1 && is[7] == -5))
+        std::fprintf(stderr, "  gather (%d, %d, %d, %d)\n", is[4], is[5], is[6], is[7]);
+    glDeleteBuffers(1, &buffer);
+    glDeleteTextures(5, tex);
+    glDeleteProgram(p);
+}

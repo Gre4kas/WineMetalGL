@@ -43,8 +43,16 @@ struct LinkedProgram {
     // `colorFormats` (MTLPixelFormat). Nil if the stage cannot have it.
     // `cull`: the drawing vertex function's cull distance count, 0 for none
     // (shader::fragmentWithCullDistances).
+    // `borders`: the clamp-to-border emulation variant (shader::borderVariantId; 0: none).
     id<MTLFunction> fragmentVariant(bool sampleMask, unsigned logicOp, const uint16_t colorFormats[8],
-                                    bool sampleRate = false, bool ignoreSampleMask = false, unsigned cull = 0);
+                                    bool sampleRate = false, bool ignoreSampleMask = false, unsigned cull = 0,
+                                    uint16_t borders = 0);
+    // The vertex function (with rasterization, with or without [[point_size]],
+    // or without rasterization) with clamp-to-border emulation variant `borders`.
+    id<MTLFunction> vertexWithBorders(bool rasterization, bool pointSize, uint16_t borders);
+    // A kernel (the compute stage, or the geometry or tessellation control
+    // emulation's: `output`) with clamp-to-border emulation variant `borders`.
+    id<MTLComputePipelineState> kernelWithBorders(const shader::StageOutput& output, int stage, uint16_t borders);
     // The fragment stage writes gl_SampleMask.
     bool writesSampleMask();
     id<MTLFunction> fragmentSampleMask() { return fragmentVariant(true, 0, nullptr); }
@@ -111,6 +119,8 @@ private:
     id<MTLFunction> vertexNoRaster_ = nil;
     bool vertexNoRasterFailed_ = false;
     std::unordered_map<std::string, id<MTLFunction>> fragmentVariants_;  // nil entries: failed
+    std::unordered_map<std::string, id<MTLFunction>> borderVertex_;
+    std::unordered_map<std::string, id<MTLComputePipelineState>> borderKernels_;
     id<MTLFunction> passthrough_ = nil;
     id<MTLFunction> noPointSize_[2] = {};
     bool noPointSizeFailed_[2] = {};

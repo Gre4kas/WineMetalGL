@@ -32,14 +32,17 @@ id<MTLRenderPipelineState> PipelineCache::render(const PipelineKey& key, LinkedP
     stats::Timer timer(&stats::Frame::pipelineNanos);
     const bool pointSizeAllowed = key.topologyClass == MTLPrimitiveTopologyClassUnspecified ||
                                   key.topologyClass == MTLPrimitiveTopologyClassPoint;
-    id<MTLFunction> vertex = !key.rasterization ? program.vertexNoRaster()
-                             : !pointSizeAllowed ? program.vertexWithoutPointSize(key.geometryPass)
-                             : key.geometryPass  ? program.geometryPassthrough()
-                                                 : program.function(shader::Stage::Vertex);
-    id<MTLFunction> fragment = key.sampleMask || key.logicOp || key.sampleShading || key.ignoreSampleMask || key.cull
-                                   ? program.fragmentVariant(key.sampleMask, key.logicOp, key.colorFormats, key.sampleShading,
-                                                             key.ignoreSampleMask, key.cull)
-                                   : program.function(shader::Stage::Fragment);
+    id<MTLFunction> vertex = key.borders[0] && !key.geometryPass
+                                 ? program.vertexWithBorders(key.rasterization, pointSizeAllowed, key.borders[0])
+                             : !key.rasterization ? program.vertexNoRaster()
+                             : !pointSizeAllowed  ? program.vertexWithoutPointSize(key.geometryPass)
+                             : key.geometryPass   ? program.geometryPassthrough()
+                                                  : program.function(shader::Stage::Vertex);
+    id<MTLFunction> fragment =
+        key.sampleMask || key.logicOp || key.sampleShading || key.ignoreSampleMask || key.cull || key.borders[1]
+            ? program.fragmentVariant(key.sampleMask, key.logicOp, key.colorFormats, key.sampleShading, key.ignoreSampleMask,
+                                      key.cull, key.borders[1])
+            : program.function(shader::Stage::Fragment);
     if (!vertex) return nil;
     MTLRenderPipelineDescriptor* desc = [MTLRenderPipelineDescriptor new];
     desc.vertexFunction = vertex;

@@ -154,6 +154,9 @@ private:
     Program* stageProgram(LinkedProgram& program, int stage);
     std::pair<Program*, size_t> blockSource(LinkedProgram& program, size_t block);
     std::pair<Program*, size_t> samplerSource(LinkedProgram& program, size_t index);
+    // The clamp-to-border emulation variant the textures and samplers bound
+    // for stage `stage`'s samplers need (shader::borderVariantId; 0: none).
+    uint16_t borderVariant(LinkedProgram& program, int stage);
     std::pair<Program*, size_t> imageSource(LinkedProgram& program, size_t index);
     // The view image slot `index` reads (GL 4.2), or a dummy image.
     id<MTLTexture> imageBinding(LinkedProgram& program, size_t index);

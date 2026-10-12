@@ -40,3 +40,25 @@ The errors only the named commands have (the GL 4.5 rules on names, targets and 
 - One extra varying per distance, and early fragment tests are lost for such draws.
 - A fragment exactly on an edge or vertex whose vertices all have the distance negative is dropped with the primitive.
 - `layout(early_fragment_tests)` shaders still update depth and stencil for culled primitives.
+
+## Arbitrary sampler border colours
+
+**Question.** Metal's samplers have three border colours: transparent black, opaque black and opaque white. GL takes any colour, and integer textures take integer border colours. This is a GL 1.x feature, but the CTS counts the gap against 4.4: `texture_border_clamp` (integer formats) and the `gpu_shader5` clamp-to-border gathers.
+
+**Decision.** Clamp-to-border is emulated in the shader, only for draws that need it.
+
+1. **Wrapping (`src/core/shader/border.cpp`).** Every stage is translated by `BorderMsl`, a SPIRV-Cross subclass. It wraps each sample and gather of a non-arrayed 1D, 2D, 3D or rectangle texture in a macro named after the texture's Metal index: `wmgl_bcs_N` for samples, `wmgl_bcg_N` for gathers.
+2. **Default.** The default definition keeps only the sampled value, so the common path costs nothing.
+3. **Per draw.** The draw looks at the bound textures and samplers (`borderEmulation`). If an axis wraps `CLAMP_TO_BORDER` with a border Metal cannot give, the draw uses a function variant: the pipeline key's `borders`, a number from `borderVariantId`.
+4. **What the variant does.** Its macros keep the hardware's value while the filter footprint stays inside the image. Otherwise:
+   - nearest filtering returns the border;
+   - linear filtering filters by hand from texel reads, using the border for texels outside the image and the texture's other wrap modes on the other axes;
+   - gathers substitute the border texel by texel;
+   - shadow lookups compare against the border's depth.
+5. **Inputs to the variant.** The level of detail, the filters, the LOD clamps, the base-format mapping and the swizzle are baked into it.
+6. **Coverage.** Vertex functions (including the transform feedback capture) and fragment functions, compute dispatches, and the geometry and tessellation control kernels all take variants. Rectangle textures, whose Metal samplers can only clamp to the edge, always use the emulation when they wrap to the border.
+
+**Cost and limits.**
+- One function variant per distinct set of borders, compiled on first use.
+- Arrays of samplers, `textureGatherOffsets` and cube maps are not emulated. Cube maps filter seamlessly, so they have no border.
+- Hand filtering ignores anisotropy at the image's edge.

@@ -84,6 +84,7 @@ add_library(wmgl_portable STATIC
     src/core/format/formats.cpp
     src/core/format/pixel_transfer.cpp
     src/core/format/vertex_decode.cpp
+    src/core/shader/border.cpp
     src/core/shader/compiler.cpp
     src/core/shader/fp64.cpp
     src/core/shader/geometry.cpp

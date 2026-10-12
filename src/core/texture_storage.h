@@ -4,6 +4,7 @@
 #import <Metal/Metal.h>
 
 #include "core/objects.h"
+#include "core/shader/border.h"
 
 namespace wmgl {
 
@@ -21,6 +22,11 @@ bool imageHasStorage(Context& ctx, Texture& tex, int face, int level);
 
 // GL texture completeness (GL 3.3 section 3.8.14) for sampling with `params`.
 bool textureComplete(Context& ctx, Texture& tex, const SamplerParams* params);
+
+// Whether sampling `tex` with `params` needs clamp-to-border emulated in the
+// shader (shader/border.h): a CLAMP_TO_BORDER axis whose border Metal's
+// sampler cannot give. Fills `out` (all but its Metal texture index).
+bool borderEmulation(const Texture& tex, const SamplerParams& params, bool shadow, shader::BorderSlot& out);
 
 // View for sampling: levels [base, max], composed swizzle, linear view of
 // stencil/depth as appropriate.

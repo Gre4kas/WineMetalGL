@@ -374,8 +374,10 @@ bool parseGeometryGlsl(const std::string& glsl, GeometryShaderInfo& info, std::s
                              replaceWord(functions, "gl_PrimitiveIDIn", "").find("gl_PrimitiveID") != std::string::npos;
     if (functions.find("gl_ClipDistance") != std::string::npos && !info.outputClipDistances) info.outputClipDistances = 8;
     if (info.readsClipDistance && !info.inputClipDistances) info.inputClipDistances = 8;
-    if (functions.find("gl_CullDistance") != std::string::npos && !info.outputCullDistances)
-        info.outputCullDistances = std::max(1, 8 - info.outputClipDistances);
+    // gl_PerVertex declares gl_CullDistance whether or not the shader writes
+    // it: unwritten distances must not reach the cull test.
+    if (functions.find("gl_CullDistance") == std::string::npos) info.outputCullDistances = 0;
+    else if (!info.outputCullDistances) info.outputCullDistances = std::max(1, 8 - info.outputClipDistances);
     if (info.readsCullDistance && !info.inputCullDistances) info.inputCullDistances = 8;
     const std::pair<const char*, const char*> renames[] = {
         {"gl_PrimitiveIDIn", "wmgl_primitive_id_in"}, {"gl_PrimitiveID", "wmgl_out_primitive_id"},

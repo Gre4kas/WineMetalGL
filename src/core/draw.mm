@@ -1078,6 +1078,30 @@ void DrawState::samplerBinding(LinkedProgram& program, size_t index, __strong id
     }
 }
 
+uint16_t DrawState::borderVariant(LinkedProgram& program, int stage) {
+    std::vector<shader::BorderSlot> slots;
+    for (size_t i = 0; i < program.link.samplers.size(); ++i) {
+        const shader::SamplerSlotInfo& slot = program.link.samplers[i];
+        const int index = slot.stageTexture[stage];
+        if (index < 0 || slot.textureTarget < 0) continue;
+        const auto [owner, ownIndex] = samplerSource(program, i);
+        const GLint unit = owner && ownIndex < owner->samplerUnits.size() ? owner->samplerUnits[ownIndex] : 0;
+        if (unit < 0 || unit >= ContextState::kMaxTextureUnits) continue;
+        Texture* texture = ctx_.state.textureUnits[unit].bound[slot.textureTarget].get();
+        if (!texture) continue;
+        const Sampler* samplerObject = ctx_.state.textureUnits[unit].sampler.get();
+        const SamplerParams& params = samplerObject ? samplerObject->params : texture->sampler;
+        if (params.wrapS != GL_CLAMP_TO_BORDER && params.wrapT != GL_CLAMP_TO_BORDER && params.wrapR != GL_CLAMP_TO_BORDER)
+            continue;
+        shader::BorderSlot border;
+        if (!textureComplete(ctx_, *texture, &params) || !borderEmulation(*texture, params, slot.shadow, border)) continue;
+        border.texture = static_cast<uint32_t>(index);
+        slots.push_back(border);
+    }
+    return slots.empty() ? 0
+                         : shader::borderVariantId(shader::borderDefinitions(slots, stage == static_cast<int>(Stage::Fragment)));
+}
+
 void DrawState::prepareSamplerStorage(LinkedProgram& program) {
     // textureComplete builds pending storage with the blit encoder, which
     // would end the render or compute encoder of a draw in progress. Image
@@ -1198,6 +1222,9 @@ id<MTLRenderCommandEncoder> DrawState::prepare(GLenum mode, MTLPrimitiveType& pr
         return nil;
     LinkedProgram* program = executable();
     if (!program) return nil;
+    // Before the render encoder: completeness checks may build storage.
+    const uint16_t borders[2] = {borderVariant(*program, static_cast<int>(Stage::Vertex)),
+                                 borderVariant(*program, static_cast<int>(Stage::Fragment))};
     // Scissor rectangles of every viewport index (an empty one clips
     // everything). Without gl_ViewportIndex only index 0 is used, and an
     // empty rectangle there draws nothing.
@@ -1257,6 +1284,8 @@ id<MTLRenderCommandEncoder> DrawState::prepare(GLenum mode, MTLPrimitiveType& pr
     // Cull distances: the fragment function drops primitives with a distance
     // negative at every vertex.
     key.cull = static_cast<uint8_t>(program->cullDistances());
+    key.borders[0] = borders[0];
+    key.borders[1] = key.rasterization ? borders[1] : 0;
     for (int i = 0; i < 8; ++i) key.colorFormats[i] = static_cast<uint16_t>(formats.color[i]);
     // GL_COLOR_LOGIC_OP replaces blending on unsigned normalized and integer
     // attachments; the fragment function applies the operation (framebuffer
@@ -1695,6 +1724,7 @@ bool DrawState::runVertexCapture(LinkedProgram& lp, const std::vector<uint32_t>&
                                  const uint32_t* strides) {
     waitForCpuVertexReads(lp, true);
     prepareSamplerStorage(lp);
+    const uint16_t borders = borderVariant(lp, static_cast<int>(Stage::Vertex));
     RenderTargetDesc target;
     TargetFormats formats;
     if (!drawTarget(target, formats, false)) return false;
@@ -1702,6 +1732,7 @@ bool DrawState::runVertexCapture(LinkedProgram& lp, const std::vector<uint32_t>&
     PipelineKey key;
     std::memset(&key, 0, sizeof(key));
     key.programId = lp.uid;
+    key.borders[0] = borders;
     key.sampleCount = static_cast<uint8_t>(target.samples);
     key.rasterization = 0;
     key.topologyClass = static_cast<uint8_t>(MTLPrimitiveTopologyClassPoint);
@@ -1857,10 +1888,12 @@ void DrawState::dispatch(GLuint x, GLuint y, GLuint z, Buffer* indirect, GLintpt
     LinkedProgram* current = executable();
     if (!current) return;
     LinkedProgram& lp = *current;
-    id<MTLComputePipelineState> pipeline = lp.computePipeline();
-    if (!pipeline) return;
     if (indirect && indirect->lastWriteSerial) ctx_.stream().waitFor(indirect->lastWriteSerial);
     prepareSamplerStorage(lp);
+    const int cs = static_cast<int>(Stage::Compute);
+    const uint16_t borders = borderVariant(lp, cs);
+    id<MTLComputePipelineState> pipeline = borders ? lp.kernelWithBorders(lp.stage(Stage::Compute), cs, borders) : lp.computePipeline();
+    if (!pipeline) return;
     id<MTLComputeCommandEncoder> encoder = ctx_.stream().compute();
     [encoder setComputePipelineState:pipeline];
     bindKernelResources(encoder, lp, lp.stage(Stage::Compute).usesDefaultUniforms, static_cast<int>(Stage::Compute),
@@ -1948,7 +1981,9 @@ void DrawState::drawGeometry(GLenum mode, const std::vector<uint32_t>& vertices,
     // Kernel threads: one per input primitive and invocation (GS instancing).
     const uint64_t threads = total * static_cast<uint64_t>(std::max(1, g.invocations));
     const uint32_t maxV = static_cast<uint32_t>(g.maxVertices);
-    id<MTLComputePipelineState> kernel = lp.geometryKernel();
+    const uint16_t borders = borderVariant(lp, static_cast<int>(Stage::Compute));  // the kernel's samplers
+    id<MTLComputePipelineState> kernel =
+        borders ? lp.kernelWithBorders(g.kernel, static_cast<int>(Stage::Geometry), borders) : lp.geometryKernel();
     if (!kernel || !lp.geometryPassthrough()) return;
     // Anything that flushes must happen before the transient allocations below.
     waitForCpuVertexReads(lp, true);
@@ -2155,9 +2190,11 @@ void DrawState::drawPatches(const std::vector<uint32_t>& vertices, GLsizei insta
     std::vector<uint32_t> records;  // control: the patch records, copied out of the transient memory
     const uint32_t recordWords = t.recordWords();
     if (t.hasControl) {
+        const uint16_t borders = borderVariant(lp, static_cast<int>(Stage::TessControl));
         TransientAllocation output = transient_.allocate(total * recordWords * 4, serial, 16);
         id<MTLComputeCommandEncoder> compute = ctx_.stream().compute();
-        [compute setComputePipelineState:lp.tessControlKernel()];
+        [compute setComputePipelineState:borders ? lp.kernelWithBorders(t.control, static_cast<int>(Stage::TessControl), borders)
+                                                 : lp.tessControlKernel()];
         bindKernelResources(compute, lp, t.control.usesDefaultUniforms, static_cast<int>(Stage::TessControl), &t.control);
         const uint32_t control[4] = {patchVertices, static_cast<uint32_t>(total), static_cast<uint32_t>(patches), 0};
         [compute setBuffer:captured.buffer offset:captured.offset atIndex:shader::kSlotFirstXfbBuffer];
