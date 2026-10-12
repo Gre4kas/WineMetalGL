@@ -175,6 +175,9 @@ void attachTexture(Context& ctx, GLenum target, GLenum attachment, GLenum textar
                 t != GL_TEXTURE_CUBE_MAP_ARRAY)
                 return ctx.setError(GL_INVALID_OPERATION);
             if (layer < 0) return ctx.setError(GL_INVALID_VALUE);
+            // A layer past the target's limit (MAX_3D_TEXTURE_SIZE or MAX_ARRAY_TEXTURE_LAYERS).
+            if (layer >= (t == GL_TEXTURE_3D ? limits::kMax3DTextureSize : limits::kMaxArrayLayers))
+                return ctx.setError(GL_INVALID_VALUE);
         }
         a.type = GL_TEXTURE;
         a.texture = tex;
@@ -370,6 +373,26 @@ void GetFramebufferParameteriv(Context& ctx, GLenum target, GLenum pname, GLint*
     RefPtr<Framebuffer>* binding = framebufferBinding(ctx, target);
     if (!binding) return ctx.setError(GL_INVALID_ENUM);
     Framebuffer* fb = binding->get();
+    // GL 4.5: the framebuffer-dependent state of glGetIntegerv, for the
+    // framebuffer bound to `target` (the default framebuffer included).
+    if (ctx.version() >= 45 && (pname == GL_DOUBLEBUFFER || pname == GL_STEREO || pname == GL_SAMPLES ||
+                                pname == GL_SAMPLE_BUFFERS || pname == GL_IMPLEMENTATION_COLOR_READ_FORMAT ||
+                                pname == GL_IMPLEMENTATION_COLOR_READ_TYPE)) {
+        if (!params) return;
+        if (pname == GL_STEREO) return void(*params = GL_FALSE);
+        if (pname == GL_DOUBLEBUFFER) {
+            Surface* surface = ctx.drawSurface();
+            *params = !fb && surface && surface->pixelFormat().double_buffer ? GL_TRUE : GL_FALSE;
+            return;
+        }
+        RefPtr<Framebuffer> current = *binding;
+        RefPtr<Framebuffer> draw = ctx.state.drawFramebuffer, read = ctx.state.readFramebuffer;
+        ctx.state.drawFramebuffer = ctx.state.readFramebuffer = current;
+        GetIntegerv(ctx, pname, params);
+        ctx.state.drawFramebuffer = draw;
+        ctx.state.readFramebuffer = read;
+        return;
+    }
     if (!fb) return ctx.setError(GL_INVALID_OPERATION);
     if (!params) return;
     switch (pname) {
@@ -393,7 +416,9 @@ void GetFramebufferAttachmentParameteriv(Context& ctx, GLenum target, GLenum att
         const bool color = attachment == GL_FRONT_LEFT || attachment == GL_BACK_LEFT || attachment == GL_FRONT ||
                            attachment == GL_BACK || attachment == GL_LEFT;
         const bool depth = attachment == GL_DEPTH, stencil = attachment == GL_STENCIL;
-        if (!color && !depth && !stencil) return ctx.setError(GL_INVALID_ENUM);
+        // The right buffers exist only in stereo formats, which WineMetalGL has none of.
+        const bool right = attachment == GL_FRONT_RIGHT || attachment == GL_BACK_RIGHT || attachment == GL_RIGHT;
+        if (!color && !depth && !stencil && !right) return ctx.setError(GL_INVALID_ENUM);
         const bool present = surface && (color || (depth && surface->hasDepth()) || (stencil && surface->hasStencil()));
         switch (pname) {
         case GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE: *params = present ? GL_FRAMEBUFFER_DEFAULT : GL_NONE; return;

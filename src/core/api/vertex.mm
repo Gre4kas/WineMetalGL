@@ -85,6 +85,8 @@ bool validFormat(Context& ctx, GLint size, GLenum type, bool normalized, bool in
         default: return fail(GL_INVALID_ENUM);
         }
         if (packed && size != 4 && size != GL_BGRA && type != GL_UNSIGNED_INT_10F_11F_11F_REV) return fail(GL_INVALID_OPERATION);
+        // GL_UNSIGNED_INT_10F_11F_11F_REV holds exactly three components (GL 4.4).
+        if (type == GL_UNSIGNED_INT_10F_11F_11F_REV && size != 3) return fail(GL_INVALID_OPERATION);
     }
     return true;
 }

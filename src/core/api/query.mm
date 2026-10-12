@@ -278,7 +278,7 @@ void beginQuery(Context& ctx, GLenum target, int index, GLuint name) {
     if (!q) {
         q = makeRef<Query>(name);
         ctx.queries.set(name, q);
-    } else if (q->everActive && q->target != target) {
+    } else if ((q->everActive || q->target) && q->target != target) {  // a created query has its target (GL 4.5)
         return ctx.setError(GL_INVALID_OPERATION);
     }
     for (const RefPtr<Query>& active : ctx.state.activeQueries)
@@ -379,7 +379,11 @@ namespace {
 template <class T>
 void getQueryObject(Context& ctx, GLuint name, GLenum pname, T* params) {
     Query* q = ctx.queries.get(name);
-    if (!q || !q->everActive || q->active) return ctx.setError(GL_INVALID_OPERATION);
+    // A query created by glCreateQueries (GL 4.5) has its target before it is first used.
+    if (!q || (!q->everActive && !q->target) || q->active) return ctx.setError(GL_INVALID_OPERATION);
+    if (pname != GL_QUERY_RESULT && pname != GL_QUERY_RESULT_AVAILABLE && pname != GL_QUERY_RESULT_NO_WAIT &&
+        !(pname == GL_QUERY_TARGET && ctx.version() >= 45))
+        return ctx.setError(GL_INVALID_ENUM);
     // GL 4.4 (GL_ARB_query_buffer_object): with a buffer bound to
     // GL_QUERY_BUFFER, `params` is an offset into it.
     Buffer* queryBuffer = ctx.version() >= 44 ? ctx.state.queryBuffer.get() : nullptr;
@@ -407,6 +411,7 @@ void getQueryObject(Context& ctx, GLuint name, GLenum pname, T* params) {
         if (!queryResultReady(ctx, *q, false)) return;
         value = q->result;
         break;
+    case GL_QUERY_TARGET: value = q->target; break;
     default: return ctx.setError(GL_INVALID_ENUM);
     }
     // Results that do not fit the requested type saturate.

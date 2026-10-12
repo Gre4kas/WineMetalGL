@@ -235,3 +235,61 @@ void main() {
     glDeleteBuffers(3, buffers);
     glDeleteProgram(p);
 }
+
+// GL 4.5 direct state access: a frame set up without binding anything to
+// edit it (buffers, a texture, a framebuffer and a vertex array), drawn into
+// the framebuffer and read back through the texture.
+GPU_TEST_VERSION(gpu_gl45_direct_state_access, 45) {
+    const float quad[8] = {-1, -1, 1, -1, -1, 1, 1, 1};
+    GLuint vbo = 0, tex = 0, src = 0, fbo = 0, vao = 0;
+    glCreateBuffers(1, &vbo);
+    glNamedBufferData(vbo, sizeof(quad), nullptr, GL_STATIC_DRAW);
+    glNamedBufferSubData(vbo, 0, sizeof(quad), quad);
+    float back[8] = {};
+    glGetNamedBufferSubData(vbo, 0, sizeof(back), back);
+    CHECK(std::memcmp(back, quad, sizeof(quad)) == 0);
+    glCreateTextures(GL_TEXTURE_2D, 1, &tex);
+    glTextureStorage2D(tex, 1, GL_RGBA8, 4, 4);
+    glCreateTextures(GL_TEXTURE_2D, 1, &src);
+    glTextureStorage2D(src, 1, GL_RGBA8, 1, 1);
+    const uint8_t green[4] = {0, 255, 0, 255};
+    glTextureSubImage2D(src, 0, 0, 0, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, green);
+    glTextureParameteri(src, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glCreateFramebuffers(1, &fbo);
+    glNamedFramebufferTexture(fbo, GL_COLOR_ATTACHMENT0, tex, 0);
+    CHECK_EQ(glCheckNamedFramebufferStatus(fbo, GL_FRAMEBUFFER), static_cast<GLenum>(GL_FRAMEBUFFER_COMPLETE));
+    const float red[4] = {1, 0, 0, 1};
+    glClearNamedFramebufferfv(fbo, GL_COLOR, 0, red);
+    glCreateVertexArrays(1, &vao);
+    glVertexArrayVertexBuffer(vao, 0, vbo, 0, 8);
+    glVertexArrayAttribFormat(vao, 0, 2, GL_FLOAT, GL_FALSE, 0);
+    glVertexArrayAttribBinding(vao, 0, 0);
+    glEnableVertexArrayAttrib(vao, 0);
+    GLuint p = gpu::program("#version 450 core\nlayout(location = 0) in vec2 position;\n"
+                            "void main() { gl_Position = vec4(position * 0.5 - 0.5, 0.0, 1.0); }\n",
+                            "#version 450 core\nlayout(binding = 3) uniform sampler2D s;\nout vec4 o;\n"
+                            "void main() { o = texture(s, vec2(0.5)); }\n");
+    glBindTextureUnit(3, src);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glViewport(0, 0, 4, 4);
+    glUseProgram(p);
+    glBindVertexArray(vao);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);  // the lower-left quarter
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glViewport(0, 0, 64, 64);
+    CHECK_GL();
+    uint8_t pixels[64] = {};
+    glGetTextureImage(tex, 0, GL_RGBA, GL_UNSIGNED_BYTE, sizeof(pixels), pixels);
+    CHECK_GL();
+    CHECK(pixels[0] == 0 && pixels[1] == 255);          // (0, 0): drawn
+    CHECK(pixels[15 * 4] == 255 && pixels[15 * 4 + 1] == 0);  // (3, 3): cleared
+    // A name that is not an object is INVALID_OPERATION.
+    glNamedBufferData(4321, 4, nullptr, GL_STATIC_DRAW);
+    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_INVALID_OPERATION));
+    glDeleteProgram(p);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &src);
+    glDeleteTextures(1, &tex);
+    glDeleteBuffers(1, &vbo);
+}

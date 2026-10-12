@@ -60,6 +60,7 @@ src/core/api/compute.mm
 src/core/api/copy_image.mm
 src/core/api/debug.mm
 src/core/api/draw.mm
+src/core/api/dsa.mm
 src/core/api/fixed_attrib.mm
 src/core/api/fixed_get.mm
 src/core/api/fixed_raster.mm
