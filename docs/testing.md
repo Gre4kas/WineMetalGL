@@ -114,9 +114,10 @@ On stock Wine 11.0 with the module (Apple M4):
 
 | Test | Checks | Failures | Skipped |
 |---|---:|---:|---:|
-| `d3d11` (x86_64) | 561,394 | 231 | 9 |
-| `d3d10core` (x86_64) | 194,651 | 210 | 0 |
-| `d3d10core` (i386) | 194,651 | 210 | 0 |
+| `d3d11` (x86_64) | 561,394 | 230 | 9 |
+| `d3d11` (i386) | 561,394 | 230 | 9 |
+| `d3d10core` (x86_64) | 194,651 | 209 | 0 |
+| `d3d10core` (i386) | 194,651 | 209 | 0 |
 
 What the failures are:
 
@@ -128,15 +129,13 @@ What the failures are:
   viewport corners. OpenGL viewports keep the fraction.
 - Single checks not yet explained:
   - `test_sample_shading`;
-  - `test_occlusion_query` (one of 100 draws is not counted);
   - `test_depth_stencil_sampling`;
   - `test_sm5_bufinfo_instruction`;
   - `test_sample_mask`;
   - `test_layered_rtv_mismatch`.
-- `d3d11` as an i386 program stops in `test_deferred_context_map`. wined3d
-  maps a 64 MB persistent buffer chunk, no contiguous 64 MB remains below
-  2 GB in the test process, and wined3d asserts on the failed map. Wine's
-  test notes that macOS hosts exhaust the 32-bit address space.
+- 32-bit programs keep their buffer storage below 4 GB: small buffers share
+  1 MiB chunks in 16 KiB pages, which leaves room for wined3d's 64 MB
+  persistent chunks (`test_deferred_context_map`).
 - `dxgi_test` fails on window and fullscreen geometry under Wine's macOS
   driver, which is not OpenGL.
 
