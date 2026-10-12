@@ -70,6 +70,9 @@ const TBuiltInResource* resources() {
         x.maxVertexUniformComponents = x.maxFragmentUniformComponents = x.maxGeometryUniformComponents =
             x.maxTessControlUniformComponents = x.maxTessEvaluationUniformComponents = x.maxComputeUniformComponents =
                 L::kMaxDefaultUniformComponents;
+        // gl_MaxVertexUniformVectors and gl_MaxFragmentUniformVectors match the
+        // API's GL_MAX_*_UNIFORM_VECTORS (KHR-GL46.limits).
+        x.maxVertexUniformVectors = x.maxFragmentUniformVectors = L::kMaxDefaultUniformComponents / 4;
         x.maxComputeTextureImageUnits = L::kMaxTextureUnitsPerStage;
         x.maxComputeWorkGroupCountX = x.maxComputeWorkGroupCountY = x.maxComputeWorkGroupCountZ = L::kMaxComputeWorkGroupCount;
         x.maxComputeWorkGroupSizeX = L::kMaxComputeWorkGroupSize[0];

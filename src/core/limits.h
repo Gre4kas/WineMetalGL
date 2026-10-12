@@ -8,7 +8,7 @@ namespace wmgl::limits {
 constexpr GLint kMaxTextureSize = 16384, kMax3DTextureSize = 2048, kMaxArrayLayers = 2048;
 // Combined limits cover the five graphics stages of GL 4.0 (5 x per stage).
 constexpr GLint kMaxDrawBuffers = 8, kMaxVertexAttribs = 16, kMaxTextureUnitsPerStage = 16, kMaxCombinedTextureUnits = 80;
-constexpr GLint kMaxUniformBlocksPerStage = 14, kMaxCombinedUniformBlocks = 70, kMaxUniformBufferBindings = 72;
+constexpr GLint kMaxUniformBlocksPerStage = 14, kMaxCombinedUniformBlocks = 70, kMaxUniformBufferBindings = 84;
 constexpr GLint kMaxUniformBlockSize = 65536, kMaxDefaultUniformComponents = 4096;
 constexpr GLint kMaxTextureBufferSize = 1 << 27;
 // GL 4.3 glTexBufferRange: the largest alignment GL allows, which every Metal

@@ -402,9 +402,9 @@ TEST(shader_glsl420_pack_rules) {
                                    "out vec4 o; void main() { o = imageLoad(i, ivec2(0)); }\n").ok);
     CHECK(!compile(Stage::Fragment, "#version 420\nlayout(binding = 8, rgba8) readonly uniform image2D i;\n"
                                     "out vec4 o; void main() { o = imageLoad(i, ivec2(0)); }\n").ok);
-    CHECK(compile(Stage::Fragment, "#version 420\nlayout(std140, binding = 70) uniform B { vec4 a; } b[2];\n"
+    CHECK(compile(Stage::Fragment, "#version 420\nlayout(std140, binding = 82) uniform B { vec4 a; } b[2];\n"
                                    "out vec4 o; void main() { o = b[1].a; }\n").ok);
-    CHECK(!compile(Stage::Fragment, "#version 420\nlayout(std140, binding = 70) uniform B { vec4 a; } b[3];\n"
+    CHECK(!compile(Stage::Fragment, "#version 420\nlayout(std140, binding = 82) uniform B { vec4 a; } b[3];\n"
                                     "out vec4 o; void main() { o = b[2].a; }\n").ok);
 }
 
