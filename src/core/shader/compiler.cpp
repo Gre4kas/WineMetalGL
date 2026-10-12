@@ -1666,11 +1666,11 @@ bool layoutShaderTransformFeedback(glslang::TIntermediate* last, const std::vect
                 }
             }
         };
-    auto add = [&](const std::string& name, const glslang::TType& type, const glslang::TQualifier& q, uint32_t extraBytes = 0) {
+    auto add = [&](const std::string& name, const glslang::TType& type, const glslang::TQualifier& q, int extraBuffers = 0) {
         if (!q.hasXfbOffset()) return;
         if (type.getBasicType() == glslang::EbtStruct) {
-            uint32_t offset = q.layoutXfbOffset + extraBytes;
-            addStruct(name, type, q.hasXfbBuffer() ? static_cast<int>(q.layoutXfbBuffer) : 0, offset);
+            uint32_t offset = q.layoutXfbOffset;
+            addStruct(name, type, (q.hasXfbBuffer() ? static_cast<int>(q.layoutXfbBuffer) : 0) + extraBuffers, offset);
             return;
         }
         TransformFeedbackVarying v;
@@ -1679,8 +1679,8 @@ bool layoutShaderTransformFeedback(glslang::TIntermediate* last, const std::vect
         v.size = type.isSizedArray() ? type.getOuterArraySize() : 1;
         v.array = type.isSizedArray();
         v.components = glTypeWords(v.type) * v.size;
-        v.buffer = q.hasXfbBuffer() ? static_cast<int>(q.layoutXfbBuffer) : 0;
-        v.offset = (q.layoutXfbOffset + extraBytes) / 4;
+        v.buffer = (q.hasXfbBuffer() ? static_cast<int>(q.layoutXfbBuffer) : 0) + extraBuffers;
+        v.offset = q.layoutXfbOffset / 4;
         v.expression = name;
         v.source = name;
         for (const StageOutputVar& o : outputs)
@@ -1700,24 +1700,16 @@ bool layoutShaderTransformFeedback(glslang::TIntermediate* last, const std::vect
             if (type.getBasicType() == glslang::EbtBlock) {
                 const std::string blockName = unescapeName(type.getTypeName().c_str());
                 const bool anonymous = glslang::IsAnonymous(symbol->getName());
-                // An array of blocks is captured block after block: element
-                // k's members at their offsets plus k times the block's span.
+                // An array of N blocks is captured by N consecutive buffers:
+                // element k's members at their offsets in buffer xfb_buffer + k
+                // (GLSL 4.60 section 4.4.2.1).
                 const int elements = type.isSizedArray() && !anonymous ? type.getOuterArraySize() : 0;
-                uint32_t first = ~0u, end = 0;
-                for (const glslang::TTypeLoc& member : *type.getStruct()) {
-                    const glslang::TQualifier& q = member.type->getQualifier();
-                    if (!q.hasXfbOffset()) continue;
-                    const uint32_t words = static_cast<uint32_t>(glTypeWords(glTypeOfAst(*member.type))) *
-                                           (member.type->isSizedArray() ? member.type->getOuterArraySize() : 1);
-                    first = std::min(first, q.layoutXfbOffset);
-                    end = std::max(end, q.layoutXfbOffset + words * 4);
-                }
                 for (int k = 0; k < std::max(1, elements); ++k)
                     for (const glslang::TTypeLoc& member : *type.getStruct()) {
                         const std::string field = unescapeName(member.type->getFieldName().c_str());
                         const std::string element = elements ? "[" + std::to_string(k) + "]" : "";
                         const std::string name = field.rfind("gl_", 0) == 0 || anonymous ? field : blockName + element + "." + field;
-                        add(name, *member.type, member.type->getQualifier(), first == ~0u ? 0 : static_cast<uint32_t>(k) * (end - first));
+                        add(name, *member.type, member.type->getQualifier(), k);
                     }
                 continue;
             }
@@ -2306,6 +2298,7 @@ static LinkResult linkImplCore(const LinkInput& input, const CaptureCode* captur
     std::map<std::string, int> blockIndexByName;
     std::map<std::string, int> samplerUniformByName, imageUniformByName;
     std::map<std::string, int> samplerUniformCount;  // uniforms per sampler variable (arrays of arrays: several)
+    std::map<std::string, int> imageUniformCount;    // likewise per image variable
     for (int s = 0; s < kStageCount; ++s) {
         if (!result.stages[s].present) continue;
         spirv_cross::Compiler compiler(result.stages[s].spirv);
@@ -2436,27 +2429,46 @@ static LinkResult linkImplCore(const LinkInput& input, const CaptureCode* captur
             const std::string name = unescapeName(compiler.get_name(image.id));
             if (!liveSamplers.count(topLevelName(name))) continue;
             const GLenum glType = imageTypeOf(base, compiler.get_type(base.image.type).basetype);
-            const uint32_t count = type.array.empty() ? 1 : std::max(1u, type.array.back());
             auto it = imageUniformByName.find(name);
             if (it != imageUniformByName.end()) {
-                result.uniforms[it->second].stageMask |= 1u << s;
+                for (int k = 0; k < imageUniformCount[name]; ++k) result.uniforms[it->second + k].stageMask |= 1u << s;
                 continue;
             }
-            UniformInfo u;
-            u.name = type.array.empty() ? name : name + "[0]";
-            u.type = glType;
-            u.size = static_cast<GLint>(count);
-            u.imageSlot = static_cast<int>(result.images.size());
-            u.stageMask = 1u << s;
-            if (auto b = explicitBindings.find(name); b != explicitBindings.end()) u.explicitBinding = b->second;
-            for (uint32_t e = 0; e < count; ++e) {
-                ImageSlotInfo slot;
-                slot.type = glType;
-                slot.format = imageFormatOf(base.image.format);
-                result.images.push_back(slot);
-            }
+            // An array of arrays is a uniform per innermost array, as for
+            // samplers; its elements take consecutive slots (flattened as the
+            // MSL side sees them, flattenArraysOfArrays).
+            std::vector<uint32_t> dims(type.array.begin(), type.array.end());
+            std::reverse(dims.begin(), dims.end());  // outermost first
+            for (uint32_t& d : dims) d = std::max(1u, d);
+            const uint32_t inner = dims.empty() ? 1 : dims.back();
+            uint32_t outer = 1;
+            for (size_t d = 0; d + 1 < dims.size(); ++d) outer *= dims[d];
             imageUniformByName[name] = static_cast<int>(result.uniforms.size());
-            result.uniforms.push_back(u);
+            imageUniformCount[name] = static_cast<int>(outer);
+            for (uint32_t k = 0; k < outer; ++k) {
+                UniformInfo u;
+                u.name = name;
+                for (size_t d = 0, rest = k; d + 1 < dims.size(); ++d) {
+                    uint32_t span = 1;
+                    for (size_t e = d + 1; e + 1 < dims.size(); ++e) span *= dims[e];
+                    u.name += "[" + std::to_string(rest / span) + "]";
+                    rest %= span;
+                }
+                if (!type.array.empty()) u.name += "[0]";
+                u.type = glType;
+                u.size = static_cast<GLint>(inner);
+                u.imageSlot = static_cast<int>(result.images.size());
+                u.stageMask = 1u << s;
+                if (auto b = explicitBindings.find(name); b != explicitBindings.end())
+                    u.explicitBinding = b->second + static_cast<int>(k * inner);
+                for (uint32_t e = 0; e < inner; ++e) {
+                    ImageSlotInfo slot;
+                    slot.type = glType;
+                    slot.format = imageFormatOf(base.image.format);
+                    result.images.push_back(slot);
+                }
+                result.uniforms.push_back(u);
+            }
         }
         // Atomic counters (GL 4.2): the storage blocks glslang made of them.
         uint32_t stageCounters = 0;
@@ -2489,29 +2501,42 @@ static LinkResult linkImplCore(const LinkInput& input, const CaptureCode* captur
                 const spirv_cross::SPIRType& memberType = compiler.get_type(type.member_types[m]);
                 const std::string name = unescapeName(compiler.get_member_name(type.self, m));
                 const uint32_t offset = compiler.type_struct_member_offset(type, m);
-                const uint32_t count = memberType.array.empty() ? 1 : std::max(1u, memberType.array.back());
-                // Every element of an array of arrays is a counter.
-                uint32_t elements = 1;
-                for (uint32_t d : memberType.array) elements *= std::max(1u, d);
-                buffer->dataSize = std::max<GLint>(buffer->dataSize, static_cast<GLint>(offset + 4 * elements));
+                // Every element of an array of arrays is a counter; a uniform
+                // per innermost array ("c[1][0]", GL 4.6 section 7.3.1.1).
+                std::vector<uint32_t> dims(memberType.array.begin(), memberType.array.end());
+                std::reverse(dims.begin(), dims.end());  // outermost first
+                for (uint32_t& d : dims) d = std::max(1u, d);
+                const uint32_t inner = dims.empty() ? 1 : dims.back();
+                uint32_t outer = 1;
+                for (size_t d = 0; d + 1 < dims.size(); ++d) outer *= dims[d];
+                buffer->dataSize = std::max<GLint>(buffer->dataSize, static_cast<GLint>(offset + 4 * outer * inner));
                 if (!all && !accessed.count(m)) continue;
-                const std::string glName = memberType.array.empty() ? name : name + "[0]";
-                auto it = std::find_if(result.uniforms.begin(), result.uniforms.end(),
-                                       [&](const UniformInfo& u) { return u.name == glName && u.atomicBufferIndex >= 0; });
-                if (it != result.uniforms.end()) {
-                    it->stageMask |= 1u << s;
-                    continue;
+                for (uint32_t k = 0; k < outer; ++k) {
+                    std::string glName = name;
+                    for (size_t d = 0, rest = k; d + 1 < dims.size(); ++d) {
+                        uint32_t span = 1;
+                        for (size_t e = d + 1; e + 1 < dims.size(); ++e) span *= dims[e];
+                        glName += "[" + std::to_string(rest / span) + "]";
+                        rest %= span;
+                    }
+                    if (!dims.empty()) glName += "[0]";
+                    auto it = std::find_if(result.uniforms.begin(), result.uniforms.end(),
+                                           [&](const UniformInfo& u) { return u.name == glName && u.atomicBufferIndex >= 0; });
+                    if (it != result.uniforms.end()) {
+                        it->stageMask |= 1u << s;
+                        continue;
+                    }
+                    UniformInfo u;
+                    u.name = glName;
+                    u.type = GL_UNSIGNED_INT_ATOMIC_COUNTER;
+                    u.size = static_cast<GLint>(inner);
+                    u.offset = static_cast<GLint>(offset + 4 * k * inner);
+                    u.arrayStride = dims.empty() ? 0 : 4;
+                    u.atomicBufferIndex = bufferIndex;
+                    u.stageMask = 1u << s;
+                    buffer->activeUniforms.push_back(static_cast<int>(result.uniforms.size()));
+                    result.uniforms.push_back(u);
                 }
-                UniformInfo u;
-                u.name = glName;
-                u.type = GL_UNSIGNED_INT_ATOMIC_COUNTER;
-                u.size = static_cast<GLint>(count);
-                u.offset = static_cast<GLint>(offset);
-                u.arrayStride = memberType.array.empty() ? 0 : 4;
-                u.atomicBufferIndex = bufferIndex;
-                u.stageMask = 1u << s;
-                buffer->activeUniforms.push_back(static_cast<int>(result.uniforms.size()));
-                result.uniforms.push_back(u);
             }
         }
         // GL_MAX_<stage>_ATOMIC_COUNTERS (KHR-GL44.geometry_shader.linking.more_ACs_in_GS_than_supported).
@@ -3021,7 +3046,8 @@ static LinkResult linkImplCore(const LinkInput& input, const CaptureCode* captur
                 b.binding = msl.get_decoration(ssbo.id, spv::DecorationBinding);
                 const int counterBinding = atomicCounterBlockBinding(blockName);
                 if (auto internal = kInternalBuffers.find(blockName); internal != kInternalBuffers.end()) b.msl_buffer = internal->second;
-                else if (blockName.rfind("wmgl_XfbData", 0) == 0) b.msl_buffer = kSlotFirstXfbBuffer + std::stoul(blockName.substr(12));
+                else if (blockName.rfind("wmgl_XfbData", 0) == 0)
+                    b.msl_buffer = kSlotFirstXfbBuffer + static_cast<uint32_t>(std::strtoul(blockName.c_str() + 12, nullptr, 10));
                 else if (counterBinding >= 0 && s == static_cast<int>(Stage::Vertex)) {
                     // A vertex function's counter buffers: argument buffer entries (it has no free slots).
                     const uint32_t id = static_cast<uint32_t>(stage.storageArgs.size());
@@ -3113,8 +3139,9 @@ static LinkResult linkImplCore(const LinkInput& input, const CaptureCode* captur
                 b.msl_texture = nextImage;
                 msl.add_msl_resource_binding(b);
                 if (auto it = imageUniformByName.find(name); it != imageUniformByName.end()) {
-                    const int first = result.uniforms[it->second].imageSlot;
-                    for (uint32_t e = 0; e < count; ++e) result.images[first + e].stageTexture[s] = static_cast<int>(nextImage + e);
+                    const size_t first = static_cast<size_t>(result.uniforms[it->second].imageSlot);
+                    for (uint32_t e = 0; e < count && first + e < result.images.size(); ++e)
+                        result.images[first + e].stageTexture[s] = static_cast<int>(nextImage + e);
                 }
                 nextImage += count;
                 if (!msl.has_decoration(image.id, spv::DecorationNonWritable) &&

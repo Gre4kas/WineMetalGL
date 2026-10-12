@@ -94,6 +94,7 @@ add_library(wmgl_portable STATIC
     src/core/tess/tessellator.cpp
     src/core/shader/spirv_input.cpp
     src/core/shader/spirv_passes.cpp
+    src/core/shader/spirv_validate.cpp
     src/core/shader/subroutines.cpp
     src/core/util/log.cpp
     vendor/tessellator/tessellator.cpp

@@ -637,7 +637,8 @@ std::string lowerBuiltinUniforms(Stage stage, const std::string& source) {
                                    source.find("gl_DrawID") != std::string::npos)) {
         static const std::regex kVersion(R"(#[ \t]*version[ \t]+([0-9]+))");
         std::smatch m;
-        drawParameters = std::regex_search(source, m, kVersion) && std::stoi(m[1]) >= 460;
+        // (A version too long for an int is not one glslang takes either.)
+        drawParameters = std::regex_search(source, m, kVersion) && m[1].length() <= 4 && std::stoi(m[1]) >= 460;
         drawParametersArb = source.find("GL_ARB_shader_draw_parameters") != std::string::npos;
     }
     if (source.find("gl_DepthRange") == std::string::npos &&

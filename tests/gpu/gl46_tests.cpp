@@ -1161,3 +1161,343 @@ GPU_TEST_VERSION(gpu_gl46_xfb_memory_flat_provoking, 46) {
     glDeleteVertexArrays(1, &vao);
     glDeleteProgram(p);
 }
+
+// An array of arrays of images: a uniform per innermost array ("img[1][0]",
+// size 3), its elements in consecutive units from the explicit binding.
+GPU_TEST_VERSION(gpu_gl46_image_arrays_of_arrays, 46) {
+    const char* cs = R"(#version 460 core
+layout(local_size_x = 1) in;
+layout(rgba8, binding = 0) readonly uniform image2D img[2][3];
+layout(std430, binding = 0) buffer Out { vec4 f[2]; };
+void main() { f[0] = imageLoad(img[1][2], ivec2(0)); f[1] = imageLoad(img[0][1], ivec2(0)); }
+)";
+    GLuint shader = glCreateShader(GL_COMPUTE_SHADER);
+    glShaderSource(shader, 1, &cs, nullptr);
+    glCompileShader(shader);
+    GLuint p = glCreateProgram();
+    glAttachShader(p, shader);
+    glLinkProgram(p);
+    glDeleteShader(shader);
+    GLint linked = 0;
+    glGetProgramiv(p, GL_LINK_STATUS, &linked);
+    CHECK(linked);
+    CHECK(glGetUniformLocation(p, "img[1][2]") >= 0);
+    CHECK(glGetUniformLocation(p, "img[0][0]") >= 0);
+    GLuint tex[6];
+    glGenTextures(6, tex);
+    for (int i = 0; i < 6; ++i) {
+        glBindTexture(GL_TEXTURE_2D, tex[i]);
+        glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, 1, 1);
+        const uint8_t texel[4] = {static_cast<uint8_t>(40 * i), 0, 0, 255};
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, texel);
+        glBindImageTexture(static_cast<GLuint>(i), tex[i], 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA8);
+    }
+    GLuint buffer = 0;
+    glGenBuffers(1, &buffer);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, buffer);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, 32, nullptr, GL_DYNAMIC_READ);
+    glUseProgram(p);
+    glDispatchCompute(1, 1, 1);
+    glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
+    float out[8] = {};
+    glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(out), out);
+    if (std::fabs(out[0] - 200.0f / 255.0f) > 0.01f || std::fabs(out[4] - 40.0f / 255.0f) > 0.01f)
+        std::fprintf(stderr, "  img[1][2] %g, img[0][1] %g\n", out[0] * 255.0f, out[4] * 255.0f);
+    CHECK(std::fabs(out[0] - 200.0f / 255.0f) < 0.01f);  // unit 5
+    CHECK(std::fabs(out[4] - 40.0f / 255.0f) < 0.01f);   // unit 1
+    CHECK_GL();
+    glDeleteBuffers(1, &buffer);
+    glDeleteTextures(6, tex);
+    glDeleteProgram(p);
+}
+
+// Malformed SPIR-V fails to specialize (an id past the header's bound, an
+// instruction past the end) instead of reaching SPIRV-Cross.
+GPU_TEST_VERSION(gpu_gl46_spirv_malformed, 46) {
+    const uint32_t outOfBound[] = {0x07230203u, 0x00010000u, 0, 2, 0,
+                                   (2u << 16) | 19u, 5000};  // OpTypeVoid %5000 with bound 2
+    const uint32_t truncated[] = {0x07230203u, 0x00010000u, 0, 8, 0,
+                                  (9u << 16) | 15u, 5, 1};  // OpEntryPoint claiming 9 words
+    for (const auto& module : {std::vector<uint32_t>(std::begin(outOfBound), std::end(outOfBound)),
+                               std::vector<uint32_t>(std::begin(truncated), std::end(truncated))}) {
+        GLuint shader = glCreateShader(GL_VERTEX_SHADER);
+        glShaderBinary(1, &shader, GL_SHADER_BINARY_FORMAT_SPIR_V, module.data(), static_cast<GLsizei>(module.size() * 4));
+        CHECK_GL();
+        glSpecializeShader(shader, "main", 0, nullptr, nullptr);
+        GLint compiled = 1;
+        glGetShaderiv(shader, GL_COMPILE_STATUS, &compiled);
+        CHECK_EQ(compiled, 0);
+        glDeleteShader(shader);
+    }
+    CHECK_GL();
+}
+
+// atomicCounterDecrement in SPIR-V (glslang: OpAtomicIDecrement, then the
+// value minus one): with the counter at 10 the shader sees 9.
+GPU_TEST_VERSION(gpu_gl46_spirv_counter_decrement, 46) {
+    // glslangValidator -G: layout(binding = 0, offset = 0) uniform atomic_uint counter;
+    // buffer Out { uint before; }; void main() { before = atomicCounterDecrement(counter); }
+    static const uint32_t module[] = {
+        0x07230203u, 0x00010000u, 0x0008000bu, 0x00000017u, 0x00000000u, 0x00020011u, 0x00000001u, 0x00020011u,
+        0x00000015u, 0x0006000bu, 0x00000001u, 0x4c534c47u, 0x6474732eu, 0x3035342eu, 0x00000000u, 0x0003000eu,
+        0x00000000u, 0x00000001u, 0x0005000fu, 0x00000005u, 0x00000004u, 0x6e69616du, 0x00000000u, 0x00060010u,
+        0x00000004u, 0x00000011u, 0x00000001u, 0x00000001u, 0x00000001u, 0x00030003u, 0x00000002u, 0x000001ccu,
+        0x00040005u, 0x00000004u, 0x6e69616du, 0x00000000u, 0x00030005u, 0x00000007u, 0x0074754fu, 0x00050006u,
+        0x00000007u, 0x00000000u, 0x6f666562u, 0x00006572u, 0x00030005u, 0x00000009u, 0x00000000u, 0x00040005u,
+        0x0000000du, 0x6e756f63u, 0x00726574u, 0x00030047u, 0x00000007u, 0x00000003u, 0x00050048u, 0x00000007u,
+        0x00000000u, 0x00000023u, 0x00000000u, 0x00040047u, 0x00000009u, 0x00000021u, 0x00000000u, 0x00040047u,
+        0x00000009u, 0x00000022u, 0x00000000u, 0x00040047u, 0x0000000du, 0x00000021u, 0x00000000u, 0x00040047u,
+        0x0000000du, 0x00000023u, 0x00000000u, 0x00040047u, 0x00000016u, 0x0000000bu, 0x00000019u, 0x00020013u,
+        0x00000002u, 0x00030021u, 0x00000003u, 0x00000002u, 0x00040015u, 0x00000006u, 0x00000020u, 0x00000000u,
+        0x0003001eu, 0x00000007u, 0x00000006u, 0x00040020u, 0x00000008u, 0x00000002u, 0x00000007u, 0x0004003bu,
+        0x00000008u, 0x00000009u, 0x00000002u, 0x00040015u, 0x0000000au, 0x00000020u, 0x00000001u, 0x0004002bu,
+        0x0000000au, 0x0000000bu, 0x00000000u, 0x00040020u, 0x0000000cu, 0x0000000au, 0x00000006u, 0x0004003bu,
+        0x0000000cu, 0x0000000du, 0x0000000au, 0x0004002bu, 0x00000006u, 0x0000000eu, 0x00000001u, 0x0004002bu,
+        0x00000006u, 0x0000000fu, 0x00000000u, 0x0004002bu, 0x0000000au, 0x00000011u, 0x00000001u, 0x00040020u,
+        0x00000013u, 0x00000002u, 0x00000006u, 0x00040017u, 0x00000015u, 0x00000006u, 0x00000003u, 0x0006002cu,
+        0x00000015u, 0x00000016u, 0x0000000eu, 0x0000000eu, 0x0000000eu, 0x00050036u, 0x00000002u, 0x00000004u,
+        0x00000000u, 0x00000003u, 0x000200f8u, 0x00000005u, 0x000600e9u, 0x00000006u, 0x00000010u, 0x0000000du,
+        0x0000000eu, 0x0000000fu, 0x00050082u, 0x00000006u, 0x00000012u, 0x00000010u, 0x00000011u, 0x00050041u,
+        0x00000013u, 0x00000014u, 0x00000009u, 0x0000000bu, 0x0003003eu, 0x00000014u, 0x00000012u, 0x000100fdu,
+        0x00010038u
+    };
+    GLuint shader = glCreateShader(GL_COMPUTE_SHADER);
+    glShaderBinary(1, &shader, GL_SHADER_BINARY_FORMAT_SPIR_V, module, sizeof(module));
+    glSpecializeShader(shader, "main", 0, nullptr, nullptr);
+    GLint compiled = 0;
+    glGetShaderiv(shader, GL_COMPILE_STATUS, &compiled);
+    CHECK(compiled);
+    GLuint p = glCreateProgram();
+    glAttachShader(p, shader);
+    glLinkProgram(p);
+    glDeleteShader(shader);
+    GLint linked = 0;
+    glGetProgramiv(p, GL_LINK_STATUS, &linked);
+    CHECK(linked);
+    GLuint buffers[2] = {};
+    glGenBuffers(2, buffers);
+    const GLuint ten = 10, unset = 0xffffffffu;
+    glBindBufferBase(GL_ATOMIC_COUNTER_BUFFER, 0, buffers[0]);
+    glBufferData(GL_ATOMIC_COUNTER_BUFFER, 4, &ten, GL_DYNAMIC_COPY);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, buffers[1]);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, 4, &unset, GL_DYNAMIC_COPY);
+    glUseProgram(p);
+    glDispatchCompute(1, 1, 1);
+    glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT | GL_ATOMIC_COUNTER_BARRIER_BIT);
+    GLuint before = 0, counter = 0;
+    glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, 4, &before);
+    glGetBufferSubData(GL_ATOMIC_COUNTER_BUFFER, 0, 4, &counter);
+    CHECK_EQ(before, 9u);
+    CHECK_EQ(counter, 9u);
+    CHECK_GL();
+    glDeleteBuffers(2, buffers);
+    glDeleteProgram(p);
+}
+
+// Numbers too long for an int in shader text and varying names fail or
+// compile normally instead of throwing out of the GL call.
+GPU_TEST_VERSION(gpu_gl46_long_numbers, 46) {
+    const char* vs = "// #version 99999999999\n#version 460 core\nout int drawId;\n"
+                     "void main() { drawId = gl_DrawID; gl_Position = vec4(0.0); }\n";
+    GLuint shader = glCreateShader(GL_VERTEX_SHADER);
+    glShaderSource(shader, 1, &vs, nullptr);
+    glCompileShader(shader);
+    GLint compiled = 0;
+    glGetShaderiv(shader, GL_COMPILE_STATUS, &compiled);
+    CHECK(compiled);
+    GLuint p = glCreateProgram();
+    glAttachShader(p, shader);
+    const char* varyings[1] = {"drawId[99999999999]"};
+    glTransformFeedbackVaryings(p, 1, varyings, GL_INTERLEAVED_ATTRIBS);
+    glLinkProgram(p);
+    GLint linked = 1;
+    glGetProgramiv(p, GL_LINK_STATUS, &linked);
+    CHECK_EQ(linked, 0);
+    glDeleteShader(shader);
+    glDeleteProgram(p);
+    CHECK_GL();
+}
+
+// SPIR-V stages match uniforms by location, whatever their debug names:
+// the vertex stage's "offsetAndScale" and the fragment stage's "tint" are
+// both location 3, one uniform.
+GPU_TEST_VERSION(gpu_gl46_spirv_uniform_locations, 46) {
+    // glslangValidator -G: layout(location = 3) uniform vec4 offsetAndScale; (vertex: position * .w + .xy)
+    static const uint32_t vertex[] = {
+        0x07230203u, 0x00010000u, 0x0008000bu, 0x00000028u, 0x00000000u, 0x00020011u, 0x00000001u, 0x0006000bu,
+        0x00000001u, 0x4c534c47u, 0x6474732eu, 0x3035342eu, 0x00000000u, 0x0003000eu, 0x00000000u, 0x00000001u,
+        0x0009000fu, 0x00000000u, 0x00000004u, 0x6e69616du, 0x00000000u, 0x0000000du, 0x00000012u, 0x00000026u,
+        0x00000027u, 0x00030003u, 0x00000002u, 0x000001ccu, 0x00040005u, 0x00000004u, 0x6e69616du, 0x00000000u,
+        0x00060005u, 0x0000000bu, 0x505f6c67u, 0x65567265u, 0x78657472u, 0x00000000u, 0x00060006u, 0x0000000bu,
+        0x00000000u, 0x505f6c67u, 0x7469736fu, 0x006e6f69u, 0x00070006u, 0x0000000bu, 0x00000001u, 0x505f6c67u,
+        0x746e696fu, 0x657a6953u, 0x00000000u, 0x00070006u, 0x0000000bu, 0x00000002u, 0x435f6c67u, 0x4470696cu,
+        0x61747369u, 0x0065636eu, 0x00070006u, 0x0000000bu, 0x00000003u, 0x435f6c67u, 0x446c6c75u, 0x61747369u,
+        0x0065636eu, 0x00030005u, 0x0000000du, 0x00000000u, 0x00050005u, 0x00000012u, 0x69736f70u, 0x6e6f6974u,
+        0x00000000u, 0x00060005u, 0x00000015u, 0x7366666fu, 0x6e417465u, 0x61635364u, 0x0000656cu, 0x00050005u,
+        0x00000026u, 0x565f6c67u, 0x65747265u, 0x00444978u, 0x00060005u, 0x00000027u, 0x495f6c67u, 0x6174736eu,
+        0x4965636eu, 0x00000044u, 0x00030047u, 0x0000000bu, 0x00000002u, 0x00050048u, 0x0000000bu, 0x00000000u,
+        0x0000000bu, 0x00000000u, 0x00050048u, 0x0000000bu, 0x00000001u, 0x0000000bu, 0x00000001u, 0x00050048u,
+        0x0000000bu, 0x00000002u, 0x0000000bu, 0x00000003u, 0x00050048u, 0x0000000bu, 0x00000003u, 0x0000000bu,
+        0x00000004u, 0x00040047u, 0x00000012u, 0x0000001eu, 0x00000000u, 0x00040047u, 0x00000015u, 0x0000001eu,
+        0x00000003u, 0x00040047u, 0x00000026u, 0x0000000bu, 0x00000005u, 0x00040047u, 0x00000027u, 0x0000000bu,
+        0x00000006u, 0x00020013u, 0x00000002u, 0x00030021u, 0x00000003u, 0x00000002u, 0x00030016u, 0x00000006u,
+        0x00000020u, 0x00040017u, 0x00000007u, 0x00000006u, 0x00000004u, 0x00040015u, 0x00000008u, 0x00000020u,
+        0x00000000u, 0x0004002bu, 0x00000008u, 0x00000009u, 0x00000001u, 0x0004001cu, 0x0000000au, 0x00000006u,
+        0x00000009u, 0x0006001eu, 0x0000000bu, 0x00000007u, 0x00000006u, 0x0000000au, 0x0000000au, 0x00040020u,
+        0x0000000cu, 0x00000003u, 0x0000000bu, 0x0004003bu, 0x0000000cu, 0x0000000du, 0x00000003u, 0x00040015u,
+        0x0000000eu, 0x00000020u, 0x00000001u, 0x0004002bu, 0x0000000eu, 0x0000000fu, 0x00000000u, 0x00040017u,
+        0x00000010u, 0x00000006u, 0x00000002u, 0x00040020u, 0x00000011u, 0x00000001u, 0x00000010u, 0x0004003bu,
+        0x00000011u, 0x00000012u, 0x00000001u, 0x00040020u, 0x00000014u, 0x00000000u, 0x00000007u, 0x0004003bu,
+        0x00000014u, 0x00000015u, 0x00000000u, 0x0004002bu, 0x00000008u, 0x00000016u, 0x00000003u, 0x00040020u,
+        0x00000017u, 0x00000000u, 0x00000006u, 0x0004002bu, 0x00000006u, 0x0000001eu, 0x00000000u, 0x0004002bu,
+        0x00000006u, 0x0000001fu, 0x3f800000u, 0x00040020u, 0x00000023u, 0x00000003u, 0x00000007u, 0x00040020u,
+        0x00000025u, 0x00000001u, 0x0000000eu, 0x0004003bu, 0x00000025u, 0x00000026u, 0x00000001u, 0x0004003bu,
+        0x00000025u, 0x00000027u, 0x00000001u, 0x00050036u, 0x00000002u, 0x00000004u, 0x00000000u, 0x00000003u,
+        0x000200f8u, 0x00000005u, 0x0004003du, 0x00000010u, 0x00000013u, 0x00000012u, 0x00050041u, 0x00000017u,
+        0x00000018u, 0x00000015u, 0x00000016u, 0x0004003du, 0x00000006u, 0x00000019u, 0x00000018u, 0x0005008eu,
+        0x00000010u, 0x0000001au, 0x00000013u, 0x00000019u, 0x0004003du, 0x00000007u, 0x0000001bu, 0x00000015u,
+        0x0007004fu, 0x00000010u, 0x0000001cu, 0x0000001bu, 0x0000001bu, 0x00000000u, 0x00000001u, 0x00050081u,
+        0x00000010u, 0x0000001du, 0x0000001au, 0x0000001cu, 0x00050051u, 0x00000006u, 0x00000020u, 0x0000001du,
+        0x00000000u, 0x00050051u, 0x00000006u, 0x00000021u, 0x0000001du, 0x00000001u, 0x00070050u, 0x00000007u,
+        0x00000022u, 0x00000020u, 0x00000021u, 0x0000001eu, 0x0000001fu, 0x00050041u, 0x00000023u, 0x00000024u,
+        0x0000000du, 0x0000000fu, 0x0003003eu, 0x00000024u, 0x00000022u, 0x000100fdu, 0x00010038u
+    };
+    // glslangValidator -G: layout(location = 3) uniform vec4 tint; (fragment: vec4(tint.z, 1.0 - tint.w, 0, 1))
+    static const uint32_t fragment[] = {
+        0x07230203u, 0x00010000u, 0x0008000bu, 0x00000018u, 0x00000000u, 0x00020011u, 0x00000001u, 0x0006000bu,
+        0x00000001u, 0x4c534c47u, 0x6474732eu, 0x3035342eu, 0x00000000u, 0x0003000eu, 0x00000000u, 0x00000001u,
+        0x0006000fu, 0x00000004u, 0x00000004u, 0x6e69616du, 0x00000000u, 0x00000009u, 0x00030010u, 0x00000004u,
+        0x00000008u, 0x00030003u, 0x00000002u, 0x000001ccu, 0x00040005u, 0x00000004u, 0x6e69616du, 0x00000000u,
+        0x00030005u, 0x00000009u, 0x0000006fu, 0x00040005u, 0x0000000bu, 0x746e6974u, 0x00000000u, 0x00040047u,
+        0x00000009u, 0x0000001eu, 0x00000000u, 0x00040047u, 0x0000000bu, 0x0000001eu, 0x00000003u, 0x00020013u,
+        0x00000002u, 0x00030021u, 0x00000003u, 0x00000002u, 0x00030016u, 0x00000006u, 0x00000020u, 0x00040017u,
+        0x00000007u, 0x00000006u, 0x00000004u, 0x00040020u, 0x00000008u, 0x00000003u, 0x00000007u, 0x0004003bu,
+        0x00000008u, 0x00000009u, 0x00000003u, 0x00040020u, 0x0000000au, 0x00000000u, 0x00000007u, 0x0004003bu,
+        0x0000000au, 0x0000000bu, 0x00000000u, 0x00040015u, 0x0000000cu, 0x00000020u, 0x00000000u, 0x0004002bu,
+        0x0000000cu, 0x0000000du, 0x00000002u, 0x00040020u, 0x0000000eu, 0x00000000u, 0x00000006u, 0x0004002bu,
+        0x00000006u, 0x00000011u, 0x3f800000u, 0x0004002bu, 0x0000000cu, 0x00000012u, 0x00000003u, 0x0004002bu,
+        0x00000006u, 0x00000016u, 0x00000000u, 0x00050036u, 0x00000002u, 0x00000004u, 0x00000000u, 0x00000003u,
+        0x000200f8u, 0x00000005u, 0x00050041u, 0x0000000eu, 0x0000000fu, 0x0000000bu, 0x0000000du, 0x0004003du,
+        0x00000006u, 0x00000010u, 0x0000000fu, 0x00050041u, 0x0000000eu, 0x00000013u, 0x0000000bu, 0x00000012u,
+        0x0004003du, 0x00000006u, 0x00000014u, 0x00000013u, 0x00050083u, 0x00000006u, 0x00000015u, 0x00000011u,
+        0x00000014u, 0x00070050u, 0x00000007u, 0x00000017u, 0x00000010u, 0x00000015u, 0x00000016u, 0x00000011u,
+        0x0003003eu, 0x00000009u, 0x00000017u, 0x000100fdu, 0x00010038u
+    };
+    GLuint shaders[2] = {glCreateShader(GL_VERTEX_SHADER), glCreateShader(GL_FRAGMENT_SHADER)};
+    glShaderBinary(1, &shaders[0], GL_SHADER_BINARY_FORMAT_SPIR_V, vertex, sizeof(vertex));
+    glShaderBinary(1, &shaders[1], GL_SHADER_BINARY_FORMAT_SPIR_V, fragment, sizeof(fragment));
+    GLuint p = glCreateProgram();
+    for (GLuint s : shaders) {
+        glSpecializeShader(s, "main", 0, nullptr, nullptr);
+        glAttachShader(p, s);
+    }
+    glLinkProgram(p);
+    GLint linked = 0;
+    glGetProgramiv(p, GL_LINK_STATUS, &linked);
+    CHECK(linked);
+    if (!linked) {
+        char log[1024] = {};
+        glGetProgramInfoLog(p, sizeof(log), nullptr, log);
+        std::fprintf(stderr, "  %s\n", log);
+    }
+    glUseProgram(p);
+    glUniform4f(3, 0.0f, 0.0f, 1.0f, 1.0f);  // whole quad; red 1, green 0
+    GLuint vao = gpu::quad();
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    const uint8_t red[4] = {255, 0, 0, 255};
+    CHECK(gpu::near(gpu::readRGBA8(32, 32, 1, 1).data(), red, 1));
+    CHECK_GL();
+    glDeleteVertexArrays(1, &vao);
+    glDeleteShader(shaders[0]);
+    glDeleteShader(shaders[1]);
+    glDeleteProgram(p);
+}
+
+// An array of output blocks with xfb_offset is captured by consecutive
+// buffers: element k into buffer xfb_buffer + k (GLSL 4.60 section 4.4.2.1).
+GPU_TEST_VERSION(gpu_gl46_xfb_block_array_buffers, 46) {
+    const char* vs = "#version 460 core\n"
+                     "layout(xfb_buffer = 0, xfb_offset = 0) out B { vec4 a; } b[2];\n"
+                     "void main() { b[0].a = vec4(1.0, 2.0, 3.0, 4.0); b[1].a = vec4(5.0, 6.0, 7.0, 8.0);\n"
+                     "              gl_Position = vec4(0.0, 0.0, 0.0, 1.0); }\n";
+    GLuint shader = glCreateShader(GL_VERTEX_SHADER);
+    glShaderSource(shader, 1, &vs, nullptr);
+    glCompileShader(shader);
+    GLuint p = glCreateProgram();
+    glAttachShader(p, shader);
+    glLinkProgram(p);
+    glDeleteShader(shader);
+    GLint linked = 0;
+    glGetProgramiv(p, GL_LINK_STATUS, &linked);
+    CHECK(linked);
+    GLuint vao = 0, buffers[2] = {};
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(2, buffers);
+    const float unset[8] = {-1, -1, -1, -1, -1, -1, -1, -1};
+    for (int i = 0; i < 2; ++i) {
+        glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, static_cast<GLuint>(i), buffers[i]);
+        glBufferData(GL_TRANSFORM_FEEDBACK_BUFFER, sizeof(unset), unset, GL_DYNAMIC_COPY);
+    }
+    glUseProgram(p);
+    glEnable(GL_RASTERIZER_DISCARD);
+    glBeginTransformFeedback(GL_POINTS);
+    glDrawArrays(GL_POINTS, 0, 1);
+    glEndTransformFeedback();
+    glDisable(GL_RASTERIZER_DISCARD);
+    float first[8], second[8];
+    glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, buffers[0]);
+    glGetBufferSubData(GL_TRANSFORM_FEEDBACK_BUFFER, 0, sizeof(first), first);
+    glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, buffers[1]);
+    glGetBufferSubData(GL_TRANSFORM_FEEDBACK_BUFFER, 0, sizeof(second), second);
+    CHECK(first[0] == 1.0f && first[3] == 4.0f && first[4] == -1.0f);
+    CHECK(second[0] == 5.0f && second[3] == 8.0f);
+    if (second[0] != 5.0f) std::fprintf(stderr, "  buffer 0: %g %g .. %g; buffer 1: %g\n", first[0], first[3], first[4], second[0]);
+    CHECK_GL();
+    glDeleteBuffers(2, buffers);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
+}
+
+// An array of arrays of atomic counters: a uniform per innermost array
+// ("c[1][0]", 3 counters from byte 12), and every counter counts.
+GPU_TEST_VERSION(gpu_gl46_counter_arrays_of_arrays, 46) {
+    const char* cs = R"(#version 460 core
+layout(local_size_x = 1) in;
+layout(binding = 0, offset = 0) uniform atomic_uint c[2][3];
+void main() { atomicCounterIncrement(c[1][2]); atomicCounterIncrement(c[0][1]); }
+)";
+    GLuint shader = glCreateShader(GL_COMPUTE_SHADER);
+    glShaderSource(shader, 1, &cs, nullptr);
+    glCompileShader(shader);
+    GLuint p = glCreateProgram();
+    glAttachShader(p, shader);
+    glLinkProgram(p);
+    glDeleteShader(shader);
+    GLint linked = 0;
+    glGetProgramiv(p, GL_LINK_STATUS, &linked);
+    CHECK(linked);
+    const GLuint second = glGetProgramResourceIndex(p, GL_UNIFORM, "c[1][0]");
+    CHECK(second != GL_INVALID_INDEX);
+    if (second != GL_INVALID_INDEX) {
+        const GLenum props[2] = {GL_ARRAY_SIZE, GL_OFFSET};
+        GLint values[2] = {};
+        glGetProgramResourceiv(p, GL_UNIFORM, second, 2, props, 2, nullptr, values);
+        CHECK_EQ(values[0], 3);
+        CHECK_EQ(values[1], 12);
+    }
+    GLuint buffer = 0;
+    glGenBuffers(1, &buffer);
+    const GLuint zeros[6] = {};
+    glBindBufferBase(GL_ATOMIC_COUNTER_BUFFER, 0, buffer);
+    glBufferData(GL_ATOMIC_COUNTER_BUFFER, sizeof(zeros), zeros, GL_DYNAMIC_COPY);
+    glUseProgram(p);
+    glDispatchCompute(1, 1, 1);
+    glMemoryBarrier(GL_ATOMIC_COUNTER_BARRIER_BIT);
+    GLuint counters[6] = {};
+    glGetBufferSubData(GL_ATOMIC_COUNTER_BUFFER, 0, sizeof(counters), counters);
+    CHECK(counters[5] == 1 && counters[1] == 1 && counters[0] == 0 && counters[3] == 0);
+    CHECK_GL();
+    glDeleteBuffers(1, &buffer);
+    glDeleteProgram(p);
+}

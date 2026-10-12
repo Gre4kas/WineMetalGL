@@ -305,6 +305,7 @@ public:
     bool spirv = false, specialized = false, spirvNamed = false;
     std::vector<uint32_t> spirvWords;
     std::string spirvGlsl;
+    std::vector<std::pair<uint32_t, std::string>> spirvUniforms;  // (location, name in spirvGlsl)
     bool deletePending = false;
     int attachCount = 0;
 };

@@ -408,6 +408,7 @@ void SpecializeShader(Context& ctx, GLuint shader, const GLchar* pEntryPoint, GL
         s->compileStatus = compiled.ok;
         s->infoLog = compiled.log;
         s->spirvGlsl = result.glsl;
+        s->spirvUniforms = result.uniformLocations;
     }
     if (!s->compileStatus) WMGL_INFO("SPIR-V shader %u failed to specialize:\n%s", shader, s->infoLog.c_str());
     // WINEMETALGL_DUMP_SHADERS=1 prints the GLSL a module became.
@@ -619,6 +620,7 @@ void LinkProgram(Context& ctx, GLuint program) {
     shader::LinkInput input;
     std::string log;
     bool ok = true;
+    std::map<uint32_t, std::string> spirvUniformNames;  // location -> the first stage's name
     for (const RefPtr<Shader>& s : p->attached) {
         if (!s->compileStatus) {
             log += "error: attached shader " + std::to_string(s->name) + (s->spirv ? " is not specialized\n" : " is not compiled\n");
@@ -640,6 +642,10 @@ void LinkProgram(Context& ctx, GLuint program) {
                 if (other->stage < s->stage && other->stage != shader::Stage::Compute)
                     previous = std::max(previous, static_cast<int>(other->stage));
             if (previous >= 0) source = shader::spirvLinkInputs(source, static_cast<shader::Stage>(previous));
+        }
+        if (s->spirv) {
+            source = shader::spirvUnifyUniforms(source, s->spirvUniforms, spirvUniformNames);
+            for (const auto& [location, name] : s->spirvUniforms) spirvUniformNames.emplace(location, name);
         }
         input.shaders.push_back({s->stage, std::move(source)});
     }

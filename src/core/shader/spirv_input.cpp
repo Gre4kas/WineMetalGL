@@ -3,6 +3,7 @@
 #include <spirv_glsl.hpp>
 
 #include <algorithm>
+#include <cctype>
 #include <functional>
 #include <map>
 #include <set>
@@ -96,6 +97,7 @@ protected:
         case spv::OpAtomicXor: function = "atomicCounterXor"; break;
         case spv::OpAtomicExchange: function = "atomicCounterExchange"; break;
         case spv::OpAtomicCompareExchange: function = "atomicCounterCompSwap"; break;
+        case spv::OpAtomicIDecrement: function = "atomicCounterDecrement"; break;
         default: break;
         }
         if (!function || instruction.length < 3 || expression_type(ops[2]).storage != spv::StorageClassAtomicCounter)
@@ -103,12 +105,23 @@ protected:
         forced_temporaries.insert(ops[1]);
         std::string call = std::string(function) + "(" + to_non_uniform_aware_expression(ops[2]);
         if (op == spv::OpAtomicCompareExchange) call += ", " + to_expression(ops[7]) + ", " + to_expression(ops[6]);
-        else if (op != spv::OpAtomicLoad) call += ", " + to_expression(ops[5]);
-        emit_op(ops[0], ops[1], call + ")", false);
+        else if (op != spv::OpAtomicLoad && op != spv::OpAtomicIDecrement) call += ", " + to_expression(ops[5]);
+        call += ")";
+        // SPIR-V's decrement returns the value before it, GLSL's the value after.
+        if (op == spv::OpAtomicIDecrement) call = "(" + call + " + 1u)";
+        emit_op(ops[0], ops[1], call, false);
         flush_all_atomic_capable_variables();
     }
 
 public:
+
+    // (location, emitted name) of the default-block and opaque uniforms that have a location.
+    void listUniformLocations(std::vector<std::pair<uint32_t, std::string>>& out) {
+        ir.for_each_typed_id<spirv_cross::SPIRVariable>([&](uint32_t id, spirv_cross::SPIRVariable& var) {
+            if (var.storage == spv::StorageClassUniformConstant && has_decoration(id, spv::DecorationLocation))
+                out.emplace_back(get_decoration(id, spv::DecorationLocation), to_name(id));
+        });
+    }
 
     void nameResources(Stage stage) {
         using namespace spirv_cross;
@@ -180,10 +193,11 @@ public:
             if (var.storage == spv::StorageClassUniformConstant && get_name(id).empty())
                 set_name(id, p + "u" + (has_decoration(id, spv::DecorationLocation) ? location() : "b" + binding()));
         });
-        // Unnamed structures: one name per layout, so stages declaring the same
-        // structure agree (GLSL matches uniform structures by name).
+        // Structures: one name per layout, named or not, so stages declaring
+        // the same structure agree (GLSL matches uniform structures by name;
+        // type names are not reported).
         ir.for_each_typed_id<SPIRType>([&](uint32_t id, SPIRType& type) {
-            if (type.basetype != SPIRType::Struct || type.self != id || !get_name(id).empty()) return;
+            if (type.basetype != SPIRType::Struct || type.self != id) return;
             if (has_decoration(id, spv::DecorationBlock) || has_decoration(id, spv::DecorationBufferBlock)) return;
             std::string layout;
             for (uint32_t member : type.member_types) layout += type_to_glsl(get<SPIRType>(member), 0) + ";";
@@ -214,6 +228,10 @@ SpirvSpecialization specializeSpirv(const std::vector<uint32_t>& words, Stage st
     SpirvSpecialization out;
     if (!spirvHeaderValid(words)) {
         out.log = "error: not a SPIR-V 1.0-1.6 module\n";
+        return out;
+    }
+    if (std::string error; !spirvStructureValid(words, error)) {
+        out.log = "error: malformed SPIR-V module: " + error + "\n";
         return out;
     }
     std::string unknownExtension;
@@ -257,6 +275,7 @@ SpirvSpecialization specializeSpirv(const std::vector<uint32_t>& words, Stage st
         options.enable_420pack_extension = true;
         glsl.set_common_options(options);
         out.glsl = glsl.compile();
+        glsl.listUniformLocations(out.uniformLocations);
         out.status = SpirvSpecialization::kOk;
     } catch (const std::exception& error) {
         out.log = std::string("error: SPIR-V module cannot be used: ") + error.what() + "\n";
@@ -268,6 +287,33 @@ std::string spirvLinkInputs(const std::string& glsl, Stage previous) {
     const std::string from = std::string(kSpirvNamePrefix) + "in_", to = std::string(kSpirvNamePrefix) + stageTag(previous) + "_";
     std::string out = glsl;
     for (size_t at = out.find(from); at != std::string::npos; at = out.find(from, at + to.size())) out.replace(at, from.size(), to);
+    return out;
+}
+
+std::string spirvUnifyUniforms(const std::string& glsl, const std::vector<std::pair<uint32_t, std::string>>& uniforms,
+                               const std::map<uint32_t, std::string>& names) {
+    std::string out = glsl;
+    for (const auto& [location, name] : uniforms) {
+        auto it = names.find(location);
+        if (it == names.end() || it->second == name) continue;
+        // Whole identifiers only.
+        const auto identifier = [](char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; };
+        std::string renamed;
+        renamed.reserve(out.size());
+        for (size_t at = 0; at < out.size();) {
+            const size_t found = out.find(name, at);
+            if (found == std::string::npos) {
+                renamed.append(out, at, std::string::npos);
+                break;
+            }
+            renamed.append(out, at, found - at);
+            const bool whole = (found == 0 || !identifier(out[found - 1])) &&
+                               (found + name.size() == out.size() || !identifier(out[found + name.size()]));
+            renamed += whole ? it->second : name;
+            at = found + name.size();
+        }
+        out = std::move(renamed);
+    }
     return out;
 }
 

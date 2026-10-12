@@ -18,7 +18,8 @@ bool parseName(const std::string& varying, std::string& base, int& index) {
     if (varying.back() != ']' || open + 2 > varying.size() - 1) return false;
     base = varying.substr(0, open);
     const std::string digits = varying.substr(open + 1, varying.size() - open - 2);
-    if (digits.empty() || digits.find_first_not_of("0123456789") != std::string::npos) return false;
+    // At most 9 digits: an index std::stoi can take (larger ones match no array).
+    if (digits.empty() || digits.size() > 9 || digits.find_first_not_of("0123456789") != std::string::npos) return false;
     index = std::stoi(digits);
     return true;
 }
