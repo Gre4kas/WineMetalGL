@@ -175,8 +175,10 @@ private:
     std::pair<Program*, size_t> imageSource(LinkedProgram& program, size_t index);
     // The view image slot `index` reads (GL 4.2), or a dummy image.
     id<MTLTexture> imageBinding(LinkedProgram& program, size_t index);
+    // `used`: the texture sampled (null: a dummy), whose lastUseSerial the binding sets.
     void samplerBinding(LinkedProgram& program, size_t index, __strong id<MTLTexture>& view,
-                        __strong id<MTLSamplerState>& sampler);
+                        __strong id<MTLSamplerState>& sampler, Texture** used = nullptr);
+    void markSampled(Texture& texture);
     // How a draw's vertex inputs are fed (planVertexInputs): read directly
     // from buffer objects through shared layouts, converted on the CPU into
     // one interleaved buffer per divisor, or taken from current values. The
@@ -213,9 +215,19 @@ private:
     void waitForCpuVertexReads(LinkedProgram& program, bool gather);
     const VertexAttrib& attribFor(const VertexArray& vao, int location) const;
     void bindUniforms(id<MTLRenderCommandEncoder> encoder, LinkedProgram& program);
-    void bindTextures(id<MTLRenderCommandEncoder> encoder, LinkedProgram& program);
+    // `known`: encoderState_ holds what the encoder has bound (encoderStateValid_).
+    void bindTextures(id<MTLRenderCommandEncoder> encoder, LinkedProgram& program, bool known);
     // Builds pending storage of every sampled texture before a draw opens its encoder.
     void prepareSamplerStorage(LinkedProgram& program);
+    // What prepareSamplerStorage found for each sampler of `preparedProgram_`,
+    // bound by the same draw's bindTextures (nothing changes in between).
+    struct PreparedSampler {
+        id<MTLTexture> view;
+        id<MTLSamplerState> sampler;
+        Texture* texture;
+    };
+    std::vector<PreparedSampler> preparedSamplers_;
+    const LinkedProgram* preparedProgram_ = nullptr;
     void applyDynamicState(id<MTLRenderCommandEncoder> encoder, const RenderTargetDesc& target);
 
     Context& ctx_;
@@ -255,6 +267,31 @@ private:
         uint64_t generation = 0, serial = 0;
     } ffBlock_;
     PipelineKey lastKey_{};
+    // The pipeline of the last draw through issue() and its key (programs carry
+    // their link's uid in the key, so a relinked program misses).
+    PipelineKey lastPipelineKey_{};
+    id<MTLRenderPipelineState> lastPipeline_ = nil;
+    // The dynamic state applyDynamicState last set (and the scissors), on the
+    // encoder of pass `pass` when the stream's render() count was `calls`:
+    // unchanged values are not set again while nothing else used the encoder.
+    static constexpr int kTrackedTextures = 32;
+    struct EncoderState {
+        uint64_t pass = 0, calls = 0;
+        MTLViewport viewports[16];  // ContextState::kMaxViewports
+        MTLScissorRect scissors[16];
+        MTLCullMode cull;
+        MTLWinding winding;
+        MTLTriangleFillMode fill;
+        float bias[3];
+        MTLDepthClipMode clip;
+        uint32_t stencil[2];
+        float blend[4];
+        id<MTLDepthStencilState> depthStencil = nil;
+        // Textures and samplers set per stage (vertex, fragment) by bindTextures.
+        id<MTLTexture> textures[2][kTrackedTextures];
+        id<MTLSamplerState> samplers[2][kTrackedTextures];
+    } encoderState_;
+    bool encoderStateValid_ = false;
     TargetFormats lastFormats_{};
     MTLScissorRect lastScissors_[16] = {};  // ContextState::kMaxViewports
 };

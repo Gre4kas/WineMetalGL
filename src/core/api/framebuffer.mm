@@ -795,6 +795,29 @@ void ReadPixels(Context& ctx, GLint x, GLint y, GLsizei width, GLsizei height, G
     const PixelStoreParams ps = pixelStoreParams(ctx.state.pack, false);
     Buffer* pbo = ctx.state.pixelPackBuffer.get();
     uint8_t* destination = static_cast<uint8_t*>(pixels);
+    // Into a pack buffer, texels already in the requested layout are copied
+    // by the GPU in command order, without waiting for it (asynchronous
+    // readback, as engines use pack buffers for): a colour region inside the
+    // source, in the alignment Metal's copies need.
+    if (pbo && pbo->mtl && !pbo->mappedNonPersistent() && !depth && !stencil && !depthStencil && width > 0 && height > 0 &&
+        x >= 0 && y >= 0 && x + width <= levelWidth && y + height <= levelHeight && storedLayout(format, type, *info) &&
+        (ctx.state.clampReadColorMode == GL_FALSE || info->type == ComponentType::UnsignedNormalized ||
+         (ctx.state.clampReadColorMode == GL_FIXED_ONLY && info->type != ComponentType::SignedNormalized))) {
+        const TransferLayout layout = transferLayout(format, type, width, height, 1, ps);
+        const size_t texelBytes = storageBytes(info->storage);
+        const uintptr_t start = reinterpret_cast<uintptr_t>(pixels) + layout.skipBytes;
+        if (start % 4 == 0 && start % texelBytes == 0 && layout.rowStride % texelBytes == 0 && layout.rowStride % 4 == 0 &&
+            start <= static_cast<size_t>(pbo->size) && layout.bytesNeeded - layout.skipBytes <= static_cast<size_t>(pbo->size) - start) {
+            const bool is3D = source.textureType == MTLTextureType3D;
+            [ctx.stream().blit() copyFromTexture:source sourceSlice:is3D ? 0 : slice sourceLevel:level
+                                    sourceOrigin:MTLOriginMake(x, y, is3D ? slice : 0)
+                                      sourceSize:MTLSizeMake(width, height, 1) toBuffer:pbo->mtl destinationOffset:start
+                          destinationBytesPerRow:layout.rowStride destinationBytesPerImage:layout.rowStride * height];
+            pbo->lastUseSerial = pbo->lastWriteSerial = ctx.stream().serial();
+            ++pbo->version;
+            return;
+        }
+    }
     if (pbo) {
         const TransferLayout layout = transferLayout(format, type, width, height, 1, ps);
         const uintptr_t offset = reinterpret_cast<uintptr_t>(pixels);

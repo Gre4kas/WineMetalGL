@@ -1,5 +1,6 @@
 // Rasterization rules the Metal defaults differ from: provoking vertex,
 // point sprite coordinates, converted vertex formats.
+#include <cstring>
 #include "gpu.h"
 
 GPU_TEST(gpu_provoking_vertex) {
@@ -93,6 +94,67 @@ in vec4 c; out vec4 o; void main() { o = c; })");
     // (1, -1, 511, 1) clamps to (1, 0, 1, 1) in the colour buffer.
     const uint8_t magenta[4] = {255, 0, 255, 255};
     CHECK(gpu::near(gpu::readRGBA8(32, 32, 1, 1).data(), magenta));
+    glDeleteBuffers(2, vbo);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
+    CHECK_GL();
+}
+
+GPU_TEST(gpu_converted_attributes_follow_buffer_changes) {
+    // Unnormalized bytes read as floats are converted on the CPU, and the
+    // conversion of an unchanged buffer is kept: it must follow every way
+    // the buffer's contents change.
+    GLuint p = gpu::program(R"(#version 330 core
+in vec2 position; in vec4 color; out vec4 c;
+void main() { c = color; gl_Position = vec4(position, 0.0, 1.0); })",
+                            R"(#version 330 core
+in vec4 c; out vec4 o; void main() { o = c; })");
+    glBindAttribLocation(p, 0, "position");
+    glBindAttribLocation(p, 1, "color");
+    glLinkProgram(p);
+    glUseProgram(p);
+    const float positions[] = {-1, -1, 3, -1, -1, 3};
+    GLuint vao = 0, vbo[2] = {};
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(2, vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo[0]);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(positions), positions, GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
+    glEnableVertexAttribArray(0);
+    const uint8_t red[12] = {1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1};
+    glBindBuffer(GL_ARRAY_BUFFER, vbo[1]);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(red), red, GL_STATIC_DRAW);
+    glVertexAttribPointer(1, 4, GL_UNSIGNED_BYTE, GL_FALSE, 0, nullptr);
+    glEnableVertexAttribArray(1);
+    auto drawn = [&](const uint8_t (&expected)[4]) {
+        glClear(GL_COLOR_BUFFER_BIT);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        return gpu::near(gpu::readRGBA8(32, 32, 1, 1).data(), expected);
+    };
+    const uint8_t redPixel[4] = {255, 0, 0, 255}, greenPixel[4] = {0, 255, 0, 255}, bluePixel[4] = {0, 0, 255, 255};
+    CHECK(drawn(redPixel));
+    CHECK(drawn(redPixel));  // the kept conversion
+    const uint8_t green[12] = {0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1};
+    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(green), green);
+    CHECK(drawn(greenPixel));
+    auto* mapped = static_cast<uint8_t*>(glMapBufferRange(GL_ARRAY_BUFFER, 0, sizeof(red), GL_MAP_WRITE_BIT));
+    CHECK(mapped != nullptr);
+    if (mapped) {
+        const uint8_t blue[12] = {0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1};
+        std::memcpy(mapped, blue, sizeof(blue));
+        glUnmapBuffer(GL_ARRAY_BUFFER);
+        CHECK(drawn(bluePixel));
+    }
+    // A GPU copy into the buffer.
+    glBindBuffer(GL_COPY_WRITE_BUFFER, vbo[1]);
+    GLuint source = 0;
+    glGenBuffers(1, &source);
+    glBindBuffer(GL_COPY_READ_BUFFER, source);
+    glBufferData(GL_COPY_READ_BUFFER, sizeof(red), red, GL_STATIC_DRAW);
+    glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0, sizeof(red));
+    CHECK(drawn(redPixel));
+    glDeleteBuffers(1, &source);
     glDeleteBuffers(2, vbo);
     glDeleteVertexArrays(1, &vao);
     glDeleteProgram(p);

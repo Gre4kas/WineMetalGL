@@ -726,6 +726,11 @@ bool identityTransfer(GLenum format, GLenum type, const FormatInfo& info) {
 
 }  // namespace
 
+bool storedLayout(GLenum format, GLenum type, const FormatInfo& info) {
+    return groupBytes(format, type) == storageBytes(info.storage) &&
+           (identityTransfer(format, type, info) || (rawTransfer(format, type, info.storage) && typeBytes(type) == 1));
+}
+
 void unpackPixels(const void* src, GLenum format, GLenum type, int width, int height, int depth,
                   const PixelStoreParams& ps, const FormatInfo& info, void* out) {
     const TransferLayout l = transferLayout(format, type, width, height, depth, ps);

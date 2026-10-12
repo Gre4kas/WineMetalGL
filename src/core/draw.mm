@@ -682,6 +682,17 @@ bool DrawState::bindVertexInputs(id<MTLRenderCommandEncoder> encoder, PipelineKe
                 return false;
             }
             converted.push_back({location, &a, partner ? linePartners_ : gather, input.kind, input.part, input.byteOffset});
+            if (stats::g_enabled) {
+                // Why: client memory, a format Metal cannot fetch (the last such GL type), or alignment.
+                if (!a.buffer) {
+                    stats::count(&stats::Frame::convertedClient);
+                } else if (vertexFetch(input, a).format == MTLVertexFormatInvalid) {
+                    stats::count(&stats::Frame::convertedFormat);
+                    stats::frame().convertedFormatType = a.type | (a.normalized ? 0x10000u : 0u);
+                } else {
+                    stats::count(&stats::Frame::convertedOther);
+                }
+            }
             break;
         case Plan::None: break;
         }
@@ -719,8 +730,60 @@ bool DrawState::bindVertexInputs(id<MTLRenderCommandEncoder> encoder, PipelineKe
             return false;
         }
         const size_t stride = 16 * group.size();
-        TransientAllocation alloc = transient_.allocate(std::max<size_t>(1, elements) * stride, serial, 16);
-        auto* dst = static_cast<uint8_t*>(alloc.data);
+        const size_t bytes = std::max<size_t>(1, elements) * stride;
+        auto bindGroup = [&](id<MTLBuffer> buffer, NSUInteger offset) {
+            const int layout = addLayout(buffer, offset, static_cast<uint32_t>(stride), divisor, false);
+            if (layout < 0) return false;
+            for (size_t m = 0; m < group.size(); ++m) {
+                VertexAttributeKey& out = key.attributes[group[m]->location];
+                out.format = static_cast<uint8_t>(group[m]->kind == 'd' ? MTLVertexFormatUInt4
+                                                  : group[m]->attrib->integer
+                                                      ? (group[m]->kind == 'u' ? MTLVertexFormatUInt4 : MTLVertexFormatInt4)
+                                                      : MTLVertexFormatFloat4);
+                out.layout = static_cast<uint8_t>(layout);
+                out.offset = static_cast<uint16_t>(m * 16);
+            }
+            return true;
+        };
+        // A group read from one buffer object that the application cannot
+        // write behind GL's back keeps its conversion until the buffer changes.
+        Buffer* cacheable = gathered ? nullptr : group.front()->attrib->buffer.get();
+        for (const Converted* c : group)
+            if (c->attrib->buffer.get() != cacheable) cacheable = nullptr;
+        if (cacheable && (cacheable->mapped || cacheable->pinned)) cacheable = nullptr;
+        std::vector<uint64_t> cacheKey;
+        if (cacheable) {
+            if (cacheable->convertedVersion != cacheable->version) {
+                cacheable->converted.clear();
+                cacheable->convertedVersion = cacheable->version;
+            }
+            cacheKey = {divisor, first, count, rebase};
+            for (const Converted* c : group) {
+                const VertexAttrib& a = *c->attrib;
+                cacheKey.push_back(static_cast<uint64_t>(a.offset));
+                cacheKey.push_back(static_cast<uint64_t>(a.effectiveStride()));
+                cacheKey.push_back(uint64_t{a.type} | uint64_t(static_cast<uint32_t>(a.size) & 0xffff) << 32 |
+                                   uint64_t{a.normalized} << 48 | uint64_t{a.integer} << 49 | uint64_t{a.isDouble} << 50);
+                cacheKey.push_back(static_cast<uint64_t>(static_cast<uint8_t>(c->kind)) | uint64_t(static_cast<uint32_t>(c->part)) << 8 |
+                                   uint64_t(static_cast<uint32_t>(c->byteOffset)) << 32);
+            }
+            auto it = cacheable->converted.find(cacheKey);
+            if (it != cacheable->converted.end()) {
+                stats::count(&stats::Frame::convertedReused);
+                if (!bindGroup(it->second->mtl, 0)) return false;
+                continue;
+            }
+            if (Buffer::convertedBytes() + bytes > Buffer::kMaxConvertedBytes) cacheable = nullptr;
+        }
+        stats::count(&stats::Frame::convertedVertices, count);
+        TransientAllocation alloc{};
+        id<MTLBuffer> kept = nil;
+        if (cacheable) {
+            kept = [Device::get().mtl() newBufferWithLength:bytes options:MTLResourceStorageModeShared];
+            if (!kept) cacheable = nullptr;
+        }
+        if (!kept) alloc = transient_.allocate(bytes, serial, 16);
+        auto* dst = static_cast<uint8_t*>(kept ? kept.contents : alloc.data);
         if (!dst) return false;
         for (size_t m = 0; m < group.size(); ++m) {
             const VertexAttrib& a = *group[m]->attrib;
@@ -735,6 +798,15 @@ bool DrawState::bindVertexInputs(id<MTLRenderCommandEncoder> encoder, PipelineKe
                 source = reinterpret_cast<const uint8_t*>(a.offset);
             }
             if (!source) return false;
+            // The common case: every element inside the buffer, read in order.
+            const size_t lastAt = count ? static_cast<size_t>(first + count - 1) * attribStride : 0;
+            if (!gathered && group[m]->kind != 'd' && !a.integer && count &&
+                (readable == SIZE_MAX || (lastAt <= readable && readable - lastAt >= elementBytes)) &&
+                decodeVertexFloats(source + static_cast<size_t>(first) * attribStride, attribStride, count, a.type, a.size,
+                                   a.normalized, dst + static_cast<size_t>(first - rebase) * stride + m * 16, stride)) {
+                if (a.buffer) a.buffer->lastUseSerial = serial;
+                continue;
+            }
             for (uint32_t v = first; v < first + count; ++v) {
                 const uint32_t fetch = gathered ? (*group[m]->order)[v] : v;
                 const size_t at = static_cast<size_t>(fetch) * attribStride;
@@ -766,16 +838,15 @@ bool DrawState::bindVertexInputs(id<MTLRenderCommandEncoder> encoder, PipelineKe
             }
             if (a.buffer) a.buffer->lastUseSerial = serial;
         }
-        const int layout = addLayout(alloc.buffer, alloc.offset, static_cast<uint32_t>(stride), divisor, false);
-        if (layout < 0) return false;
-        for (size_t m = 0; m < group.size(); ++m) {
-            VertexAttributeKey& out = key.attributes[group[m]->location];
-            out.format = static_cast<uint8_t>(group[m]->kind == 'd' ? MTLVertexFormatUInt4
-                                              : group[m]->attrib->integer
-                                                  ? (group[m]->kind == 'u' ? MTLVertexFormatUInt4 : MTLVertexFormatInt4)
-                                                  : MTLVertexFormatFloat4);
-            out.layout = static_cast<uint8_t>(layout);
-            out.offset = static_cast<uint16_t>(m * 16);
+        if (kept) {
+            auto entry = std::make_unique<Buffer::ConvertedVertices>();
+            entry->mtl = kept;
+            entry->bytes = bytes;
+            Buffer::convertedBytes() += bytes;
+            cacheable->converted[std::move(cacheKey)] = std::move(entry);
+            if (!bindGroup(kept, 0)) return false;
+        } else if (!bindGroup(alloc.buffer, alloc.offset)) {
+            return false;
         }
     }
     if (!constants.empty()) {
@@ -940,6 +1011,9 @@ void DrawState::bindUniforms(id<MTLRenderCommandEncoder> encoder, LinkedProgram&
             applyBuiltinUniforms(*owner);
         }
     static id<MTLBuffer> zero = [Device::get().mtl() newBufferWithLength:65536 options:MTLResourceStorageModePrivate];
+    // Default uniforms copied for one stage serve the other stage of the same program.
+    const Program* uploadedOwner = nullptr;
+    TransientAllocation uploaded{};
     for (int s : {static_cast<int>(Stage::Vertex), static_cast<int>(Stage::Fragment)}) {
         const shader::StageOutput& stage = program.link.stages[s];
         if (!stage.present) continue;
@@ -959,10 +1033,14 @@ void DrawState::bindUniforms(id<MTLRenderCommandEncoder> encoder, LinkedProgram&
                 if (vertex) [encoder setVertexBytes:p.uniformData.data() length:size atIndex:shader::kSlotDefaultUniforms];
                 else [encoder setFragmentBytes:p.uniformData.data() length:size atIndex:shader::kSlotDefaultUniforms];
             } else {
-                TransientAllocation alloc = transient_.allocate(size, serial, 256);
-                std::memcpy(alloc.data, p.uniformData.data(), size);
-                if (vertex) [encoder setVertexBuffer:alloc.buffer offset:alloc.offset atIndex:shader::kSlotDefaultUniforms];
-                else [encoder setFragmentBuffer:alloc.buffer offset:alloc.offset atIndex:shader::kSlotDefaultUniforms];
+                if (uploadedOwner != &p) {
+                    uploaded = transient_.allocate(size, serial, 256);
+                    std::memcpy(uploaded.data, p.uniformData.data(), size);
+                    stats::count(&stats::Frame::uniformBytes, size);
+                    uploadedOwner = &p;
+                }
+                if (vertex) [encoder setVertexBuffer:uploaded.buffer offset:uploaded.offset atIndex:shader::kSlotDefaultUniforms];
+                else [encoder setFragmentBuffer:uploaded.buffer offset:uploaded.offset atIndex:shader::kSlotDefaultUniforms];
             }
         }
         for (size_t b = 0; b < program.link.blocks.size(); ++b) {
@@ -1103,8 +1181,15 @@ void DrawState::bindStorageBlocks(id<MTLComputeCommandEncoder> encoder, const sh
     [encoder setBuffer:args.buffer offset:args.offset atIndex:shader::kSlotStorageBlocks];
 }
 
+void DrawState::markSampled(Texture& texture) {
+    texture.lastUseSerial = ctx_.stream().serial();
+    // A buffer texture reads its buffer: writes to the buffer must wait for this draw.
+    if (texture.target == GL_TEXTURE_BUFFER && texture.buffer) texture.buffer->lastUseSerial = texture.lastUseSerial;
+}
+
 void DrawState::samplerBinding(LinkedProgram& program, size_t index, __strong id<MTLTexture>& view,
-                               __strong id<MTLSamplerState>& sampler) {
+                               __strong id<MTLSamplerState>& sampler, Texture** used) {
+    if (used) *used = nullptr;
     const shader::SamplerSlotInfo& slot = program.link.samplers[index];
     const auto [owner, ownIndex] = samplerSource(program, index);
     const GLint unit = owner && ownIndex < owner->samplerUnits.size() ? owner->samplerUnits[ownIndex] : 0;
@@ -1119,9 +1204,8 @@ void DrawState::samplerBinding(LinkedProgram& program, size_t index, __strong id
         view = samplingView(ctx_, *texture, params.srgbDecode == GL_SKIP_DECODE_EXT);
         params.lodBias += compat::textureUnitLodBias(ctx_, unit);  // glTexEnv(GL_TEXTURE_FILTER_CONTROL)
         sampler = samplerState(ctx_, *texture, params, slot.shadow);
-        texture->lastUseSerial = ctx_.stream().serial();
-        // A buffer texture reads its buffer: writes to the buffer must wait for this draw.
-        if (texture->target == GL_TEXTURE_BUFFER && texture->buffer) texture->buffer->lastUseSerial = texture->lastUseSerial;
+        markSampled(*texture);
+        if (used) *used = texture;
     } else {
         view = dummyTexture(slot.type);
         // Shadow lookups of an incomplete texture return 0 (the CTS's
@@ -1163,11 +1247,11 @@ void DrawState::prepareSamplerStorage(LinkedProgram& program) {
     // textureComplete builds pending storage with the blit encoder, which
     // would end the render or compute encoder of a draw in progress. Image
     // units (re)allocate writable storage the same way.
-    for (size_t i = 0; i < program.link.samplers.size(); ++i) {
-        id<MTLTexture> view = nil;
-        id<MTLSamplerState> sampler = nil;
-        samplerBinding(program, i, view, sampler);
-    }
+    preparedProgram_ = nullptr;
+    preparedSamplers_.resize(program.link.samplers.size());
+    for (size_t i = 0; i < program.link.samplers.size(); ++i)
+        samplerBinding(program, i, preparedSamplers_[i].view, preparedSamplers_[i].sampler, &preparedSamplers_[i].texture);
+    preparedProgram_ = &program;
     for (size_t i = 0; i < program.link.images.size(); ++i) imageBinding(program, i);
     prepareImageShadows(program);
 }
@@ -1203,22 +1287,47 @@ void DrawState::finishImageShadows() {
     imageShadows_.clear();
 }
 
-void DrawState::bindTextures(id<MTLRenderCommandEncoder> encoder, LinkedProgram& program) {
+void DrawState::bindTextures(id<MTLRenderCommandEncoder> encoder, LinkedProgram& program, bool known) {
+    EncoderState& e = encoderState_;
+    if (!known)
+        for (int s = 0; s < 2; ++s)
+            for (int i = 0; i < kTrackedTextures; ++i) e.textures[s][i] = nil, e.samplers[s][i] = nil;
+    // Each stage's texture and sampler (s: 0 vertex, 1 fragment), set only
+    // when they differ from what the encoder has (untracked slots always).
+    const auto setTexture = [&](int s, int index, id<MTLTexture> view) {
+        if (index < kTrackedTextures) {
+            if (known && e.textures[s][index] == view) return;
+            e.textures[s][index] = view;
+        }
+        if (s == 0) [encoder setVertexTexture:view atIndex:static_cast<NSUInteger>(index)];
+        else [encoder setFragmentTexture:view atIndex:static_cast<NSUInteger>(index)];
+    };
+    const auto setSampler = [&](int s, int index, id<MTLSamplerState> sampler) {
+        if (index < kTrackedTextures) {
+            if (known && e.samplers[s][index] == sampler) return;
+            e.samplers[s][index] = sampler;
+        }
+        if (s == 0) [encoder setVertexSamplerState:sampler atIndex:static_cast<NSUInteger>(index)];
+        else [encoder setFragmentSamplerState:sampler atIndex:static_cast<NSUInteger>(index)];
+    };
+    const bool prepared = preparedProgram_ == &program && preparedSamplers_.size() == program.link.samplers.size();
     for (size_t i = 0; i < program.link.samplers.size(); ++i) {
         const shader::SamplerSlotInfo& slot = program.link.samplers[i];
         id<MTLTexture> view = nil;
         id<MTLSamplerState> sampler = nil;
-        samplerBinding(program, i, view, sampler);
-        for (int s : {static_cast<int>(Stage::Vertex), static_cast<int>(Stage::Fragment)}) {
-            const int index = slot.stageTexture[s];
+        if (prepared) {
+            view = preparedSamplers_[i].view;
+            sampler = preparedSamplers_[i].sampler;
+            // The draw may be in a later command buffer than the preparation.
+            if (Texture* texture = preparedSamplers_[i].texture) markSampled(*texture);
+        } else {
+            samplerBinding(program, i, view, sampler);
+        }
+        for (int s = 0; s < 2; ++s) {
+            const int index = slot.stageTexture[s ? static_cast<int>(Stage::Fragment) : static_cast<int>(Stage::Vertex)];
             if (index < 0) continue;
-            if (s == static_cast<int>(Stage::Vertex)) {
-                [encoder setVertexTexture:view atIndex:static_cast<NSUInteger>(index)];
-                [encoder setVertexSamplerState:sampler atIndex:static_cast<NSUInteger>(index)];
-            } else {
-                [encoder setFragmentTexture:view atIndex:static_cast<NSUInteger>(index)];
-                [encoder setFragmentSamplerState:sampler atIndex:static_cast<NSUInteger>(index)];
-            }
+            setTexture(s, index, view);
+            setSampler(s, index, sampler);
         }
     }
     for (size_t i = 0; i < program.link.images.size(); ++i) {
@@ -1227,8 +1336,8 @@ void DrawState::bindTextures(id<MTLRenderCommandEncoder> encoder, LinkedProgram&
         const int fragment = slot.stageTexture[static_cast<int>(Stage::Fragment)];
         if (vertex < 0 && fragment < 0) continue;
         id<MTLTexture> view = imageBinding(program, i);
-        if (vertex >= 0) [encoder setVertexTexture:view atIndex:static_cast<NSUInteger>(vertex)];
-        if (fragment >= 0) [encoder setFragmentTexture:view atIndex:static_cast<NSUInteger>(fragment)];
+        if (vertex >= 0) setTexture(0, vertex, view);
+        if (fragment >= 0) setTexture(1, fragment, view);
     }
 }
 
@@ -1244,26 +1353,47 @@ void DrawState::applyDynamicState(id<MTLRenderCommandEncoder> encoder, const Ren
         viewports[i].znear = st.depthRanges[i][0];
         viewports[i].zfar = st.depthRanges[i][1];
     }
-    [encoder setViewports:viewports count:ContextState::kMaxViewports];
+    // Only what changed since this path last set it on the encoder
+    // (encoderStateValid_, bindDrawState).
+    EncoderState& e = encoderState_;
+    const bool all = !encoderStateValid_;
+    if (all || std::memcmp(e.viewports, viewports, sizeof(viewports)) != 0) {
+        [encoder setViewports:viewports count:ContextState::kMaxViewports];
+        std::memcpy(e.viewports, viewports, sizeof(viewports));
+    }
     // Cull / winding (the vertex stage flips Y, so GL's CCW is Metal's CW).
     MTLCullMode cull = MTLCullModeNone;
     if (st.cullFace) cull = st.cullFaceMode == GL_FRONT ? MTLCullModeFront : MTLCullModeBack;
-    [encoder setCullMode:cull];
+    if (all || e.cull != cull) [encoder setCullMode:(e.cull = cull)];
     // With an UPPER_LEFT clip origin (GL_ARB_clip_control) Y is not flipped.
     const bool flipped = st.clipOrigin == GL_LOWER_LEFT;
-    [encoder setFrontFacingWinding:(st.frontFace == GL_CCW) == flipped ? MTLWindingClockwise : MTLWindingCounterClockwise];
-    [encoder setTriangleFillMode:st.polygonMode == GL_LINE ? MTLTriangleFillModeLines : MTLTriangleFillModeFill];
+    const MTLWinding winding = (st.frontFace == GL_CCW) == flipped ? MTLWindingClockwise : MTLWindingCounterClockwise;
+    if (all || e.winding != winding) [encoder setFrontFacingWinding:(e.winding = winding)];
+    const MTLTriangleFillMode fill = st.polygonMode == GL_LINE ? MTLTriangleFillModeLines : MTLTriangleFillModeFill;
+    if (all || e.fill != fill) [encoder setTriangleFillMode:(e.fill = fill)];
     const bool offset = (st.polygonMode == GL_FILL && st.polygonOffsetFill) ||
                         (st.polygonMode == GL_LINE && st.polygonOffsetLine) ||
                         (st.polygonMode == GL_POINT && st.polygonOffsetPoint);
-    [encoder setDepthBias:offset ? st.polygonOffsetUnits : 0.0f
-               slopeScale:offset ? st.polygonOffsetFactor : 0.0f
-                    clamp:offset ? st.polygonOffsetClamp : 0.0f];
-    [encoder setDepthClipMode:st.depthClamp ? MTLDepthClipModeClamp : MTLDepthClipModeClip];
+    const float bias[3] = {offset ? st.polygonOffsetUnits : 0.0f, offset ? st.polygonOffsetFactor : 0.0f,
+                           offset ? st.polygonOffsetClamp : 0.0f};
+    if (all || std::memcmp(e.bias, bias, sizeof(bias)) != 0) {
+        [encoder setDepthBias:bias[0] slopeScale:bias[1] clamp:bias[2]];
+        std::memcpy(e.bias, bias, sizeof(bias));
+    }
+    const MTLDepthClipMode clip = st.depthClamp ? MTLDepthClipModeClamp : MTLDepthClipModeClip;
+    if (all || e.clip != clip) [encoder setDepthClipMode:(e.clip = clip)];
     // The reference is clamped to the stencil range (GL 3.3 section 4.1.5).
-    [encoder setStencilFrontReferenceValue:static_cast<uint32_t>(std::clamp(st.stencilFront.ref, 0, 255))
-                        backReferenceValue:static_cast<uint32_t>(std::clamp(st.stencilBack.ref, 0, 255))];
-    [encoder setBlendColorRed:st.blendColor[0] green:st.blendColor[1] blue:st.blendColor[2] alpha:st.blendColor[3]];
+    const uint32_t stencil[2] = {static_cast<uint32_t>(std::clamp(st.stencilFront.ref, 0, 255)),
+                                 static_cast<uint32_t>(std::clamp(st.stencilBack.ref, 0, 255))};
+    if (all || e.stencil[0] != stencil[0] || e.stencil[1] != stencil[1]) {
+        [encoder setStencilFrontReferenceValue:stencil[0] backReferenceValue:stencil[1]];
+        e.stencil[0] = stencil[0];
+        e.stencil[1] = stencil[1];
+    }
+    if (all || std::memcmp(e.blend, st.blendColor, sizeof(e.blend)) != 0) {
+        [encoder setBlendColorRed:st.blendColor[0] green:st.blendColor[1] blue:st.blendColor[2] alpha:st.blendColor[3]];
+        std::memcpy(e.blend, st.blendColor, sizeof(e.blend));
+    }
     (void)target;
 }
 
@@ -1597,7 +1727,15 @@ bool DrawState::issue(GLenum mode, GLint first, GLsizei count, GLsizei instances
         WMGL_WARN("too many vertex buffers for one draw");
         return false;
     }
-    id<MTLRenderPipelineState> pipeline = ctx_.share().pipelines().render(key, program);
+    // Consecutive draws often have the same pipeline: compared before the cache's hash.
+    id<MTLRenderPipelineState> pipeline = nil;
+    if (lastPipeline_ && std::memcmp(&key, &lastPipelineKey_, sizeof(key)) == 0) {
+        pipeline = lastPipeline_;
+    } else {
+        pipeline = ctx_.share().pipelines().render(key, program);
+        lastPipelineKey_ = key;
+        lastPipeline_ = pipeline;
+    }
     if (!pipeline) return false;
     [encoder setRenderPipelineState:pipeline];
     bindDrawState(encoder, program);
@@ -1610,6 +1748,7 @@ bool DrawState::issue(GLenum mode, GLint first, GLsizei count, GLsizei instances
     if (points) native = MTLPrimitiveTypePoint;
     const uint64_t serial = ctx_.stream().serial();
     if (needsIndices || rotate || points || (indexData && !indexBuffer)) {
+        stats::count(&stats::Frame::cpuIndexDraws);
         std::vector<uint32_t> in, out;
         in.reserve(static_cast<size_t>(count));
         for (GLsizei i = 0; i < count; ++i) in.push_back(indexData ? indexData[i] : static_cast<uint32_t>(first + i - rebase));
@@ -1677,11 +1816,23 @@ void DrawState::bindDrawState(id<MTLRenderCommandEncoder> encoder, LinkedProgram
         face(st.stencilFront, ds.front);
         face(st.stencilBack, ds.back);
     }
-    [encoder setDepthStencilState:ctx_.share().pipelines().depthStencil(ds)];
+    // Valid while only this draw path used the encoder since it last set state.
+    const uint64_t pass = ctx_.stream().passGeneration(), calls = ctx_.stream().renderCalls();
+    encoderStateValid_ = encoderState_.pass == pass && (calls == encoderState_.calls || calls == encoderState_.calls + 1);
+    encoderState_.pass = pass;
+    encoderState_.calls = calls;
+    id<MTLDepthStencilState> depthStencil = ctx_.share().pipelines().depthStencil(ds);
+    if (!encoderStateValid_ || encoderState_.depthStencil != depthStencil) {
+        [encoder setDepthStencilState:depthStencil];
+        encoderState_.depthStencil = depthStencil;
+    }
     applyDynamicState(encoder, target);
-    [encoder setScissorRects:lastScissors_ count:ContextState::kMaxViewports];
+    if (!encoderStateValid_ || std::memcmp(encoderState_.scissors, lastScissors_, sizeof(lastScissors_)) != 0) {
+        [encoder setScissorRects:lastScissors_ count:ContextState::kMaxViewports];
+        std::memcpy(encoderState_.scissors, lastScissors_, sizeof(lastScissors_));
+    }
     bindUniforms(encoder, program);
-    bindTextures(encoder, program);
+    bindTextures(encoder, program, encoderStateValid_);
     id<MTLBuffer> counter = nil;
     NSUInteger counterOffset = 0;
     if (lastKey_.countFragments && queriesFragmentCounter(ctx_, counter, counterOffset))
@@ -1885,7 +2036,7 @@ bool DrawState::runVertexCapture(LinkedProgram& lp, const std::vector<uint32_t>&
         bindDrawState(encoder, lp);
     } else {
         bindUniforms(encoder, lp);
-        bindTextures(encoder, lp);
+        bindTextures(encoder, lp, false);
     }
     const uint64_t serial = ctx_.stream().serial();
     // Control block: active, vertex count, slot limit, pad, base[4], stride[4], vertex ids.
@@ -2524,6 +2675,26 @@ void DrawState::drawArrays(GLenum mode, GLint first, GLsizei count, GLsizei inst
     issue(mode, first, count, instances, nullptr, nil, 0, MTLIndexTypeUInt16, 0, first, count);
 }
 
+namespace {
+
+// The smallest and largest of `count` indices of type T at `p` (any alignment).
+template <typename T>
+void scanIndexRange(const uint8_t* p, GLsizei count, uint32_t& lo, uint32_t& hi) {
+    T low = static_cast<T>(~T(0)), high = 0;
+    for (GLsizei i = 0; i < count; ++i) {
+        T v;
+        std::memcpy(&v, p + static_cast<size_t>(i) * sizeof(T), sizeof(T));
+        low = v < low ? v : low;
+        high = v > high ? v : high;
+    }
+    if (count > 0) {
+        lo = low;
+        hi = high;
+    }
+}
+
+}  // namespace
+
 void DrawState::drawElements(GLenum mode, GLsizei count, GLenum type, const void* indices, GLsizei instances,
                              GLint baseVertex) {
     ImageShadowScope shadows(*this);
@@ -2589,12 +2760,15 @@ void DrawState::drawElements(GLenum mode, GLsizei count, GLenum type, const void
     // the application writes behind GL's back).
     uint32_t minIndex = UINT32_MAX, maxIndex = 0;
     bool hasRestart = false;
-    Buffer::IndexScan* cached = nullptr;
+    const Buffer::IndexRange range{offset, static_cast<uint64_t>(count), type, restart ? restartIndex : ~0ull};
+    const Buffer::IndexScan* cached = nullptr;
     if (elementBuffer && !elementBuffer->mapped) {
-        for (Buffer::IndexScan& scan : elementBuffer->indexScans)
-            if (scan.version == elementBuffer->version && scan.offset == offset && scan.count == count &&
-                scan.type == type && scan.restart == restart && (!restart || scan.restartIndex == restartIndex))
-                cached = &scan;
+        if (elementBuffer->indexScansVersion != elementBuffer->version) {
+            elementBuffer->indexScans.clear();
+            elementBuffer->indexScansVersion = elementBuffer->version;
+        }
+        auto it = elementBuffer->indexScans.find(range);
+        if (it != elementBuffer->indexScans.end()) cached = &it->second;
     }
     if (cached) {
         minIndex = cached->minIndex;
@@ -2602,17 +2776,23 @@ void DrawState::drawElements(GLenum mode, GLsizei count, GLenum type, const void
         hasRestart = cached->hasRestart;
     } else {
         const uint8_t* p = cpuSource();
-        for (GLsizei i = 0; i < count; ++i) {
-            const uint32_t v = index(p, i);
-            if (restart && v == restartIndex) { hasRestart = true; continue; }
-            minIndex = std::min(minIndex, v);
-            maxIndex = std::max(maxIndex, v);
+        if (!restart) {
+            // Without restart a plain min/max, which the compiler vectorizes.
+            if (indexSize == 2) scanIndexRange<uint16_t>(p, count, minIndex, maxIndex);
+            else if (indexSize == 4) scanIndexRange<uint32_t>(p, count, minIndex, maxIndex);
+            else scanIndexRange<uint8_t>(p, count, minIndex, maxIndex);
+        } else {
+            for (GLsizei i = 0; i < count; ++i) {
+                const uint32_t v = index(p, i);
+                if (v == restartIndex) { hasRestart = true; continue; }
+                minIndex = std::min(minIndex, v);
+                maxIndex = std::max(maxIndex, v);
+            }
         }
         if (elementBuffer && !elementBuffer->mapped) {
-            std::vector<Buffer::IndexScan>& scans = elementBuffer->indexScans;
-            if (!scans.empty() && scans.front().version != elementBuffer->version) scans.clear();
-            if (scans.size() >= Buffer::kMaxIndexScans) scans.erase(scans.begin());
-            scans.push_back({elementBuffer->version, offset, count, type, restartIndex, restart, minIndex, maxIndex, hasRestart});
+            auto& scans = elementBuffer->indexScans;
+            if (scans.size() >= Buffer::kMaxIndexScans) scans.clear();
+            scans[range] = {minIndex, maxIndex, hasRestart};
         }
     }
     if (minIndex == UINT32_MAX) return;  // only restart indices

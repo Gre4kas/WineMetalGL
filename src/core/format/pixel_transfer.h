@@ -51,6 +51,10 @@ void unpackPixels(const void* src, GLenum format, GLenum type, int width, int he
 void packPixels(const void* storage, const FormatInfo& info, int width, int height, int depth, GLenum format,
                 GLenum type, const PixelStoreParams& ps, bool clampColor, void* dst);
 
+// Whether a client group of `format`/`type` has exactly the bytes of a
+// stored texel of `info`: transfers then copy rows as they are.
+bool storedLayout(GLenum format, GLenum type, const FormatInfo& info);
+
 // Single-texel conversions (exposed for tests and the clear/compressed paths).
 void decodeStorage(Storage storage, const uint8_t* texel, Texel& out);
 void encodeStorage(Storage storage, const Texel& in, uint8_t* texel);

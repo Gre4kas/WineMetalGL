@@ -291,6 +291,7 @@ tests/games/perf.json
 tests/games/README.md
 tests/games/results.json
 tests/gpu/basic_tests.cpp
+tests/gpu/bench_tests.cpp
 tests/gpu/buffer_storage_tests.cpp
 tests/gpu/code_review_tests.cpp
 tests/gpu/compat_tests.cpp

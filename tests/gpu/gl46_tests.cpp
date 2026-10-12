@@ -1543,3 +1543,53 @@ TEST(gpu_shared_framebuffers) {
     glDeleteTextures(1, &tex);
     wmgl_context_destroy(second);
 }
+
+// glReadPixels into a pixel pack buffer (copied by the GPU without a wait
+// when no conversion is needed): the texels land at the pack layout's
+// places, row length and skips included, and read back through the buffer.
+GPU_TEST_VERSION(gpu_gl46_read_pixels_pack_buffer, 46) {
+    GLuint tex = 0, fbo = 0, pbo = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, 8, 8);
+    uint8_t texels[8][8][4];
+    for (int y = 0; y < 8; ++y)
+        for (int x = 0; x < 8; ++x) {
+            texels[y][x][0] = static_cast<uint8_t>(x * 10);
+            texels[y][x][1] = static_cast<uint8_t>(y * 10);
+            texels[y][x][2] = 7;
+            texels[y][x][3] = 255;
+        }
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 8, 8, GL_RGBA, GL_UNSIGNED_BYTE, texels);
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+    glGenBuffers(1, &pbo);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, pbo);
+    glBufferData(GL_PIXEL_PACK_BUFFER, 1024, nullptr, GL_STREAM_READ);
+    // A 3x2 region at (2, 3), into rows of 5 pixels after 1 skipped row and pixel.
+    glPixelStorei(GL_PACK_ROW_LENGTH, 5);
+    glPixelStorei(GL_PACK_SKIP_ROWS, 1);
+    glPixelStorei(GL_PACK_SKIP_PIXELS, 1);
+    glReadPixels(2, 3, 3, 2, GL_RGBA, GL_UNSIGNED_BYTE, reinterpret_cast<void*>(16));
+    glPixelStorei(GL_PACK_ROW_LENGTH, 0);
+    glPixelStorei(GL_PACK_SKIP_ROWS, 0);
+    glPixelStorei(GL_PACK_SKIP_PIXELS, 0);
+    // The whole image, tightly packed, after it.
+    glReadPixels(0, 0, 8, 8, GL_RGBA, GL_UNSIGNED_BYTE, reinterpret_cast<void*>(512));
+    CHECK_GL();
+    uint8_t out[1024] = {};
+    glGetBufferSubData(GL_PIXEL_PACK_BUFFER, 0, sizeof(out), out);
+    for (int r = 0; r < 2; ++r)
+        for (int c = 0; c < 3; ++c) {
+            const uint8_t* p = out + 16 + ((1 + r) * 5 + 1 + c) * 4;
+            CHECK(p[0] == (2 + c) * 10 && p[1] == (3 + r) * 10 && p[2] == 7 && p[3] == 255);
+        }
+    CHECK(out[16] == 0 && out[16 + 4 * 5] == 0);  // skipped pixels untouched
+    CHECK(std::memcmp(out + 512, texels, sizeof(texels)) == 0);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteBuffers(1, &pbo);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &tex);
+}

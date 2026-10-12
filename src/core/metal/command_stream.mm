@@ -139,6 +139,7 @@ void CommandStream::startRender(const RenderTargetDesc& target) {
 }
 
 id<MTLRenderCommandEncoder> CommandStream::render(const RenderTargetDesc& target) {
+    ++renderCalls_;
     // A clear recorded for another target while this pass stayed open runs
     // first: later draws (here, or sampling that target) must see it.
     if (pending_.any() && pendingTarget_ != target) resolvePendingClear();

@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <limits>
+#include <type_traits>
 
 namespace wmgl {
 
@@ -100,6 +102,52 @@ void decodeVertexFloat(const uint8_t* element, GLenum type, GLint size, bool nor
     const int count = size == GL_BGRA ? 4 : std::min<int>(size, 4);
     for (int c = 0; c < count; ++c) out[c] = component(element, type, normalized, c);
     if (size == GL_BGRA) std::swap(out[0], out[2]);
+}
+
+namespace {
+
+// component() for one type, over a run of elements.
+template <typename T>
+void decodeRun(const uint8_t* elements, size_t stride, size_t count, int components, bool normalized, uint8_t* out,
+               size_t outStride) {
+    for (size_t v = 0; v < count; ++v) {
+        const uint8_t* element = elements + v * stride;
+        float values[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+        for (int c = 0; c < components; ++c) {
+            T x;
+            std::memcpy(&x, element + c * sizeof(T), sizeof(T));
+            if constexpr (std::is_same_v<T, float>) {
+                values[c] = x;
+            } else if constexpr (sizeof(T) == 4) {
+                // As component(): through double, so every 32-bit value converts the same way.
+                constexpr double max = std::is_signed_v<T> ? 2147483647.0 : 4294967295.0;
+                values[c] = normalized ? (std::is_signed_v<T> ? std::max(-1.0f, static_cast<float>(x / max))
+                                                               : static_cast<float>(x / max))
+                                       : static_cast<float>(x);
+            } else {
+                constexpr float max = static_cast<float>(std::numeric_limits<T>::max());
+                values[c] = normalized ? (std::is_signed_v<T> ? std::max(-1.0f, x / max) : x / max) : static_cast<float>(x);
+            }
+        }
+        std::memcpy(out + v * outStride, values, 16);
+    }
+}
+
+}  // namespace
+
+bool decodeVertexFloats(const uint8_t* elements, size_t stride, size_t count, GLenum type, GLint size, bool normalized,
+                        uint8_t* out, size_t outStride) {
+    if (size < 1 || size > 4) return false;  // GL_BGRA
+    switch (type) {
+    case GL_BYTE: decodeRun<int8_t>(elements, stride, count, size, normalized, out, outStride); return true;
+    case GL_UNSIGNED_BYTE: decodeRun<uint8_t>(elements, stride, count, size, normalized, out, outStride); return true;
+    case GL_SHORT: decodeRun<int16_t>(elements, stride, count, size, normalized, out, outStride); return true;
+    case GL_UNSIGNED_SHORT: decodeRun<uint16_t>(elements, stride, count, size, normalized, out, outStride); return true;
+    case GL_INT: decodeRun<int32_t>(elements, stride, count, size, normalized, out, outStride); return true;
+    case GL_UNSIGNED_INT: decodeRun<uint32_t>(elements, stride, count, size, normalized, out, outStride); return true;
+    case GL_FLOAT: decodeRun<float>(elements, stride, count, size, false, out, outStride); return true;
+    default: return false;
+    }
 }
 
 void decodeVertexInt(const uint8_t* element, GLenum type, GLint size, int32_t out[4]) {

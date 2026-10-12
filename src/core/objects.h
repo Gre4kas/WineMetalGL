@@ -10,6 +10,7 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "core/format/formats.h"
@@ -54,19 +55,44 @@ public:
     // Incremented whenever the contents change (keys derived caches).
     uint64_t version = 0;
     // drawElements' scans of index ranges in this buffer (draw.mm), valid
-    // while `version` is unchanged.
-    struct IndexScan {
-        uint64_t version;
+    // while `version` is `indexScansVersion`: by range (offset, count, type
+    // and restart index, all-ones for none), for a scene's worth of meshes.
+    struct IndexRange {
         uintptr_t offset;
-        GLsizei count;
-        GLenum type;
-        uint32_t restartIndex;
-        bool restart;
+        uint64_t count, type, restartIndex;
+        bool operator==(const IndexRange& o) const {
+            return offset == o.offset && count == o.count && type == o.type && restartIndex == o.restartIndex;
+        }
+    };
+    struct IndexRangeHash {
+        size_t operator()(const IndexRange& r) const {
+            return std::hash<uint64_t>()(r.offset * 0x9e3779b97f4a7c15ull ^ (r.count << 20) ^ (r.type << 8) ^ r.restartIndex);
+        }
+    };
+    struct IndexScan {
         uint32_t minIndex, maxIndex;
         bool hasRestart;
     };
-    static constexpr size_t kMaxIndexScans = 64;
-    std::vector<IndexScan> indexScans;
+    static constexpr size_t kMaxIndexScans = 16384;
+    std::unordered_map<IndexRange, IndexScan, IndexRangeHash> indexScans;
+    uint64_t indexScansVersion = 0;
+
+    // bindVertexInputs' CPU conversions of attributes read from this buffer
+    // (draw.mm), valid while `version` is `convertedVersion`: by the
+    // attributes' layouts and the elements converted, so draws of unchanged
+    // meshes convert once. Their bytes count towards kMaxConvertedBytes.
+    struct ConvertedVertices {
+        id<MTLBuffer> mtl = nil;
+        size_t bytes = 0;
+        ~ConvertedVertices() { convertedBytes() -= bytes; }
+    };
+    static constexpr size_t kMaxConvertedBytes = size_t{256} << 20;
+    static std::atomic<size_t>& convertedBytes() {
+        static std::atomic<size_t> bytes{0};
+        return bytes;
+    }
+    std::map<std::vector<uint64_t>, std::unique_ptr<ConvertedVertices>> converted;
+    uint64_t convertedVersion = 0;
 
     uint8_t* contents() const { return mtl ? static_cast<uint8_t*>(mtl.contents) : nullptr; }
     // Mapped in a way that forbids GPU use (persistent mappings allow it).

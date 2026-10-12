@@ -3,6 +3,7 @@
 // both decode through here, so the same arrays give the same values.
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 #include "core/gl/types.h"
@@ -14,6 +15,13 @@ namespace wmgl {
 // Metal's normalized vertex formats convert them. Components the element does
 // not have read (0, 0, 0, 1).
 void decodeVertexFloat(const uint8_t* element, GLenum type, GLint size, bool normalized, float out[4]);
+
+// decodeVertexFloat of `count` elements `stride` bytes apart into 16-byte
+// values `outStride` bytes apart, for the common component types (byte,
+// short and int, signed or not, and float); false for others, which decode
+// element by element.
+bool decodeVertexFloats(const uint8_t* elements, size_t stride, size_t count, GLenum type, GLint size, bool normalized,
+                        uint8_t* out, size_t outStride);
 
 // Integer attributes (glVertexAttribIPointer): sign- or zero-extended per
 // `type`; components the element does not have read (0, 0, 0, 1).

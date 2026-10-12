@@ -23,6 +23,13 @@ struct Frame {
     uint64_t glNanos = 0, pipelineNanos = 0, linkNanos = 0, waitNanos = 0;
     uint64_t lockNanos = 0;  // waiting for the share group's lock inside GL calls
     uint64_t presentNanos = 0, drawableNanos = 0;  // SwapBuffers, and waiting for a drawable inside it
+    // Vertex attributes converted on the CPU (draw.mm bindVertexInputs):
+    // vertices converted, groups reused from a buffer's cache, and converted
+    // attributes by cause (client memory, unfetchable format, other).
+    uint64_t convertedVertices = 0, convertedReused = 0, convertedClient = 0, convertedFormat = 0, convertedOther = 0;
+    uint64_t convertedFormatType = 0;  // GL type of the last unfetchable one (| 0x10000: normalized)
+    uint64_t cpuIndexDraws = 0;        // draws whose indices were rewritten on the CPU
+    uint64_t uniformBytes = 0;         // default uniforms copied to transient memory
 };
 
 Frame& frame();

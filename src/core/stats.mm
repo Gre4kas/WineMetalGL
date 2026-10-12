@@ -133,14 +133,19 @@ void endFrame() {
     std::fprintf(stderr,
                  "winemetalgl:stats: frame %llu %.2f ms | gl %.2f ms in %llu calls | present %.2f ms (drawable %.2f ms) | "
                  "draws %llu passes %llu | pipelines %llu (%.2f ms) links %llu (%.2f ms) | transient %llu KiB | "
-                 "waits %llu (%.2f ms) | lock %.2f ms\n",
+                 "waits %llu (%.2f ms) | lock %.2f ms | converted %llu vertices, %llu reused (client %llu format %llu "
+                 "[0x%llx] other %llu) | cpu indices %llu | uniforms %llu KiB\n",
                  static_cast<unsigned long long>(t.index), t.lastPresent ? ms(now - t.lastPresent) : 0.0, ms(f.glNanos),
                  static_cast<unsigned long long>(f.calls), ms(f.presentNanos), ms(f.drawableNanos),
                  static_cast<unsigned long long>(f.draws),
                  static_cast<unsigned long long>(f.passes), static_cast<unsigned long long>(f.pipelineMisses),
                  ms(f.pipelineNanos), static_cast<unsigned long long>(f.programLinks), ms(f.linkNanos),
                  static_cast<unsigned long long>(f.transientBytes / 1024), static_cast<unsigned long long>(f.waits),
-                 ms(f.waitNanos), ms(f.lockNanos));
+                 ms(f.waitNanos), ms(f.lockNanos), static_cast<unsigned long long>(f.convertedVertices),
+                 static_cast<unsigned long long>(f.convertedReused), static_cast<unsigned long long>(f.convertedClient),
+                 static_cast<unsigned long long>(f.convertedFormat), static_cast<unsigned long long>(f.convertedFormatType),
+                 static_cast<unsigned long long>(f.convertedOther), static_cast<unsigned long long>(f.cpuIndexDraws),
+                 static_cast<unsigned long long>(f.uniformBytes / 1024));
     if (t.index % 60 == 59) printProfile(60);
     t.frame = Frame();
     t.lastPresent = now;
