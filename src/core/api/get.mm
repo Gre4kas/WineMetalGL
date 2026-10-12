@@ -207,6 +207,10 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
         if (ctx.version() < 44) return false;
         out = ints({nameOf(s.queryBuffer)});
         return true;
+    case GL_MAX_SHADER_COMPILER_THREADS_ARB:
+        if (!ctx.parallelShaderCompile()) return false;
+        out = ints({static_cast<GLint>(s.maxShaderCompilerThreads)});
+        return true;
     case GL_PARAMETER_BUFFER_BINDING:  // GL 4.6, GL_ARB_indirect_parameters
         if (!ctx.indirectParameters()) return false;
         out = ints({nameOf(s.parameterBuffer)});

@@ -127,6 +127,10 @@ struct ContextState {
     GLenum clipOrigin = GL_LOWER_LEFT, clipDepthMode = GL_NEGATIVE_ONE_TO_ONE;  // GL_ARB_clip_control
     bool primitiveRestart = false;
     GLuint primitiveRestartIndex = 0;
+    // GL_ARB/KHR_parallel_shader_compile: the application's thread limit
+    // (0xFFFFFFFF: the implementation's choice). Compiles finish before the
+    // call returns, so it changes nothing.
+    GLuint maxShaderCompilerThreads = 0xFFFFFFFFu;
     bool primitiveRestartFixedIndex = false;
     bool textureCubeMapSeamless = false;
     uint32_t clipDistanceEnables = 0;

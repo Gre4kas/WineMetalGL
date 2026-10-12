@@ -198,6 +198,9 @@
   "GL_ARB_shader_draw_parameters",
   "GL_ARB_shader_group_vote",
   "GL_ARB_transform_feedback_overflow_query",
+  "GL_ARB_parallel_shader_compile",
+  "GL_KHR_parallel_shader_compile",
+  "GL_KHR_no_error",
   "GL_EXT_shader_integer_mix",
   "GL_ARB_polygon_offset_clamp",
   "GL_EXT_polygon_offset_clamp"

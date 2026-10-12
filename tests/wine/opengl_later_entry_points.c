@@ -1,12 +1,12 @@
 /* Entry points of later GL versions on a 3.2 core context. HashLink's GL
  * loader (Dead Cells) refuses to start without glBindImageTexture,
  * glMemoryBarrier, glDispatchCompute and glMultiDrawElementsIndirect, which
- * Windows drivers return whatever the context's version; the 4.3 context a
+ * Windows drivers return whatever the context's version; the 4.6 context a
  * 3.2 request gets offers them. Entry points of versions above the context's
- * (glSpecializeShader, GL 4.6) Wine returns only for applications with
+ * Wine returns only for applications with
  * HKCU\Software\Wine\AppDefaults\<app.exe>\OpenGL LaterEntryPoints = "Y"
- * (patch 0001), so this checks both: NULL without the setting, the entry
- * point with it.
+ * (patch 0001). Every context is 4.6, the newest version, so none is above
+ * it: glSpecializeShader (GL 4.6) comes with and without the setting.
  * Prints WINEMETALGL_LATER_ENTRY_POINTS_OK. */
 #include <windows.h>
 #include <GL/gl.h>
@@ -48,7 +48,7 @@ int main(void) {
     for (int i = 0; i < 4; i++) {
         if (!wglGetProcAddress(names[i])) { printf("missing %s\n", names[i]); return 15; }
     }
-    if (wglGetProcAddress("glSpecializeShader")) { printf("glSpecializeShader without LaterEntryPoints\n"); return 17; }
+    if (!wglGetProcAddress("glSpecializeShader")) { printf("missing glSpecializeShader without LaterEntryPoints\n"); return 17; }
     if (RegSetKeyValueA(HKEY_CURRENT_USER, key, "LaterEntryPoints", REG_SZ, "Y", 2)) return 18;
     if (!wglGetProcAddress("glSpecializeShader")) { printf("missing glSpecializeShader\n"); return 15; }
     PFNGLMEMORYBARRIERPROC barrier = (PFNGLMEMORYBARRIERPROC)wglGetProcAddress("glMemoryBarrier");

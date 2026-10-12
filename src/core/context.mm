@@ -201,7 +201,8 @@ void Context::initStrings() {
         for (const char* name : {"GL_ARB_gl_spirv", "GL_ARB_spirv_extensions", "GL_ARB_indirect_parameters",
                                  "GL_ARB_pipeline_statistics_query", "GL_ARB_shader_atomic_counter_ops",
                                  "GL_ARB_shader_draw_parameters", "GL_ARB_shader_group_vote",
-                                 "GL_ARB_transform_feedback_overflow_query"})
+                                 "GL_ARB_transform_feedback_overflow_query", "GL_ARB_parallel_shader_compile",
+                                 "GL_KHR_parallel_shader_compile", "GL_KHR_no_error"})
             extensions_.push_back(name);
     // Later extensions the core implements, in 4.x contexts: wined3d reads
     // EXT_shader_integer_mix and polygon_offset_clamp for its feature level.

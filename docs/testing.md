@@ -37,8 +37,8 @@ checks.
 WINEMETALGL_WINE_RUNTIME=/path/to/wine tests/wine/probe-opengl-wow64.sh
 ```
 
-The 59 gate fixtures run by default; `--all` adds the 10 fixtures kept for
-the later 4.x milestones, which need features of GL 4.4 or later.
+All 69 fixtures are in the gate (the 10 that need GL 4.4 to 4.6 features
+joined it with GL 4.6), each run as an x86_64 and an i386 guest.
 
 ## Khronos CTS
 

@@ -368,6 +368,10 @@ void GetShaderiv(Context& ctx, GLuint shader, GLenum pname, GLint* params) {
         if (!ctx.glSpirv()) break;
         *params = s->spirv;
         return;
+    case GL_COMPLETION_STATUS_ARB:  // compiles finish before glCompileShader returns
+        if (!ctx.parallelShaderCompile()) break;
+        *params = GL_TRUE;
+        return;
     default: break;
     }
     ctx.setError(GL_INVALID_ENUM);
@@ -419,6 +423,11 @@ void GetShaderSource(Context& ctx, GLuint shader, GLsizei bufSize, GLsizei* leng
 }
 
 void ReleaseShaderCompiler(Context& ctx) {}
+
+void MaxShaderCompilerThreadsKHR(Context& ctx, GLuint count) {
+    if (!ctx.parallelShaderCompile()) return ctx.unimplemented("glMaxShaderCompilerThreadsKHR");
+    ctx.state.maxShaderCompilerThreads = count;
+}
 
 // The one shader binary format is SPIR-V (GL 4.6 / GL_ARB_gl_spirv): the
 // module goes to every listed shader, to be specialized for its stage.
@@ -882,6 +891,10 @@ void GetProgramiv(Context& ctx, GLuint program, GLenum pname, GLint* params) {
     switch (pname) {
     case GL_DELETE_STATUS: *params = p->deletePending; return;
     case GL_LINK_STATUS: *params = p->linkStatus; return;
+    case GL_COMPLETION_STATUS_ARB:  // links finish before glLinkProgram returns
+        if (!ctx.parallelShaderCompile()) break;
+        *params = GL_TRUE;
+        return;
     case GL_VALIDATE_STATUS: *params = p->validateStatus; return;
     case GL_INFO_LOG_LENGTH: *params = p->infoLog.empty() ? 0 : static_cast<GLint>(p->infoLog.size() + 1); return;
     case GL_ATTACHED_SHADERS: *params = static_cast<GLint>(p->attached.size()); return;

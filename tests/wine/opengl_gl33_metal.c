@@ -60,13 +60,9 @@ static int compile_one(GLuint shader, const char *source,
 
 int main(void)
 {
-/* GL_SHADING_LANGUAGE_VERSION of the context the fixture targets (a legacy
+/* GL_SHADING_LANGUAGE_VERSION of the context the fixture targets (every
    context gets the highest version, fixture_version.h). */
-#ifdef WINEMETALGL_GLSL450
-#define EXPECTED_GLSL_VERSION "4.50"
-#else
 #define EXPECTED_GLSL_VERSION WINEMETALGL_FIXTURE_GLSL_VERSION
-#endif
 #ifdef WINEMETALGL_GLSL450
     static const char version_name[] = "GLSL450";
     static const char success_marker[] = "OPENGL_GL450_METAL_DRAW_READBACK_OK";

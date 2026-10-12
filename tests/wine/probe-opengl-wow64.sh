@@ -6,8 +6,8 @@
 #
 # The Wine installation must carry the patches in patches/wine and
 # libwinemetalgl.dylib next to winemac.so (scripts/stage-wine.sh). --all also
-# runs the GL 4.x fixtures. Exit status is non-zero if any fixture misses a
-# marker; a summary lists every fixture.
+# runs fixtures outside the gate scope (none since GL 4.6). Exit status is
+# non-zero if any fixture misses a marker; a summary lists every fixture.
 set -uo pipefail
 
 PROJECT_ROOT=$(cd "$(dirname "$0")/../.." && pwd)
