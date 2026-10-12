@@ -17,4 +17,4 @@
 - [ ] No code that recognises Khronos CTS tests or shaders
 - [ ] Generated docs regenerated with `scripts/docs/generate.py`, not edited by hand
 - [ ] `scripts/update-checksums.sh` run after adding, removing or changing files
-- [ ] `patches/wine` still applies to `wine-11.17`, if it changed
+- [ ] The Wine fixtures pass with the module, if `src/wine` changed

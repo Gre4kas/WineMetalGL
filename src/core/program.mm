@@ -2,9 +2,14 @@
 
 #include <algorithm>
 #include <atomic>
+#include <list>
+#include <mutex>
+#include <string>
+#include <unordered_map>
 
 #include "core/metal/device.h"
 #include "core/objects.h"
+#include "core/shader/border.h"
 #include "core/util/log.h"
 
 namespace wmgl {
@@ -16,7 +21,52 @@ uint64_t nextLinkedProgramId() {
 
 namespace {
 
+// Compiled functions by their source and entry point: programs linked
+// again from the same shaders (shader::link's cache) and stages shared
+// between programs compile once.
+struct FunctionCache {
+    static constexpr size_t kEntries = 512;
+    std::mutex mutex;
+    std::list<std::string> order;  // most recently used first
+    std::unordered_map<std::string, std::pair<id<MTLFunction>, std::list<std::string>::iterator>> entries;
+};
+
+FunctionCache& functionCache() {
+    static FunctionCache cache;
+    return cache;
+}
+
+id<MTLFunction> compileFunctionUncached(const std::string& msl, const std::string& entryPoint, int stage);
+
 id<MTLFunction> compileFunction(const std::string& msl, const std::string& entryPoint, int stage) {
+    FunctionCache& cache = functionCache();
+    std::string key = entryPoint;
+    key += '\0';
+    key += msl;
+    {
+        std::lock_guard<std::mutex> lock(cache.mutex);
+        auto it = cache.entries.find(key);
+        if (it != cache.entries.end()) {
+            cache.order.splice(cache.order.begin(), cache.order, it->second.second);
+            return it->second.first;
+        }
+    }
+    // Compiled outside the lock: other threads compile other functions meanwhile.
+    id<MTLFunction> function = compileFunctionUncached(msl, entryPoint, stage);
+    if (!function) return nil;
+    std::lock_guard<std::mutex> lock(cache.mutex);
+    if (!cache.entries.count(key)) {
+        cache.order.push_front(key);
+        cache.entries.emplace(std::move(key), std::make_pair(function, cache.order.begin()));
+        while (cache.entries.size() > FunctionCache::kEntries) {
+            cache.entries.erase(cache.order.back());
+            cache.order.pop_back();
+        }
+    }
+    return function;
+}
+
+id<MTLFunction> compileFunctionUncached(const std::string& msl, const std::string& entryPoint, int stage) {
     MTLCompileOptions* options = [MTLCompileOptions new];
     options.languageVersion = MTLLanguageVersion3_1;  // texture atomics
     options.mathMode = MTLMathModeSafe;  // GL requires IEEE behaviour for inf/nan propagation
@@ -31,6 +81,14 @@ id<MTLFunction> compileFunction(const std::string& msl, const std::string& entry
     id<MTLFunction> function = [library newFunctionWithName:[NSString stringWithUTF8String:entryPoint.c_str()]];
     if (!function) WMGL_ERR("entry point %s missing", entryPoint.c_str());
     return function;
+}
+
+// A vertex function without the [[point_size]] output. The member stays
+// (the code writing it is unchanged) as an unread varying.
+std::string withoutPointSize(std::string msl) {
+    const std::string from = "[[point_size]]", to = "[[user(wmgl_point_size)]]";
+    for (size_t at = msl.find(from); at != std::string::npos; at = msl.find(from, at + to.size())) msl.replace(at, from.size(), to);
+    return msl;
 }
 
 }  // namespace
@@ -106,6 +164,9 @@ int LinkedProgram::outputFlags() const {
     const std::string& vertex = drawingVertexMsl();
     flags = (vertex.find("[[viewport_array_index]]") != std::string::npos ? kWritesViewport : 0) |
             (vertex.find("[[render_target_array_index]]") != std::string::npos ? kWritesLayer : 0);
+    int culls = 0;
+    while (culls < 8 && vertex.find("[[user(cull" + std::to_string(culls) + ")]]") != std::string::npos) ++culls;
+    flags |= culls << kCullShift;
     if (pipeline) {
         const auto& fs = stageExecutable[static_cast<int>(shader::Stage::Fragment)];
         if (fs && fs->writesSampleMask()) flags |= kWritesSampleMask;
@@ -120,19 +181,27 @@ int LinkedProgram::outputFlags() const {
 bool LinkedProgram::writesSampleMask() { return (outputFlags() & kWritesSampleMask) != 0; }
 
 id<MTLFunction> LinkedProgram::fragmentVariant(bool sampleMask, unsigned logicOp, const uint16_t colorFormats[8],
-                                               bool sampleRate, bool ignoreSampleMask) {
+                                               bool sampleRate, bool ignoreSampleMask, unsigned cull, uint16_t borders,
+                                               bool countInvocations) {
     if (pipeline) {
         const auto& fs = stageExecutable[static_cast<int>(shader::Stage::Fragment)];
-        return fs ? fs->fragmentVariant(sampleMask, logicOp, colorFormats, sampleRate, ignoreSampleMask) : nil;
+        return fs ? fs->fragmentVariant(sampleMask, logicOp, colorFormats, sampleRate, ignoreSampleMask, cull, borders,
+                                        countInvocations)
+                  : nil;
     }
     std::string key = std::string(sampleMask ? "m" : "-") + (sampleRate ? "s" : "-") + (ignoreSampleMask ? "i" : "-") +
-                      std::to_string(logicOp);
+                      (countInvocations ? "n" : "-") + std::to_string(logicOp) + "c" + std::to_string(cull) + "b" +
+                      std::to_string(borders);
     if (logicOp)
         for (int i = 0; i < 8; ++i) key += "/" + std::to_string(colorFormats[i]);
     std::lock_guard<std::mutex> lock(mutex_);
     if (auto it = fragmentVariants_.find(key); it != fragmentVariants_.end()) return it->second;
     const shader::StageOutput& output = link.stages[static_cast<int>(shader::Stage::Fragment)];
     std::string msl = output.present ? output.msl : std::string();
+    if (!msl.empty() && borders) msl = shader::mslWithBorders(msl, shader::borderVariantDefinitions(borders));
+    // Counted before the cull test is added, which then runs first: culled primitives have no fragments.
+    if (!msl.empty() && countInvocations) msl = shader::fragmentCountingInvocations(msl);
+    if (!msl.empty() && cull) msl = shader::fragmentWithCullDistances(msl, static_cast<int>(cull));
     if (!msl.empty() && logicOp) {
         shader::LogicOpTarget targets[8];
         for (int i = 0; i < 8; ++i) targets[i] = logicOpTarget(static_cast<MTLPixelFormat>(colorFormats[i]));
@@ -171,22 +240,36 @@ id<MTLFunction> LinkedProgram::vertexWithoutPointSize(bool geometryPass) {
     if (noPointSize_[v] || noPointSizeFailed_[v]) return noPointSize_[v];
     const shader::StageOutput& output = geometryPass ? link.geometry.passthrough : link.stages[static_cast<int>(shader::Stage::Vertex)];
     if (output.msl.empty()) return nil;
-    std::string msl = output.msl;
-    // The member stays (the code writing it is unchanged) as an unread varying.
-    const std::string from = "[[point_size]]", to = "[[user(wmgl_point_size)]]";
-    for (size_t at = msl.find(from); at != std::string::npos; at = msl.find(from, at + to.size())) msl.replace(at, from.size(), to);
-    noPointSize_[v] = compileFunction(msl, output.entryPoint, 0);
+    noPointSize_[v] = compileFunction(withoutPointSize(output.msl), output.entryPoint, 0);
     noPointSizeFailed_[v] = noPointSize_[v] == nil;
     return noPointSize_[v];
+}
+
+id<MTLFunction> LinkedProgram::vertexWithBorders(bool rasterization, bool pointSize, uint16_t borders) {
+    const int vs = static_cast<int>(shader::Stage::Vertex);
+    if (pipeline) return stageExecutable[vs] ? stageExecutable[vs]->vertexWithBorders(rasterization, pointSize, borders) : nil;
+    const std::string key = std::string(rasterization ? "r" : "-") + (pointSize ? "p" : "-") + std::to_string(borders);
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (auto it = borderVertex_.find(key); it != borderVertex_.end()) return it->second;
+    const shader::StageOutput& output = link.stages[vs];
+    std::string msl = rasterization ? output.msl : output.mslNoRaster;
+    if (!msl.empty() && rasterization && !pointSize) msl = withoutPointSize(msl);
+    if (!msl.empty()) msl = shader::mslWithBorders(msl, shader::borderVariantDefinitions(borders));
+    id<MTLFunction> function = msl.empty() ? nil : compileFunction(msl, output.entryPoint, vs);
+    borderVertex_[key] = function;
+    return function;
 }
 
 namespace {
 
 // `threads`: the work group size a compute program dispatches (0: any); the
 // compiler then fits the kernel to it (GL guarantees 1024 invocations).
-id<MTLComputePipelineState> computePipelineFor(const shader::StageOutput& output, int stage, NSUInteger threads = 0) {
+id<MTLComputePipelineState> computePipelineFor(const shader::StageOutput& output, int stage, NSUInteger threads = 0,
+                                               uint16_t borders = 0) {
     if (output.msl.empty()) return nil;
-    id<MTLFunction> function = compileFunction(output.msl, output.entryPoint, stage);
+    id<MTLFunction> function =
+        compileFunction(borders ? shader::mslWithBorders(output.msl, shader::borderVariantDefinitions(borders)) : output.msl,
+                        output.entryPoint, stage);
     if (!function) return nil;
     NSError* error = nil;
     MTLComputePipelineDescriptor* desc = [[MTLComputePipelineDescriptor alloc] init];
@@ -229,6 +312,22 @@ id<MTLComputePipelineState> LinkedProgram::computePipeline() {
     if (link.stages[cs].present) compute_ = computePipelineFor(link.stages[cs], cs, threads);
     computeFailed_ = compute_ == nil;
     return compute_;
+}
+
+id<MTLComputePipelineState> LinkedProgram::kernelWithBorders(const shader::StageOutput& output, int stage, uint16_t borders) {
+    if (pipeline && stage == static_cast<int>(shader::Stage::Compute)) {
+        const auto& cs = stageExecutable[stage];
+        return cs ? cs->kernelWithBorders(cs->link.stages[stage], stage, borders) : nil;
+    }
+    const std::string key = std::to_string(reinterpret_cast<uintptr_t>(&output)) + "/" + std::to_string(borders);
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (auto it = borderKernels_.find(key); it != borderKernels_.end()) return it->second;
+    const NSUInteger threads = stage == static_cast<int>(shader::Stage::Compute) && &output == &link.stages[stage]
+                                   ? NSUInteger(link.computeLocalSize[0]) * link.computeLocalSize[1] * link.computeLocalSize[2]
+                                   : 0;
+    id<MTLComputePipelineState> state = computePipelineFor(output, stage, threads, borders);
+    borderKernels_[key] = state;
+    return state;
 }
 
 id<MTLComputePipelineState> LinkedProgram::tessControlKernel() {

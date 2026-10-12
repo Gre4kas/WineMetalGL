@@ -147,13 +147,16 @@ void Context::initStrings() {
     extensions_.push_back("GL_ARB_clip_control");
     extensions_.push_back("GL_ARB_get_program_binary");
     extensions_.push_back("GL_ARB_buffer_storage");
+    // Client memory as buffer storage: Wine maps 32-bit (WoW64) guests'
+    // buffers through it, and limits them to GL 4.3 without it.
+    extensions_.push_back("GL_AMD_pinned_memory");
     extensions_.push_back("GL_KHR_debug");
     extensions_.push_back("GL_ARB_debug_output");
     extensions_.push_back("GL_ARB_separate_shader_objects");
     for (const char* name : {"GL_KHR_robustness", "GL_ARB_robustness", "GL_ARB_internalformat_query",
                              "GL_ARB_invalidate_subdata", "GL_ARB_copy_image", "GL_NVX_gpu_memory_info", "GL_ATI_meminfo"})
         extensions_.push_back(name);
-    // The extensions GL 4.0 to 4.3 made core, in contexts of the
+    // The extensions GL 4.0 to 4.6 made core, in contexts of the
     // version that includes them (their features are gated on the version).
     const int version = config_.major * 10 + config_.minor;
     if (version >= 40)
@@ -183,11 +186,37 @@ void Context::initStrings() {
               // GL 4.5, implemented: the Khronos CTS calls glTextureBarrier in GL 4.3 view tests
               "GL_ARB_texture_barrier"})
             extensions_.push_back(name);
+    if (version >= 44)
+        for (const char* name :
+             {"GL_ARB_clear_texture", "GL_ARB_enhanced_layouts", "GL_ARB_multi_bind", "GL_ARB_query_buffer_object",
+              "GL_ARB_texture_mirror_clamp_to_edge", "GL_ARB_texture_stencil8", "GL_ARB_vertex_type_10f_11f_11f_rev"})
+            extensions_.push_back(name);
+    if (version >= 45)
+        for (const char* name :
+             {"GL_ARB_conditional_render_inverted", "GL_ARB_cull_distance", "GL_ARB_derivative_control",
+              "GL_ARB_direct_state_access", "GL_ARB_ES3_1_compatibility", "GL_ARB_get_texture_sub_image",
+              "GL_ARB_shader_texture_image_samples", "GL_KHR_context_flush_control"})
+            extensions_.push_back(name);
+    if (version >= 46)
+        for (const char* name : {"GL_ARB_gl_spirv", "GL_ARB_spirv_extensions", "GL_ARB_indirect_parameters",
+                                 "GL_ARB_pipeline_statistics_query", "GL_ARB_shader_atomic_counter_ops",
+                                 "GL_ARB_shader_draw_parameters", "GL_ARB_shader_group_vote",
+                                 "GL_ARB_transform_feedback_overflow_query", "GL_ARB_parallel_shader_compile",
+                                 "GL_KHR_parallel_shader_compile", "GL_KHR_no_error"})
+            extensions_.push_back(name);
     // Later extensions the core implements, in 4.x contexts: wined3d reads
     // EXT_shader_integer_mix and polygon_offset_clamp for its feature level.
     if (version >= 40)
         for (const char* name : {"GL_EXT_shader_integer_mix", "GL_ARB_polygon_offset_clamp", "GL_EXT_polygon_offset_clamp"})
             extensions_.push_back(name);
+    // gl_Layer and gl_ViewportIndex from vertex and tessellation evaluation
+    // shaders, which Metal vertex functions write natively (the geometry
+    // emulation's pass-through vertex function already does).
+    if (version >= 41) extensions_.push_back("GL_ARB_shader_viewport_layer_array");
+    // Sampling sRGB textures without decoding: wined3d renders to sRGB
+    // targets (GL_ARB_framebuffer_sRGB) only with it.
+    extensions_.push_back("GL_EXT_texture_sRGB_decode");
+    if (version >= 40) extensions_.push_back("GL_EXT_texture_shadow_lod");
     extensionString_.clear();
     for (const std::string& ext : extensions_) {
         if (!extensionString_.empty()) extensionString_ += ' ';
@@ -202,6 +231,13 @@ bool Context::hasExtension(const char* name) const {
 void Context::setError(GLenum error) {
     if (error_ == GL_NO_ERROR) error_ = error;
     if (logEnabled(LogLevel::Trace)) WMGL_TRACE("GL error 0x%04x in %s", error, currentCommand);
+    // Each command's error once: an application that ignores errors shows
+    // what failed (a refused attachment later drops every draw).
+    if (logEnabled(LogLevel::Warn)) {
+        char key[96];
+        std::snprintf(key, sizeof(key), "error-%s-%04x", currentCommand, error);
+        logOnce(LogLevel::Warn, key, "GL error 0x%04x in %s (reported once per command and error)", error, currentCommand);
+    }
     if (state.debugOutput) {
         const char* name = error == GL_INVALID_ENUM        ? "GL_INVALID_ENUM"
                            : error == GL_INVALID_VALUE     ? "GL_INVALID_VALUE"
@@ -301,6 +337,8 @@ RefPtr<Buffer>* Context::bufferBinding(GLenum target) {
     if (storageBuffers() && target == GL_SHADER_STORAGE_BUFFER) return &state.shaderStorageBuffer;
     if (atomicCounters() && target == GL_ATOMIC_COUNTER_BUFFER) return &state.atomicCounterBuffer;
     if (version() >= 44 && target == GL_QUERY_BUFFER) return &state.queryBuffer;
+    if (indirectParameters() && target == GL_PARAMETER_BUFFER) return &state.parameterBuffer;
+    if (target == GL_EXTERNAL_VIRTUAL_MEMORY_BUFFER_AMD) return &state.externalVirtualMemoryBuffer;
     return nullptr;
 }
 

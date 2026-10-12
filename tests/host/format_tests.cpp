@@ -70,6 +70,28 @@ TEST(format_packed_float_transfer_is_bit_exact) {
 
 // GL_BGRA with a packed 2_10_10_10 type swaps x and z like GL_BGRA bytes
 // (KHR-GL43.vertex_attrib_binding.basic-input-case5).
+TEST(format_vertex_runs_decode_as_elements_do) {
+    // decodeVertexFloats gives decodeVertexFloat's values, bit for bit.
+    uint8_t elements[7 * 20];
+    for (size_t i = 0; i < sizeof(elements); ++i) elements[i] = static_cast<uint8_t>(i * 73 + 41);
+    const GLenum types[] = {GL_BYTE, GL_UNSIGNED_BYTE, GL_SHORT, GL_UNSIGNED_SHORT, GL_INT, GL_UNSIGNED_INT, GL_FLOAT};
+    for (GLenum type : types)
+        for (GLint size = 1; size <= 4; ++size)
+            for (bool normalized : {false, true}) {
+                uint8_t run[7 * 32];
+                std::memset(run, 0xcd, sizeof(run));
+                CHECK(decodeVertexFloats(elements, 20, 7, type, size, normalized, run, 32));
+                for (int v = 0; v < 7; ++v) {
+                    float expected[4];
+                    decodeVertexFloat(elements + v * 20, type, size, normalized, expected);
+                    CHECK(std::memcmp(run + v * 32, expected, 16) == 0);
+                }
+            }
+    uint8_t out[16];
+    CHECK(!decodeVertexFloats(elements, 4, 1, GL_HALF_FLOAT, 2, false, out, 16));
+    CHECK(!decodeVertexFloats(elements, 4, 1, GL_UNSIGNED_BYTE, GL_BGRA, true, out, 16));
+}
+
 TEST(format_vertex_bgra_packed_swaps_red_and_blue) {
     const uint32_t word = 0u | (1023u << 10) | (511u << 20) | (1u << 30);
     float out[4];

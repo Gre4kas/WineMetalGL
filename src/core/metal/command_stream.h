@@ -63,6 +63,10 @@ public:
     const RenderTargetDesc& currentTarget() const { return target_; }
     // Bumped every time a new render encoder starts (dynamic state must be re-sent).
     uint64_t passGeneration() const { return passGeneration_; }
+    // Calls of render(): every user of the render encoder makes one first, so
+    // a caller that saw the count move by only its own call knows nobody
+    // else set encoder state since (DrawState's dynamic state cache).
+    uint64_t renderCalls() const { return renderCalls_; }
 
     // Records a clear for the target. Returns false if the clear cannot be a
     // load action (a pass on this target already has draws) — the caller then
@@ -129,6 +133,7 @@ private:
     PendingClear pending_;
     bool drawsInPass_ = false;
     uint64_t passGeneration_ = 0;
+    uint64_t renderCalls_ = 0;
     bool visibilityWanted_ = false, passVisibility_ = false;
     // noteShaderWrites: set while the open encoder writes through images;
     // fenced once such an encoder ended (later encoders wait for writesFence_).

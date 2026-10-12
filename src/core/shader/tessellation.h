@@ -52,8 +52,8 @@ struct TessVar {
 struct TessStageInfo {
     std::vector<TessVar> inputs, outputs;
     int verticesOut = 0;  // control: layout(vertices = N)
-    bool readsPointSize = false, readsClipDistance = false;
-    int inputClipDistances = 0, outputClipDistances = 0;
+    bool readsPointSize = false, readsClipDistance = false, readsCullDistance = false;
+    int inputClipDistances = 0, outputClipDistances = 0, inputCullDistances = 0, outputCullDistances = 0;
     bool writesPointSize = false;
     std::string globals;    // uniforms, constants, structs, extensions
     std::string outputDeclarations;  // evaluation: output declarations (vertex shader outputs)
@@ -71,7 +71,7 @@ std::vector<std::string> tessellationCaptureVaryings(const TessStageInfo& first)
 // then the patch section: the outer levels (4 words), the inner levels
 // (2 words), then the per-patch outputs.
 struct TessRecordField {
-    std::string key;        // "gl_Position", "gl_PointSize", "gl_ClipDistance", "name" or "Block.member"
+    std::string key;        // "gl_Position", "gl_PointSize", "gl_ClipDistance", "gl_CullDistance", "name" or "Block.member"
     GLenum type = 0;
     int elements = 1;       // array elements
     uint32_t offset = 0;    // words, within the vertex record or the patch section

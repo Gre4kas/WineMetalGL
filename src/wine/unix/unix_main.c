@@ -1,0 +1,305 @@
+/* winemetalgl.so: loads the WineMetalGL core and carries GL calls to it
+ * (the call tables are generated: wine_gl_unix.gen.c), with the debug
+ * callbacks, which the core calls on the unix side where PE code cannot run:
+ * their messages wait in a per-thread queue that the PE side drains after
+ * the GL call that produced them (wmgl_after_call). */
+
+#include <dlfcn.h>
+#include <libgen.h>
+
+#include "wmgl_unix.h"
+
+#define GL_DEBUG_CALLBACK_FUNCTION 0x8244
+#define GL_DEBUG_CALLBACK_USER_PARAM 0x8245
+
+struct wmgl_core wmgl;
+BOOL wmgl_trace;
+static void *core_handle;
+
+void *wmgl_core_symbol( const char *name )
+{
+    return core_handle ? dlsym( core_handle, name ) : NULL;
+}
+
+/* ------------------------------------------------------------ the core */
+
+static BOOL load_core(void)
+{
+    Dl_info info;
+    char path[4096], *dir;
+    void *handle;
+    unsigned int i;
+
+    wmgl_trace = getenv( "WINEMETALGL_WINE_DEBUG" ) != NULL;
+    /* libwinemetalgl.dylib sits next to winemetalgl.so. */
+    if (!dladdr( (void *)load_core, &info ) || !info.dli_fname) return FALSE;
+    snprintf( path, sizeof(path), "%s", info.dli_fname );
+    dir = dirname( path );
+    snprintf( path, sizeof(path), "%s/libwinemetalgl.dylib", dir );
+    if (!(handle = dlopen( path, RTLD_NOW | RTLD_LOCAL )))
+    {
+        WMGL_ERR( "cannot load %s: %s\n", path, dlerror() );
+        return FALSE;
+    }
+    core_handle = handle;
+#define LOAD(field, name) if (!(*(void **)&wmgl.field = dlsym( handle, name ))) { WMGL_ERR( "%s missing\n", name ); return FALSE; }
+    LOAD(initialize, "wmgl_initialize");
+    LOAD(get_pixel_formats, "wmgl_get_pixel_formats");
+    LOAD(surface_create_window, "wmgl_surface_create_window");
+    LOAD(surface_create_pbuffer, "wmgl_surface_create_pbuffer");
+    LOAD(surface_destroy, "wmgl_surface_destroy");
+    LOAD(surface_flush, "wmgl_surface_flush");
+    LOAD(surface_swap, "wmgl_surface_swap");
+    LOAD(context_create, "wmgl_context_create");
+    LOAD(context_destroy, "wmgl_context_destroy");
+    LOAD(make_current, "wmgl_make_current");
+    LOAD(get_proc_address, "wmgl_get_proc_address");
+    LOAD(renderer_string, "wmgl_renderer_string");
+    LOAD(video_memory_mb, "wmgl_video_memory_mb");
+    LOAD(max_versions, "wmgl_max_versions");
+#undef LOAD
+    *(void **)&wmgl.version = dlsym( handle, "wmgl_version" );
+    if (wmgl.initialize( WMGL_DRIVER_ABI_VERSION ))
+    {
+        WMGL_ERR( "the WineMetalGL core refused to initialise (driver ABI %u)\n", WMGL_DRIVER_ABI_VERSION );
+        return FALSE;
+    }
+    /* Every command the generated tables call (struct wmgl_core_procs is
+     * one pointer per name, in wmgl_core_names order). */
+    for (i = 0; i < WMGL_CORE_PROC_COUNT; i++)
+        ((void **)&core)[i] = wmgl.get_proc_address( wmgl_core_names[i] );
+    return TRUE;
+}
+
+static pthread_once_t core_once = PTHREAD_ONCE_INIT;
+static BOOL core_loaded;
+
+static void load_core_once(void)
+{
+    core_loaded = load_core();
+}
+
+extern NTSTATUS wmgl_unix_init_formats( void *args );
+
+/* The first call of the PE side (DllMain): loads the core, then reports the
+ * pixel formats (unix_wgl.c). */
+NTSTATUS wmgl_unix_init( void *args )
+{
+    struct wmgl_init_params *params = args;
+    pthread_once( &core_once, load_core_once );
+    if (!core_loaded)
+    {
+        memset( params, 0, sizeof(*params) );
+        return STATUS_SUCCESS;
+    }
+    return wmgl_unix_init_formats( args );
+}
+
+/* ------------------------------------------------------- debug messages */
+
+#define MAX_QUEUED 64
+
+struct queued_message
+{
+    UINT64 callback, user;
+    UINT source, type, id, severity;
+    INT length;
+    BOOL amd;
+    char *text;
+};
+
+static __thread struct queued_message queue[MAX_QUEUED];
+static __thread unsigned int queued, delivered;
+
+NTSTATUS wmgl_after_call( void )
+{
+    return queued > delivered ? WMGL_STATUS_DEBUG_MESSAGES : STATUS_SUCCESS;
+}
+
+static void queue_message( BOOL amd, GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length,
+                           const GLchar *message )
+{
+    struct wmgl_debug_target *target = wmgl_current_debug_target();
+    struct queued_message *slot;
+    UINT64 callback, user;
+    size_t len;
+
+    if (!target) return;
+    callback = amd ? target->callback_amd : target->callback;
+    user = amd ? target->user_amd : target->user;
+    if (!callback) return;
+    if (queued == delivered) queued = delivered = 0;
+    if (queued >= MAX_QUEUED) return;  /* the application gets the first ones */
+    slot = &queue[queued];
+    len = length >= 0 ? (size_t)length : (message ? strlen( message ) : 0);
+    if (!(slot->text = malloc( len + 1 ))) return;
+    if (len) memcpy( slot->text, message, len );
+    slot->text[len] = 0;
+    slot->callback = callback;
+    slot->user = user;
+    slot->source = source;
+    slot->type = type;
+    slot->id = id;
+    slot->severity = severity;
+    slot->length = (INT)len;
+    slot->amd = amd;
+    queued++;
+}
+
+static void debug_callback( GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length,
+                            const GLchar *message, const void *user )
+{
+    queue_message( FALSE, source, type, id, severity, length, message );
+}
+
+static void debug_callback_amd( GLuint id, GLenum category, GLenum severity, GLsizei length, const GLchar *message,
+                                void *user )
+{
+    queue_message( TRUE, 0, category, id, severity, length, message );
+}
+
+NTSTATUS wmgl_unix_debug_message( void *args )
+{
+    struct wmgl_debug_message_params *params = args;
+    char *buffer = (char *)(ULONG_PTR)params->buffer;
+    struct queued_message *message;
+
+    params->got = params->more = FALSE;
+    if (delivered >= queued) return STATUS_SUCCESS;
+    message = &queue[delivered++];
+    params->callback = message->callback;
+    params->user = message->user;
+    params->source = message->source;
+    params->type = message->type;
+    params->id = message->id;
+    params->severity = message->severity;
+    params->length = message->length;
+    params->amd = message->amd;
+    if (buffer && params->size)
+    {
+        size_t len = (size_t)message->length < params->size - 1 ? (size_t)message->length : params->size - 1;
+        memcpy( buffer, message->text, len );
+        buffer[len] = 0;
+        if ((size_t)message->length > len) params->length = (INT)len;
+    }
+    free( message->text );
+    message->text = NULL;
+    params->got = TRUE;
+    params->more = delivered < queued;
+    if (!params->more) queued = delivered = 0;
+    return STATUS_SUCCESS;
+}
+
+/* glDebugMessageCallback*: the core calls ours; the application's waits in
+ * the context for the PE side. */
+static void set_callback( UINT64 callback, UINT64 user, BOOL amd )
+{
+    wmgl_set_debug_callback( callback, user, amd );
+    if (amd) core.p_glDebugMessageCallbackAMD( callback ? (GLDEBUGPROCAMD)debug_callback_amd : NULL, NULL );
+    else core.p_glDebugMessageCallback( callback ? (GLDEBUGPROC)debug_callback : NULL, NULL );
+}
+
+NTSTATUS manual_glDebugMessageCallback( void *args )
+{
+    struct glDebugMessageCallback_params *params = args;
+    set_callback( (UINT64)(ULONG_PTR)params->callback, (UINT64)(ULONG_PTR)params->userParam, FALSE );
+    return wmgl_after_call();
+}
+
+NTSTATUS manual_glDebugMessageCallbackARB( void *args )
+{
+    struct glDebugMessageCallbackARB_params *params = args;
+    set_callback( (UINT64)(ULONG_PTR)params->callback, (UINT64)(ULONG_PTR)params->userParam, FALSE );
+    return wmgl_after_call();
+}
+
+NTSTATUS manual_glDebugMessageCallbackAMD( void *args )
+{
+    struct glDebugMessageCallbackAMD_params *params = args;
+    set_callback( (UINT64)(ULONG_PTR)params->callback, (UINT64)(ULONG_PTR)params->userParam, TRUE );
+    return wmgl_after_call();
+}
+
+/* glGetPointerv*: the debug callback and its parameter are the application's. */
+static BOOL debug_pointer( GLenum pname, UINT64 *value )
+{
+    struct wmgl_debug_target *target = wmgl_current_debug_target();
+    if (pname != GL_DEBUG_CALLBACK_FUNCTION && pname != GL_DEBUG_CALLBACK_USER_PARAM) return FALSE;
+    *value = !target ? 0 : pname == GL_DEBUG_CALLBACK_FUNCTION ? target->callback : target->user;
+    return TRUE;
+}
+
+static NTSTATUS get_pointer( GLenum pname, void **out, void (*proc)( GLenum, void ** ) )
+{
+    UINT64 value;
+    if (debug_pointer( pname, &value ))
+    {
+        if (out) *out = (void *)(ULONG_PTR)value;
+    }
+    else proc( pname, out );
+    return wmgl_after_call();
+}
+
+NTSTATUS manual_glGetPointerv( void *args )
+{
+    struct glGetPointerv_params *params = args;
+    return get_pointer( params->pname, params->params, core.p_glGetPointerv );
+}
+
+NTSTATUS manual_glGetPointervEXT( void *args )
+{
+    struct glGetPointervEXT_params *params = args;
+    return get_pointer( params->pname, params->params, core.p_glGetPointervEXT );
+}
+
+#ifdef _WIN64
+
+NTSTATUS wow64_manual_glDebugMessageCallback( void *args )
+{
+    struct glDebugMessageCallback_params32 *params = args;
+    set_callback( params->callback, params->userParam, FALSE );
+    return wmgl_after_call();
+}
+
+NTSTATUS wow64_manual_glDebugMessageCallbackARB( void *args )
+{
+    struct glDebugMessageCallbackARB_params32 *params = args;
+    set_callback( params->callback, params->userParam, FALSE );
+    return wmgl_after_call();
+}
+
+NTSTATUS wow64_manual_glDebugMessageCallbackAMD( void *args )
+{
+    struct glDebugMessageCallbackAMD_params32 *params = args;
+    set_callback( params->callback, params->userParam, TRUE );
+    return wmgl_after_call();
+}
+
+/* A 32-bit caller's pointers are below 4 GB: what the core reports (the
+ * application's own pointers) fits, and the debug callback is its own. */
+static NTSTATUS wow64_get_pointer( GLenum pname, UINT out, void (*proc)( GLenum, void ** ) )
+{
+    UINT64 value;
+    void *ptr = NULL;
+    if (!debug_pointer( pname, &value ))
+    {
+        proc( pname, &ptr );
+        value = wmgl_wow64_pointer( ptr );
+    }
+    if (out) *(UINT *)ULongToPtr( out ) = (UINT)value;
+    return wmgl_after_call();
+}
+
+NTSTATUS wow64_manual_glGetPointerv( void *args )
+{
+    struct glGetPointerv_params32 *params = args;
+    return wow64_get_pointer( params->pname, params->params, core.p_glGetPointerv );
+}
+
+NTSTATUS wow64_manual_glGetPointervEXT( void *args )
+{
+    struct glGetPointervEXT_params32 *params = args;
+    return wow64_get_pointer( params->pname, params->params, core.p_glGetPointervEXT );
+}
+
+#endif

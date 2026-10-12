@@ -192,7 +192,10 @@ bool ensureTextureStorage(Context& ctx, Texture& tex) {
     desc.sampleCount = static_cast<NSUInteger>(std::max(1, samples));
     desc.storageMode = MTLStorageModePrivate;
     desc.usage = MTLTextureUsageShaderRead | MTLTextureUsagePixelFormatView | writeUsage;
-    if ((format->colorRenderable || format->isDepthOrStencil() || format->storedAlphaIsOne) && !format->compressed)
+    // Immutable storage can have views of another format, which may be
+    // renderable when this one is not (GL_RGB9_E5 as GL_R32UI).
+    if ((format->colorRenderable || format->isDepthOrStencil() || format->storedAlphaIsOne || tex.immutable) &&
+        !format->compressed)
         desc.usage |= MTLTextureUsageRenderTarget;
     (void)cube;
     id<MTLTexture> texture = [Device::get().mtl() newTextureWithDescriptor:desc];
@@ -378,7 +381,10 @@ bool textureComplete(Context& ctx, Texture& tex, const SamplerParams* params) {
     if (multisample) return ensureTextureStorage(ctx, tex);
     // Integer formats cannot be filtered; depth formats only with compare mode
     // or nearest filtering in some cases (GL 3.3: depth textures filter linearly).
-    if (baseImage.format && baseImage.format->isInteger() &&
+    // Stencil indices sample like integers (GL 4.6 section 8.17).
+    const bool stencilSampled = baseImage.format && baseImage.format->isStencil() &&
+                                (!baseImage.format->isDepth() || tex.depthStencilMode == GL_STENCIL_INDEX);
+    if (baseImage.format && (baseImage.format->isInteger() || stencilSampled) &&
         (p.magFilter != GL_NEAREST || (p.minFilter != GL_NEAREST && p.minFilter != GL_NEAREST_MIPMAP_NEAREST)))
         return false;
     if (mipmapped) {
@@ -402,7 +408,28 @@ bool textureComplete(Context& ctx, Texture& tex, const SamplerParams* params) {
     return ensureTextureStorage(ctx, tex);
 }
 
-id<MTLTexture> samplingView(Context& ctx, Texture& tex) {
+namespace {
+
+// The format an sRGB format's texels are read as without decoding
+// (GL_SKIP_DECODE_EXT); other formats are their own.
+MTLPixelFormat withoutSrgb(MTLPixelFormat f) {
+    switch (f) {
+    case MTLPixelFormatRGBA8Unorm_sRGB: return MTLPixelFormatRGBA8Unorm;
+    case MTLPixelFormatBGRA8Unorm_sRGB: return MTLPixelFormatBGRA8Unorm;
+    case MTLPixelFormatBC1_RGBA_sRGB: return MTLPixelFormatBC1_RGBA;
+    case MTLPixelFormatBC2_RGBA_sRGB: return MTLPixelFormatBC2_RGBA;
+    case MTLPixelFormatBC3_RGBA_sRGB: return MTLPixelFormatBC3_RGBA;
+    case MTLPixelFormatBC7_RGBAUnorm_sRGB: return MTLPixelFormatBC7_RGBAUnorm;
+    case MTLPixelFormatETC2_RGB8_sRGB: return MTLPixelFormatETC2_RGB8;
+    case MTLPixelFormatETC2_RGB8A1_sRGB: return MTLPixelFormatETC2_RGB8A1;
+    case MTLPixelFormatEAC_RGBA8_sRGB: return MTLPixelFormatEAC_RGBA8;
+    default: return f;
+    }
+}
+
+}  // namespace
+
+id<MTLTexture> samplingView(Context& ctx, Texture& tex, bool skipSrgbDecode) {
     if (tex.target == GL_TEXTURE_BUFFER) return bufferTextureView(ctx, tex);
     const TextureImage& baseImage = tex.baseImage();
     const FormatInfo* format = baseImage.format;
@@ -417,6 +444,7 @@ id<MTLTexture> samplingView(Context& ctx, Texture& tex) {
     // Depth/stencil textures sample depth by default; stencil sampling (GL 4.3) uses the stencil view.
     if (viewFormat == MTLPixelFormatDepth32Float_Stencil8 && tex.depthStencilMode == GL_STENCIL_INDEX)
         viewFormat = MTLPixelFormatX32_Stencil8;
+    if (skipSrgbDecode) viewFormat = withoutSrgb(viewFormat);
     const uint64_t key = (static_cast<uint64_t>(base) << 56) | (static_cast<uint64_t>(levelCount) << 48) |
                          (static_cast<uint64_t>(viewFormat) << 32) | (static_cast<uint64_t>(swizzle[0] & 0xff) << 24) |
                          (static_cast<uint64_t>(swizzle[1] & 0xff) << 16) | (static_cast<uint64_t>(swizzle[2] & 0xff) << 8) |
@@ -448,6 +476,97 @@ id<MTLTexture> samplingView(Context& ctx, Texture& tex) {
     if (!view) view = tex.mtl;
     tex.views.push_back({key, view});
     return view;
+}
+
+bool borderEmulation(const Texture& tex, const SamplerParams& p, bool shadow, shader::BorderSlot& out) {
+    int dims = 0;
+    switch (tex.target) {
+    case GL_TEXTURE_1D: case GL_TEXTURE_1D_ARRAY: dims = 1; break;
+    case GL_TEXTURE_2D: case GL_TEXTURE_2D_ARRAY: case GL_TEXTURE_RECTANGLE: dims = 2; break;
+    case GL_TEXTURE_3D: dims = 3; break;
+    default: return false;  // cube maps filter seamlessly; buffers and multisample textures are not filtered
+    }
+    const GLenum wraps[3] = {p.wrapS, p.wrapT, p.wrapR};
+    out = {};
+    for (int a = 0; a < dims; ++a) {
+        uint32_t mode = 3;
+        switch (wraps[a]) {
+        case GL_CLAMP_TO_BORDER: mode = 0; out.axes |= 1u << a; break;
+        case GL_REPEAT: mode = 1; break;
+        case GL_MIRRORED_REPEAT: mode = 2; break;
+        case GL_MIRROR_CLAMP_TO_EDGE: mode = 4; break;
+        default: break;
+        }
+        out.wrap |= mode << (4 * a);
+    }
+    if (!out.axes) return false;
+    const FormatInfo* format = tex.baseImage().format;
+    if (!format) return false;
+    const bool stencil = format->isStencil() && (!format->isDepth() || tex.depthStencilMode == GL_STENCIL_INDEX);
+    out.kind = stencil || format->type == ComponentType::UnsignedInt ? 'u' : format->type == ComponentType::Int ? 'i' : 'f';
+    // The border as the texel of the image's base format (GL 4.6 section
+    // 8.14.2, table 8.11), then the texture's swizzle.
+    float f[4];
+    int32_t n[4];
+    for (int k = 0; k < 4; ++k) {
+        f[k] = p.borderIsInteger ? static_cast<float>(p.borderColor.i[k]) : p.borderColor.f[k];
+        n[k] = p.borderIsInteger ? p.borderColor.i[k] : static_cast<int32_t>(p.borderColor.f[k]);
+    }
+    int source[4] = {0, 1, 2, 3};  // 0-3: component, 4: zero, 5: one
+    switch (format->isDepthOrStencil() ? GL_RED : format->baseFormat) {
+    case GL_RED: source[1] = source[2] = 4; source[3] = 5; break;
+    case GL_RG: source[2] = 4; source[3] = 5; break;
+    case GL_RGB: source[3] = 5; break;
+    case GL_ALPHA: source[0] = source[1] = source[2] = 4; break;
+    case GL_LUMINANCE: source[1] = source[2] = 0; source[3] = 5; break;
+    case GL_LUMINANCE_ALPHA: source[1] = source[2] = 0; break;
+    case GL_INTENSITY: source[1] = source[2] = source[3] = 0; break;
+    default: break;
+    }
+    bool identity = format->baseFormat == GL_RGBA || format->baseFormat == GL_BGRA;
+    for (int k = 0; k < 4; ++k) {
+        int s = 4;
+        switch (tex.swizzle[k]) {
+        case GL_RED: s = source[0]; break;
+        case GL_GREEN: s = source[1]; break;
+        case GL_BLUE: s = source[2]; break;
+        case GL_ALPHA: s = source[3]; break;
+        case GL_ONE: s = 5; break;
+        default: break;
+        }
+        identity = identity && s == k;
+        if (out.kind == 'f') {
+            const float v = s == 4 ? 0.0f : s == 5 ? 1.0f : f[s];
+            std::memcpy(&out.border[k], &v, 4);
+        } else {
+            const int32_t v = s == 4 ? 0 : s == 5 ? 1 : n[s];
+            std::memcpy(&out.border[k], &v, 4);
+        }
+    }
+    // What the Metal sampler gives (samplerState): exact for these RGBA
+    // borders, and for shadow lookups whose border depth it has.
+    const bool rect = tex.target == GL_TEXTURE_RECTANGLE;
+    const float metal = f[3] == 0.0f ? 0.0f : (f[0] + f[1] + f[2]) > 1.5f ? 1.0f : 0.0f;
+    if (!rect && out.kind == 'f') {
+        if (shadow && f[0] == metal) return false;
+        const bool black = f[0] == 0.0f && f[1] == 0.0f && f[2] == 0.0f, white = f[0] == 1.0f && f[1] == 1.0f && f[2] == 1.0f;
+        if (!shadow && identity && ((black && (f[3] == 0.0f || f[3] == 1.0f)) || (white && f[3] == 1.0f))) return false;
+    }
+    if (!rect && out.kind != 'f' && !shadow && n[0] == 0 && n[1] == 0 && n[2] == 0 && n[3] == 0 && identity) return false;
+    const auto linear = [](GLenum filter) {
+        return filter == GL_LINEAR || filter == GL_LINEAR_MIPMAP_NEAREST || filter == GL_LINEAR_MIPMAP_LINEAR;
+    };
+    out.magLinear = linear(p.magFilter);
+    out.minLinear = linear(p.minFilter);
+    out.mip = p.minFilter == GL_NEAREST_MIPMAP_NEAREST || p.minFilter == GL_LINEAR_MIPMAP_NEAREST  ? 1
+              : p.minFilter == GL_NEAREST_MIPMAP_LINEAR || p.minFilter == GL_LINEAR_MIPMAP_LINEAR ? 2
+                                                                                                  : 0;
+    out.rect = rect;
+    out.minLod = std::max(0.0f, p.minLod);
+    out.maxLod = std::max(out.minLod, p.maxLod);
+    out.lodBias = p.lodBias;
+    out.compare = shadow && p.compareMode == GL_COMPARE_REF_TO_TEXTURE ? p.compareFunc : 0;
+    return true;
 }
 
 id<MTLSamplerState> samplerState(Context& ctx, const SamplerParams& p, bool shadow) {
@@ -598,7 +717,6 @@ void uploadTexels(Context& ctx, Texture& tex, int face, int level, int x, int y,
                   const void* data, size_t bytesPerRow, size_t bytesPerImage) {
     if (!tex.mtl || width <= 0 || height <= 0 || depth <= 0) return;
     const bool array = tex.mtl.textureType == MTLTextureType2DArray || tex.mtl.textureType == MTLTextureTypeCubeArray;
-    const bool is3D = tex.mtl.textureType == MTLTextureType3D;
     const size_t total = bytesPerImage * static_cast<size_t>(depth);
     if (tex.mtl.pixelFormat == MTLPixelFormatDepth32Float_Stencil8) {
         // Storage texels are (float depth, uint8 stencil, pad); Metal uploads each aspect separately.
@@ -630,12 +748,20 @@ void uploadTexels(Context& ctx, Texture& tex, int face, int level, int x, int y,
         return;
     }
     TransientAllocation staging = ctx.draw().transient().allocate(total, ctx.stream().serial(), 16);
+    if (!staging.data) return;
     std::memcpy(staging.data, data, total);
+    uploadStaged(ctx, tex, face, level, x, y, z, width, height, depth, staging, bytesPerRow, bytesPerImage);
+}
+
+void uploadStaged(Context& ctx, Texture& tex, int face, int level, int x, int y, int z, int width, int height, int depth,
+                  const TransientAllocation& staging, size_t bytesPerRow, size_t bytesPerImage) {
+    const bool array = tex.mtl.textureType == MTLTextureType2DArray || tex.mtl.textureType == MTLTextureTypeCubeArray;
     id<MTLBlitCommandEncoder> blit = ctx.stream().blit();
-    if (is3D) {
+    if (tex.mtl.textureType == MTLTextureType3D) {
         [blit copyFromBuffer:staging.buffer sourceOffset:staging.offset sourceBytesPerRow:bytesPerRow
             sourceBytesPerImage:bytesPerImage sourceSize:MTLSizeMake(width, height, depth) toTexture:tex.mtl
                destinationSlice:0 destinationLevel:static_cast<NSUInteger>(level) destinationOrigin:MTLOriginMake(x, y, z)];
+        ++tex.version;
         return;
     }
     // Arrays (and 1D arrays, whose layers are rows of the GL image) upload one slice at a time.

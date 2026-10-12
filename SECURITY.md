@@ -7,7 +7,7 @@ update to the latest one.
 
 | Version | Supported |
 |---|---|
-| 2.4.x | Yes |
+| 3.0.x | Yes |
 | Earlier | No |
 
 ## Reporting a vulnerability
@@ -39,7 +39,7 @@ GL and WGL call. In scope:
   writes, use-after-free, integer overflows in sizes and offsets);
 - input that crashes or hangs the host process or the GPU beyond the program
   that sent it;
-- problems in the Wine patches in `patches/wine` or in the release packages.
+- problems in the Wine module in `src/wine` or in the release packages.
 
 Out of scope, and better reported where they belong:
 

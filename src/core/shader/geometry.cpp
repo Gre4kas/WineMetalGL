@@ -4,6 +4,7 @@
 #include <cctype>
 #include <cstdlib>
 #include <map>
+#include <regex>
 #include <sstream>
 
 #include "core/shader/glsl_upgrade.h"
@@ -57,7 +58,7 @@ GLenum glslTypeEnum(const std::string& t) {
 }
 
 // "flat out vec4 name[3]" -> qualifiers stripped; returns direction ("in"/"out", or "").
-std::string parseVariable(const std::string& decl, std::string& type, std::string& name, int& arraySize) {
+std::string parseVariable(const std::string& decl, std::string& type, std::string& name, int& arraySize, int* innerSize = nullptr) {
     std::string d = decl;
     if (d.compare(0, 7, "layout(") == 0) d = trim(d.substr(d.find(')') + 1));
     std::istringstream words(d);
@@ -81,7 +82,12 @@ std::string parseVariable(const std::string& decl, std::string& type, std::strin
     const size_t open = name.find('[');
     if (open != std::string::npos) {
         arraySize = std::atoi(name.c_str() + open + 1);
+        // A second dimension (a geometry input's array per vertex).
+        const size_t second = name.find('[', open + 1);
+        if (innerSize) *innerSize = second != std::string::npos ? std::atoi(name.c_str() + second + 1) : 0;
         name = name.substr(0, open);
+    } else if (innerSize) {
+        *innerSize = 0;
     }
     return direction;
 }
@@ -101,7 +107,17 @@ int layoutStream(const std::string& decl) {
 // The declaration without its stream qualifier (vertex shaders have none).
 std::string withoutStream(const std::string& decl) {
     std::string out = decl;
-    for (size_t at = out.find("stream"); at != std::string::npos; at = out.find("stream", at)) {
+    // The word "stream" inside a layout qualifier, not in a name such as "out_stream0".
+    auto qualifier = [&](size_t from) {
+        for (size_t at = out.find("stream", from); at != std::string::npos; at = out.find("stream", at + 1)) {
+            const bool word = (at == 0 || !(std::isalnum(static_cast<unsigned char>(out[at - 1])) || out[at - 1] == '_')) &&
+                              (at + 6 >= out.size() || !(std::isalnum(static_cast<unsigned char>(out[at + 6])) || out[at + 6] == '_'));
+            const size_t layout = out.rfind("layout(", at);
+            if (word && layout != std::string::npos && out.find(')', layout) > at) return at;
+        }
+        return std::string::npos;
+    };
+    for (size_t at = qualifier(0); at != std::string::npos; at = qualifier(at)) {
         size_t end = at + 6;
         while (end < out.size() && (out[end] == ' ' || out[end] == '=' || std::isdigit(static_cast<unsigned char>(out[end])))) ++end;
         size_t start = at;
@@ -196,6 +212,9 @@ std::string renameGlIn(const std::string& text, GeometryShaderInfo& info) {
         } else if (member == "gl_ClipDistance") {
             info.readsClipDistance = true;
             out += "wmgl_in_clipdistance[" + index + "]";
+        } else if (member == "gl_CullDistance") {
+            info.readsCullDistance = true;
+            out += "wmgl_in_culldistance[" + index + "]";
         } else {
             out += "wmgl_in_position[" + index + "]";
         }
@@ -283,10 +302,13 @@ bool parseGeometryGlsl(const std::string& glsl, GeometryShaderInfo& info, std::s
                 continue;
             }
             std::string type, name;
-            int arraySize = 0;
-            const std::string direction = parseVariable(flat, type, name, arraySize);
+            int arraySize = 0, innerSize = 0;
+            const std::string direction = parseVariable(flat, type, name, arraySize, &innerSize);
             if (direction.empty()) {
-                info.globals += flat + "\n";
+                // "invariant gl_Position;" (wined3d) names a built-in output the
+                // kernel, a compute shader, does not have.
+                static const std::regex kBuiltinQualifier(R"(^\s*(invariant|precise)\s+gl_\w+(\s*,\s*gl_\w+)*\s*;?\s*$)");
+                if (!std::regex_match(flat, kBuiltinQualifier)) info.globals += flat + "\n";
                 continue;
             }
             const GLenum glType = glslTypeEnum(type);
@@ -294,8 +316,14 @@ bool parseGeometryGlsl(const std::string& glsl, GeometryShaderInfo& info, std::s
                 log += "error: geometry shader " + direction + "put '" + name + "' has an unsupported type\n";
                 return false;
             }
-            if (name.rfind("gl_", 0) == 0) continue;
-            GeometryVar v{type, glType, name, "", "", direction == "out" ? arraySize : 0, flat};
+            if (name.rfind("gl_", 0) == 0) {
+                // Redeclared built-in arrays: "out float gl_ClipDistance[N];".
+                if (direction == "out" && name == "gl_ClipDistance") info.outputClipDistances = arraySize;
+                if (direction == "out" && name == "gl_CullDistance") info.outputCullDistances = arraySize;
+                continue;
+            }
+            // Inputs are arrays of vertices: their own array size is the second dimension.
+            GeometryVar v{type, glType, name, "", "", direction == "out" ? arraySize : innerSize, flat};
             if (direction == "out") v.stream = layoutStream(flat);
             (direction == "in" ? info.inputs : info.outputs).push_back(v);
             continue;
@@ -317,6 +345,8 @@ bool parseGeometryGlsl(const std::string& glsl, GeometryShaderInfo& info, std::s
         }
         std::string instance = tail;
         const size_t bracket = instance.find('[');
+        // Input blocks are arrays of vertices; an output block may be an array of blocks.
+        const int instanceSize = bracket != std::string::npos && direction == "out" ? std::atoi(instance.c_str() + bracket + 1) : 0;
         if (bracket != std::string::npos) instance = instance.substr(0, bracket);
         std::istringstream members(body);
         std::string member;
@@ -326,6 +356,7 @@ bool parseGeometryGlsl(const std::string& glsl, GeometryShaderInfo& info, std::s
                 int arraySize = 0;
                 parseVariable(trim(member), type, name, arraySize);
                 if (name == "gl_ClipDistance") (direction == "in" ? info.inputClipDistances : info.outputClipDistances) = arraySize;
+                if (name == "gl_CullDistance") (direction == "in" ? info.inputCullDistances : info.outputCullDistances) = arraySize;
             }
             continue;
         }
@@ -345,6 +376,7 @@ bool parseGeometryGlsl(const std::string& glsl, GeometryShaderInfo& info, std::s
             if (direction == "out") {
                 v.declaration = flat;  // whole block, emitted once by the pass-through
                 v.stream = layoutStream(member) ? layoutStream(member) : layoutStream(header);
+                v.instanceSize = instance.empty() ? 0 : instanceSize;
             }
             (direction == "in" ? info.inputs : info.outputs).push_back(v);
         }
@@ -365,10 +397,15 @@ bool parseGeometryGlsl(const std::string& glsl, GeometryShaderInfo& info, std::s
                              replaceWord(functions, "gl_PrimitiveIDIn", "").find("gl_PrimitiveID") != std::string::npos;
     if (functions.find("gl_ClipDistance") != std::string::npos && !info.outputClipDistances) info.outputClipDistances = 8;
     if (info.readsClipDistance && !info.inputClipDistances) info.inputClipDistances = 8;
+    // gl_PerVertex declares gl_CullDistance whether or not the shader writes
+    // it: unwritten distances must not reach the cull test.
+    if (functions.find("gl_CullDistance") == std::string::npos) info.outputCullDistances = 0;
+    else if (!info.outputCullDistances) info.outputCullDistances = std::max(1, 8 - info.outputClipDistances);
+    if (info.readsCullDistance && !info.inputCullDistances) info.inputCullDistances = 8;
     const std::pair<const char*, const char*> renames[] = {
         {"gl_PrimitiveIDIn", "wmgl_primitive_id_in"}, {"gl_PrimitiveID", "wmgl_out_primitive_id"},
         {"gl_Position", "wmgl_out_position"}, {"gl_PointSize", "wmgl_out_pointsize"},
-        {"gl_ClipDistance", "wmgl_out_clipdistance"}, {"gl_Layer", "wmgl_out_layer"},
+        {"gl_ClipDistance", "wmgl_out_clipdistance"}, {"gl_CullDistance", "wmgl_out_culldistance"}, {"gl_Layer", "wmgl_out_layer"},
         {"gl_ViewportIndex", "wmgl_out_viewport"}, {"gl_InvocationID", "wmgl_invocation_id"},
         {"EmitVertex", "wmgl_EmitVertex"}, {"EndPrimitive", "wmgl_EndPrimitive"},
         {"EmitStreamVertex", "wmgl_EmitStreamVertex"}, {"EndStreamPrimitive", "wmgl_EndStreamPrimitive"},
@@ -391,6 +428,7 @@ std::vector<std::string> geometryCaptureVaryings(const GeometryShaderInfo& info)
     std::vector<std::string> varyings = {"gl_Position"};
     if (info.readsPointSize) varyings.push_back("gl_PointSize");
     if (info.readsClipDistance) varyings.push_back("gl_ClipDistance");
+    if (info.readsCullDistance) varyings.push_back("gl_CullDistance");
     for (const GeometryVar& v : info.inputs) varyings.push_back(captureName(v));
     return varyings;
 }
@@ -425,11 +463,22 @@ GeometrySources geometrySources(const GeometryShaderInfo& info, const LinkResult
     addVar("gl_Position", "wmgl_out_position", GL_FLOAT_VEC4, "vec4", 0);
     if (info.writesPointSize) addVar("gl_PointSize", "wmgl_out_pointsize", GL_FLOAT, "float", 0);
     if (info.outputClipDistances) addVar("gl_ClipDistance", "wmgl_out_clipdistance", GL_FLOAT, "float", info.outputClipDistances);
+    if (info.outputCullDistances) addVar("gl_CullDistance", "wmgl_out_culldistance", GL_FLOAT, "float", info.outputCullDistances);
     if (info.writesLayer) addVar("gl_Layer", "wmgl_out_layer", GL_INT, "int", 0);
     if (info.writesViewportIndex) addVar("gl_ViewportIndex", "wmgl_out_viewport", GL_INT, "int", 0);
-    for (const GeometryVar& v : info.outputs)
-        addVar(v.member.empty() ? v.name : v.blockName + "." + v.member, v.member.empty() ? v.name : v.name + "." + v.member,
-               v.type, v.glslType, v.arraySize);
+    for (const GeometryVar& v : info.outputs) {
+        if (!v.instanceSize) {
+            addVar(v.member.empty() ? v.name : v.blockName + "." + v.member, v.member.empty() ? v.name : v.name + "." + v.member,
+                   v.type, v.glslType, v.arraySize);
+            continue;
+        }
+        // An array of blocks: each element's member ("Block[k].member").
+        for (int k = 0; k < v.instanceSize; ++k) {
+            const std::string element = "[" + std::to_string(k) + "].";
+            addVar(v.blockName + element + v.member, v.name + element + v.member, v.type, v.glslType, v.arraySize);
+            out.fields.back().stream = v.stream;
+        }
+    }
     // Vertex streams: the record ends with the stream it was emitted to.
     if (info.streams) out.streamOffset = words++;
     out.outputStride = words;
@@ -445,7 +494,8 @@ GeometrySources geometrySources(const GeometryShaderInfo& info, const LinkResult
     std::map<std::string, std::string> inputBlocks;  // instance -> struct name
     for (const GeometryVar& v : info.inputs) {
         if (v.member.empty()) {
-            c += v.glslType + " " + v.name + "[" + std::to_string(n) + "];\n";
+            c += v.glslType + " " + v.name + "[" + std::to_string(n) + "]" + (v.arraySize ? "[" + std::to_string(v.arraySize) + "]" : "") +
+                 ";\n";
         } else if (!inputBlocks.count(v.name)) {
             std::string structName = "wmgl_in_" + v.blockName;
             c += "struct " + structName + " {";
@@ -466,7 +516,8 @@ GeometrySources geometrySources(const GeometryShaderInfo& info, const LinkResult
             for (const GeometryVar& m : info.outputs)
                 if (m.name == v.name)
                     c += " " + m.glslType + " " + m.member + (m.arraySize ? "[" + std::to_string(m.arraySize) + "]" : "") + ";";
-            c += " };\nwmgl_out_" + v.blockName + " " + v.name + ";\n";
+            c += " };\nwmgl_out_" + v.blockName + " " + v.name + (v.instanceSize ? "[" + std::to_string(v.instanceSize) + "]" : "") +
+                 ";\n";
             outputBlocks[v.name] = true;
         }
     }
@@ -474,9 +525,12 @@ GeometrySources geometrySources(const GeometryShaderInfo& info, const LinkResult
     if (info.readsPointSize) c += "float wmgl_in_pointsize[" + std::to_string(n) + "];\n";
     if (info.readsClipDistance)
         c += "float wmgl_in_clipdistance[" + std::to_string(n) + "][" + std::to_string(info.inputClipDistances) + "];\n";
+    if (info.readsCullDistance)
+        c += "float wmgl_in_culldistance[" + std::to_string(n) + "][" + std::to_string(info.inputCullDistances) + "];\n";
     c += "vec4 wmgl_out_position;\nfloat wmgl_out_pointsize;\nint wmgl_out_layer;\nint wmgl_out_viewport;\nint wmgl_out_primitive_id;\n"
          "int wmgl_primitive_id_in;\nint wmgl_invocation_id;\n";
     if (info.outputClipDistances) c += "float wmgl_out_clipdistance[" + std::to_string(info.outputClipDistances) + "];\n";
+    if (info.outputCullDistances) c += "float wmgl_out_culldistance[" + std::to_string(info.outputCullDistances) + "];\n";
     c += "buffer wmgl_GsInput { uint wmgl_gs_in[]; };\n"
          "buffer wmgl_GsOutput { uint wmgl_gs_out[]; };\n"
          "buffer wmgl_GsIndices { uint wmgl_gs_indices[]; };\n"
@@ -524,6 +578,10 @@ GeometrySources geometrySources(const GeometryShaderInfo& info, const LinkResult
         for (int k = 0; k < std::min(info.inputClipDistances, p->size); ++k)
             c += "        wmgl_in_clipdistance[wmgl_j][" + std::to_string(k) + "] = " +
                  loadValue("float", GL_FLOAT, "wmgl_gs_in", "wmgl_b + " + std::to_string(p->offset + k) + "u") + ";\n";
+    if (const TransformFeedbackVarying* p = info.readsCullDistance ? captured("gl_CullDistance") : nullptr)
+        for (int k = 0; k < std::min(info.inputCullDistances, p->size); ++k)
+            c += "        wmgl_in_culldistance[wmgl_j][" + std::to_string(k) + "] = " +
+                 loadValue("float", GL_FLOAT, "wmgl_gs_in", "wmgl_b + " + std::to_string(p->offset + k) + "u") + ";\n";
     for (const GeometryVar& v : info.inputs) {
         const TransformFeedbackVarying* p = captured(captureName(v));
         if (!p) continue;
@@ -567,6 +625,7 @@ GeometrySources geometrySources(const GeometryShaderInfo& info, const LinkResult
         p += withoutStream(v.declaration) + "\n";
     }
     if (info.outputClipDistances) p += "out float gl_ClipDistance[" + std::to_string(info.outputClipDistances) + "];\n";
+    if (info.outputCullDistances) p += "out float gl_CullDistance[" + std::to_string(info.outputCullDistances) + "];\n";
     p += "void main() {\n    uint wmgl_b = uint(gl_VertexID) * " + stride + "u;\n";
     for (const Field& f : fields) {
         std::string target = f.expr;
@@ -575,6 +634,7 @@ GeometrySources geometrySources(const GeometryShaderInfo& info, const LinkResult
         else if (target == "wmgl_out_layer") target = "gl_Layer";
         else if (target == "wmgl_out_viewport") target = "gl_ViewportIndex";
         else if (target.rfind("wmgl_out_clipdistance", 0) == 0) target = "gl_ClipDistance" + target.substr(21);
+        else if (target.rfind("wmgl_out_culldistance", 0) == 0) target = "gl_CullDistance" + target.substr(21);
         p += "    " + target + " = " + loadValue(f.glslType, f.type, "wmgl_gs_v", "wmgl_b + " + std::to_string(f.offset) + "u") + ";\n";
     }
     // Only stream 0 is rasterized: other streams' vertices land outside the clip volume.

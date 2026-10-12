@@ -1,9 +1,9 @@
 #!/bin/sh
-# Stages the arm64 core for a native arm64 Wine: the core, the driver ABI
-# header and the Wine patches (docs/release.md). The x86_64 release
-# (scripts/stage-release.sh) is the drop-in package for x86_64 Wine under
-# Rosetta; the two cores are not interchangeable (winemac.so loads the core of
-# its own architecture and falls back to Apple's OpenGL otherwise).
+# Stages the arm64 core for a native arm64 Wine: the core and the driver ABI
+# header (docs/release.md). The x86_64 release (scripts/stage-release.sh) is the
+# package for x86_64 Wine under Rosetta, with the Wine module; the module is
+# built for x86_64 Wine only, and the two cores are not interchangeable (a
+# library of the other architecture does not load).
 #
 #   scripts/stage-arm64-core.sh /absolute/path/to/output
 set -eu
@@ -42,31 +42,35 @@ if nm -gU "$core" | awk '{print $3}' | grep -v '^_wmgl_' | grep -q .; then
     exit 1
 fi
 
-mkdir -p "$output/lib" "$output/include/winemetalgl" "$output/patches" "$output/docs" "$output/evidence/cts"
+mkdir -p "$output/lib" "$output/include/winemetalgl" "$output/docs" "$output/evidence/cts"
 cp "$core" "$output/lib/libwinemetalgl.dylib"
-codesign --force --sign - "$output/lib/libwinemetalgl.dylib"
+# WINEMETALGL_SIGN_IDENTITY: a Developer ID signature (stage-release.sh); else ad hoc.
+if test -n "${WINEMETALGL_SIGN_IDENTITY:-}"; then
+    codesign --force --options runtime --timestamp --sign "$WINEMETALGL_SIGN_IDENTITY" "$output/lib/libwinemetalgl.dylib"
+else
+    codesign --force --sign - "$output/lib/libwinemetalgl.dylib"
+fi
 cp "$project_root/include/winemetalgl/driver.h" "$output/include/winemetalgl/driver.h"
-cp -R "$project_root/patches/wine" "$output/patches/wine"
 cp "$project_root/README.md" "$output/README.md"
 # LGPL-3.0-or-later: LICENSE, the GPL-3.0 it builds on and the third-party licenses.
 cp "$project_root/LICENSE" "$output/LICENSE"
 cp -R "$project_root/LICENSES" "$output/LICENSES"
 cp "$project_root/docs/conformance.md" "$project_root/docs/unsupported.md" "$project_root/docs/building.md" \
     "$project_root/docs/release.md" "$output/docs/"
-# The native KHR-GL30 to KHR-GL33 runs exercise this build of the core (tests/cts/native).
-cp "$project_root"/tests/cts/baseline/gl3[0-3]-cfg*-native.txt "$output/evidence/cts/"
+# The native runs exercise this build of the core (tests/cts/native).
+cp "$project_root"/tests/cts/baseline/gl*-cfg*-native.txt "$output/evidence/cts/"
 cat > "$output/ARM64.txt" <<'EOF'
 WineMetalGL core for arm64 (native) Wine on macOS 15 or later.
 
-lib/libwinemetalgl.dylib goes next to an arm64 winemac.so built from a Wine
-11.17 tree with patches/wine applied (patches/wine/README.md); winemac.so
-loads it from its own directory. Do not install it into an x86_64 Wine (use
-the x86_64 package there): a core of the wrong architecture does not load, and
-Wine silently falls back to Apple's OpenGL.
+lib/libwinemetalgl.dylib implements the driver ABI in
+include/winemetalgl/driver.h. The Wine module that loads it
+(scripts/build-wine-module.sh) is built for x86_64 Wine only, so this core is
+for those porting the module to an arm64 Wine. Do not install it into an
+x86_64 Wine (use the x86_64 package there): a library of the wrong
+architecture does not load.
 
-This core is the build the native KHR-GL30 to KHR-GL33 runs in evidence/cts
-exercised (mustpass configurations 1 to 4). It has not yet run inside an arm64
-Wine.
+This core is the build the native runs in evidence/cts exercised. It has not
+yet run inside an arm64 Wine.
 EOF
 
 commit=$(git -C "$project_root" rev-parse HEAD)

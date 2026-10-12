@@ -41,8 +41,19 @@ struct LinkedProgram {
     // mask (shader::fragmentWithSampleMask), and applying logical operation
     // `logicOp` - 1 (0: none; shader::fragmentWithLogicOp) to attachments of
     // `colorFormats` (MTLPixelFormat). Nil if the stage cannot have it.
+    // `cull`: the drawing vertex function's cull distance count, 0 for none
+    // (shader::fragmentWithCullDistances).
+    // `borders`: the clamp-to-border emulation variant (shader::borderVariantId; 0: none).
+    // `countInvocations`: FRAGMENT_SHADER_INVOCATIONS (shader::fragmentCountingInvocations).
     id<MTLFunction> fragmentVariant(bool sampleMask, unsigned logicOp, const uint16_t colorFormats[8],
-                                    bool sampleRate = false, bool ignoreSampleMask = false);
+                                    bool sampleRate = false, bool ignoreSampleMask = false, unsigned cull = 0,
+                                    uint16_t borders = 0, bool countInvocations = false);
+    // The vertex function (with rasterization, with or without [[point_size]],
+    // or without rasterization) with clamp-to-border emulation variant `borders`.
+    id<MTLFunction> vertexWithBorders(bool rasterization, bool pointSize, uint16_t borders);
+    // A kernel (the compute stage, or the geometry or tessellation control
+    // emulation's: `output`) with clamp-to-border emulation variant `borders`.
+    id<MTLComputePipelineState> kernelWithBorders(const shader::StageOutput& output, int stage, uint16_t borders);
     // The fragment stage writes gl_SampleMask.
     bool writesSampleMask();
     id<MTLFunction> fragmentSampleMask() { return fragmentVariant(true, 0, nullptr); }
@@ -87,6 +98,8 @@ struct LinkedProgram {
     bool writesViewportIndex() const { return (outputFlags() & kWritesViewport) != 0; }
     // ... or gl_Layer: Metal then needs the pipeline's input topology class.
     bool writesLayerOrViewport() const { return (outputFlags() & (kWritesViewport | kWritesLayer)) != 0; }
+    // The gl_CullDistance elements it writes (shader::addCullDistances).
+    int cullDistances() const { return (outputFlags() >> kCullShift) & 15; }
     const std::string& drawingVertexMsl() const {
         return link.geometry.active ? link.geometry.passthrough.msl : stage(shader::Stage::Vertex).msl;
     }
@@ -99,7 +112,7 @@ private:
     std::atomic<int> readsVertexId_{-1};
     // What the drawing vertex and fragment functions write, found once in
     // their MSL (draws ask on every call): kWrites* bits.
-    enum : int { kWritesViewport = 1, kWritesLayer = 2, kWritesSampleMask = 4 };
+    enum : int { kWritesViewport = 1, kWritesLayer = 2, kWritesSampleMask = 4, kCullShift = 4 };
     mutable std::atomic<int> outputFlags_{-1};
     int outputFlags() const;
     id<MTLFunction> functions_[shader::kStageCount] = {};
@@ -107,6 +120,8 @@ private:
     id<MTLFunction> vertexNoRaster_ = nil;
     bool vertexNoRasterFailed_ = false;
     std::unordered_map<std::string, id<MTLFunction>> fragmentVariants_;  // nil entries: failed
+    std::unordered_map<std::string, id<MTLFunction>> borderVertex_;
+    std::unordered_map<std::string, id<MTLComputePipelineState>> borderKernels_;
     id<MTLFunction> passthrough_ = nil;
     id<MTLFunction> noPointSize_[2] = {};
     bool noPointSizeFailed_[2] = {};

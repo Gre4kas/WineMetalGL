@@ -2,6 +2,10 @@
 
 #include <algorithm>
 #include <cstring>
+#include <mutex>
+#include <unistd.h>
+#include <utility>
+#include <vector>
 
 #include "core/context.h"
 #include "core/draw.h"
@@ -22,12 +26,56 @@ bool validUsage(GLenum usage) {
     }
 }
 
+}  // namespace
+
+// The host's memory for buffer storage (wmgl_set_buffer_memory), or none.
+void* (*g_bufferAllocate)(size_t) = nullptr;
+void (*g_bufferRelease)(void*, size_t) = nullptr;
+
+namespace {
+
+// Host memory that Metal has let go of. Metal can drop its last reference on
+// its own completion thread, where the host (Wine) must not be called, so
+// the memory goes back on an application thread, before the next allocation.
+struct ReleasedMemory {
+    std::mutex lock;
+    std::vector<std::pair<void*, size_t>> memory;
+};
+
+ReleasedMemory& releasedMemory() {
+    static ReleasedMemory* released = new ReleasedMemory;  // never destroyed: Metal may release at exit
+    return *released;
+}
+
+void returnReleasedMemory() {
+    std::vector<std::pair<void*, size_t>> memory;
+    {
+        std::lock_guard<std::mutex> lock(releasedMemory().lock);
+        memory.swap(releasedMemory().memory);
+    }
+    for (const auto& [pointer, bytes] : memory) g_bufferRelease(pointer, bytes);
+}
+
 id<MTLBuffer> newStorage(GLsizeiptr size) {
     if (size <= 0) return nil;
     // Padded to 256 bytes, so texture views of the buffer (texture buffers,
     // buffer images) have room for Metal's aligned rows at any size.
     const NSUInteger length = (static_cast<NSUInteger>(size) + 255) & ~NSUInteger(255);
-    return [Device::get().mtl() newBufferWithLength:length options:MTLResourceStorageModeShared];
+    if (!g_bufferAllocate) return [Device::get().mtl() newBufferWithLength:length options:MTLResourceStorageModeShared];
+    // In the host's memory, in whole 16 KiB (kernel) pages as Metal needs,
+    // zero-filled like Metal's.
+    returnReleasedMemory();
+    const NSUInteger pages = (length + 0x3fff) & ~NSUInteger(0x3fff);
+    void* memory = g_bufferAllocate(pages);
+    if (!memory) return nil;
+    std::memset(memory, 0, pages);
+    return [Device::get().mtl() newBufferWithBytesNoCopy:memory
+                                                  length:pages
+                                                 options:MTLResourceStorageModeShared
+                                             deallocator:^(void* pointer, NSUInteger bytes) {
+                                                 std::lock_guard<std::mutex> lock(releasedMemory().lock);
+                                                 releasedMemory().memory.emplace_back(pointer, bytes);
+                                             }];
 }
 
 bool gpuBusy(Context& ctx, const Buffer& buffer) {
@@ -119,7 +167,7 @@ void DeleteBuffers(Context& ctx, GLsizei n, const GLuint* buffers) {
         for (RefPtr<Buffer>* b : {&s.arrayBuffer, &s.copyReadBuffer, &s.copyWriteBuffer, &s.pixelPackBuffer,
                                   &s.pixelUnpackBuffer, &s.textureBuffer, &s.uniformBuffer, &s.transformFeedbackBuffer,
                                   &s.drawIndirectBuffer, &s.dispatchIndirectBuffer, &s.shaderStorageBuffer,
-                                  &s.atomicCounterBuffer, &s.queryBuffer})
+                                  &s.atomicCounterBuffer, &s.queryBuffer, &s.parameterBuffer, &s.externalVirtualMemoryBuffer})
             if (*b == buffer) b->reset();
         if (s.vertexArray->elementBuffer == buffer) s.vertexArray->elementBuffer.reset();
         for (VertexAttrib& a : s.vertexArray->attribs)
@@ -229,6 +277,60 @@ void BindBufferBase(Context& ctx, GLenum target, GLuint index, GLuint name) {
     }
 }
 
+// ------------------------------------------------------------ multi-bind (GL 4.4)
+
+namespace {
+
+GLuint indexedBindingCount(GLenum target) {
+    switch (target) {
+    case GL_SHADER_STORAGE_BUFFER: return ContextState::kMaxShaderStorageBufferBindings;
+    case GL_ATOMIC_COUNTER_BUFFER: return ContextState::kMaxAtomicCounterBufferBindings;
+    case GL_UNIFORM_BUFFER: return ContextState::kMaxUniformBufferBindings;
+    default: return TransformFeedback::kMaxBuffers;
+    }
+}
+
+RefPtr<Buffer>& genericBinding(Context& ctx, GLenum target) {
+    switch (target) {
+    case GL_SHADER_STORAGE_BUFFER: return ctx.state.shaderStorageBuffer;
+    case GL_ATOMIC_COUNTER_BUFFER: return ctx.state.atomicCounterBuffer;
+    case GL_UNIFORM_BUFFER: return ctx.state.uniformBuffer;
+    default: return ctx.state.transformFeedbackBuffer;
+    }
+}
+
+// glBindBuffersBase/Range (GL 4.4 section 6.1.1): a range of indexed bindings
+// at once. A range past the last binding changes nothing; otherwise an error
+// in one binding leaves that binding alone and the others are still made. The
+// generic binding point is not changed.
+void bindBuffers(Context& ctx, const char* command, GLenum target, GLuint first, GLsizei count, const GLuint* buffers,
+                 const GLintptr* offsets, const GLsizeiptr* sizes) {
+    if (ctx.version() < 44 && !ctx.hasExtension("GL_ARB_multi_bind")) return ctx.unimplemented(command);
+    if (!indexedTarget(ctx, target)) return ctx.setError(GL_INVALID_ENUM);
+    if (count < 0) return ctx.setError(GL_INVALID_VALUE);
+    if (static_cast<uint64_t>(first) + static_cast<uint64_t>(count) > indexedBindingCount(target))
+        return ctx.setError(GL_INVALID_OPERATION);
+    if (target == GL_TRANSFORM_FEEDBACK_BUFFER && ctx.state.transformFeedback->active) return ctx.setError(GL_INVALID_OPERATION);
+    const RefPtr<Buffer> generic = genericBinding(ctx, target);
+    for (GLsizei i = 0; i < count; ++i) {
+        const GLuint name = buffers ? buffers[i] : 0;
+        if (offsets && sizes && name) BindBufferRange(ctx, target, first + static_cast<GLuint>(i), name, offsets[i], sizes[i]);
+        else BindBufferBase(ctx, target, first + static_cast<GLuint>(i), name);
+    }
+    genericBinding(ctx, target) = generic;
+}
+
+}  // namespace
+
+void BindBuffersBase(Context& ctx, GLenum target, GLuint first, GLsizei count, const GLuint* buffers) {
+    bindBuffers(ctx, "glBindBuffersBase", target, first, count, buffers, nullptr, nullptr);
+}
+
+void BindBuffersRange(Context& ctx, GLenum target, GLuint first, GLsizei count, const GLuint* buffers, const GLintptr* offsets,
+                      const GLsizeiptr* sizes) {
+    bindBuffers(ctx, "glBindBuffersRange", target, first, count, buffers, buffers ? offsets : nullptr, buffers ? sizes : nullptr);
+}
+
 void BufferData(Context& ctx, GLenum target, GLsizeiptr size, const void* data, GLenum usage) {
     if (size < 0) return ctx.setError(GL_INVALID_VALUE);
     if (!validUsage(usage)) return ctx.setError(GL_INVALID_ENUM);
@@ -236,8 +338,32 @@ void BufferData(Context& ctx, GLenum target, GLsizeiptr size, const void* data, 
     if (!buffer) return;
     if (buffer->immutable) return ctx.setError(GL_INVALID_OPERATION);
     if (buffer->mapped) unmapBuffer(*buffer);
-    // Reuse the storage only when no queued work references it (orphaning).
-    if (buffer->mtl && buffer->size == size && !gpuBusy(ctx, *buffer)) {
+    if (target == GL_EXTERNAL_VIRTUAL_MEMORY_BUFFER_AMD) {
+        // GL_AMD_pinned_memory: `data` (page aligned, owned by the
+        // application while the buffer uses it) is the storage itself.
+        const uintptr_t page = static_cast<uintptr_t>(getpagesize());
+        if (!data || reinterpret_cast<uintptr_t>(data) % page) return ctx.setError(GL_INVALID_OPERATION);
+        const NSUInteger length = (static_cast<NSUInteger>(size) + page - 1) & ~static_cast<NSUInteger>(page - 1);
+        id<MTLBuffer> storage = size ? [Device::get().mtl() newBufferWithBytesNoCopy:const_cast<void*>(data)
+                                                                               length:length
+                                                                              options:MTLResourceStorageModeShared
+                                                                          deallocator:nil]
+                                     : nil;
+        if (size && !storage) return ctx.setError(GL_INVALID_OPERATION);
+        buffer->mtl = storage;
+        buffer->size = size;
+        buffer->usage = usage;
+        buffer->pinned = true;
+        buffer->lastUseSerial = buffer->lastWriteSerial = 0;
+        ++buffer->version;
+        ctx.markDirty(kDirtyVertexInput | kDirtyUniformBuffers);
+        return;
+    }
+    // Reuse the storage only when no queued work references it (orphaning),
+    // and never the application's memory of a pinned buffer.
+    const bool wasPinned = buffer->pinned;
+    buffer->pinned = false;
+    if (buffer->mtl && !wasPinned && buffer->size == size && !gpuBusy(ctx, *buffer)) {
         ++buffer->version;
     } else {
         buffer->mtl = newStorage(size);
@@ -270,6 +396,7 @@ void BufferStorage(Context& ctx, GLenum target, GLsizeiptr size, const void* dat
     if (!storage) return ctx.setError(GL_OUT_OF_MEMORY);
     if (data) std::memcpy(storage.contents, data, static_cast<size_t>(size));
     buffer->mtl = storage;
+    buffer->pinned = false;
     buffer->size = size;
     buffer->usage = GL_DYNAMIC_DRAW;
     buffer->immutable = true;
@@ -283,13 +410,14 @@ void BufferSubData(Context& ctx, GLenum target, GLintptr offset, GLsizeiptr size
     if (offset < 0 || size < 0) return ctx.setError(GL_INVALID_VALUE);
     Buffer* buffer = boundBuffer(ctx, target);
     if (!buffer) return;
-    if (offset + size > buffer->size) return ctx.setError(GL_INVALID_VALUE);
-    if (buffer->mapped && !(buffer->mapAccess & GL_MAP_PERSISTENT_BIT)) return ctx.setError(GL_INVALID_OPERATION);
+    if (size > buffer->size - offset) return ctx.setError(GL_INVALID_VALUE);
+    if (buffer->rangeMapped(offset, size)) return ctx.setError(GL_INVALID_OPERATION);
     if (buffer->immutable && !(buffer->storageFlags & GL_DYNAMIC_STORAGE_BIT)) return ctx.setError(GL_INVALID_OPERATION);
     if (!size || !data || !buffer->mtl) return;
     if (gpuBusy(ctx, *buffer)) {
-        // Immutable storage keeps its memory (it may be persistently mapped).
-        if (!buffer->immutable && (size == buffer->size || buffer->size <= (256 << 10))) {
+        // Immutable storage keeps its memory (it may be persistently mapped),
+        // and so does a mapped buffer.
+        if (!buffer->immutable && !buffer->pinned && !buffer->mapped && (size == buffer->size || buffer->size <= (256 << 10))) {
             // Small or whole-buffer updates: copy-on-write.
             rename(ctx, *buffer, size != buffer->size);
         } else {
@@ -331,9 +459,9 @@ void ClearBufferSubData(Context& ctx, GLenum target, GLenum internalformat, GLin
     const FormatInfo* info = formatInfo(internalformat);
     if (!info || !validTransferFormatType(format, type, false)) return ctx.setError(GL_INVALID_VALUE);
     if (!transferCompatible(format, type, *info)) return ctx.setError(GL_INVALID_OPERATION);
-    if (offset < 0 || size < 0 || offset + size > buffer->size) return ctx.setError(GL_INVALID_VALUE);
+    if (offset < 0 || size < 0 || size > buffer->size - offset) return ctx.setError(GL_INVALID_VALUE);
     if (offset % static_cast<GLintptr>(element) || size % static_cast<GLsizeiptr>(element)) return ctx.setError(GL_INVALID_VALUE);
-    if (buffer->mapped && !(buffer->mapAccess & GL_MAP_PERSISTENT_BIT)) return ctx.setError(GL_INVALID_OPERATION);
+    if (buffer->rangeMapped(offset, size)) return ctx.setError(GL_INVALID_OPERATION);
     if (!size || !buffer->mtl) return;
     // The element, as stored (RGB32 texels are stored with a fourth component).
     uint8_t texel[16] = {};
@@ -362,12 +490,13 @@ void GetBufferSubData(Context& ctx, GLenum target, GLintptr offset, GLsizeiptr s
     if (offset < 0 || size < 0) return ctx.setError(GL_INVALID_VALUE);
     Buffer* buffer = boundBuffer(ctx, target);
     if (!buffer) return;
-    if (offset + size > buffer->size) return ctx.setError(GL_INVALID_VALUE);
-    if (buffer->mapped && !(buffer->mapAccess & GL_MAP_PERSISTENT_BIT)) return ctx.setError(GL_INVALID_OPERATION);
+    if (size > buffer->size - offset) return ctx.setError(GL_INVALID_VALUE);
+    // Any non-persistent mapping, not just an overlapping one (GL 4.6 section 6.6).
+    if (buffer->mappedNonPersistent()) return ctx.setError(GL_INVALID_OPERATION);
     if (!size || !data || !buffer->mtl) return;
     waitForGpuUnlocked(ctx, buffer->lastUseSerial);
     // Another context may have respecified the buffer during the wait.
-    if (!buffer->mtl || offset + size > buffer->size) return ctx.setError(GL_INVALID_VALUE);
+    if (!buffer->mtl || size > buffer->size - offset) return ctx.setError(GL_INVALID_VALUE);
     std::memcpy(data, static_cast<uint8_t*>(buffer->mtl.contents) + offset, static_cast<size_t>(size));
 }
 
@@ -376,7 +505,7 @@ void* MapBufferRange(Context& ctx, GLenum target, GLintptr offset, GLsizeiptr le
     if (!buffer) return nullptr;
     const GLbitfield known = GL_MAP_READ_BIT | GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_RANGE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT |
                              GL_MAP_FLUSH_EXPLICIT_BIT | GL_MAP_UNSYNCHRONIZED_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT;
-    if (offset < 0 || length < 0 || offset + length > buffer->size || (access & ~known)) {
+    if (offset < 0 || length < 0 || length > buffer->size - offset || (access & ~known)) {
         ctx.setError(GL_INVALID_VALUE);
         return nullptr;
     }
@@ -409,12 +538,12 @@ void* MapBufferRange(Context& ctx, GLenum target, GLintptr offset, GLsizeiptr le
     }
     if (!(access & GL_MAP_UNSYNCHRONIZED_BIT) && gpuBusy(ctx, *buffer)) {
         // Immutable storage is never renamed: an invalidating map just waits.
-        if ((access & GL_MAP_INVALIDATE_BUFFER_BIT) && !buffer->immutable) rename(ctx, *buffer, false);
-        else if ((access & GL_MAP_INVALIDATE_RANGE_BIT) && !read && !buffer->immutable) rename(ctx, *buffer, true);
+        if ((access & GL_MAP_INVALIDATE_BUFFER_BIT) && !buffer->immutable && !buffer->pinned) rename(ctx, *buffer, false);
+        else if ((access & GL_MAP_INVALIDATE_RANGE_BIT) && !read && !buffer->immutable && !buffer->pinned) rename(ctx, *buffer, true);
         else waitForGpuUnlocked(ctx, buffer->lastUseSerial);
     }
     // Another context may have respecified or mapped the buffer during a wait.
-    if (buffer->mapped || !buffer->mtl || offset + length > buffer->size) {
+    if (buffer->mapped || !buffer->mtl || length > buffer->size - offset) {
         ctx.setError(GL_INVALID_OPERATION);
         return nullptr;
     }
@@ -462,7 +591,7 @@ void FlushMappedBufferRange(Context& ctx, GLenum target, GLintptr offset, GLsize
     Buffer* buffer = boundBuffer(ctx, target);
     if (!buffer) return;
     if (!buffer->mapped || !(buffer->mapAccess & GL_MAP_FLUSH_EXPLICIT_BIT)) return ctx.setError(GL_INVALID_OPERATION);
-    if (offset < 0 || length < 0 || offset + length > buffer->mapLength) return ctx.setError(GL_INVALID_VALUE);
+    if (offset < 0 || length < 0 || length > buffer->mapLength - offset) return ctx.setError(GL_INVALID_VALUE);
     ++buffer->version;  // shared storage: the CPU writes are already visible
 }
 
@@ -472,10 +601,11 @@ void CopyBufferSubData(Context& ctx, GLenum readTarget, GLenum writeTarget, GLin
     if (!src) return;
     Buffer* dst = boundBuffer(ctx, writeTarget);
     if (!dst) return;
-    if (readOffset < 0 || writeOffset < 0 || size < 0 || readOffset + size > src->size || writeOffset + size > dst->size)
+    if (readOffset < 0 || writeOffset < 0 || size < 0 || size > src->size - readOffset || size > dst->size - writeOffset)
         return ctx.setError(GL_INVALID_VALUE);
     if (src == dst && std::max(readOffset, writeOffset) < std::min(readOffset, writeOffset) + size)
         return ctx.setError(GL_INVALID_VALUE);
+    // Any non-persistent mapping of either buffer (GL 4.6 section 6.7).
     if (src->mappedNonPersistent() || dst->mappedNonPersistent()) return ctx.setError(GL_INVALID_OPERATION);
     if (!size) return;
     [ctx.stream().blit() copyFromBuffer:src->mtl sourceOffset:static_cast<NSUInteger>(readOffset) toBuffer:dst->mtl

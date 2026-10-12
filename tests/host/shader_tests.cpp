@@ -398,13 +398,13 @@ TEST(shader_glsl420_pack_rules) {
                                    "out vec4 o; void main() { o = v; }\n").ok);
     CHECK(!compile(Stage::Vertex, "#version 420\ninvariant in vec4 v; void main() { gl_Position = v; }\n").ok);
     // Image bindings name image units; block bindings stay below GL_MAX_UNIFORM_BUFFER_BINDINGS.
-    CHECK(compile(Stage::Fragment, "#version 420\nlayout(binding = 7, rgba8) readonly uniform image2D i;\n"
+    CHECK(compile(Stage::Fragment, "#version 420\nlayout(binding = 15, rgba8) readonly uniform image2D i;\n"
                                    "out vec4 o; void main() { o = imageLoad(i, ivec2(0)); }\n").ok);
-    CHECK(!compile(Stage::Fragment, "#version 420\nlayout(binding = 8, rgba8) readonly uniform image2D i;\n"
+    CHECK(!compile(Stage::Fragment, "#version 420\nlayout(binding = 16, rgba8) readonly uniform image2D i;\n"
                                     "out vec4 o; void main() { o = imageLoad(i, ivec2(0)); }\n").ok);
-    CHECK(compile(Stage::Fragment, "#version 420\nlayout(std140, binding = 70) uniform B { vec4 a; } b[2];\n"
+    CHECK(compile(Stage::Fragment, "#version 420\nlayout(std140, binding = 82) uniform B { vec4 a; } b[2];\n"
                                    "out vec4 o; void main() { o = b[1].a; }\n").ok);
-    CHECK(!compile(Stage::Fragment, "#version 420\nlayout(std140, binding = 70) uniform B { vec4 a; } b[3];\n"
+    CHECK(!compile(Stage::Fragment, "#version 420\nlayout(std140, binding = 82) uniform B { vec4 a; } b[3];\n"
                                     "out vec4 o; void main() { o = b[2].a; }\n").ok);
 }
 
@@ -549,4 +549,37 @@ TEST(shader_vertex_input_matrix_array) {
     LinkResult r = link43("#version 430 core\nin mat2x3 m[2];\nvoid main() { gl_Position = vec4(m[1][1], 1.0); }\n", kPassFs);
     CHECK(r.ok);
     CHECK(r.stages[0].msl.find("m_3 [[attribute(") != std::string::npos);
+}
+
+// GLSL 4.30: an array of arrays with an initializer may leave any dimension
+// unsized; the initializer sizes them.
+TEST(shader_unsized_arrays_of_arrays_with_initializer) {
+    const char* src =
+        "#version 430 core\n"
+        "uniform int x[2][][2][] = int[2][2][2][2](int[2][2][2](int[2][2](int[2](1, 2), int[2](3, 4)), int[2][2](int[2](5, 6), "
+        "int[2](7, 8))), int[2][2][2](int[2][2](int[2](11, 12), int[2](13, 14)), int[2][2](int[2](15, 16), int[2](17, 18))));\n"
+        "void main() { gl_Position = vec4(float(x[1][1][1][1])); }\n";
+    const CompileResult r = compile(Stage::Vertex, src);
+    if (!r.ok) std::fprintf(stderr, "%s\n", r.log.c_str());
+    CHECK(r.ok);
+}
+
+// Draw parameters and gl_DepthRange become hidden uniforms declared before
+// the first code, never inside a #define line before it.
+TEST(shader_builtin_uniforms_after_defines) {
+    CHECK(compile(Stage::Vertex, "#version 460 core\n#define CULL 1\n#define SHIFT \\\n  7\n"
+                                 "layout(location = 0) in vec2 grid;\nout vec2 v;\n"
+                                 "void main() { v = grid + vec2(float(gl_BaseInstance - SHIFT * gl_DrawID));\n"
+                                 "#if CULL\n  gl_Position = vec4(gl_DepthRange.near);\n#endif\n}\n").ok);
+}
+
+// wined3d's literal constants: a global const initialized from a bit cast.
+TEST(shader_bitcast_global_constants) {
+    CHECK(compile(Stage::Fragment, "#version 440\n"
+                                   "const vec4 lc0 = intBitsToFloat(ivec4(0x3f800000 /* 1.0 */, 0, 0, 0x3f000000));\n"
+                                   "const uvec2 lc1 = floatBitsToUint(vec2(1.0, 2.0));\nout vec4 o;\n"
+                                   "void main() { o = lc0 + vec4(lc1.xyxy); }\n").ok);
+    // A const used where a constant expression is required keeps its const.
+    CHECK(compile(Stage::Fragment, "#version 440\nconst int n = 2;\nuniform vec4 v[n];\nout vec4 o;\n"
+                                   "void main() { o = v[1]; }\n").ok);
 }

@@ -11,6 +11,7 @@
 #include "core/limits.h"
 #include "core/metal/device.h"
 #include "core/program.h"
+#include "core/shader/spirv_input.h"
 #include "gl_api.gen.h"
 
 namespace wmgl::api {
@@ -139,7 +140,7 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
     case GL_NUM_SHADING_LANGUAGE_VERSIONS:
         // The glGetStringi(GL_SHADING_LANGUAGE_VERSION) list (api/state.mm).
         if (ctx.version() < 43) return false;
-        out = ints({ctx.version() - 43 + 12});
+        out = ints({ctx.version() - 43 + 12 + (ctx.version() >= 45 ? 1 : 0)});
         return true;
     case GL_RESET_NOTIFICATION_STRATEGY: out = ints({ctx.config().resetNotification}); return true;
     case 0x90F3:  // GL_CONTEXT_ROBUST_ACCESS (GL_KHR_robustness)
@@ -202,6 +203,18 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
         if (ctx.version() < 43 && !ctx.hasExtension("GL_ARB_explicit_uniform_location")) return false;
         out = ints({kMaxUniformLocations});
         return true;
+    case GL_QUERY_BUFFER_BINDING:  // GL 4.4, GL_ARB_query_buffer_object
+        if (ctx.version() < 44) return false;
+        out = ints({nameOf(s.queryBuffer)});
+        return true;
+    case GL_MAX_SHADER_COMPILER_THREADS_ARB:
+        if (!ctx.parallelShaderCompile()) return false;
+        out = ints({static_cast<GLint>(s.maxShaderCompilerThreads)});
+        return true;
+    case GL_PARAMETER_BUFFER_BINDING:  // GL 4.6, GL_ARB_indirect_parameters
+        if (!ctx.indirectParameters()) return false;
+        out = ints({nameOf(s.parameterBuffer)});
+        return true;
     // GL 4.3 shader storage blocks (limits.h): vertex, fragment and compute stages.
     case GL_SHADER_STORAGE_BUFFER_BINDING: case GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS: case GL_MAX_SHADER_STORAGE_BLOCK_SIZE:
     case GL_SHADER_STORAGE_BUFFER_OFFSET_ALIGNMENT: case GL_MAX_VERTEX_SHADER_STORAGE_BLOCKS:
@@ -237,12 +250,19 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
     case GL_MAX_VARYING_VECTORS: out = ints({16}); return true;
     // GL_ARB_ES2_compatibility.
     case GL_SHADER_COMPILER: out = bools({true}); return true;
-    case GL_NUM_SHADER_BINARY_FORMATS: out = ints({0}); return true;
+    // GL 4.6 / GL_ARB_gl_spirv: SPIR-V is the one shader binary format.
+    case GL_NUM_SHADER_BINARY_FORMATS: out = ints({ctx.glSpirv() ? 1 : 0}); return true;
+    case GL_NUM_SPIR_V_EXTENSIONS:
+        if (!ctx.glSpirv()) return false;
+        out = ints({static_cast<int64_t>(shader::spirvExtensions().size())});
+        return true;
     case GL_NUM_PROGRAM_BINARY_FORMATS: case GL_PROGRAM_BINARY_FORMATS:
         if (ctx.version() < 41 && !ctx.hasExtension("GL_ARB_get_program_binary")) return false;
         out = pname == GL_NUM_PROGRAM_BINARY_FORMATS ? ints({1}) : ints({kProgramBinaryFormat});
         return true;
-    case GL_SHADER_BINARY_FORMATS: out = ints({}); return true;
+    case GL_SHADER_BINARY_FORMATS:
+        out = ctx.glSpirv() ? ints({GL_SHADER_BINARY_FORMAT_SPIR_V}) : ints({});
+        return true;
     case GL_IMPLEMENTATION_COLOR_READ_FORMAT:
     case GL_IMPLEMENTATION_COLOR_READ_TYPE: {
         GLenum format = GL_RGBA, type = GL_UNSIGNED_BYTE;
@@ -254,17 +274,17 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
         out = ints({pname == GL_IMPLEMENTATION_COLOR_READ_FORMAT ? format : type});
         return true;
     }
-    case GL_MAX_VERTEX_OUTPUT_COMPONENTS: out = ints({64}); return true;
-    case GL_MAX_GEOMETRY_INPUT_COMPONENTS: out = ints({64}); return true;
-    case GL_MAX_GEOMETRY_OUTPUT_COMPONENTS: out = ints({128}); return true;
-    case GL_MAX_FRAGMENT_INPUT_COMPONENTS: out = ints({128}); return true;
+    case GL_MAX_VERTEX_OUTPUT_COMPONENTS: out = ints({kMaxVertexOutputComponents}); return true;
+    case GL_MAX_GEOMETRY_INPUT_COMPONENTS: out = ints({kMaxGeometryInputComponents}); return true;
+    case GL_MAX_GEOMETRY_OUTPUT_COMPONENTS: out = ints({kMaxInterfaceComponents}); return true;
+    case GL_MAX_FRAGMENT_INPUT_COMPONENTS: out = ints({kMaxInterfaceComponents}); return true;
     case GL_MAX_GEOMETRY_OUTPUT_VERTICES: out = ints({256}); return true;
     // Primitive restart is treated as disabled for GL_PATCHES (GL 4.3 section 10.3.5).
     case GL_PRIMITIVE_RESTART_FOR_PATCHES_SUPPORTED:
         if (!ctx.tessellationShaders()) return false;
         out = bools({false});
         return true;
-    // GL 4.2 atomic counters (limits.h); vertex and tessellation stages have none.
+    // GL 4.2 atomic counters (limits.h); tessellation stages have none.
     case GL_ATOMIC_COUNTER_BUFFER_BINDING: case GL_MAX_ATOMIC_COUNTER_BUFFER_BINDINGS: case GL_MAX_ATOMIC_COUNTER_BUFFER_SIZE:
     case GL_MAX_VERTEX_ATOMIC_COUNTER_BUFFERS: case GL_MAX_TESS_CONTROL_ATOMIC_COUNTER_BUFFERS:
     case GL_MAX_TESS_EVALUATION_ATOMIC_COUNTER_BUFFERS: case GL_MAX_GEOMETRY_ATOMIC_COUNTER_BUFFERS:
@@ -342,7 +362,7 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
         case GL_MAX_COMBINED_TESS_CONTROL_UNIFORM_COMPONENTS: case GL_MAX_COMBINED_TESS_EVALUATION_UNIFORM_COMPONENTS:
             out = ints({kMaxDefaultUniformComponents + static_cast<int64_t>(kMaxUniformBlocksPerStage) * kMaxUniformBlockSize / 4});
             break;
-        default: out = ints({128}); break;  // input and output components
+        default: out = ints({kMaxInterfaceComponents}); break;  // input and output components
         }
         return true;
     case GL_MAX_GEOMETRY_TOTAL_OUTPUT_COMPONENTS: out = ints({1024}); return true;
@@ -381,6 +401,14 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
     case GL_MAX_TRANSFORM_FEEDBACK_SEPARATE_ATTRIBS: out = ints({4}); return true;
     case GL_MAX_TRANSFORM_FEEDBACK_SEPARATE_COMPONENTS: out = ints({4}); return true;
     case GL_MAX_CLIP_DISTANCES: out = ints({8}); return true;
+    case GL_CONTEXT_RELEASE_BEHAVIOR:  // GL 4.5, GL_KHR_context_flush_control: releasing a context flushes it
+        if (ctx.version() < 45 && !ctx.hasExtension("GL_KHR_context_flush_control")) return false;
+        out = ints({GL_CONTEXT_RELEASE_BEHAVIOR_FLUSH});
+        return true;
+    case GL_MAX_CULL_DISTANCES: case GL_MAX_COMBINED_CLIP_AND_CULL_DISTANCES:  // GL 4.5, GL_ARB_cull_distance
+        if (ctx.version() < 45 && !ctx.hasExtension("GL_ARB_cull_distance")) return false;
+        out = ints({8});
+        return true;
     case GL_MAX_SERVER_WAIT_TIMEOUT: out = int64v(INT64_MAX); return true;
     // GL 4.3 / GL_ARB_ES3_compatibility, which the KHR-GL32 API coverage test queries in
     // every core context. Element arrays take full 32-bit indices.
@@ -644,6 +672,34 @@ bool getIndexed(Context& ctx, GLenum pname, GLuint index, Value& out, bool& badI
     const ContextState& s = ctx.state;
     badIndex = false;
     switch (pname) {
+    // The texture and sampler bindings of a unit (GL 4.4, GL_ARB_multi_bind).
+    case GL_TEXTURE_BINDING_1D: case GL_TEXTURE_BINDING_2D: case GL_TEXTURE_BINDING_3D: case GL_TEXTURE_BINDING_1D_ARRAY:
+    case GL_TEXTURE_BINDING_2D_ARRAY: case GL_TEXTURE_BINDING_RECTANGLE: case GL_TEXTURE_BINDING_CUBE_MAP:
+    case GL_TEXTURE_BINDING_BUFFER: case GL_TEXTURE_BINDING_CUBE_MAP_ARRAY: case GL_TEXTURE_BINDING_2D_MULTISAMPLE:
+    case GL_TEXTURE_BINDING_2D_MULTISAMPLE_ARRAY: case GL_SAMPLER_BINDING: {
+        if (ctx.version() < 44 && !ctx.hasExtension("GL_ARB_multi_bind")) return false;
+        if (index >= static_cast<GLuint>(limits::kMaxCombinedTextureUnits)) { badIndex = true; return true; }
+        const TextureUnit& unit = s.textureUnits[index];
+        if (pname == GL_SAMPLER_BINDING) {
+            out = ints({unit.sampler ? static_cast<int64_t>(unit.sampler->name) : 0});
+            return true;
+        }
+        static const std::pair<GLenum, GLenum> kTargets[] = {
+            {GL_TEXTURE_BINDING_1D, GL_TEXTURE_1D}, {GL_TEXTURE_BINDING_2D, GL_TEXTURE_2D},
+            {GL_TEXTURE_BINDING_3D, GL_TEXTURE_3D}, {GL_TEXTURE_BINDING_1D_ARRAY, GL_TEXTURE_1D_ARRAY},
+            {GL_TEXTURE_BINDING_2D_ARRAY, GL_TEXTURE_2D_ARRAY}, {GL_TEXTURE_BINDING_RECTANGLE, GL_TEXTURE_RECTANGLE},
+            {GL_TEXTURE_BINDING_CUBE_MAP, GL_TEXTURE_CUBE_MAP}, {GL_TEXTURE_BINDING_BUFFER, GL_TEXTURE_BUFFER},
+            {GL_TEXTURE_BINDING_CUBE_MAP_ARRAY, GL_TEXTURE_CUBE_MAP_ARRAY},
+            {GL_TEXTURE_BINDING_2D_MULTISAMPLE, GL_TEXTURE_2D_MULTISAMPLE},
+            {GL_TEXTURE_BINDING_2D_MULTISAMPLE_ARRAY, GL_TEXTURE_2D_MULTISAMPLE_ARRAY}};
+        for (const auto& [binding, target] : kTargets) {
+            if (binding != pname) continue;
+            const int t = textureTargetIndex(target);
+            const Texture* tex = t >= 0 ? unit.bound[static_cast<size_t>(t)].get() : nullptr;
+            out = ints({tex ? static_cast<int64_t>(tex->name) : 0});
+        }
+        return true;
+    }
     case GL_MAX_COMPUTE_WORK_GROUP_COUNT: case GL_MAX_COMPUTE_WORK_GROUP_SIZE:
         if (!ctx.computeShaders()) return false;
         if (index >= 3) { badIndex = true; return true; }

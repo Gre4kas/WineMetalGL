@@ -61,7 +61,23 @@
     X(glClearBufferData) X(glClearBufferSubData) X(glFramebufferParameteri) X(glGetFramebufferParameteriv)          \
     X(glGetInternalformativ) X(glGetInternalformati64v) X(glBlendFunc) X(glGetSubroutineIndex)              \
     X(glUniformSubroutinesuiv) X(glGetSubroutineUniformLocation) X(glGetProgramResourceIndex)             \
-    X(glGetProgramResourceiv) X(glTexParameterIiv) X(glTexParameterIuiv)
+    X(glGetProgramResourceiv) X(glTexParameterIiv) X(glTexParameterIuiv) WMGL_GPU_FUNCS_GL44(X)
+
+// GL 4.4-4.6 entry points (gl44_tests.cpp and later).
+#define WMGL_GPU_FUNCS_GL44(X)                                                                        \
+    X(glClearTexImage) X(glClearTexSubImage) X(glBindBuffersBase) X(glBindBuffersRange) X(glBindTextures)         \
+    X(glBindSamplers) X(glBindImageTextures) X(glBindVertexBuffers) X(glGetInteger64i_v) X(glGetActiveUniformBlockiv)     \
+    X(glCreateBuffers) X(glNamedBufferData) X(glNamedBufferSubData) X(glCreateTextures) X(glTextureStorage2D)     \
+    X(glTextureSubImage2D) X(glGetTextureImage) X(glCreateFramebuffers) X(glNamedFramebufferTexture)                \
+    X(glCheckNamedFramebufferStatus) X(glClearNamedFramebufferfv) X(glCreateVertexArrays) X(glVertexArrayVertexBuffer) \
+    X(glVertexArrayAttribFormat) X(glVertexArrayAttribBinding) X(glEnableVertexArrayAttrib) X(glBindTextureUnit)  \
+    X(glTextureParameteri) X(glGetNamedBufferSubData) X(glBlitNamedFramebuffer) X(glGetTextureSubImage)          \
+    X(glGetCompressedTextureSubImage) X(glTextureStorage3D) X(glTextureSubImage3D) X(glVertexAttrib4fv)          \
+    X(glMultiDrawArrays) X(glMultiDrawArraysIndirectCount) X(glDrawElementsBaseVertex) X(glBeginQueryIndexed)     \
+    X(glEndQueryIndexed) X(glGetProgramInterfaceiv) X(glCompressedTexSubImage2D) X(glSampleMaski) X(glDeleteRenderbuffers) \
+    X(glCopyBufferSubData) X(glCompressedTexImage3D) X(glTexStorage2DMultisample) X(glNamedFramebufferTextureLayer) \
+    X(glGetTextureParameteriv) X(glTransformFeedbackBufferBase) X(glCreateTransformFeedbacks) X(glGetVertexArrayIndexed64iv) \
+    X(glDisableVertexArrayAttrib) X(glShaderBinary) X(glSpecializeShader) X(glIsFramebuffer) X(glUniform4fv)
 
 #define WMGL_DECLARE_FUNC(name) extern PFN_##name name;
 WMGL_GPU_FUNCS(WMGL_DECLARE_FUNC)
@@ -70,7 +86,7 @@ WMGL_GPU_FUNCS(WMGL_DECLARE_FUNC)
 namespace gpu {
 
 // A context current on a pbuffer for the lifetime of the fixture, requesting
-// `version` (10 * major + minor); versions above 4.3 go through the
+// `version` (10 * major + minor); versions above 4.6 go through the
 // development override (WINEMETALGL_DEV_MAX_VERSION).
 struct Fixture {
     explicit Fixture(int width = 64, int height = 64, bool core = true, int version = 33);
@@ -78,6 +94,7 @@ struct Fixture {
     bool ok = false;
     wmgl_context* context = nullptr;
     wmgl_surface* surface = nullptr;
+    int format = 0;
 };
 
 // Compiles and links; records a check failure (with the log) on error.

@@ -74,7 +74,8 @@ const FormatInfo* formatInfo(GLenum internalFormat);
 GLenum resolveInternalFormat(GLenum internalFormat, GLenum format, GLenum type);
 
 // True when the internal format is accepted by glTexImage* in this profile.
-bool isValidTextureInternalFormat(GLenum internalFormat, bool compatibility);
+// `stencilTextures`: STENCIL_INDEX formats are texture formats (GL 4.4, GL_ARB_texture_stencil8).
+bool isValidTextureInternalFormat(GLenum internalFormat, bool compatibility, bool stencilTextures = false);
 
 // Bytes per texel for uncompressed storage, or per 4x4 block for BC formats.
 uint32_t storageBytes(Storage storage);

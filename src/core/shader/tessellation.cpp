@@ -107,7 +107,7 @@ std::string dimsText(const std::vector<std::string>& dims, size_t from) {
 
 // Replaces ARRAY[EXPR].gl_X with PREFIX_x[EXPR] for the gl_in / gl_out built-in arrays.
 std::string renameArrayedBuiltin(const std::string& text, const std::string& array, const std::string& prefix, bool& pointSize,
-                                 bool& clipDistance) {
+                                 bool& clipDistance, bool& cullDistance) {
     std::string out;
     size_t i = 0;
     const std::string open = array + "[";
@@ -141,6 +141,9 @@ std::string renameArrayedBuiltin(const std::string& text, const std::string& arr
         } else if (member == "gl_ClipDistance") {
             clipDistance = true;
             out += prefix + "clipdistance[" + index + "]";
+        } else if (member == "gl_CullDistance") {
+            cullDistance = true;
+            out += prefix + "culldistance[" + index + "]";
         } else {
             out += prefix + "position[" + index + "]";
         }
@@ -236,7 +239,13 @@ bool parseTessellationGlsl(Stage stage, const std::string& glsl, TessStageInfo& 
                 info.globals += flat + "\n";
                 continue;
             }
-            if (d.name.rfind("gl_", 0) == 0) continue;
+            if (d.name.rfind("gl_", 0) == 0) {
+                // Redeclared built-in arrays ("out float gl_CullDistance[N];"):
+                // the evaluation stage keeps its outputs' sizes.
+                if ((d.name == "gl_ClipDistance" || d.name == "gl_CullDistance") && d.direction == "out" && !control)
+                    info.outputDeclarations += flat + "\n";
+                continue;
+            }
             const bool output = d.direction == "out";
             const bool arrayed = !d.patch && (control || !output);
             if (auto st = structs.find(d.type); st != structs.end()) {
@@ -312,6 +321,8 @@ bool parseTessellationGlsl(Stage stage, const std::string& glsl, TessStageInfo& 
                 const Declaration m = parseDeclaration(trim(member) + ";");
                 if (m.name == "gl_ClipDistance" && !m.dims.empty())
                     (output ? info.outputClipDistances : info.inputClipDistances) = std::atoi(m.dims[0].c_str());
+                if (m.name == "gl_CullDistance" && !m.dims.empty())
+                    (output ? info.outputCullDistances : info.inputCullDistances) = std::atoi(m.dims[0].c_str());
             }
             // The evaluation stage's output block is a vertex shader output.
             if (!control && output) info.outputDeclarations += flat + "\n";
@@ -350,16 +361,20 @@ bool parseTessellationGlsl(Stage stage, const std::string& glsl, TessStageInfo& 
     }
     std::string functions;
     for (size_t i = functionsStart; i < lines.size(); ++i) functions += lines[i] + "\n";
-    bool inPointSize = false, inClip = false, outPointSize = false, outClip = false;
-    functions = renameArrayedBuiltin(functions, "gl_in", "wmgl_in_", inPointSize, inClip);
-    if (control) functions = renameArrayedBuiltin(functions, "gl_out", "wmgl_out_", outPointSize, outClip);
+    bool inPointSize = false, inClip = false, inCull = false, outPointSize = false, outClip = false, outCull = false;
+    functions = renameArrayedBuiltin(functions, "gl_in", "wmgl_in_", inPointSize, inClip, inCull);
+    if (control) functions = renameArrayedBuiltin(functions, "gl_out", "wmgl_out_", outPointSize, outClip, outCull);
     info.readsPointSize = inPointSize;
     info.readsClipDistance = inClip;
+    info.readsCullDistance = inCull;
     if (inClip && !info.inputClipDistances) info.inputClipDistances = 8;
+    if (inCull && !info.inputCullDistances) info.inputCullDistances = 8;
     if (control) {
         info.writesPointSize = outPointSize;
         if (outClip && !info.outputClipDistances) info.outputClipDistances = 8;
         if (!outClip) info.outputClipDistances = 0;
+        if (outCull && !info.outputCullDistances) info.outputCullDistances = std::max(1, 8 - info.outputClipDistances);
+        if (!outCull) info.outputCullDistances = 0;
     }
     const std::pair<const char*, const char*> renames[] = {
         {"gl_InvocationID", "wmgl_invocation_id"}, {"gl_PrimitiveID", "wmgl_primitive_id"},
@@ -382,6 +397,7 @@ std::vector<std::string> tessellationCaptureVaryings(const TessStageInfo& first)
     std::vector<std::string> varyings = {"gl_Position"};
     if (first.readsPointSize) varyings.push_back("gl_PointSize");
     if (first.readsClipDistance) varyings.push_back("gl_ClipDistance");
+    if (first.readsCullDistance) varyings.push_back("gl_CullDistance");
     for (const TessVar& v : first.inputs)
         if (!v.patch) varyings.push_back(varKey(v));
     return varyings;
@@ -456,6 +472,8 @@ TessControlSources tessControlSources(const TessStageInfo& info, const LinkResul
     add(out.vertexFields, out.vertexWords, "gl_Position", GL_FLOAT_VEC4, 1, -1);
     add(out.vertexFields, out.vertexWords, "gl_PointSize", GL_FLOAT, 1, -1);
     if (info.outputClipDistances) add(out.vertexFields, out.vertexWords, "gl_ClipDistance", GL_FLOAT, info.outputClipDistances, -1);
+    if (info.outputCullDistances) add(out.vertexFields, out.vertexWords, "gl_CullDistance", GL_FLOAT, info.outputCullDistances, -1);
+    const size_t builtinFields = out.vertexFields.size();
     out.patchWords = 6;  // outer levels, inner levels
     for (const TessVar& v : info.outputs) {
         const std::string key = varKey(v);
@@ -474,9 +492,13 @@ TessControlSources tessControlSources(const TessStageInfo& info, const LinkResul
     if (info.readsPointSize) c += "float wmgl_in_pointsize[" + maxIn + "];\n";
     if (info.readsClipDistance)
         c += "float wmgl_in_clipdistance[" + maxIn + "][" + std::to_string(info.inputClipDistances) + "];\n";
+    if (info.readsCullDistance)
+        c += "float wmgl_in_culldistance[" + maxIn + "][" + std::to_string(info.inputCullDistances) + "];\n";
     c += "shared vec4 wmgl_out_position[" + ns + "];\nshared float wmgl_out_pointsize[" + ns + "];\n";
     if (info.outputClipDistances)
         c += "shared float wmgl_out_clipdistance[" + ns + "][" + std::to_string(info.outputClipDistances) + "];\n";
+    if (info.outputCullDistances)
+        c += "shared float wmgl_out_culldistance[" + ns + "][" + std::to_string(info.outputCullDistances) + "];\n";
     c += "shared float wmgl_tess_outer[4];\nshared float wmgl_tess_inner[2];\n"
          "int wmgl_invocation_id, wmgl_primitive_id, wmgl_patch_vertices_in;\n"
          "layout(std430) readonly buffer wmgl_TcsInput { uint wmgl_tcs_in[]; };\n"
@@ -500,6 +522,10 @@ TessControlSources tessControlSources(const TessStageInfo& info, const LinkResul
     if (const TransformFeedbackVarying* p = info.readsClipDistance ? captured("gl_ClipDistance") : nullptr)
         for (int k = 0; k < std::min(info.inputClipDistances, p->size); ++k)
             c += "        wmgl_in_clipdistance[wmgl_j][" + std::to_string(k) + "] = " +
+                 glslLoadValue("float", GL_FLOAT, "wmgl_tcs_in", "wmgl_b + " + std::to_string(p->offset + k) + "u") + ";\n";
+    if (const TransformFeedbackVarying* p = info.readsCullDistance ? captured("gl_CullDistance") : nullptr)
+        for (int k = 0; k < std::min(info.inputCullDistances, p->size); ++k)
+            c += "        wmgl_in_culldistance[wmgl_j][" + std::to_string(k) + "] = " +
                  glslLoadValue("float", GL_FLOAT, "wmgl_tcs_in", "wmgl_b + " + std::to_string(p->offset + k) + "u") + ";\n";
     for (const TessVar& v : info.inputs) {
         const TransformFeedbackVarying* p = captured(varKey(v));
@@ -528,11 +554,14 @@ TessControlSources tessControlSources(const TessStageInfo& info, const LinkResul
         else if (f.key == "gl_ClipDistance")
             for (int k = 0; k < f.elements; ++k)
                 c += store("wmgl_o", f.offset + k, "wmgl_out_clipdistance[wmgl_invocation_id][" + std::to_string(k) + "]", GL_FLOAT);
+        else if (f.key == "gl_CullDistance")
+            for (int k = 0; k < f.elements; ++k)
+                c += store("wmgl_o", f.offset + k, "wmgl_out_culldistance[wmgl_invocation_id][" + std::to_string(k) + "]", GL_FLOAT);
     }
     size_t field = 0;
     for (const TessVar& v : info.outputs) {
         if (v.patch) continue;
-        const TessRecordField& f = out.vertexFields[(info.outputClipDistances ? 3 : 2) + field++];
+        const TessRecordField& f = out.vertexFields[builtinFields + field++];
         for (int e = 0; e < f.elements; ++e)
             c += store("wmgl_o", f.offset + static_cast<uint32_t>(e * words(v.type)), access(v, "wmgl_invocation_id", e), v.type);
     }
@@ -563,6 +592,8 @@ std::string tessEvaluationVertexShader(const TessStageInfo& info, const TessCont
     if (info.readsPointSize) v += "float wmgl_in_pointsize[" + maxIn + "];\n";
     if (info.readsClipDistance)
         v += "float wmgl_in_clipdistance[" + maxIn + "][" + std::to_string(info.inputClipDistances) + "];\n";
+    if (info.readsCullDistance)
+        v += "float wmgl_in_culldistance[" + maxIn + "][" + std::to_string(info.inputCullDistances) + "];\n";
     v += "float wmgl_tess_outer[4];\nfloat wmgl_tess_inner[2];\nvec3 wmgl_tess_coord;\n"
          "int wmgl_primitive_id, wmgl_patch_vertices_in;\n";
     v += info.outputDeclarations;
@@ -619,13 +650,14 @@ std::string tessEvaluationVertexShader(const TessStageInfo& info, const TessCont
         for (int k = 0; k < std::min(info.inputClipDistances, f->elements); ++k)
             v += load("wmgl_in_clipdistance[wmgl_j][" + std::to_string(k) + "]", "float", GL_FLOAT, "wmgl_b",
                       f->offset + static_cast<uint32_t>(k));
+    if (const TessRecordField* f = info.readsCullDistance ? find(vertexFields, "gl_CullDistance", -1) : nullptr)
+        for (int k = 0; k < std::min(info.inputCullDistances, f->elements); ++k)
+            v += load("wmgl_in_culldistance[wmgl_j][" + std::to_string(k) + "]", "float", GL_FLOAT, "wmgl_b",
+                      f->offset + static_cast<uint32_t>(k));
     for (const TessVar& in : info.inputs) {
         if (in.patch) continue;
         const TessRecordField* f = find(vertexFields, varKey(in), in.location);
-        if (!f) {
-            log += "error: tessellation evaluation input '" + varKey(in) + "' is not written by the previous stage\n";
-            return std::string();
-        }
+        if (!f) continue;  // not written by the previous stage: undefined (GL allows it while unread)
         for (int e = 0; e < std::max(1, std::min(in.arraySize, f->elements)); ++e)
             v += load(access(in, "wmgl_j", e), in.glslType, in.type, "wmgl_b", f->offset + static_cast<uint32_t>(e * words(in.type)));
     }
@@ -641,10 +673,7 @@ std::string tessEvaluationVertexShader(const TessStageInfo& info, const TessCont
         for (const TessVar& in : info.inputs) {
             if (!in.patch) continue;
             const TessRecordField* f = find(control->patchFields, varKey(in), in.location);
-            if (!f) {
-                log += "error: tessellation evaluation patch input '" + varKey(in) + "' is not written by the control stage\n";
-                return std::string();
-            }
+            if (!f) continue;  // not written by the control stage: undefined
             for (int e = 0; e < std::max(1, std::min(in.arraySize, f->elements)); ++e)
                 v += "    " + access(in, "", e) + " = " +
                      glslLoadValue(in.glslType, in.type, "wmgl_tes_p",

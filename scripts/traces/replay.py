@@ -9,7 +9,7 @@ The corpus manifest (tests/games/corpus.json) lists entries of two kinds:
   are snapshotted as PNM on stdout.
 
 Frames are compared with a reference image (by default produced by the
-Apple OpenGL path, WINEMETALGL=0) using two numbers: the fraction of pixels
+Apple OpenGL path, Wine's own opengl32) using two numbers: the fraction of pixels
 whose largest channel difference exceeds --threshold, and PSNR. An entry
 passes when the fraction is at most its "tolerance" (default 0.005).
 
@@ -96,8 +96,9 @@ def compare(reference, actual, threshold):
 
 
 def path_env(path):
-    # The core is Wine's default OpenGL; WINEMETALGL=0 selects Apple's.
-    return {"WINEMETALGL": "0"} if path == "apple" else {}
+    # WineMetalGL is the prefix's OpenGL (the Wine module); Wine's own
+    # opengl32 is Apple's (WINEMETALGL=0 for a Wine with the 2.x patches).
+    return {"WINEDLLOVERRIDES": "opengl32=b", "WINEMETALGL": "0"} if path == "apple" else {}
 
 
 def run_entry(entry, args, env, workdir):

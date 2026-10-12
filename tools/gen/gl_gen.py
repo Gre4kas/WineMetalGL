@@ -357,10 +357,11 @@ def main():
             out.write('    if (__builtin_expect(!ctx, 0)) { wmgl::noCurrentContext("%s"); return%s; }\n' % (
                 cmd, (" " + dflt) if dflt else ""))
             # CPU time inside GL calls (WINEMETALGL_STATS, core/stats.h).
-            out.write("    wmgl::stats::CallTimer statsTimer;\n")
+            out.write('    wmgl::stats::CallTimer statsTimer("%s");\n' % cmd)
             # Every command runs under its share group's lock: contexts on
             # different threads may use the same shared objects.
             out.write("    wmgl::ShareLock shareLock(*ctx);\n")
+            out.write("    statsTimer.locked();\n")
             out.write('    ctx->currentCommand = "%s";\n' % cmd)
             if not ALLOWED_IN_BEGIN.match(impl) and not ALLOWED_IN_BEGIN.match(cmd):
                 # Most commands are invalid between glBegin and glEnd.

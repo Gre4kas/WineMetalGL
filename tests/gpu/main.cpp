@@ -1,6 +1,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 
 #include "gpu.h"
 
@@ -47,19 +48,19 @@ bool loadFunctions() {
 Fixture::Fixture(int width, int height, bool core, int version) {
     static const bool initialized = wmgl_initialize(WMGL_DRIVER_ABI_VERSION) == 0 && loadFunctions();
     if (!initialized) return;
-    const int format = pickFormat();
+    format = pickFormat();
     if (!format) return;
     surface = wmgl_surface_create_pbuffer(format, width, height);
     const int attribs[] = {0x2091 /* MAJOR */, version / 10, 0x2092 /* MINOR */, version % 10, 0x9126 /* PROFILE_MASK */,
                            core ? 1 : 2, 0};
     int error = 0;
-    if (version > 43) {
+    if (version > 46) {
         char value[8];
         std::snprintf(value, sizeof(value), "%d.%d", version / 10, version % 10);
         setenv("WINEMETALGL_DEV_MAX_VERSION", value, 1);
     }
     context = wmgl_context_create(format, nullptr, attribs, &error);
-    if (version > 43) unsetenv("WINEMETALGL_DEV_MAX_VERSION");
+    if (version > 46) unsetenv("WINEMETALGL_DEV_MAX_VERSION");
     ok = surface && context && wmgl_make_current(context, surface, surface);
     if (ok) glViewport(0, 0, width, height);
 }
@@ -137,15 +138,33 @@ bool near(const uint8_t* got, const uint8_t want[4], int tolerance) {
 }  // namespace gpu
 
 int main(int argc, char** argv) {
-    int run = 0;
+    // WMGL_GPU_NOT_REQUIRED: comma-separated tests that run and report, but
+    // whose failures do not fail the run (CI on a device that lacks what
+    // they test).
+    const char* notRequired = std::getenv("WMGL_GPU_NOT_REQUIRED");
+    auto required = [&](const char* name) {
+        if (!notRequired) return true;
+        const std::string list = std::string(",") + notRequired + ",";
+        return list.find(std::string(",") + name + ",") == std::string::npos;
+    };
+    int run = 0, ignored = 0;
     for (const auto& test : wmgl_test::registry()) {
         if (argc > 1 && !std::strstr(test.name, argv[1])) continue;
         const int before = wmgl_test::failures;
         test.body();
-        std::printf("%s %s\n", wmgl_test::failures == before ? "PASS" : "FAIL", test.name);
+        const bool passed = wmgl_test::failures == before;
+        if (!passed && !required(test.name)) {
+            ignored += wmgl_test::failures - before;
+            wmgl_test::failures = before;
+            std::printf("FAIL %s (not required)\n", test.name);
+        } else {
+            std::printf("%s %s\n", passed ? "PASS" : "FAIL", test.name);
+        }
         std::fflush(stdout);
         ++run;
     }
-    std::printf("%d tests, %d failed checks\n", run, wmgl_test::failures);
+    std::printf("%d tests, %d failed checks", run, wmgl_test::failures);
+    if (ignored) std::printf(" (%d more in tests not required)", ignored);
+    std::printf("\n");
     return wmgl_test::failures ? 1 : 0;
 }

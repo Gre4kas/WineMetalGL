@@ -12,14 +12,18 @@ namespace wmgl {
 
 template <class K>
 size_t PipelineCache::Hash<K>::operator()(const K& k) const {
-    // FNV-1a over the key bytes.
+    // Eight key bytes a step (keys are hundreds of bytes, hashed per draw).
     const auto* bytes = reinterpret_cast<const uint8_t*>(&k);
-    uint64_t hash = 1469598103934665603ull;
-    for (size_t i = 0; i < sizeof(K); ++i) {
-        hash ^= bytes[i];
-        hash *= 1099511628211ull;
+    uint64_t hash = 1469598103934665603ull ^ sizeof(K);
+    size_t i = 0;
+    for (; i + 8 <= sizeof(K); i += 8) {
+        uint64_t word;
+        std::memcpy(&word, bytes + i, 8);
+        hash = (hash ^ word) * 0x9e3779b97f4a7c15ull;
+        hash ^= hash >> 29;
     }
-    return static_cast<size_t>(hash);
+    for (; i < sizeof(K); ++i) hash = (hash ^ bytes[i]) * 1099511628211ull;
+    return static_cast<size_t>(hash ^ (hash >> 32));
 }
 
 id<MTLRenderPipelineState> PipelineCache::render(const PipelineKey& key, LinkedProgram& program) {
@@ -32,14 +36,18 @@ id<MTLRenderPipelineState> PipelineCache::render(const PipelineKey& key, LinkedP
     stats::Timer timer(&stats::Frame::pipelineNanos);
     const bool pointSizeAllowed = key.topologyClass == MTLPrimitiveTopologyClassUnspecified ||
                                   key.topologyClass == MTLPrimitiveTopologyClassPoint;
-    id<MTLFunction> vertex = !key.rasterization ? program.vertexNoRaster()
-                             : !pointSizeAllowed ? program.vertexWithoutPointSize(key.geometryPass)
-                             : key.geometryPass  ? program.geometryPassthrough()
-                                                 : program.function(shader::Stage::Vertex);
-    id<MTLFunction> fragment = key.sampleMask || key.logicOp || key.sampleShading || key.ignoreSampleMask
-                                   ? program.fragmentVariant(key.sampleMask, key.logicOp, key.colorFormats, key.sampleShading,
-                                                             key.ignoreSampleMask)
-                                   : program.function(shader::Stage::Fragment);
+    id<MTLFunction> vertex = key.borders[0] && !key.geometryPass
+                                 ? program.vertexWithBorders(key.rasterization, pointSizeAllowed, key.borders[0])
+                             : !key.rasterization ? program.vertexNoRaster()
+                             : !pointSizeAllowed  ? program.vertexWithoutPointSize(key.geometryPass)
+                             : key.geometryPass   ? program.geometryPassthrough()
+                                                  : program.function(shader::Stage::Vertex);
+    id<MTLFunction> fragment =
+        key.sampleMask || key.logicOp || key.sampleShading || key.ignoreSampleMask || key.cull || key.borders[1] ||
+                key.countFragments
+            ? program.fragmentVariant(key.sampleMask, key.logicOp, key.colorFormats, key.sampleShading, key.ignoreSampleMask,
+                                      key.cull, key.borders[1], key.countFragments)
+            : program.function(shader::Stage::Fragment);
     if (!vertex) return nil;
     MTLRenderPipelineDescriptor* desc = [MTLRenderPipelineDescriptor new];
     desc.vertexFunction = vertex;

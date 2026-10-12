@@ -14,8 +14,11 @@ Local changes to vendored sources (each marked `WineMetalGL:` in the code):
 - glslang `glslang/MachineIndependent/linkValidate.cpp`, `checkStageIO`: the
   Vulkan "every input has a matching output" check skips built-in blocks
   (`gl_PerVertex`) and redeclared built-in inputs (`gl_ClipDistance`), which
-  GL provides implicitly, and inputs the stage never reads, which GL does
-  not require to be written.
+  GL provides implicitly, and inputs (and input blocks) the stage never
+  reads, which GL does not require to be written.
+- glslang `glslang/MachineIndependent/linkValidate.cpp`, `addUsedLocation`:
+  vertex shader inputs may alias locations under the relaxed Vulkan rules
+  WineMetalGL's OpenGL code generation uses, as they may in OpenGL.
 - glslang `glslang/MachineIndependent/linkValidate.cpp`, `isIoResizeArray`:
   per-patch tessellation evaluation inputs (`patch in`) are not arrayed per
   vertex, so `patch` arrays match their control-stage outputs at link time.
@@ -57,6 +60,15 @@ Local changes to vendored sources (each marked `WineMetalGL:` in the code):
 - SPIRV-Cross `spirv_msl.cpp`, `InterpolateAtOffset`: the GLSL offset is
   biased by 1/2 (upstream uses 7/16 for Intel GPUs), so on Apple GPUs an
   offset of `gl_SamplePosition - 0.5` interpolates exactly at the sample.
+- glslang `glslang/MachineIndependent/Initialize.cpp`: the
+  `GL_EXT_texture_shadow_lod` lookups with a bias (`texture` of
+  `sampler2DArrayShadow` and `samplerCubeArrayShadow`, `textureOffset` of
+  `sampler2DArrayShadow`) are declared for fragment shaders only, as every
+  lookup with a bias is.
+- glslang `glslang/MachineIndependent/ParseHelper.cpp`: `textureOffset` of
+  `sampler2DArrayShadow` without a bias is accepted before GLSL 4.30 when
+  `GL_EXT_texture_shadow_lod` is enabled (the check allowed only the form
+  with a bias).
 - glslang `glslang/MachineIndependent/{Versions.h,Versions.cpp,Initialize.cpp}`:
   `GL_ARB_texture_query_levels` (`textureQueryLevels` from GLSL 1.30 with the
   extension, as before from 4.30 without).
@@ -77,9 +89,10 @@ Local changes to vendored sources (each marked `WineMetalGL:` in the code):
   locations it spans (`getExplicitUniformLocations`), for the linker's GL 4.3
   uniform location assignment; the Vulkan rules drop the qualifier.
 - glslang `glslang/MachineIndependent/ParseHelper.cpp`,
-  `vkRelaxedRemapUniformVariable`: an unsized uniform array takes its size
-  from its initializer before the Vulkan rules drop the initializer (the
-  values are applied from the default block, `applyUniformInitializers`).
+  `vkRelaxedRemapUniformVariable`: an unsized uniform array (any dimension
+  of an array of arrays) takes its sizes from its initializer before the
+  Vulkan rules drop the initializer (the values are applied from the default
+  block, `applyUniformInitializers`).
 - SPIRV-Cross `spirv_glsl.cpp`, `bitcast_expression`, and `spirv_msl.cpp`,
   `emit_atomic_func_op`: atomic operands are read unpacked, so an element of a
   scalar array in a std140 block (padded to a vector) is passed as a scalar.
@@ -109,8 +122,8 @@ The built dylib dynamically links only Apple system frameworks and libraries
 libobjc); it never links OpenGL.framework (`scripts/verify-source.sh` and CI
 check this).
 
-Wine integration requires the Wine patch series in `patches/wine/`, applied to
-a Wine 11.17 source tree (`patches/wine/README.md`).
+The Wine module (`src/wine`) builds against the headers of an unmodified
+Wine 11.x (`scripts/build-wine-module.sh`); its PE side needs llvm-mingw.
 
 Test tooling that is not vendored: the Khronos VK-GL-CTS (commit `1942832`,
 built with `tests/cts/windows/build.sh` and `tests/cts/native/build.sh`),

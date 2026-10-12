@@ -262,6 +262,10 @@ GLenum viewClassEnum(GLenum f) {
     case GL_COMPRESSED_RG_RGTC2: case GL_COMPRESSED_SIGNED_RG_RGTC2: return GL_VIEW_CLASS_RGTC2_RG;
     case GL_COMPRESSED_RGBA_BPTC_UNORM: case GL_COMPRESSED_SRGB_ALPHA_BPTC_UNORM: return GL_VIEW_CLASS_BPTC_UNORM;
     case GL_COMPRESSED_RGB_BPTC_SIGNED_FLOAT: case GL_COMPRESSED_RGB_BPTC_UNSIGNED_FLOAT: return GL_VIEW_CLASS_BPTC_FLOAT;
+    case GL_COMPRESSED_RGB_S3TC_DXT1_EXT: case GL_COMPRESSED_SRGB_S3TC_DXT1_EXT: return GL_VIEW_CLASS_S3TC_DXT1_RGB;
+    case GL_COMPRESSED_RGBA_S3TC_DXT1_EXT: case GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT1_EXT: return GL_VIEW_CLASS_S3TC_DXT1_RGBA;
+    case GL_COMPRESSED_RGBA_S3TC_DXT3_EXT: case GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT3_EXT: return GL_VIEW_CLASS_S3TC_DXT3_RGBA;
+    case GL_COMPRESSED_RGBA_S3TC_DXT5_EXT: case GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT5_EXT: return GL_VIEW_CLASS_S3TC_DXT5_RGBA;
     default: return GL_NONE;
     }
 }
@@ -292,7 +296,9 @@ bool internalformatQuery(Context& ctx, GLenum target, GLenum internalformat, GLe
                         (f->baseFormat != GL_RGB || internalformat == GL_RGB32F || internalformat == GL_RGB32I ||
                          internalformat == GL_RGB32UI);
         else if (f->compressed) supported = target == GL_TEXTURE_2D || target == GL_TEXTURE_2D_ARRAY || target == GL_TEXTURE_CUBE_MAP ||
-                                            target == GL_TEXTURE_CUBE_MAP_ARRAY;
+                                            target == GL_TEXTURE_CUBE_MAP_ARRAY ||
+                                            (target == GL_TEXTURE_3D && f->storage >= Storage::BC6H_RGBFloat &&
+                                             f->storage <= Storage::BC7_RGBAUnorm_sRGB);  // GL 4.6 table 8.14
         else if (f->isDepthOrStencil()) supported = target != GL_TEXTURE_3D;
         if (f->compressed && supported) supported = compressedFormatSupported(ctx, f);
     }
@@ -367,6 +373,7 @@ bool internalformatQuery(Context& ctx, GLenum target, GLenum internalformat, GLe
     case GL_COLOR_ENCODING: one(supported && !f->isDepthOrStencil() ? (f->srgb ? GL_SRGB : GL_LINEAR) : GL_NONE); return true;
     case GL_SRGB_READ: one(full(supported && f->srgb)); return true;
     case GL_SRGB_WRITE: one(full(supported && f->srgb && f->colorRenderable)); return true;
+    case GL_SRGB_DECODE_ARB: one(full(supported && texture && f->srgb)); return true;  // GL_EXT_texture_sRGB_decode
     case GL_FILTER: one(full(supported && texture && f->textureFilterable)); return true;
     case GL_VERTEX_TEXTURE: case GL_TESS_CONTROL_TEXTURE: case GL_TESS_EVALUATION_TEXTURE: case GL_GEOMETRY_TEXTURE:
     case GL_FRAGMENT_TEXTURE: case GL_COMPUTE_TEXTURE:
@@ -539,7 +546,7 @@ void InvalidateBufferData(Context& ctx, GLuint buffer) {
 
 void InvalidateBufferSubData(Context& ctx, GLuint buffer, GLintptr offset, GLsizeiptr length) {
     Buffer* b = ctx.buffer(buffer);
-    if (!b || offset < 0 || length < 0 || offset + length > b->size) return ctx.setError(GL_INVALID_VALUE);
+    if (!b || offset < 0 || length < 0 || length > b->size - offset) return ctx.setError(GL_INVALID_VALUE);
     if (b->mappedNonPersistent()) ctx.setError(GL_INVALID_OPERATION);
 }
 

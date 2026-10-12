@@ -21,7 +21,15 @@ extern const bool g_enabled;  // WINEMETALGL_STATS set
 struct Frame {
     uint64_t calls = 0, draws = 0, passes = 0, pipelineMisses = 0, programLinks = 0, transientBytes = 0, waits = 0;
     uint64_t glNanos = 0, pipelineNanos = 0, linkNanos = 0, waitNanos = 0;
+    uint64_t lockNanos = 0;  // waiting for the share group's lock inside GL calls
     uint64_t presentNanos = 0, drawableNanos = 0;  // SwapBuffers, and waiting for a drawable inside it
+    // Vertex attributes converted on the CPU (draw.mm bindVertexInputs):
+    // vertices converted, groups reused from a buffer's cache, and converted
+    // attributes by cause (client memory, unfetchable format, other).
+    uint64_t convertedVertices = 0, convertedReused = 0, convertedClient = 0, convertedFormat = 0, convertedOther = 0;
+    uint64_t convertedFormatType = 0;  // GL type of the last unfetchable one (| 0x10000: normalized)
+    uint64_t cpuIndexDraws = 0;        // draws whose indices were rewritten on the CPU
+    uint64_t uniformBytes = 0;         // default uniforms copied to transient memory
 };
 
 Frame& frame();
@@ -44,19 +52,31 @@ private:
     uint64_t start_;
 };
 
-// One GL call (the generated entry points).
+// Adds one call of `command` to the process-wide profile (every thread's
+// calls), which endFrame prints every 60 frames.
+void recordCall(const char* command, uint64_t nanos, uint64_t lockNanos);
+
+// One GL call (the generated entry points): `locked()` once the share
+// group's lock is held.
 class CallTimer {
 public:
-    CallTimer() : start_(g_enabled ? nowNanos() : 0) {}
+    explicit CallTimer(const char* command) : command_(command), start_(g_enabled ? nowNanos() : 0) {}
+    void locked() {
+        if (start_) locked_ = nowNanos();
+    }
     ~CallTimer() {
         if (!start_) return;
         Frame& f = frame();
+        const uint64_t nanos = nowNanos() - start_, lock = locked_ ? locked_ - start_ : 0;
         ++f.calls;
-        f.glNanos += nowNanos() - start_;
+        f.glNanos += nanos;
+        f.lockNanos += lock;
+        recordCall(command_, nanos, lock);
     }
 
 private:
-    uint64_t start_;
+    const char* command_;
+    uint64_t start_, locked_ = 0;
 };
 
 // A frame was presented: logs it (when enabled), resets the counters and

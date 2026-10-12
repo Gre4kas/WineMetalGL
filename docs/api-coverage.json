@@ -2,7 +2,7 @@
  "project": "WineMetalGL",
  "generated_by": "scripts/docs/generate.py",
  "context": {
-  "versions": "up to 4.3",
+  "versions": "up to 4.6",
   "profiles": [
    "core",
    "compatibility"
@@ -13,9 +13,9 @@
   "minimum": "15.0",
   "architecture": "x86_64"
  },
- "core_commands_version": "4.3",
- "core_commands": 533,
- "implemented": 533,
+ "core_commands_version": "4.6",
+ "core_commands": 656,
+ "implemented": 656,
  "missing": [],
  "extensions": [
   "GL_ARB_compatibility",
@@ -124,6 +124,7 @@
   "GL_ARB_clip_control",
   "GL_ARB_get_program_binary",
   "GL_ARB_buffer_storage",
+  "GL_AMD_pinned_memory",
   "GL_KHR_debug",
   "GL_ARB_debug_output",
   "GL_ARB_separate_shader_objects",
@@ -174,8 +175,37 @@
   "GL_ARB_shader_image_size",
   "GL_ARB_stencil_texturing",
   "GL_ARB_texture_barrier",
+  "GL_ARB_clear_texture",
+  "GL_ARB_enhanced_layouts",
+  "GL_ARB_multi_bind",
+  "GL_ARB_query_buffer_object",
+  "GL_ARB_texture_mirror_clamp_to_edge",
+  "GL_ARB_texture_stencil8",
+  "GL_ARB_vertex_type_10f_11f_11f_rev",
+  "GL_ARB_conditional_render_inverted",
+  "GL_ARB_cull_distance",
+  "GL_ARB_derivative_control",
+  "GL_ARB_direct_state_access",
+  "GL_ARB_ES3_1_compatibility",
+  "GL_ARB_get_texture_sub_image",
+  "GL_ARB_shader_texture_image_samples",
+  "GL_KHR_context_flush_control",
+  "GL_ARB_gl_spirv",
+  "GL_ARB_spirv_extensions",
+  "GL_ARB_indirect_parameters",
+  "GL_ARB_pipeline_statistics_query",
+  "GL_ARB_shader_atomic_counter_ops",
+  "GL_ARB_shader_draw_parameters",
+  "GL_ARB_shader_group_vote",
+  "GL_ARB_transform_feedback_overflow_query",
+  "GL_ARB_parallel_shader_compile",
+  "GL_KHR_parallel_shader_compile",
+  "GL_KHR_no_error",
   "GL_EXT_shader_integer_mix",
   "GL_ARB_polygon_offset_clamp",
-  "GL_EXT_polygon_offset_clamp"
+  "GL_EXT_polygon_offset_clamp",
+  "GL_ARB_shader_viewport_layer_array",
+  "GL_EXT_texture_sRGB_decode",
+  "GL_EXT_texture_shadow_lod"
  ]
 }

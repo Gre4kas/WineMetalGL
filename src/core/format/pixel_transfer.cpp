@@ -697,7 +697,39 @@ bool rawTransfer(GLenum format, GLenum type, Storage storage) {
     }
 }
 
+// Client groups whose bytes are the stored texel's bytes: the client format
+// names the stored channels in order (alpha and luminance formats store into
+// R or RG) and the type is the storage's component, so a row is copied as is.
+bool identityTransfer(GLenum format, GLenum type, const FormatInfo& info) {
+    if (info.storedAlphaIsOne || info.compressed || info.isDepthOrStencil()) return false;
+    const GLenum base = info.baseFormat;
+    const bool integer = info.isInteger();
+    const bool channels =
+        integer ? (format == GL_RED_INTEGER && base == GL_RED) || (format == GL_RG_INTEGER && base == GL_RG) ||
+                      (format == GL_RGBA_INTEGER && base == GL_RGBA)
+                : format == base && (base == GL_RED || base == GL_RG || base == GL_RGBA || base == GL_ALPHA ||
+                                     base == GL_LUMINANCE || base == GL_LUMINANCE_ALPHA);
+    if (!channels) return false;
+    using S = Storage;
+    switch (info.storage) {
+    case S::R8Unorm: case S::RG8Unorm: case S::RGBA8Unorm: case S::RGBA8Unorm_sRGB: return type == GL_UNSIGNED_BYTE;
+    case S::R16Unorm: case S::RG16Unorm: case S::RGBA16Unorm: return type == GL_UNSIGNED_SHORT;
+    case S::R8Uint: case S::RG8Uint: case S::RGBA8Uint: return type == GL_UNSIGNED_BYTE;
+    case S::R8Sint: case S::RG8Sint: case S::RGBA8Sint: return type == GL_BYTE;
+    case S::R16Uint: case S::RG16Uint: case S::RGBA16Uint: return type == GL_UNSIGNED_SHORT;
+    case S::R16Sint: case S::RG16Sint: case S::RGBA16Sint: return type == GL_SHORT;
+    case S::R32Uint: case S::RG32Uint: case S::RGBA32Uint: return type == GL_UNSIGNED_INT;
+    case S::R32Sint: case S::RG32Sint: case S::RGBA32Sint: return type == GL_INT;
+    default: return false;
+    }
+}
+
 }  // namespace
+
+bool storedLayout(GLenum format, GLenum type, const FormatInfo& info) {
+    return groupBytes(format, type) == storageBytes(info.storage) &&
+           (identityTransfer(format, type, info) || (rawTransfer(format, type, info.storage) && typeBytes(type) == 1));
+}
 
 void unpackPixels(const void* src, GLenum format, GLenum type, int width, int height, int depth,
                   const PixelStoreParams& ps, const FormatInfo& info, void* out) {
@@ -709,6 +741,30 @@ void unpackPixels(const void* src, GLenum format, GLenum type, int width, int he
     const auto* base = static_cast<const uint8_t*>(src) + l.skipBytes;
     const bool swap = ps.swapBytes && typeBytes(type) > 1;
     Texel t;
+    // Rows that need no conversion are copied whole; BGRA bytes into RGBA8
+    // swap two bytes per texel.
+    const size_t rowBytes = static_cast<size_t>(width) * texelBytes;
+    if (!swap && l.groupBytes == texelBytes &&
+        (identityTransfer(format, type, info) || (rawTransfer(format, type, info.storage) && typeBytes(type) == 1))) {
+        for (int z = 0; z < depth; ++z)
+            for (int y = 0; y < height; ++y, dst += rowBytes)
+                std::memcpy(dst, base + static_cast<size_t>(z) * l.imageStride + static_cast<size_t>(y) * l.rowStride, rowBytes);
+        return;
+    }
+    if (!swap && format == GL_BGRA && type == GL_UNSIGNED_BYTE && l.groupBytes == 4 &&
+        (info.storage == Storage::RGBA8Unorm || info.storage == Storage::RGBA8Unorm_sRGB) && info.baseFormat == GL_RGBA) {
+        for (int z = 0; z < depth; ++z)
+            for (int y = 0; y < height; ++y) {
+                const uint8_t* row = base + static_cast<size_t>(z) * l.imageStride + static_cast<size_t>(y) * l.rowStride;
+                for (int x = 0; x < width; ++x, row += 4, dst += 4) {
+                    dst[0] = row[2];
+                    dst[1] = row[1];
+                    dst[2] = row[0];
+                    dst[3] = row[3];
+                }
+            }
+        return;
+    }
     const bool raw = rawTransfer(format, type, info.storage) && l.groupBytes == texelBytes;
     const size_t rawComponent = type == GL_BYTE ? 1 : type == GL_HALF_FLOAT || type == GL_SHORT ? 2 : 4;
     for (int z = 0; z < depth; ++z)

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(WineMetalGL VERSION 2.4.0 LANGUAGES C CXX OBJC OBJCXX)
+project(WineMetalGL VERSION 3.0.0 LANGUAGES C CXX OBJC OBJCXX)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 if(NOT APPLE)
@@ -52,8 +52,8 @@ find_library(QUARTZCORE_FRAMEWORK QuartzCore REQUIRED)
 
 # ---------------------------------------------------------------------------
 # WineMetalGL core: the OpenGL implementation on Metal. Built as
-# libwinemetalgl.dylib, which winemac.drv loads from its own directory
-# (patches/wine).
+# libwinemetalgl.dylib, which the Wine module's winemetalgl.so loads from its
+# own directory (src/wine, scripts/build-wine-module.sh).
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 set(WMGL_GEN_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
@@ -84,6 +84,7 @@ add_library(wmgl_portable STATIC
     src/core/format/formats.cpp
     src/core/format/pixel_transfer.cpp
     src/core/format/vertex_decode.cpp
+    src/core/shader/border.cpp
     src/core/shader/compiler.cpp
     src/core/shader/fp64.cpp
     src/core/shader/geometry.cpp
@@ -91,7 +92,9 @@ add_library(wmgl_portable STATIC
     src/core/shader/glsl_upgrade.cpp
     src/core/shader/tessellation.cpp
     src/core/tess/tessellator.cpp
+    src/core/shader/spirv_input.cpp
     src/core/shader/spirv_passes.cpp
+    src/core/shader/spirv_validate.cpp
     src/core/shader/subroutines.cpp
     src/core/util/log.cpp
     vendor/tessellator/tessellator.cpp

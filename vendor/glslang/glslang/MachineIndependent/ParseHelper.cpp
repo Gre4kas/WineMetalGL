@@ -2350,7 +2350,10 @@ void TParseContext::builtInOpCheck(const TSourceLoc& loc, const TFunction& fnCan
                     if (
                         ((*argp)[1]->getAsTyped()->getType().getBasicType() == EbtFloat) && 
                         ((*argp)[1]->getAsTyped()->getType().getVectorSize() == 4) &&
-                        (fnCandidate.getParamCount() == 4)) {
+                        // GL_EXT_texture_shadow_lod adds the lookup with a bias and,
+                        // where core GLSL lacks it (before 4.30, ES), without one.
+                        (fnCandidate.getParamCount() == 4 ||
+                         (fnCandidate.getParamCount() == 3 && (isEsProfile() || version <= 420)))) {
                         featureString = fnCandidate.getName() + " for sampler2DArrayShadow";
                         feature = featureString.c_str();
                         requireExtensions(loc, 1, &E_GL_EXT_texture_shadow_lod, feature);
@@ -7515,10 +7518,16 @@ bool TParseContext::vkRelaxedRemapUniformVariable(const TSourceLoc& loc, TString
     }
 
     if (initializer) {
-        // WineMetalGL: an unsized array still takes its size from the
-        // initializer (GLSL 4.30 section 4.1.9) before the value is dropped.
-        if (type.isUnsizedArray() && initializer->getType().isSizedArray())
-            type.changeOuterArraySize(initializer->getType().getOuterArraySize());
+        // WineMetalGL: an unsized array (any dimension of an array of
+        // arrays) still takes its sizes from the initializer (GLSL 4.30
+        // section 4.1.9) before the value is dropped.
+        if (type.isArray() && initializer->getType().isSizedArray()) {
+            TArraySizes* sizes = type.getArraySizes();
+            const TArraySizes* from = initializer->getType().getArraySizes();
+            if (sizes && from && sizes->getNumDims() == from->getNumDims())
+                for (int d = 0; d < sizes->getNumDims(); ++d)
+                    if (sizes->getDimSize(d) == UnsizedArraySize) sizes->setDimSize(d, from->getDimSize(d));
+        }
         warn(loc, "Ignoring initializer for uniform", identifier.c_str(), "");
         initializer = nullptr;
     }

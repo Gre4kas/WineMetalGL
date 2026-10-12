@@ -127,6 +127,10 @@ struct ContextState {
     GLenum clipOrigin = GL_LOWER_LEFT, clipDepthMode = GL_NEGATIVE_ONE_TO_ONE;  // GL_ARB_clip_control
     bool primitiveRestart = false;
     GLuint primitiveRestartIndex = 0;
+    // GL_ARB/KHR_parallel_shader_compile: the application's thread limit
+    // (0xFFFFFFFF: the implementation's choice). Compiles finish before the
+    // call returns, so it changes nothing.
+    GLuint maxShaderCompilerThreads = 0xFFFFFFFFu;
     bool primitiveRestartFixedIndex = false;
     bool textureCubeMapSeamless = false;
     uint32_t clipDistanceEnables = 0;
@@ -186,8 +190,9 @@ struct ContextState {
     // Bindings.
     RefPtr<Buffer> arrayBuffer, copyReadBuffer, copyWriteBuffer, pixelPackBuffer, pixelUnpackBuffer,
         textureBuffer, uniformBuffer, transformFeedbackBuffer, drawIndirectBuffer, dispatchIndirectBuffer,
-        shaderStorageBuffer, atomicCounterBuffer, queryBuffer;
-    static constexpr int kMaxUniformBufferBindings = 72;  // = limits::kMaxUniformBufferBindings
+        shaderStorageBuffer, atomicCounterBuffer, queryBuffer, parameterBuffer,
+        externalVirtualMemoryBuffer;  // GL_AMD_pinned_memory
+    static constexpr int kMaxUniformBufferBindings = 84;  // = limits::kMaxUniformBufferBindings (GL 4.5 minimum)
     std::array<IndexedBufferBinding, kMaxUniformBufferBindings> uniformBufferBindings;
     // GL 4.2 atomic counter buffer bindings.
     static constexpr int kMaxAtomicCounterBufferBindings = 8;  // = limits::kMaxAtomicCounterBufferBindings
@@ -195,7 +200,7 @@ struct ContextState {
     // GL 4.3 shader storage buffer bindings.
     static constexpr int kMaxShaderStorageBufferBindings = 16;  // = limits::kMaxShaderStorageBufferBindings
     std::array<IndexedBufferBinding, kMaxShaderStorageBufferBindings> shaderStorageBufferBindings;
-    static constexpr int kMaxImageUnits = 8;  // = limits::kMaxImageUnits
+    static constexpr int kMaxImageUnits = 16;  // = limits::kMaxImageUnits
     std::array<ImageUnit, kMaxImageUnits> imageUnits;
     static constexpr int kMaxTextureUnits = 80;
     std::array<TextureUnit, kMaxTextureUnits> textureUnits;
@@ -212,7 +217,7 @@ struct ContextState {
     GLenum defaultReadBuffer = GL_BACK;
 
     // Active queries by target index.
-    std::array<RefPtr<Query>, 12> activeQueries;  // by QueryIndex slot (core/query.h)
+    std::array<RefPtr<Query>, 28> activeQueries;  // by QueryIndex slot (core/query.h: kQuerySlotCount)
     struct {
         RefPtr<Query> query;
         GLenum mode = 0;

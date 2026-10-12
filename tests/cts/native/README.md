@@ -4,7 +4,7 @@
 on macOS directly against the WineMetalGL core, without Wine. Each GL
 context renders to a pbuffer surface created through the driver ABI
 (`include/winemetalgl/driver.h`), and entry points come from
-`wmgl_get_proc_address`, exactly as winemac.drv uses them.
+`wmgl_get_proc_address`, exactly as the Wine module uses them.
 
 It exists for fast iteration and debugging (lldb, Metal validation, no
 Rosetta). Conformance claims still come from the Wine runs

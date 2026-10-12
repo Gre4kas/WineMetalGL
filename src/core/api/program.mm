@@ -3,6 +3,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <type_traits>
@@ -10,6 +12,7 @@
 #include "core/context.h"
 #include "core/limits.h"
 #include "core/program.h"
+#include "core/shader/spirv_input.h"
 #include "core/stats.h"
 #include "core/util/log.h"
 #include "gl_api.gen.h"
@@ -322,16 +325,26 @@ void ShaderSource(Context& ctx, GLuint shader, GLsizei count, const GLchar* cons
         else source.append(strings[i]);
     }
     s->source = std::move(source);
+    // A source replaces a SPIR-V module (SPIR_V_BINARY becomes FALSE).
+    s->spirv = s->specialized = false;
+    s->spirvWords.clear();
+    s->spirvGlsl.clear();
 }
 
 void CompileShader(Context& ctx, GLuint shader) {
     Shader* s = shaderOrError(ctx, shader);
     if (!s) return;
+    if (s->spirv) return ctx.setError(GL_INVALID_OPERATION);  // SPIR-V is specialized instead
     shader::CompileResult result = shader::compile(s->stage, s->source);
     s->compiled = true;
     s->compileStatus = result.ok;
     s->infoLog = result.log;
-    if (!result.ok) WMGL_INFO("shader %u failed to compile:\n%s", shader, result.log.c_str());
+    if (!result.ok) {
+        WMGL_INFO("shader %u failed to compile:\n%s", shader, result.log.c_str());
+        // WINEMETALGL_DUMP_SHADERS=1 also prints the source.
+        if (const char* v = std::getenv("WINEMETALGL_DUMP_SHADERS"); v && v[0] == '1')
+            std::fprintf(stderr, "winemetalgl: shader %u source:\n%s\n", shader, s->source.c_str());
+    }
 }
 
 void DeleteShader(Context& ctx, GLuint shader) {
@@ -356,8 +369,51 @@ void GetShaderiv(Context& ctx, GLuint shader, GLenum pname, GLint* params) {
     case GL_COMPILE_STATUS: *params = s->compileStatus; return;
     case GL_INFO_LOG_LENGTH: *params = s->infoLog.empty() ? 0 : static_cast<GLint>(s->infoLog.size() + 1); return;
     case GL_SHADER_SOURCE_LENGTH: *params = s->source.empty() ? 0 : static_cast<GLint>(s->source.size() + 1); return;
-    default: ctx.setError(GL_INVALID_ENUM);
+    case GL_SPIR_V_BINARY:
+        if (!ctx.glSpirv()) break;
+        *params = s->spirv;
+        return;
+    case GL_COMPLETION_STATUS_ARB:  // compiles finish before glCompileShader returns
+        if (!ctx.parallelShaderCompile()) break;
+        *params = GL_TRUE;
+        return;
+    default: break;
     }
+    ctx.setError(GL_INVALID_ENUM);
+}
+
+// GL 4.6 / GL_ARB_gl_spirv: the shader's module for its stage at
+// `pEntryPoint`, with specialization constant pConstantIndex[i] set to
+// pConstantValue[i], becomes its compiled form (GLSL, shader/spirv_input.h).
+void SpecializeShader(Context& ctx, GLuint shader, const GLchar* pEntryPoint, GLuint numSpecializationConstants,
+                      const GLuint* pConstantIndex, const GLuint* pConstantValue) {
+    if (!ctx.glSpirv()) return ctx.unimplemented("glSpecializeShader");
+    Shader* s = shaderOrError(ctx, shader);
+    if (!s) return;
+    if (!s->spirv || s->specialized) return ctx.setError(GL_INVALID_OPERATION);
+    std::vector<std::pair<uint32_t, uint32_t>> constants;
+    for (GLuint i = 0; i < numSpecializationConstants && pConstantIndex && pConstantValue; ++i)
+        constants.emplace_back(pConstantIndex[i], pConstantValue[i]);
+    const shader::SpirvSpecialization result =
+        shader::specializeSpirv(s->spirvWords, s->stage, pEntryPoint ? pEntryPoint : "", constants);
+    if (result.status == shader::SpirvSpecialization::kBadEntryPoint || result.status == shader::SpirvSpecialization::kBadConstant)
+        return ctx.setError(GL_INVALID_VALUE);
+    s->specialized = s->compiled = true;
+    s->spirvNamed = result.named;
+    if (result.status != shader::SpirvSpecialization::kOk) {
+        s->compileStatus = false;
+        s->infoLog = result.log;
+    } else {
+        const shader::CompileResult compiled = shader::compile(s->stage, result.glsl);
+        s->compileStatus = compiled.ok;
+        s->infoLog = compiled.log;
+        s->spirvGlsl = result.glsl;
+        s->spirvUniforms = result.uniformLocations;
+    }
+    if (!s->compileStatus) WMGL_INFO("SPIR-V shader %u failed to specialize:\n%s", shader, s->infoLog.c_str());
+    // WINEMETALGL_DUMP_SHADERS=1 prints the GLSL a module became.
+    if (const char* v = std::getenv("WINEMETALGL_DUMP_SHADERS"); v && v[0] == '1')
+        std::fprintf(stderr, "winemetalgl: SPIR-V shader %u as GLSL:\n%s\n", shader, s->spirvGlsl.c_str());
 }
 
 void GetShaderInfoLog(Context& ctx, GLuint shader, GLsizei bufSize, GLsizei* length, GLchar* infoLog) {
@@ -374,11 +430,37 @@ void GetShaderSource(Context& ctx, GLuint shader, GLsizei bufSize, GLsizei* leng
 
 void ReleaseShaderCompiler(Context& ctx) {}
 
+void MaxShaderCompilerThreadsKHR(Context& ctx, GLuint count) {
+    if (!ctx.parallelShaderCompile()) return ctx.unimplemented("glMaxShaderCompilerThreadsKHR");
+    ctx.state.maxShaderCompilerThreads = count;
+}
+
+// The one shader binary format is SPIR-V (GL 4.6 / GL_ARB_gl_spirv): the
+// module goes to every listed shader, to be specialized for its stage.
 void ShaderBinary(Context& ctx, GLsizei count, const GLuint* shaders, GLenum binaryFormat, const void* binary,
                   GLsizei length) {
     if (count < 0 || length < 0) return ctx.setError(GL_INVALID_VALUE);
-    // NUM_SHADER_BINARY_FORMATS is 0: no binary format is accepted.
-    ctx.setError(GL_INVALID_ENUM);
+    if (!ctx.glSpirv() || binaryFormat != GL_SHADER_BINARY_FORMAT_SPIR_V) return ctx.setError(GL_INVALID_ENUM);
+    std::vector<Shader*> targets;
+    for (GLsizei i = 0; i < count && shaders; ++i) {
+        Shader* s = shaderOrError(ctx, shaders[i]);
+        if (!s) return;
+        // At most one shader of each stage.
+        for (const Shader* other : targets)
+            if (other->type == s->type) return ctx.setError(GL_INVALID_OPERATION);
+        targets.push_back(s);
+    }
+    if (length % 4 || (length && !binary)) return ctx.setError(GL_INVALID_VALUE);
+    std::vector<uint32_t> words(static_cast<size_t>(length) / 4);
+    if (length) std::memcpy(words.data(), binary, static_cast<size_t>(length));
+    if (!shader::spirvHeaderValid(words)) return ctx.setError(GL_INVALID_VALUE);
+    for (Shader* s : targets) {
+        s->spirv = true;
+        s->specialized = s->compiled = s->compileStatus = false;
+        s->spirvWords = words;
+        s->spirvGlsl.clear();
+        s->infoLog.clear();
+    }
 }
 
 void GetShaderPrecisionFormat(Context& ctx, GLenum shadertype, GLenum precisiontype, GLint* range, GLint* precision) {
@@ -538,12 +620,34 @@ void LinkProgram(Context& ctx, GLuint program) {
     shader::LinkInput input;
     std::string log;
     bool ok = true;
+    std::map<uint32_t, std::string> spirvUniformNames;  // location -> the first stage's name
     for (const RefPtr<Shader>& s : p->attached) {
         if (!s->compileStatus) {
-            log += "error: attached shader " + std::to_string(s->name) + " is not compiled\n";
+            log += "error: attached shader " + std::to_string(s->name) + (s->spirv ? " is not specialized\n" : " is not compiled\n");
             ok = false;
         }
-        input.shaders.push_back({s->stage, s->source});
+        // SPIR-V shaders link as the GLSL they were specialized into, and
+        // only with SPIR-V shaders.
+        if (s->spirv != p->attached.front()->spirv) {
+            log += "error: SPIR-V and GLSL shaders cannot be linked together\n";
+            ok = false;
+        }
+        input.spirv |= s->spirv;
+        input.spirvUnnamed |= s->spirv && !s->spirvNamed;
+        std::string source = s->spirv ? s->spirvGlsl : s->source;
+        if (s->spirv && s->stage != shader::Stage::Compute) {
+            // Inputs match the outputs of the closest earlier stage.
+            int previous = -1;
+            for (const RefPtr<Shader>& other : p->attached)
+                if (other->stage < s->stage && other->stage != shader::Stage::Compute)
+                    previous = std::max(previous, static_cast<int>(other->stage));
+            if (previous >= 0) source = shader::spirvLinkInputs(source, static_cast<shader::Stage>(previous));
+        }
+        if (s->spirv) {
+            source = shader::spirvUnifyUniforms(source, s->spirvUniforms, spirvUniformNames);
+            for (const auto& [location, name] : s->spirvUniforms) spirvUniformNames.emplace(location, name);
+        }
+        input.shaders.push_back({s->stage, std::move(source)});
     }
     input.attribBindings = p->attribBindings;
     input.fragDataBindings = p->fragDataBindings;
@@ -662,6 +766,8 @@ std::string serialize(const shader::LinkInput& in) {
     for (const std::string& v : in.transformFeedbackVaryings) putString(out, v);
     put32(out, in.transformFeedbackMode);
     put32(out, in.separable ? 1 : 0);
+    // Since 3.0.0: SPIR-V programs (absent from older binaries).
+    put32(out, (in.spirv ? 1u : 0u) | (in.spirvUnnamed ? 2u : 0u));
     return out;
 }
 
@@ -717,6 +823,11 @@ bool deserialize(const void* data, size_t size, shader::LinkInput& in) {
     for (uint32_t i = 0; r.ok && i < varyings; ++i) in.transformFeedbackVaryings.push_back(r.str());
     in.transformFeedbackMode = r.u32();
     in.separable = r.u32() != 0;
+    if (r.ok && r.left >= 4) {
+        const uint32_t spirv = r.u32();
+        in.spirv = spirv & 1u;
+        in.spirvUnnamed = spirv & 2u;
+    }
     return r.ok && r.left == 0;
 }
 
@@ -782,15 +893,19 @@ void GetProgramiv(Context& ctx, GLuint program, GLenum pname, GLint* params) {
     Program* p = programOrError(ctx, program);
     if (!p || !params) return;
     const shader::LinkResult* link = p->linked && p->linkStatus ? &p->linked->link : nullptr;
-    auto maxLength = [](const auto& list, size_t count = SIZE_MAX) {
+    auto maxLength = [&](const auto& list, size_t count = SIZE_MAX) {
         GLint n = 0;
         for (size_t i = 0; i < std::min(count, list.size()); ++i)
-            n = std::max<GLint>(n, static_cast<GLint>(list[i].name.size() + 1));
+            n = std::max<GLint>(n, static_cast<GLint>(shader::spirvDisplayName(*link, list[i].name).size() + 1));
         return n;
     };
     switch (pname) {
     case GL_DELETE_STATUS: *params = p->deletePending; return;
     case GL_LINK_STATUS: *params = p->linkStatus; return;
+    case GL_COMPLETION_STATUS_ARB:  // links finish before glLinkProgram returns
+        if (!ctx.parallelShaderCompile()) break;
+        *params = GL_TRUE;
+        return;
     case GL_VALIDATE_STATUS: *params = p->validateStatus; return;
     case GL_INFO_LOG_LENGTH: *params = p->infoLog.empty() ? 0 : static_cast<GLint>(p->infoLog.size() + 1); return;
     case GL_ATTACHED_SHADERS: *params = static_cast<GLint>(p->attached.size()); return;
@@ -889,7 +1004,7 @@ void GetActiveAttrib(Context& ctx, GLuint program, GLuint index, GLsizei bufSize
     if (!p->linked || !p->linkStatus || index >= p->linked->link.attribs.size()) return ctx.setError(GL_INVALID_VALUE);
     const shader::AttribInfo& a = p->linked->link.attribs[index];
     // Lowered legacy attributes report their built-in name (wmgl_Vertex -> gl_Vertex).
-    copyString(a.conventional ? "gl_" + a.name.substr(5) : a.name, bufSize, length, name);
+    copyString(shader::spirvDisplayName(p->linked->link, a.conventional ? "gl_" + a.name.substr(5) : a.name), bufSize, length, name);
     if (size) *size = a.size;
     if (type) *type = a.type;
 }
@@ -923,7 +1038,7 @@ void GetActiveUniform(Context& ctx, GLuint program, GLuint index, GLsizei bufSiz
     if (!p) return;
     if (!p->linked || !p->linkStatus || index >= p->linked->link.visibleUniformCount()) return ctx.setError(GL_INVALID_VALUE);
     const shader::UniformInfo& u = p->linked->link.uniforms[index];
-    copyString(u.name, bufSize, length, name);
+    copyString(shader::spirvDisplayName(p->linked->link, u.name), bufSize, length, name);
     if (size) *size = u.size;
     if (type) *type = u.type;
 }
@@ -945,7 +1060,7 @@ void GetActiveUniformsiv(Context& ctx, GLuint program, GLsizei count, const GLui
         switch (pname) {
         case GL_UNIFORM_TYPE: params[i] = static_cast<GLint>(u.type); break;
         case GL_UNIFORM_SIZE: params[i] = u.size; break;
-        case GL_UNIFORM_NAME_LENGTH: params[i] = static_cast<GLint>(u.name.size() + 1); break;
+        case GL_UNIFORM_NAME_LENGTH: params[i] = static_cast<GLint>(shader::spirvDisplayName(p->linked->link, u.name).size() + 1); break;
         case GL_UNIFORM_BLOCK_INDEX: params[i] = u.blockIndex; break;
         // Block members and atomic counters (GL 4.2) have offsets and strides.
         case GL_UNIFORM_OFFSET: params[i] = u.blockIndex >= 0 || u.atomicBufferIndex >= 0 ? u.offset : -1; break;
@@ -1033,7 +1148,7 @@ void GetActiveUniformBlockiv(Context& ctx, GLuint program, GLuint blockIndex, GL
     switch (pname) {
     case GL_UNIFORM_BLOCK_BINDING: *params = static_cast<GLint>(p->uniformBlockBindings[blockIndex]); return;
     case GL_UNIFORM_BLOCK_DATA_SIZE: *params = b.dataSize; return;
-    case GL_UNIFORM_BLOCK_NAME_LENGTH: *params = static_cast<GLint>(b.name.size() + 1); return;
+    case GL_UNIFORM_BLOCK_NAME_LENGTH: *params = static_cast<GLint>(shader::spirvDisplayName(p->linked->link, b.name).size() + 1); return;
     case GL_UNIFORM_BLOCK_ACTIVE_UNIFORMS: *params = static_cast<GLint>(b.activeUniforms.size()); return;
     case GL_UNIFORM_BLOCK_ACTIVE_UNIFORM_INDICES:
         for (size_t i = 0; i < b.activeUniforms.size(); ++i) params[i] = b.activeUniforms[i];
@@ -1061,7 +1176,7 @@ void GetActiveUniformBlockName(Context& ctx, GLuint program, GLuint blockIndex, 
     Program* p = programOrError(ctx, program);
     if (!p) return;
     if (!p->linked || !p->linkStatus || blockIndex >= p->linked->link.visibleBlockCount()) return ctx.setError(GL_INVALID_VALUE);
-    copyString(p->linked->link.blocks[blockIndex].name, bufSize, length, name);
+    copyString(shader::spirvDisplayName(p->linked->link, p->linked->link.blocks[blockIndex].name), bufSize, length, name);
 }
 
 void UniformBlockBinding(Context& ctx, GLuint program, GLuint blockIndex, GLuint binding) {
@@ -1277,7 +1392,7 @@ void GetTransformFeedbackVarying(Context& ctx, GLuint program, GLuint index, GLs
     if (!p) return;
     if (!p->linked || !p->linkStatus || index >= p->linked->link.transformFeedback.size()) return ctx.setError(GL_INVALID_VALUE);
     const auto& v = p->linked->link.transformFeedback[index];
-    copyString(v.name, bufSize, length, name);
+    copyString(shader::spirvDisplayName(p->linked->link, v.name), bufSize, length, name);
     if (size) *size = v.size;
     if (type) *type = v.type;
 }

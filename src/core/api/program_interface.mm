@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "core/context.h"
+#include "core/shader/spirv_input.h"
 #include "core/program.h"
 #include "gl_api.gen.h"
 
@@ -18,7 +19,7 @@ using shader::Stage;
 
 enum class Kind {
     Uniform, UniformBlock, AtomicCounterBuffer, Input, Output, Subroutine, SubroutineUniform, TransformFeedbackVarying,
-    BufferVariable, StorageBlock,
+    BufferVariable, StorageBlock, TransformFeedbackBuffer,
 };
 
 bool programInterfaceQuery(Context& ctx, const char* command) {
@@ -39,6 +40,10 @@ bool interfaceKind(Context& ctx, GLenum iface, Kind& kind, Stage& stage) {
     case GL_TRANSFORM_FEEDBACK_VARYING: kind = Kind::TransformFeedbackVarying; return true;
     case GL_BUFFER_VARIABLE: kind = Kind::BufferVariable; return true;
     case GL_SHADER_STORAGE_BLOCK: kind = Kind::StorageBlock; return true;
+    case GL_TRANSFORM_FEEDBACK_BUFFER:  // GL 4.4, GL_ARB_enhanced_layouts
+        if (ctx.version() < 44 && !ctx.hasExtension("GL_ARB_enhanced_layouts")) return ctx.setError(GL_INVALID_ENUM), false;
+        kind = Kind::TransformFeedbackBuffer;
+        return true;
     case GL_VERTEX_SUBROUTINE: case GL_VERTEX_SUBROUTINE_UNIFORM: stage = Stage::Vertex; break;
     case GL_TESS_CONTROL_SUBROUTINE: case GL_TESS_CONTROL_SUBROUTINE_UNIFORM: stage = Stage::TessControl; break;
     case GL_TESS_EVALUATION_SUBROUTINE: case GL_TESS_EVALUATION_SUBROUTINE_UNIFORM: stage = Stage::TessEval; break;
@@ -63,6 +68,18 @@ Program* programOrError(Context& ctx, GLuint name) {
 
 const LinkResult* linkOf(const Program& p) { return p.linked && p.linkStatus ? &p.linked->link : nullptr; }
 
+// GL_TRANSFORM_FEEDBACK_BUFFER resources: the buffer bindings that captured
+// varyings use, in binding order.
+std::vector<int> xfbBuffers(const LinkResult& link) {
+    std::vector<int> buffers;
+    for (const shader::TransformFeedbackVarying& v : link.transformFeedback)
+        if (v.name.rfind("gl_SkipComponents", 0) != 0 && v.name != "gl_NextBuffer" &&
+            std::find(buffers.begin(), buffers.end(), v.buffer) == buffers.end())
+            buffers.push_back(v.buffer);
+    std::sort(buffers.begin(), buffers.end());
+    return buffers;
+}
+
 size_t resourceCount(const LinkResult* link, Kind kind, Stage stage) {
     if (!link) return 0;
     switch (kind) {
@@ -76,6 +93,7 @@ size_t resourceCount(const LinkResult* link, Kind kind, Stage stage) {
     case Kind::TransformFeedbackVarying: return link->transformFeedback.size();
     case Kind::BufferVariable: return link->bufferVariables.size();
     case Kind::StorageBlock: return link->storageBlocks.size();
+    case Kind::TransformFeedbackBuffer: return xfbBuffers(*link).size();
     }
     return 0;
 }
@@ -98,6 +116,7 @@ std::string resourceName(const LinkResult& link, Kind kind, Stage stage, size_t 
     case Kind::TransformFeedbackVarying: return link.transformFeedback[index].name;
     case Kind::BufferVariable: return link.bufferVariables[index].name;
     case Kind::StorageBlock: return link.storageBlocks[index].name;
+    case Kind::TransformFeedbackBuffer: return {};
     }
     return {};
 }
@@ -155,8 +174,8 @@ bool resourceProperty(const Program& p, const LinkResult& link, Kind kind, Stage
     Stage referenced;
     const bool referencedProp = referencedProperty(prop, referenced);
     if (prop == GL_NAME_LENGTH) {
-        if (kind == Kind::AtomicCounterBuffer) return false;
-        out.push_back(static_cast<GLint>(resourceName(link, kind, stage, index).size() + 1));
+        if (kind == Kind::AtomicCounterBuffer || kind == Kind::TransformFeedbackBuffer) return false;
+        out.push_back(static_cast<GLint>(shader::spirvDisplayName(link, resourceName(link, kind, stage, index)).size() + 1));
         return true;
     }
     switch (kind) {
@@ -217,6 +236,7 @@ bool resourceProperty(const Program& p, const LinkResult& link, Kind kind, Stage
         case GL_TYPE: out.push_back(static_cast<GLint>(v.type)); return true;
         case GL_ARRAY_SIZE: out.push_back(v.size); return true;
         case GL_LOCATION: out.push_back(v.location); return true;
+        case GL_LOCATION_COMPONENT: out.push_back(v.location < 0 ? 0 : v.component); return true;
         case GL_IS_PER_PATCH: out.push_back(v.perPatch ? 1 : 0); return true;
         case GL_LOCATION_INDEX:
             if (kind != Kind::Output) return false;
@@ -242,6 +262,31 @@ bool resourceProperty(const Program& p, const LinkResult& link, Kind kind, Stage
         switch (prop) {
         case GL_TYPE: out.push_back(static_cast<GLint>(v.type)); return true;
         case GL_ARRAY_SIZE: out.push_back(v.size); return true;
+        case GL_OFFSET: out.push_back(static_cast<GLint>(v.offset * 4)); return true;
+        case GL_TRANSFORM_FEEDBACK_BUFFER_INDEX: {
+            const std::vector<int> buffers = xfbBuffers(link);
+            const auto it = std::find(buffers.begin(), buffers.end(), v.buffer);
+            out.push_back(it == buffers.end() ? -1 : static_cast<GLint>(it - buffers.begin()));
+            return true;
+        }
+        default: return false;
+        }
+    }
+    case Kind::TransformFeedbackBuffer: {
+        const int buffer = xfbBuffers(link)[index];
+        std::vector<GLint> active;
+        for (size_t i = 0; i < link.transformFeedback.size(); ++i) {
+            const shader::TransformFeedbackVarying& v = link.transformFeedback[i];
+            if (v.buffer == buffer && v.name.rfind("gl_SkipComponents", 0) != 0 && v.name != "gl_NextBuffer")
+                active.push_back(static_cast<GLint>(i));
+        }
+        switch (prop) {
+        case GL_BUFFER_BINDING: out.push_back(buffer); return true;
+        case GL_NUM_ACTIVE_VARIABLES: out.push_back(static_cast<GLint>(active.size())); return true;
+        case GL_ACTIVE_VARIABLES: out.assign(active.begin(), active.end()); return true;
+        case GL_TRANSFORM_FEEDBACK_BUFFER_STRIDE:
+            out.push_back(static_cast<GLint>(buffer >= 0 && buffer < 4 ? link.xfbStride[buffer] * 4 : 0));
+            return true;
         default: return false;
         }
     }
@@ -277,6 +322,7 @@ bool knownProperty(GLenum prop) {
     case GL_REFERENCED_BY_GEOMETRY_SHADER: case GL_REFERENCED_BY_FRAGMENT_SHADER: case GL_REFERENCED_BY_COMPUTE_SHADER:
     case GL_TOP_LEVEL_ARRAY_SIZE: case GL_TOP_LEVEL_ARRAY_STRIDE: case GL_LOCATION: case GL_LOCATION_INDEX:
     case GL_IS_PER_PATCH: case GL_NUM_COMPATIBLE_SUBROUTINES: case GL_COMPATIBLE_SUBROUTINES:
+    case GL_LOCATION_COMPONENT: case GL_TRANSFORM_FEEDBACK_BUFFER_INDEX: case GL_TRANSFORM_FEEDBACK_BUFFER_STRIDE:
         return true;
     default: return false;
     }
@@ -296,17 +342,19 @@ void GetProgramInterfaceiv(Context& ctx, GLuint program, GLenum programInterface
     switch (pname) {
     case GL_ACTIVE_RESOURCES: *params = static_cast<GLint>(count); return;
     case GL_MAX_NAME_LENGTH: {
-        if (kind == Kind::AtomicCounterBuffer) return ctx.setError(GL_INVALID_OPERATION);
+        if (kind == Kind::AtomicCounterBuffer || kind == Kind::TransformFeedbackBuffer) return ctx.setError(GL_INVALID_OPERATION);
         GLint n = 0;
         if (kind == Kind::Subroutine && link)
             for (const auto& f : link->subroutines[static_cast<int>(stage)].functions) n = std::max(n, static_cast<GLint>(f.name.size() + 1));
         else if (kind != Kind::Subroutine)
-            for (size_t i = 0; i < count; ++i) n = std::max(n, static_cast<GLint>(resourceName(*link, kind, stage, i).size() + 1));
+            for (size_t i = 0; i < count; ++i)
+                n = std::max(n, static_cast<GLint>(shader::spirvDisplayName(*link, resourceName(*link, kind, stage, i)).size() + 1));
         *params = n;
         return;
     }
     case GL_MAX_NUM_ACTIVE_VARIABLES: {
-        if (kind != Kind::UniformBlock && kind != Kind::StorageBlock && kind != Kind::AtomicCounterBuffer)
+        if (kind != Kind::UniformBlock && kind != Kind::StorageBlock && kind != Kind::AtomicCounterBuffer &&
+            kind != Kind::TransformFeedbackBuffer)
             return ctx.setError(GL_INVALID_OPERATION);
         GLint n = 0;
         std::vector<GLint> values;
@@ -334,7 +382,7 @@ GLuint GetProgramResourceIndex(Context& ctx, GLuint program, GLenum programInter
     Kind kind;
     Stage stage;
     if (!interfaceKind(ctx, programInterface, kind, stage)) return GL_INVALID_INDEX;
-    if (kind == Kind::AtomicCounterBuffer) {
+    if (kind == Kind::AtomicCounterBuffer || kind == Kind::TransformFeedbackBuffer) {
         ctx.setError(GL_INVALID_ENUM);
         return GL_INVALID_INDEX;
     }
@@ -366,13 +414,13 @@ void GetProgramResourceName(Context& ctx, GLuint program, GLenum programInterfac
     Kind kind;
     Stage stage;
     if (!interfaceKind(ctx, programInterface, kind, stage)) return;
-    if (kind == Kind::AtomicCounterBuffer) return ctx.setError(GL_INVALID_ENUM);
+    if (kind == Kind::AtomicCounterBuffer || kind == Kind::TransformFeedbackBuffer) return ctx.setError(GL_INVALID_ENUM);
     Program* p = programOrError(ctx, program);
     if (!p) return;
     if (bufSize < 0) return ctx.setError(GL_INVALID_VALUE);
     const LinkResult* link = linkOf(*p);
     if (!validIndex(link, kind, stage, index)) return ctx.setError(GL_INVALID_VALUE);
-    const std::string s = resourceName(*link, kind, stage, index);
+    const std::string s = shader::spirvDisplayName(*link, resourceName(*link, kind, stage, index));
     if (length) *length = 0;
     if (bufSize <= 0 || !name) return;
     const GLsizei n = std::min<GLsizei>(bufSize - 1, static_cast<GLsizei>(s.size()));

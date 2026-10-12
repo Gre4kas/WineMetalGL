@@ -121,7 +121,10 @@ void CommandStream::startRender(const RenderTargetDesc& target) {
         if (!visibility_) {
             visibility_ = [Device::get().mtl() newBufferWithLength:kVisibilitySlots * 8 options:MTLResourceStorageModeShared];
             std::memset(visibility_.contents, 0, kVisibilitySlots * 8);
-            visibilityUsed_ = 0;
+            // Slot 0 is never a query's: every pass starts counting at offset
+            // 0 (and disabled counting points there), and a later pass in the
+            // command buffer resets what an earlier one counted there.
+            visibilityUsed_ = 1;
         }
         pass.visibilityResultBuffer = visibility_;
         passVisibility_ = true;
@@ -136,6 +139,7 @@ void CommandStream::startRender(const RenderTargetDesc& target) {
 }
 
 id<MTLRenderCommandEncoder> CommandStream::render(const RenderTargetDesc& target) {
+    ++renderCalls_;
     // A clear recorded for another target while this pass stayed open runs
     // first: later draws (here, or sampling that target) must see it.
     if (pending_.any() && pendingTarget_ != target) resolvePendingClear();

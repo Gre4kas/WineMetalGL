@@ -28,6 +28,10 @@ public:
     NameTable<Texture> textures;
     NameTable<Renderbuffer> renderbuffers;
     NameTable<Sampler> samplers;
+    // Framebuffers are container objects GL does not share, but desktop
+    // drivers (Mesa, NVIDIA, AMD) do, and games rely on it: DOOM (2016) makes
+    // its framebuffers on one context and draws with another.
+    NameTable<Framebuffer> framebuffers;
 
     // Shaders and programs share one name space (GL 3.3 section 2.11.1).
     std::unordered_map<GLuint, RefPtr<Shader>> shaders;

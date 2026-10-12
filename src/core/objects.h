@@ -10,6 +10,7 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "core/format/formats.h"
@@ -37,6 +38,9 @@ public:
     GLsizeiptr size = 0;
     GLenum usage = GL_STATIC_DRAW;
     bool immutable = false;
+    // GL_AMD_pinned_memory: the storage is the application's memory (never
+    // replaced behind its back).
+    bool pinned = false;
     GLbitfield storageFlags = 0;
     // Mapping state (glMapBuffer*).
     bool mapped = false;
@@ -51,23 +55,54 @@ public:
     // Incremented whenever the contents change (keys derived caches).
     uint64_t version = 0;
     // drawElements' scans of index ranges in this buffer (draw.mm), valid
-    // while `version` is unchanged.
-    struct IndexScan {
-        uint64_t version;
+    // while `version` is `indexScansVersion`: by range (offset, count, type
+    // and restart index, all-ones for none), for a scene's worth of meshes.
+    struct IndexRange {
         uintptr_t offset;
-        GLsizei count;
-        GLenum type;
-        uint32_t restartIndex;
-        bool restart;
+        uint64_t count, type, restartIndex;
+        bool operator==(const IndexRange& o) const {
+            return offset == o.offset && count == o.count && type == o.type && restartIndex == o.restartIndex;
+        }
+    };
+    struct IndexRangeHash {
+        size_t operator()(const IndexRange& r) const {
+            return std::hash<uint64_t>()(r.offset * 0x9e3779b97f4a7c15ull ^ (r.count << 20) ^ (r.type << 8) ^ r.restartIndex);
+        }
+    };
+    struct IndexScan {
         uint32_t minIndex, maxIndex;
         bool hasRestart;
     };
-    static constexpr size_t kMaxIndexScans = 64;
-    std::vector<IndexScan> indexScans;
+    static constexpr size_t kMaxIndexScans = 16384;
+    std::unordered_map<IndexRange, IndexScan, IndexRangeHash> indexScans;
+    uint64_t indexScansVersion = 0;
+
+    // bindVertexInputs' CPU conversions of attributes read from this buffer
+    // (draw.mm), valid while `version` is `convertedVersion`: by the
+    // attributes' layouts and the elements converted, so draws of unchanged
+    // meshes convert once. Their bytes count towards kMaxConvertedBytes.
+    struct ConvertedVertices {
+        id<MTLBuffer> mtl = nil;
+        size_t bytes = 0;
+        ~ConvertedVertices() { convertedBytes() -= bytes; }
+    };
+    static constexpr size_t kMaxConvertedBytes = size_t{256} << 20;
+    static std::atomic<size_t>& convertedBytes() {
+        static std::atomic<size_t> bytes{0};
+        return bytes;
+    }
+    std::map<std::vector<uint64_t>, std::unique_ptr<ConvertedVertices>> converted;
+    uint64_t convertedVersion = 0;
 
     uint8_t* contents() const { return mtl ? static_cast<uint8_t*>(mtl.contents) : nullptr; }
     // Mapped in a way that forbids GPU use (persistent mappings allow it).
     bool mappedNonPersistent() const { return mapped && !(mapAccess & GL_MAP_PERSISTENT_BIT); }
+    // Whether [offset, offset + size) overlaps a non-persistent mapping: the
+    // INVALID_OPERATION of BufferSubData and ClearBufferSubData (GL 4.6
+    // sections 6.2.2, 6.3).
+    bool rangeMapped(GLintptr offset, GLsizeiptr size) const {
+        return mappedNonPersistent() && offset < mapOffset + mapLength && mapOffset < offset + size;
+    }
 };
 
 // --------------------------------------------------------------- samplers
@@ -80,6 +115,7 @@ struct SamplerParams {
     GLenum compareMode = GL_NONE;
     GLenum compareFunc = GL_LEQUAL;
     GLfloat maxAnisotropy = 1.0f;
+    GLenum srgbDecode = GL_DECODE_EXT;  // GL_EXT_texture_sRGB_decode
     union {
         GLfloat f[4];
         GLint i[4];
@@ -290,6 +326,12 @@ public:
     bool compiled = false;   // glCompileShader has been called since the last source change
     bool compileStatus = false;
     std::string infoLog;
+    // GL_ARB_gl_spirv: the module glShaderBinary gave (SPIR_V_BINARY) and the
+    // GLSL glSpecializeShader made of it (shader/spirv_input.h).
+    bool spirv = false, specialized = false, spirvNamed = false;
+    std::vector<uint32_t> spirvWords;
+    std::string spirvGlsl;
+    std::vector<std::pair<uint32_t, std::string>> spirvUniforms;  // (location, name in spirvGlsl)
     bool deletePending = false;
     int attachCount = 0;
 };
@@ -360,8 +402,12 @@ public:
     uint64_t result = 0;
     uint64_t pendingSerial = 0;   // result is final once this serial completes
     bool resultFinal = true;      // result holds the final value
-    // Visibility-result slots used by occlusion queries (summed on completion).
+    // Visibility-result slots used by occlusion queries, or the 32-bit
+    // counters of FRAGMENT_SHADER_INVOCATIONS (one per command buffer); summed
+    // on completion.
     std::vector<std::pair<id<MTLBuffer>, uint32_t>> visibilitySlots;
+    uint64_t counterSerial = 0;  // the command buffer of the last counter slot
+    uint64_t counterBound = 0;   // invocations the last counter slot's draws can have counted
     // GPU times (seconds, host time base) for TIME_ELAPSED and TIMESTAMP,
     // written by command-buffer completion handlers.
     struct Timer {

@@ -171,10 +171,16 @@ void attachTexture(Context& ctx, GLenum target, GLenum attachment, GLenum textar
                 return ctx.setError(GL_INVALID_VALUE);
         } else if (layerCall) {
             const GLenum t = tex->target;
+            // GL 4.5: a cube map's layer is a face.
+            const bool cube = t == GL_TEXTURE_CUBE_MAP && ctx.version() >= 45;
             if (t != GL_TEXTURE_3D && t != GL_TEXTURE_2D_ARRAY && t != GL_TEXTURE_1D_ARRAY && t != GL_TEXTURE_2D_MULTISAMPLE_ARRAY &&
-                t != GL_TEXTURE_CUBE_MAP_ARRAY)
+                t != GL_TEXTURE_CUBE_MAP_ARRAY && !cube)
                 return ctx.setError(GL_INVALID_OPERATION);
-            if (layer < 0) return ctx.setError(GL_INVALID_VALUE);
+            if (layer < 0 || (cube && layer >= 6)) return ctx.setError(GL_INVALID_VALUE);
+            if (cube) a.cubeFace = GL_TEXTURE_CUBE_MAP_POSITIVE_X + static_cast<GLenum>(layer);
+            // A layer past the target's limit (MAX_3D_TEXTURE_SIZE or MAX_ARRAY_TEXTURE_LAYERS).
+            if (layer >= (t == GL_TEXTURE_3D ? limits::kMax3DTextureSize : limits::kMaxArrayLayers))
+                return ctx.setError(GL_INVALID_VALUE);
         }
         a.type = GL_TEXTURE;
         a.texture = tex;
@@ -199,7 +205,9 @@ void attachTexture(Context& ctx, GLenum target, GLenum attachment, GLenum textar
 
 void GenFramebuffers(Context& ctx, GLsizei n, GLuint* framebuffers) {
     if (n < 0) return ctx.setError(GL_INVALID_VALUE);
-    if (framebuffers) ctx.framebuffers.generate(n, framebuffers);
+    if (!framebuffers) return;
+    ShareLock lock(ctx);
+    ctx.share().framebuffers.generate(n, framebuffers);
 }
 
 void DeleteFramebuffers(Context& ctx, GLsizei n, const GLuint* framebuffers) {
@@ -207,7 +215,11 @@ void DeleteFramebuffers(Context& ctx, GLsizei n, const GLuint* framebuffers) {
     if (!framebuffers) return;
     for (GLsizei i = 0; i < n; ++i) {
         if (!framebuffers[i]) continue;
-        RefPtr<Framebuffer> fb = ctx.framebuffers.remove(framebuffers[i]);
+        RefPtr<Framebuffer> fb;
+        {
+            ShareLock lock(ctx);
+            fb = ctx.share().framebuffers.remove(framebuffers[i]);
+        }
         if (!fb) continue;
         if (ctx.state.drawFramebuffer == fb) ctx.state.drawFramebuffer.reset();
         if (ctx.state.readFramebuffer == fb) ctx.state.readFramebuffer.reset();
@@ -215,7 +227,10 @@ void DeleteFramebuffers(Context& ctx, GLsizei n, const GLuint* framebuffers) {
     }
 }
 
-GLboolean IsFramebuffer(Context& ctx, GLuint framebuffer) { return ctx.framebuffers.exists(framebuffer) ? GL_TRUE : GL_FALSE; }
+GLboolean IsFramebuffer(Context& ctx, GLuint framebuffer) {
+    ShareLock lock(ctx);
+    return ctx.share().framebuffers.exists(framebuffer) ? GL_TRUE : GL_FALSE;
+}
 
 namespace {
 
@@ -226,14 +241,16 @@ void bindFramebuffer(Context& ctx, GLenum target, GLuint name, bool createUnused
         return ctx.setError(GL_INVALID_ENUM);
     RefPtr<Framebuffer> fb;
     if (name) {
-        if (!ctx.framebuffers.isGenerated(name)) {
+        ShareLock lock(ctx);
+        NameTable<Framebuffer>& table = ctx.share().framebuffers;
+        if (!table.isGenerated(name)) {
             if (!createUnused) return ctx.setError(GL_INVALID_OPERATION);
-            ctx.framebuffers.reserve(name);
+            table.reserve(name);
         }
-        fb = ctx.framebuffers.getRef(name);
+        fb = table.getRef(name);
         if (!fb) {
             fb = makeRef<Framebuffer>(name);
-            ctx.framebuffers.set(name, fb);
+            table.set(name, fb);
         }
     }
     if (target != GL_READ_FRAMEBUFFER) ctx.state.drawFramebuffer = fb;
@@ -370,6 +387,26 @@ void GetFramebufferParameteriv(Context& ctx, GLenum target, GLenum pname, GLint*
     RefPtr<Framebuffer>* binding = framebufferBinding(ctx, target);
     if (!binding) return ctx.setError(GL_INVALID_ENUM);
     Framebuffer* fb = binding->get();
+    // GL 4.5: the framebuffer-dependent state of glGetIntegerv, for the
+    // framebuffer bound to `target` (the default framebuffer included).
+    if (ctx.version() >= 45 && (pname == GL_DOUBLEBUFFER || pname == GL_STEREO || pname == GL_SAMPLES ||
+                                pname == GL_SAMPLE_BUFFERS || pname == GL_IMPLEMENTATION_COLOR_READ_FORMAT ||
+                                pname == GL_IMPLEMENTATION_COLOR_READ_TYPE)) {
+        if (!params) return;
+        if (pname == GL_STEREO) return void(*params = GL_FALSE);
+        if (pname == GL_DOUBLEBUFFER) {
+            Surface* surface = ctx.drawSurface();
+            *params = !fb && surface && surface->pixelFormat().double_buffer ? GL_TRUE : GL_FALSE;
+            return;
+        }
+        RefPtr<Framebuffer> current = *binding;
+        RefPtr<Framebuffer> draw = ctx.state.drawFramebuffer, read = ctx.state.readFramebuffer;
+        ctx.state.drawFramebuffer = ctx.state.readFramebuffer = current;
+        GetIntegerv(ctx, pname, params);
+        ctx.state.drawFramebuffer = draw;
+        ctx.state.readFramebuffer = read;
+        return;
+    }
     if (!fb) return ctx.setError(GL_INVALID_OPERATION);
     if (!params) return;
     switch (pname) {
@@ -393,7 +430,9 @@ void GetFramebufferAttachmentParameteriv(Context& ctx, GLenum target, GLenum att
         const bool color = attachment == GL_FRONT_LEFT || attachment == GL_BACK_LEFT || attachment == GL_FRONT ||
                            attachment == GL_BACK || attachment == GL_LEFT;
         const bool depth = attachment == GL_DEPTH, stencil = attachment == GL_STENCIL;
-        if (!color && !depth && !stencil) return ctx.setError(GL_INVALID_ENUM);
+        // The right buffers exist only in stereo formats, which WineMetalGL has none of.
+        const bool right = attachment == GL_FRONT_RIGHT || attachment == GL_BACK_RIGHT || attachment == GL_RIGHT;
+        if (!color && !depth && !stencil && !right) return ctx.setError(GL_INVALID_ENUM);
         const bool present = surface && (color || (depth && surface->hasDepth()) || (stencil && surface->hasStencil()));
         switch (pname) {
         case GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE: *params = present ? GL_FRAMEBUFFER_DEFAULT : GL_NONE; return;
@@ -756,10 +795,34 @@ void ReadPixels(Context& ctx, GLint x, GLint y, GLsizei width, GLsizei height, G
     const PixelStoreParams ps = pixelStoreParams(ctx.state.pack, false);
     Buffer* pbo = ctx.state.pixelPackBuffer.get();
     uint8_t* destination = static_cast<uint8_t*>(pixels);
+    // Into a pack buffer, texels already in the requested layout are copied
+    // by the GPU in command order, without waiting for it (asynchronous
+    // readback, as engines use pack buffers for): a colour region inside the
+    // source, in the alignment Metal's copies need.
+    if (pbo && pbo->mtl && !pbo->mappedNonPersistent() && !depth && !stencil && !depthStencil && width > 0 && height > 0 &&
+        x >= 0 && y >= 0 && x + width <= levelWidth && y + height <= levelHeight && storedLayout(format, type, *info) &&
+        (ctx.state.clampReadColorMode == GL_FALSE || info->type == ComponentType::UnsignedNormalized ||
+         (ctx.state.clampReadColorMode == GL_FIXED_ONLY && info->type != ComponentType::SignedNormalized))) {
+        const TransferLayout layout = transferLayout(format, type, width, height, 1, ps);
+        const size_t texelBytes = storageBytes(info->storage);
+        const uintptr_t start = reinterpret_cast<uintptr_t>(pixels) + layout.skipBytes;
+        if (start % 4 == 0 && start % texelBytes == 0 && layout.rowStride % texelBytes == 0 && layout.rowStride % 4 == 0 &&
+            start <= static_cast<size_t>(pbo->size) && layout.bytesNeeded - layout.skipBytes <= static_cast<size_t>(pbo->size) - start) {
+            const bool is3D = source.textureType == MTLTextureType3D;
+            [ctx.stream().blit() copyFromTexture:source sourceSlice:is3D ? 0 : slice sourceLevel:level
+                                    sourceOrigin:MTLOriginMake(x, y, is3D ? slice : 0)
+                                      sourceSize:MTLSizeMake(width, height, 1) toBuffer:pbo->mtl destinationOffset:start
+                          destinationBytesPerRow:layout.rowStride destinationBytesPerImage:layout.rowStride * height];
+            pbo->lastUseSerial = pbo->lastWriteSerial = ctx.stream().serial();
+            ++pbo->version;
+            return;
+        }
+    }
     if (pbo) {
         const TransferLayout layout = transferLayout(format, type, width, height, 1, ps);
         const uintptr_t offset = reinterpret_cast<uintptr_t>(pixels);
-        if (pbo->mappedNonPersistent() || !pbo->mtl || offset + layout.bytesNeeded > static_cast<size_t>(pbo->size))
+        if (pbo->mappedNonPersistent() || !pbo->mtl || offset > static_cast<size_t>(pbo->size) ||
+            layout.bytesNeeded > static_cast<size_t>(pbo->size) - offset)
             return ctx.setError(GL_INVALID_OPERATION);
         ctx.stream().waitFor(pbo->lastUseSerial);
         destination = pbo->contents() + offset;

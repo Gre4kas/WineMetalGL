@@ -36,6 +36,14 @@ import xml.etree.ElementTree as ET
 
 MAX_ABORTS = 20  # platform aborts tolerated per shard before cases are marked Crash
 MUSTPASS_REL = "external/openglcts/data/gl_cts/data/mustpass/gl/khronos_mustpass/main"
+# The single-configuration lists (KHR-Single-GL4x: enhanced layouts, arrays of arrays).
+SINGLE_MUSTPASS_REL = "external/openglcts/data/gl_cts/data/mustpass/gl/khronos_mustpass_single/main"
+
+
+def mustpass_dir(caselist_name):
+    return SINGLE_MUSTPASS_REL if caselist_name.endswith("-khr-single.txt") else MUSTPASS_REL
+
+
 CASE_BEGIN = re.compile(r"^#beginTestCaseResult (\S+)")
 CASE_END = re.compile(r"^#(endTestCaseResult|terminateTestCaseResult)")
 STATUS = re.compile(r'<Result StatusCode="(\w+)"')
@@ -52,7 +60,7 @@ def find_cts_root(cts_exe):
 
 def load_configs(cts_root, caselist_name):
     """Return the mustpass command lines for a case list, in mustpass.xml order."""
-    tree = ET.parse(os.path.join(cts_root, MUSTPASS_REL, "mustpass.xml"))
+    tree = ET.parse(os.path.join(cts_root, mustpass_dir(caselist_name), "mustpass.xml"))
     configs = []
     for node in tree.iter("Configuration"):
         if node.get("caseListFile") == caselist_name:
@@ -64,7 +72,7 @@ def read_cases(args, cts_root):
     if args.caselist:
         path = args.caselist
     else:
-        path = os.path.join(cts_root, MUSTPASS_REL, args.mustpass)
+        path = os.path.join(cts_root, mustpass_dir(args.mustpass), args.mustpass)
     cases = []
     with open(path) as handle:
         for line in handle:
@@ -260,7 +268,7 @@ def main():
     parser.add_argument("--template", help="existing WoW64 template prefix to clone")
     parser.add_argument("--env", action="append", default=[], help="extra KEY=VALUE for Wine")
     parser.add_argument("--reference", action="store_true",
-                        help="run the Apple OpenGL reference path (WINEMETALGL=0)")
+                        help="run the Apple OpenGL reference path (Wine's own opengl32)")
     parser.add_argument("--keep-qpa", action="store_true")
     parser.add_argument("--keep-prefix", action="store_true")
     parser.add_argument("--log-images", action="store_true")
@@ -291,10 +299,12 @@ def main():
     env.update({"WINEARCH": "wow64", "WINEDEBUG": env.get("WINEDEBUG", "-all")})
     if not args.native:
         env.setdefault("DYLD_LIBRARY_PATH", os.path.join(args.wine, "lib"))
+    env.pop("WINEMETALGL", None)
     if args.reference:
+        # Wine's own opengl32 instead of the Wine module (WINEMETALGL=0 for a
+        # Wine with the 2.x patches).
+        env["WINEDLLOVERRIDES"] = "opengl32=b"
         env["WINEMETALGL"] = "0"
-    else:
-        env.pop("WINEMETALGL", None)  # the core is Wine's default OpenGL
     for item in args.env:
         key, _, value = item.partition("=")
         env[key] = value

@@ -31,8 +31,11 @@ scripts/traces/replay.py --wine /path/to/wine --corpus-root /path/to/corpus \
     --template /path/to/prefix-template --path new --html /tmp/corpus.html
 ```
 
-`--path` selects the implementation: `new` (WineMetalGL, Wine's default) or
-`apple` (`WINEMETALGL=0`, Apple's OpenGL, which records the references).
+The template prefix has the Wine module installed
+(`scripts/install-wine-module.sh /path/to/wine /path/to/prefix-template`).
+`--path` selects the implementation: `new` (WineMetalGL, the prefix's
+OpenGL) or `apple` (Wine's own `opengl32`, Apple's OpenGL, which records the
+references; it needs a Wine built with OpenGL).
 `--json tests/games/results.json` records the run that `docs/games.md` reports.
 
 The corpus directory is not tracked: `build-demos.sh` builds the demos into

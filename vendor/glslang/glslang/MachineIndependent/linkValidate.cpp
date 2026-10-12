@@ -174,9 +174,9 @@ void TIntermediate::checkStageIO(TInfoSink& infoSink, TIntermediate& unit) {
             if (nextStageSymbol->getType().getBasicType() != EbtBlock &&
                 nextStageSymbol->getName().compare(0, 3, "gl_") == 0)
                 continue;
-            // WineMetalGL: an input the stage never reads needs no output
-            // (GL rules; it is only an error when statically used).
-            if (nextStageSymbol->getType().getBasicType() != EbtBlock && !unit.inIoAccessed(nextStageSymbol->getName()))
+            // WineMetalGL: an input (or input block) the stage never reads
+            // needs no output (GL rules; it is only an error when statically used).
+            if (!unit.inIoAccessed(nextStageSymbol->getName()))
                 continue;
             bool found = false;
             for (auto& curStageInterm : linkerObjects) {
@@ -1798,7 +1798,9 @@ int TIntermediate::addUsedLocation(const TQualifier& qualifier, const TType& typ
     TIoRange range(locationRange, componentRange, basicTy, qualifier.hasIndex() ? qualifier.getIndex() : 0, qualifier.centroid, qualifier.smooth, qualifier.flat, qualifier.sample, qualifier.patch);
 
     // check for collisions, except for vertex inputs on desktop targeting OpenGL
-    if (! (!isEsProfile() && language == EShLangVertex && qualifier.isPipeInput()) || spvVersion.vulkan > 0)
+    // (WineMetalGL: also under the relaxed Vulkan rules its OpenGL codegen uses)
+    if (! (!isEsProfile() && language == EShLangVertex && qualifier.isPipeInput()) ||
+        (spvVersion.vulkan > 0 && !spvVersion.vulkanRelaxed))
         collision = checkLocationRange(set, range, type, typeCollision);
 
     if (collision < 0)

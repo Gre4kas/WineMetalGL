@@ -1,5 +1,6 @@
 // Drawing commands (GL 3.3 section 2.8.3).
 
+#include <algorithm>
 #include <cstring>
 #include <vector>
 
@@ -125,8 +126,14 @@ bool readIndirectCommand(Context& ctx, const void* indirect, uint32_t* words, si
     }
     if (offset % 4) return ctx.setError(GL_INVALID_VALUE), false;
     if (buffer->mappedNonPersistent()) return ctx.setError(GL_INVALID_OPERATION), false;
-    if (!buffer->mtl || offset + count * 4 > static_cast<uint64_t>(buffer->size)) return ctx.setError(GL_INVALID_OPERATION), false;
+    const auto fits = [&] {
+        const uint64_t size = static_cast<uint64_t>(std::max<GLsizeiptr>(0, buffer->size));
+        return buffer->mtl && offset <= size && count * 4 <= size - offset;
+    };
+    if (!fits()) return ctx.setError(GL_INVALID_OPERATION), false;
     if (buffer->lastWriteSerial) waitForGpuUnlocked(ctx, buffer->lastWriteSerial);
+    // Another context may have specified the buffer again during the wait.
+    if (!fits()) return ctx.setError(GL_INVALID_OPERATION), false;
     std::memcpy(words, buffer->contents() + offset, count * 4);
     return true;
 }
@@ -174,35 +181,125 @@ void DrawElementsIndirect(Context& ctx, GLenum mode, GLenum type, const void* in
 }
 
 // GL 4.3 / GL_ARB_multi_draw_indirect: each command as its own indirect
-// draw (commands are read on the CPU, as for the single-draw forms).
+// draw (commands are read on the CPU, as for the single-draw forms), with
+// gl_DrawID its index.
+namespace {
+
+// INVALID_OPERATION, before anything draws, when `drawcount` commands of
+// `size` bytes `step` apart from `indirect` don't fit in DRAW_INDIRECT_BUFFER.
+bool indirectCommandsFit(Context& ctx, const void* indirect, GLsizei drawcount, uintptr_t step, uintptr_t size) {
+    Buffer* buffer = ctx.state.drawIndirectBuffer.get();
+    if (!buffer || drawcount <= 0) return true;  // client memory (compatibility profile), or nothing to read
+    uint64_t end = 0;
+    if (__builtin_mul_overflow(step, static_cast<uint64_t>(drawcount - 1), &end) ||
+        __builtin_add_overflow(end, static_cast<uint64_t>(reinterpret_cast<uintptr_t>(indirect)), &end) ||
+        __builtin_add_overflow(end, static_cast<uint64_t>(size), &end) || end > static_cast<uint64_t>(buffer->size))
+        return ctx.setError(GL_INVALID_OPERATION), false;
+    return true;
+}
+
+void multiDrawArraysIndirect(Context& ctx, GLenum mode, const void* indirect, GLsizei drawcount, uintptr_t step) {
+    for (GLsizei i = 0; i < drawcount; ++i) {
+        DrawState::DrawIdScope id(ctx.draw(), i);
+        DrawArraysIndirect(ctx, mode, reinterpret_cast<const void*>(reinterpret_cast<uintptr_t>(indirect) + step * static_cast<uintptr_t>(i)));
+    }
+}
+
+void multiDrawElementsIndirect(Context& ctx, GLenum mode, GLenum type, const void* indirect, GLsizei drawcount, uintptr_t step) {
+    for (GLsizei i = 0; i < drawcount; ++i) {
+        DrawState::DrawIdScope id(ctx.draw(), i);
+        DrawElementsIndirect(ctx, mode, type,
+                             reinterpret_cast<const void*>(reinterpret_cast<uintptr_t>(indirect) + step * static_cast<uintptr_t>(i)));
+    }
+}
+
+// GL 4.6 / GL_ARB_indirect_parameters: the draw count is the uint at
+// `offset` in PARAMETER_BUFFER (read on the CPU after any GPU write to it),
+// at most `maxdrawcount`. -1 with the GL error set.
+GLsizei parameterDrawCount(Context& ctx, GLintptr offset, GLsizei maxdrawcount) {
+    if (offset < 0 || offset % 4 || maxdrawcount < 0) return ctx.setError(GL_INVALID_VALUE), -1;
+    Buffer* buffer = ctx.state.parameterBuffer.get();
+    if (!buffer || !buffer->mtl || 4 > buffer->size - offset || buffer->mappedNonPersistent())
+        return ctx.setError(GL_INVALID_OPERATION), -1;
+    if (buffer->lastWriteSerial) waitForGpuUnlocked(ctx, buffer->lastWriteSerial);
+    // Another context may have specified the buffer again during the wait.
+    if (!buffer->mtl || 4 > buffer->size - offset) return ctx.setError(GL_INVALID_OPERATION), -1;
+    uint32_t count = 0;
+    std::memcpy(&count, buffer->contents() + offset, 4);
+    return static_cast<GLsizei>(std::min<uint32_t>(count, static_cast<uint32_t>(maxdrawcount)));
+}
+
+// The errors each command of a multi-draw would generate, checked once
+// before any command is read, so that they are generated when none draws.
+bool validMultiDraw(Context& ctx, GLenum mode, const GLenum* type, const void* indirect) {
+    if (!validIndirectMode(ctx, mode)) return false;
+    if (type && *type != GL_UNSIGNED_BYTE && *type != GL_UNSIGNED_SHORT && *type != GL_UNSIGNED_INT)
+        return ctx.setError(GL_INVALID_ENUM), false;
+    if (ctx.isCore() && ctx.state.vertexArray == ctx.defaultVertexArray) return ctx.setError(GL_INVALID_OPERATION), false;
+    if (type && !ctx.state.vertexArray->elementBuffer) return ctx.setError(GL_INVALID_OPERATION), false;
+    Buffer* buffer = ctx.state.drawIndirectBuffer.get();
+    if (!buffer && ctx.isCore()) return ctx.setError(GL_INVALID_OPERATION), false;
+    if (buffer && reinterpret_cast<uintptr_t>(indirect) % 4) return ctx.setError(GL_INVALID_VALUE), false;
+    return true;
+}
+
+}  // namespace
+
 void MultiDrawArraysIndirect(Context& ctx, GLenum mode, const void* indirect, GLsizei drawcount, GLsizei stride) {
     if (ctx.version() < 43 && !ctx.hasExtension("GL_ARB_multi_draw_indirect")) return ctx.unimplemented("glMultiDrawArraysIndirect");
     if (drawcount < 0 || stride < 0 || stride % 4) return ctx.setError(GL_INVALID_VALUE);
+    if (!validMultiDraw(ctx, mode, nullptr, indirect)) return;
     const uintptr_t step = stride ? static_cast<uintptr_t>(stride) : 16;
-    for (GLsizei i = 0; i < drawcount; ++i)
-        DrawArraysIndirect(ctx, mode, reinterpret_cast<const void*>(reinterpret_cast<uintptr_t>(indirect) + step * static_cast<uintptr_t>(i)));
+    if (!indirectCommandsFit(ctx, indirect, drawcount, step, 16)) return;
+    multiDrawArraysIndirect(ctx, mode, indirect, drawcount, step);
 }
 
 void MultiDrawElementsIndirect(Context& ctx, GLenum mode, GLenum type, const void* indirect, GLsizei drawcount, GLsizei stride) {
     if (ctx.version() < 43 && !ctx.hasExtension("GL_ARB_multi_draw_indirect")) return ctx.unimplemented("glMultiDrawElementsIndirect");
     if (drawcount < 0 || stride < 0 || stride % 4) return ctx.setError(GL_INVALID_VALUE);
+    if (!validMultiDraw(ctx, mode, &type, indirect)) return;
     const uintptr_t step = stride ? static_cast<uintptr_t>(stride) : 20;
-    for (GLsizei i = 0; i < drawcount; ++i)
-        DrawElementsIndirect(ctx, mode, type,
-                             reinterpret_cast<const void*>(reinterpret_cast<uintptr_t>(indirect) + step * static_cast<uintptr_t>(i)));
+    if (!indirectCommandsFit(ctx, indirect, drawcount, step, 20)) return;
+    multiDrawElementsIndirect(ctx, mode, type, indirect, drawcount, step);
+}
+
+void MultiDrawArraysIndirectCount(Context& ctx, GLenum mode, const void* indirect, GLintptr drawcount, GLsizei maxdrawcount,
+                                  GLsizei stride) {
+    if (!ctx.indirectParameters()) return ctx.unimplemented("glMultiDrawArraysIndirectCount");
+    if (stride < 0 || stride % 4) return ctx.setError(GL_INVALID_VALUE);
+    if (!validMultiDraw(ctx, mode, nullptr, indirect)) return;
+    const uintptr_t step = stride ? static_cast<uintptr_t>(stride) : 16;
+    const GLsizei count = parameterDrawCount(ctx, drawcount, maxdrawcount);
+    if (count < 0 || !indirectCommandsFit(ctx, indirect, maxdrawcount, step, 16)) return;
+    multiDrawArraysIndirect(ctx, mode, indirect, count, step);
+}
+
+void MultiDrawElementsIndirectCount(Context& ctx, GLenum mode, GLenum type, const void* indirect, GLintptr drawcount,
+                                    GLsizei maxdrawcount, GLsizei stride) {
+    if (!ctx.indirectParameters()) return ctx.unimplemented("glMultiDrawElementsIndirectCount");
+    if (stride < 0 || stride % 4) return ctx.setError(GL_INVALID_VALUE);
+    if (!validMultiDraw(ctx, mode, &type, indirect)) return;
+    const uintptr_t step = stride ? static_cast<uintptr_t>(stride) : 20;
+    const GLsizei count = parameterDrawCount(ctx, drawcount, maxdrawcount);
+    if (count < 0 || !indirectCommandsFit(ctx, indirect, maxdrawcount, step, 20)) return;
+    multiDrawElementsIndirect(ctx, mode, type, indirect, count, step);
 }
 
 void MultiDrawArrays(Context& ctx, GLenum mode, const GLint* first, const GLsizei* count, GLsizei drawcount) {
     if (drawcount < 0) return ctx.setError(GL_INVALID_VALUE);
-    for (GLsizei i = 0; i < drawcount; ++i)
+    for (GLsizei i = 0; i < drawcount; ++i) {
+        DrawState::DrawIdScope id(ctx.draw(), i);
         if (compileArrays(ctx, mode, first[i], count[i])) ctx.draw().drawArrays(mode, first[i], count[i], 1);
+    }
 }
 
 void MultiDrawElements(Context& ctx, GLenum mode, const GLsizei* count, GLenum type, const void* const* indices,
                        GLsizei drawcount) {
     if (drawcount < 0) return ctx.setError(GL_INVALID_VALUE);
-    for (GLsizei i = 0; i < drawcount; ++i)
+    for (GLsizei i = 0; i < drawcount; ++i) {
+        DrawState::DrawIdScope id(ctx.draw(), i);
         if (compileElements(ctx, mode, count[i], type, indices[i], 0)) ctx.draw().drawElements(mode, count[i], type, indices[i], 1, 0);
+    }
 }
 
 void MultiDrawElementsBaseVertex(Context& ctx, GLenum mode, const GLsizei* count, GLenum type, const void* const* indices,
@@ -213,8 +310,10 @@ void MultiDrawElementsBaseVertex(Context& ctx, GLenum mode, const GLsizei* count
     for (GLsizei i = 0; i < drawcount; ++i)
         if (count[i] < 0) return ctx.setError(GL_INVALID_VALUE);
     if (type != GL_UNSIGNED_BYTE && type != GL_UNSIGNED_SHORT && type != GL_UNSIGNED_INT) return ctx.setError(GL_INVALID_ENUM);
-    for (GLsizei i = 0; i < drawcount; ++i)
+    for (GLsizei i = 0; i < drawcount; ++i) {
+        DrawState::DrawIdScope id(ctx.draw(), i);
         ctx.draw().drawElements(mode, count[i], type, indices[i], 1, basevertex ? basevertex[i] : 0);
+    }
 }
 
 void Clear(Context& ctx, GLbitfield mask) { ctx.draw().clear(mask); }

@@ -27,8 +27,8 @@ build/host/wmgl_host_tests && build/host/wmgl_gpu_tests
 ./scripts/check-forbidden-identifiers.sh
 ```
 
-Changes that reach Wine (WGL, contexts, surfaces, `patches/wine`) also need
-the Wine fixtures (`tests/wine/probe-opengl-wow64.sh`). Changes to core
+Changes that reach Wine (WGL, contexts, surfaces, the Wine module in
+`src/wine`) also need the Wine fixtures (`tests/wine/probe-opengl-wow64.sh`). Changes to core
 rendering or GL state that could move conformance results also need the
 affected Khronos CTS lists, in `mustpass.xml` configurations 1 to 4.
 
@@ -53,9 +53,9 @@ affected Khronos CTS lists, in `mustpass.xml` configurations 1 to 4.
   `scripts/update-checksums.sh` so `MANIFEST.txt` and `SHA256SUMS` match.
 - **No Apple OpenGL.** The core must not link OpenGL.framework, and it exports
   only the driver ABI in `include/winemetalgl/driver.h`.
-- **Wine patches apply to Wine 11.17.** `patches/wine/wine-11.17` must keep
-  applying cleanly to the `wine-11.17` release; regenerate them with
-  `git diff` from a patched tree rather than editing them.
+- **No Wine changes.** The Wine module (`src/wine`) builds against the headers
+  of an unmodified Wine 11.x and installs next to Wine's own modules; it must
+  not need a patched or rebuilt Wine.
 
 ## Code
 
@@ -78,6 +78,7 @@ affected Khronos CTS lists, in `mustpass.xml` configurations 1 to 4.
 
 ## License
 
-WineMetalGL is LGPL-3.0-or-later; the Wine patches in `patches/wine` are
+WineMetalGL is LGPL-3.0-or-later; the files of the Wine module adapted from
+Wine (`src/wine/pe/wgl_formats.c`, `src/wine/pe/wgl_fonts.c`) are
 LGPL-2.1-or-later, like Wine. By contributing you agree that your changes are
 licensed under the same terms.

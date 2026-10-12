@@ -17,6 +17,7 @@
 #include "core/context.h"
 #include "core/draw.h"
 #include "core/metal/device.h"
+#include "core/query.h"
 #include "core/util/log.h"
 #include "gl_api.gen.h"
 
@@ -133,6 +134,7 @@ bool tryCopy(Context& ctx, const RenderTargetDesc::Target& src, uint32_t srcW, u
 void drawBlit(Context& ctx, const RenderTargetDesc& target, id<MTLRenderPipelineState> pipeline, id<MTLTexture> source,
               const BlitParams& params, const Rect& scissor, bool depth, bool linear) {
     id<MTLRenderCommandEncoder> encoder = ctx.stream().render(target);
+    queriesSuspendVisibility(ctx, encoder);  // blits do not count towards occlusion queries
     [encoder setRenderPipelineState:pipeline];
     DepthStencilKey ds;
     std::memset(&ds, 0, sizeof(ds));
@@ -227,6 +229,7 @@ void writeStencilMultisample(Context& ctx, const RenderTargetDesc::Target& dst, 
                                                        dst.texture.pixelFormat, samples);
     if (!pipeline) return;
     id<MTLRenderCommandEncoder> encoder = ctx.stream().render(target);
+    queriesSuspendVisibility(ctx, encoder);  // blits do not count towards occlusion queries
     [encoder setRenderPipelineState:pipeline];
     [encoder setViewport:{0, 0, static_cast<double>(dstW), static_cast<double>(dstH), 0, 1}];
     [encoder setScissorRect:{static_cast<NSUInteger>(clip.x0), static_cast<NSUInteger>(clip.y0), static_cast<NSUInteger>(w),
@@ -422,7 +425,11 @@ void BlitFramebuffer(Context& ctx, GLint srcX0, GLint srcY0, GLint srcX1, GLint 
             if (pipeline) drawBlit(ctx, target, pipeline, view, paramsFor(depthW, depthH), scissor, true, false);
         }
     }
-    if (doStencil)
+    // Stencil-only images of one format and sample count copy directly, every
+    // sample included (KHR-GL46.texture_stencil8.multisample); otherwise the
+    // CPU path, which resolves a multisample source.
+    if (doStencil && !(srcStencil.texture.pixelFormat == MTLPixelFormatStencil8 &&
+                       tryCopy(ctx, srcStencil, stencilW, stencilH, dst.stencil, dst.width, dst.height, srcRect, dstRect)))
         blitStencil(ctx, srcStencil, stencilW, stencilH, dst.stencil, dstFormats.depth, dst.samples, dst.width, dst.height,
                     srcRect, dstRect);
     // Draws after the blit start a fresh pass with their own state.

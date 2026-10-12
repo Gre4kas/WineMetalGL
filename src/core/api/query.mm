@@ -10,15 +10,24 @@
 #include <cstring>
 #include <limits>
 #include <mutex>
+#include <tuple>
+#include <unistd.h>
 
 #include "core/context.h"
+#include "core/draw.h"
+#include "core/metal/device.h"
 #include "core/query.h"
 #include "core/util/log.h"
 #include "gl_api.gen.h"
 
 namespace wmgl {
 
+static_assert(std::tuple_size<decltype(ContextState::activeQueries)>::value == kQuerySlotCount);
+
 int queryTargetIndex(Context& ctx, GLenum target) {
+    const bool overflow = ctx.version() >= 46 || ctx.hasExtension("GL_ARB_transform_feedback_overflow_query");
+    const int statistics = ctx.version() >= 46 || ctx.hasExtension("GL_ARB_pipeline_statistics_query") ? kQueryStatisticsFirst : -1;
+    auto statistic = [&](PipelineStatistic s) { return statistics < 0 ? -1 : statistics + s; };
     switch (target) {
     case GL_SAMPLES_PASSED: return kQuerySamplesPassed;
     case GL_ANY_SAMPLES_PASSED: return kQueryAnySamplesPassed;
@@ -26,6 +35,19 @@ int queryTargetIndex(Context& ctx, GLenum target) {
     case GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN: return kQueryXfbPrimitivesWritten;
     case GL_TIME_ELAPSED: return kQueryTimeElapsed;
     case GL_ANY_SAMPLES_PASSED_CONSERVATIVE: return ctx.version() >= 43 ? kQueryAnySamplesPassedConservative : -1;
+    case GL_TRANSFORM_FEEDBACK_OVERFLOW: return overflow ? kQueryXfbOverflow : -1;
+    case GL_TRANSFORM_FEEDBACK_STREAM_OVERFLOW: return overflow ? kQueryXfbStreamOverflow : -1;
+    case GL_VERTICES_SUBMITTED: return statistic(kStatVerticesSubmitted);
+    case GL_PRIMITIVES_SUBMITTED: return statistic(kStatPrimitivesSubmitted);
+    case GL_VERTEX_SHADER_INVOCATIONS: return statistic(kStatVertexShaderInvocations);
+    case GL_TESS_CONTROL_SHADER_PATCHES: return statistic(kStatTessControlShaderPatches);
+    case GL_TESS_EVALUATION_SHADER_INVOCATIONS: return statistic(kStatTessEvaluationShaderInvocations);
+    case GL_GEOMETRY_SHADER_INVOCATIONS: return statistic(kStatGeometryShaderInvocations);
+    case GL_GEOMETRY_SHADER_PRIMITIVES_EMITTED: return statistic(kStatGeometryShaderPrimitivesEmitted);
+    case GL_FRAGMENT_SHADER_INVOCATIONS: return statistic(kStatFragmentShaderInvocations);
+    case GL_COMPUTE_SHADER_INVOCATIONS: return statistic(kStatComputeShaderInvocations);
+    case GL_CLIPPING_INPUT_PRIMITIVES: return statistic(kStatClippingInputPrimitives);
+    case GL_CLIPPING_OUTPUT_PRIMITIVES: return statistic(kStatClippingOutputPrimitives);
     default: return -1;
     }
 }
@@ -36,6 +58,7 @@ int queryTargetIndex(Context& ctx, GLenum target, GLuint stream) {
     if (stream >= static_cast<GLuint>(kMaxVertexStreams)) return -2;
     if (index == kQueryPrimitivesGenerated) return kQueryStreamFirst + static_cast<int>(stream) - 1;
     if (index == kQueryXfbPrimitivesWritten) return kQueryStreamFirst + 3 + static_cast<int>(stream) - 1;
+    if (index == kQueryXfbStreamOverflow) return kQueryStreamFirst + 6 + static_cast<int>(stream) - 1;
     return -2;
 }
 
@@ -61,6 +84,27 @@ void finalize(Query& q) {
             samples += value;
         }
         q.result = q.target == GL_SAMPLES_PASSED ? samples : (samples ? 1 : 0);
+        if (logEnabled(LogLevel::Trace)) {
+            WMGL_TRACE("occlusion query: %zu slots, %llu samples", q.visibilitySlots.size(),
+                       static_cast<unsigned long long>(samples));
+            for (size_t i = 0; i < q.visibilitySlots.size(); ++i) {
+                uint64_t value;
+                std::memcpy(&value, static_cast<const uint8_t*>(q.visibilitySlots[i].first.contents) + q.visibilitySlots[i].second,
+                            sizeof(value));
+                if (!value) WMGL_TRACE("occlusion query: slot %zu (offset %u) counted nothing", i, q.visibilitySlots[i].second);
+            }
+        }
+        q.visibilitySlots.clear();
+        break;
+    }
+    case GL_FRAGMENT_SHADER_INVOCATIONS: {
+        uint64_t invocations = 0;
+        for (const auto& [buffer, offset] : q.visibilitySlots) {
+            uint32_t value;
+            std::memcpy(&value, static_cast<const uint8_t*>(buffer.contents) + offset, sizeof(value));
+            invocations += value;
+        }
+        q.result = invocations;
         q.visibilitySlots.clear();
         break;
     }
@@ -90,12 +134,20 @@ bool queryResultReady(Context& ctx, Query& q, bool wait) {
             return false;
         }
     }
-    // Completion handlers for timers run beside the queue's; wait for them briefly.
+    // Completion handlers for timers run beside the queue's, after it: a
+    // wait waits for them too (they always run, so the bound is only a guard).
     if (q.timer) {
         const bool needStart = q.target == GL_TIME_ELAPSED;
-        for (int spin = 0; spin < 100000 && (!q.timer->endSet || (needStart && !q.timer->startSet)); ++spin) {
+        for (int spin = 0; !q.timer->endSet || (needStart && !q.timer->startSet); ++spin) {
             if (!wait && spin > 0) return false;
-            sched_yield();
+            if (spin < 100000) {
+                sched_yield();
+            } else if (spin < 100000 + 50000) {
+                usleep(100);
+            } else {
+                logOnce(LogLevel::Warn, "timer-handler", "a timer query's completion handler did not run; its result is 0");
+                break;
+            }
         }
     }
     finalize(q);
@@ -127,22 +179,95 @@ void queriesCountPrimitives(Context& ctx, GLenum mode, GLsizei count, GLsizei in
     if (q) q->result += primitiveCount(mode, count) * static_cast<uint64_t>(std::max(0, instances));
 }
 
+void queriesNoteXfbOverflow(Context& ctx, GLuint stream) {
+    for (int index : {static_cast<int>(kQueryXfbOverflow), queryTargetIndex(ctx, GL_TRANSFORM_FEEDBACK_STREAM_OVERFLOW, stream)})
+        if (Query* q = index >= 0 ? ctx.state.activeQueries[index].get() : nullptr) q->result = 1;
+}
+
+bool queriesCountingStatistics(Context& ctx) {
+    for (int s = 0; s < kStatCount; ++s)
+        if (ctx.state.activeQueries[kQueryStatisticsFirst + s]) return true;
+    return false;
+}
+
+bool queriesCounting(Context& ctx, PipelineStatistic statistic) {
+    return ctx.state.activeQueries[kQueryStatisticsFirst + statistic] != nullptr;
+}
+
+void queriesCountStatistic(Context& ctx, PipelineStatistic statistic, uint64_t n) {
+    if (Query* q = ctx.state.activeQueries[kQueryStatisticsFirst + statistic].get()) q->result += n;
+}
+
+void queriesCountSubmitted(Context& ctx, GLenum mode, GLsizei vertices, GLsizei instances, bool clipped) {
+    if (!queriesCountingStatistics(ctx)) return;
+    const uint64_t n = static_cast<uint64_t>(std::max(0, vertices)), copies = static_cast<uint64_t>(std::max(0, instances));
+    // A line loop of two vertices is one primitive here, as the CTS expects.
+    const uint64_t primitives = mode == GL_LINE_LOOP ? (n > 2 ? n : n == 2 ? 1 : 0)
+                                : mode == GL_PATCHES ? n / static_cast<uint64_t>(std::max(1, ctx.state.patchVertices))
+                                                     : primitiveCount(mode, vertices);
+    queriesCountStatistic(ctx, kStatVerticesSubmitted, n * copies);
+    queriesCountStatistic(ctx, kStatPrimitivesSubmitted, primitives * copies);
+    queriesCountStatistic(ctx, kStatVertexShaderInvocations, n * copies);
+    if (!clipped) return;
+    queriesCountStatistic(ctx, kStatClippingInputPrimitives, primitives * copies);
+    queriesCountStatistic(ctx, kStatClippingOutputPrimitives, primitives * copies);
+}
+
+bool queriesFragmentCounter(Context& ctx, __strong id<MTLBuffer>& buffer, NSUInteger& offset) {
+    Query* q = ctx.state.activeQueries[kQueryStatisticsFirst + kStatFragmentShaderInvocations].get();
+    if (!q) return false;
+    const uint64_t serial = ctx.stream().serial();
+    if (q->visibilitySlots.empty() || q->counterSerial != serial || q->counterBound + ctx.drawSampleBound >= (1ull << 31)) {
+        // A new zeroed counter per command buffer (or when it could wrap), from pages of 1024.
+        constexpr uint32_t kPage = 4096;
+        id<MTLBuffer> page = q->visibilitySlots.empty() ? nil : q->visibilitySlots.back().first;
+        uint32_t next = q->visibilitySlots.empty() ? kPage : q->visibilitySlots.back().second + 4;
+        if (next >= kPage) {
+            page = [Device::get().mtl() newBufferWithLength:kPage options:MTLResourceStorageModeShared];
+            next = 0;
+        }
+        q->visibilitySlots.emplace_back(page, next);
+        q->counterSerial = serial;
+        q->counterBound = 0;
+        q->pendingSerial = std::max(q->pendingSerial, serial);
+    }
+    q->counterBound += ctx.drawSampleBound;
+    buffer = q->visibilitySlots.back().first;
+    offset = q->visibilitySlots.back().second;
+    return true;
+}
+
 void queriesPrepareVisibility(Context& ctx) {
     if (anyOcclusionActive(ctx) && !ctx.stream().visibilitySlotAvailable()) ctx.stream().flush();
 }
 
-void queriesBeforeDraw(Context& ctx, id<MTLRenderCommandEncoder> encoder) {
+void queriesBeforeDraw(Context& ctx, id<MTLRenderCommandEncoder> encoder, GLsizei instances) {
+    // Apple GPUs count a slot's samples in 32 bits: a slot takes draws while
+    // the samples they can cover (the whole target once per instance) fit in
+    // 31 bits, then the pass moves on to a new slot.
+    const RenderTargetDesc& target = ctx.stream().currentTarget();
+    const uint64_t drawBound = static_cast<uint64_t>(target.width) * target.height * std::max(1u, target.samples) *
+                               std::max(1u, target.layers) * static_cast<uint64_t>(std::max(1, instances));
+    ctx.drawSampleBound = drawBound;
     if (!anyOcclusionActive(ctx)) return;
+    if (drawBound >= (1ull << 32))
+        logOnce(LogLevel::Warn, "visibility-wrap", "a draw can cover 2^32 samples or more: occlusion counts may wrap");
     auto& slot = ctx.occlusionSlot;
     const uint64_t pass = ctx.stream().passGeneration();
-    if (slot.valid && slot.pass == pass && slot.epoch == ctx.occlusionEpoch) return;
+    const bool current = slot.valid && slot.pass == pass && slot.epoch == ctx.occlusionEpoch;
+    if (current && slot.samplesBound + drawBound < (1ull << 31)) {
+        slot.samplesBound += drawBound;
+        return;
+    }
     id<MTLBuffer> buffer = nil;
     NSUInteger offset = 0;
     if (!ctx.stream().allocateVisibilitySlot(buffer, offset)) {
+        if (current) return;  // the pass's last slot keeps counting
         logOnce(LogLevel::Warn, "visibility-slots", "occlusion query slots exhausted; samples not counted");
         return;
     }
     [encoder setVisibilityResultMode:MTLVisibilityResultModeCounting offset:offset];
+    slot.samplesBound = drawBound;
     slot.valid = true;
     slot.pass = pass;
     slot.epoch = ctx.occlusionEpoch;
@@ -165,9 +290,12 @@ void queriesSuspendVisibility(Context& ctx, id<MTLRenderCommandEncoder> encoder)
 bool conditionalRenderAllows(Context& ctx) {
     auto& cr = ctx.state.conditionalRender;
     if (!cr.active || !cr.query) return true;
-    const bool wait = cr.mode == GL_QUERY_WAIT || cr.mode == GL_QUERY_BY_REGION_WAIT;
+    // GL 4.5 / ARB_conditional_render_inverted: the *_INVERTED modes render when no samples passed.
+    const bool inverted = cr.mode >= GL_QUERY_WAIT_INVERTED && cr.mode <= GL_QUERY_BY_REGION_NO_WAIT_INVERTED;
+    const bool wait = cr.mode == GL_QUERY_WAIT || cr.mode == GL_QUERY_BY_REGION_WAIT || cr.mode == GL_QUERY_WAIT_INVERTED ||
+                      cr.mode == GL_QUERY_BY_REGION_WAIT_INVERTED;
     if (!queryResultReady(ctx, *cr.query, wait)) return true;  // NO_WAIT: render while unknown
-    return cr.query->result != 0;
+    return (cr.query->result != 0) != inverted;
 }
 
 }  // namespace wmgl
@@ -193,11 +321,14 @@ double monotonicGpuTime(double t) {
     return last;
 }
 
-// Records the completion time of the current command buffer into the timer.
+// Records the completion time of the current command buffer into the timer:
+// monotonic for timestamps; as reported for elapsed time, which its start
+// (also as reported) is subtracted from.
 void markTimerEnd(Context& ctx, Query& q) {
     std::shared_ptr<Query::Timer> timer = q.timer;
+    const bool timestamp = q.target == GL_TIMESTAMP;
     [ctx.stream().commandBuffer() addCompletedHandler:^(id<MTLCommandBuffer> done) {
-        timer->end = monotonicGpuTime(done.GPUEndTime);
+        timer->end = timestamp ? monotonicGpuTime(done.GPUEndTime) : done.GPUEndTime;
         timer->endSet = true;
     }];
     q.pendingSerial = ctx.stream().flush();
@@ -277,7 +408,7 @@ void beginQuery(Context& ctx, GLenum target, int index, GLuint name) {
     if (!q) {
         q = makeRef<Query>(name);
         ctx.queries.set(name, q);
-    } else if (q->everActive && q->target != target) {
+    } else if ((q->everActive || q->target) && q->target != target) {  // a created query has its target (GL 4.5)
         return ctx.setError(GL_INVALID_OPERATION);
     }
     for (const RefPtr<Query>& active : ctx.state.activeQueries)
@@ -290,6 +421,7 @@ void beginQuery(Context& ctx, GLenum target, int index, GLuint name) {
     q->resultFinal = false;
     q->pendingSerial = 0;
     q->visibilitySlots.clear();
+    q->counterSerial = 0;
     q->timer.reset();
     ctx.state.activeQueries[index] = q;
     if (isOcclusion(index)) {
@@ -317,6 +449,8 @@ void endQuery(Context& ctx, int index) {
         if (q->visibilitySlots.empty()) q->resultFinal = true;
     } else if (index == kQueryTimeElapsed) {
         markTimerEnd(ctx, *q);
+    } else if (index == kQueryStatisticsFirst + kStatFragmentShaderInvocations) {
+        if (q->visibilitySlots.empty()) q->resultFinal = true;  // otherwise summed once its command buffers complete
     } else {
         q->resultFinal = true;  // counted on the CPU
     }
@@ -331,7 +465,7 @@ void QueryCounter(Context& ctx, GLuint name, GLenum target) {
     if (!q) {
         q = makeRef<Query>(name);
         ctx.queries.set(name, q);
-    } else if (q->active || (q->everActive && q->target != GL_TIMESTAMP)) {
+    } else if (q->active || (q->target && q->target != GL_TIMESTAMP)) {  // used, or made by glCreateQueries
         return ctx.setError(GL_INVALID_OPERATION);
     }
     q->target = GL_TIMESTAMP;
@@ -347,7 +481,13 @@ namespace {
 void getQuery(Context& ctx, int index, GLenum pname, GLint* params) {
     switch (pname) {
     case GL_CURRENT_QUERY: *params = ctx.state.activeQueries[index] ? static_cast<GLint>(ctx.state.activeQueries[index]->name) : 0; return;
-    case GL_QUERY_COUNTER_BITS: *params = index == kQueryAnySamplesPassed || index == kQueryAnySamplesPassedConservative ? 1 : 64; return;
+    case GL_QUERY_COUNTER_BITS: {
+        const bool boolean = index == kQueryAnySamplesPassed || index == kQueryAnySamplesPassedConservative ||
+                             index == kQueryXfbOverflow || index == kQueryXfbStreamOverflow ||
+                             index >= kQueryStreamFirst + 6;
+        *params = boolean ? 1 : 64;
+        return;
+    }
     default: return ctx.setError(GL_INVALID_ENUM);
     }
 }
@@ -378,7 +518,19 @@ namespace {
 template <class T>
 void getQueryObject(Context& ctx, GLuint name, GLenum pname, T* params) {
     Query* q = ctx.queries.get(name);
-    if (!q || !q->everActive || q->active) return ctx.setError(GL_INVALID_OPERATION);
+    // A query created by glCreateQueries (GL 4.5) has its target before it is first used.
+    if (!q || (!q->everActive && !q->target) || q->active) return ctx.setError(GL_INVALID_OPERATION);
+    if (pname != GL_QUERY_RESULT && pname != GL_QUERY_RESULT_AVAILABLE && pname != GL_QUERY_RESULT_NO_WAIT &&
+        !(pname == GL_QUERY_TARGET && ctx.version() >= 45))
+        return ctx.setError(GL_INVALID_ENUM);
+    // GL 4.4 (GL_ARB_query_buffer_object): with a buffer bound to
+    // GL_QUERY_BUFFER, `params` is an offset into it.
+    Buffer* queryBuffer = ctx.version() >= 44 ? ctx.state.queryBuffer.get() : nullptr;
+    if (queryBuffer) {
+        const intptr_t offset = reinterpret_cast<intptr_t>(params);
+        if (offset < 0) return ctx.setError(GL_INVALID_VALUE);
+        if (static_cast<intptr_t>(sizeof(T)) > queryBuffer->size - offset) return ctx.setError(GL_INVALID_OPERATION);
+    }
     uint64_t value = 0;
     switch (pname) {
     case GL_QUERY_RESULT:
@@ -398,11 +550,34 @@ void getQueryObject(Context& ctx, GLuint name, GLenum pname, T* params) {
         if (!queryResultReady(ctx, *q, false)) return;
         value = q->result;
         break;
+    case GL_QUERY_TARGET: value = q->target; break;
     default: return ctx.setError(GL_INVALID_ENUM);
     }
     // Results that do not fit the requested type saturate.
     if (value > static_cast<uint64_t>(std::numeric_limits<T>::max())) value = static_cast<uint64_t>(std::numeric_limits<T>::max());
-    *params = static_cast<T>(value);
+    const T result = static_cast<T>(value);
+    if (!queryBuffer) {
+        *params = result;
+        return;
+    }
+    // The result goes into the query buffer through an ordered GPU copy, so
+    // draws before and after see the buffer in command order.
+    if (!queryBuffer->mtl) return;
+    const intptr_t offset = reinterpret_cast<intptr_t>(params);
+    if (offset % 4) {
+        // Metal copies whole words: an unaligned result is written once
+        // the queued work using the buffer is done.
+        ctx.stream().waitFor(queryBuffer->lastUseSerial);
+        std::memcpy(static_cast<uint8_t*>(queryBuffer->mtl.contents) + offset, &result, sizeof(T));
+        ++queryBuffer->version;
+        return;
+    }
+    TransientAllocation staging = ctx.draw().transient().allocate(sizeof(T), ctx.stream().serial(), 16);
+    std::memcpy(staging.data, &result, sizeof(T));
+    [ctx.stream().blit() copyFromBuffer:staging.buffer sourceOffset:staging.offset toBuffer:queryBuffer->mtl
+                        destinationOffset:static_cast<NSUInteger>(offset) size:sizeof(T)];
+    queryBuffer->lastUseSerial = queryBuffer->lastWriteSerial = ctx.stream().serial();
+    ++queryBuffer->version;
 }
 
 }  // namespace
@@ -415,15 +590,19 @@ void GetQueryObjectui64v(Context& ctx, GLuint name, GLenum pname, GLuint64* para
 // ------------------------------------------------------------ conditional rendering
 
 void BeginConditionalRender(Context& ctx, GLuint name, GLenum mode) {
+    const bool inverted = (ctx.version() >= 45 || ctx.hasExtension("GL_ARB_conditional_render_inverted")) &&
+                          mode >= GL_QUERY_WAIT_INVERTED && mode <= GL_QUERY_BY_REGION_NO_WAIT_INVERTED;
     if (mode != GL_QUERY_WAIT && mode != GL_QUERY_NO_WAIT && mode != GL_QUERY_BY_REGION_WAIT &&
-        mode != GL_QUERY_BY_REGION_NO_WAIT)
+        mode != GL_QUERY_BY_REGION_NO_WAIT && !inverted)
         return ctx.setError(GL_INVALID_ENUM);
     auto& cr = ctx.state.conditionalRender;
     if (cr.active) return ctx.setError(GL_INVALID_OPERATION);
     Query* q = ctx.queries.get(name);
     if (!q || !q->everActive || q->active) return ctx.setError(GL_INVALID_OPERATION);
+    // GL 4.6 / ARB_transform_feedback_overflow_query: overflow queries render when they overflowed.
     if (q->target != GL_SAMPLES_PASSED && q->target != GL_ANY_SAMPLES_PASSED &&
-        q->target != GL_ANY_SAMPLES_PASSED_CONSERVATIVE)
+        q->target != GL_ANY_SAMPLES_PASSED_CONSERVATIVE && q->target != GL_TRANSFORM_FEEDBACK_OVERFLOW &&
+        q->target != GL_TRANSFORM_FEEDBACK_STREAM_OVERFLOW)
         return ctx.setError(GL_INVALID_OPERATION);
     cr.query = q;
     cr.mode = mode;

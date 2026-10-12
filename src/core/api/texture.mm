@@ -5,7 +5,10 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <mutex>
+#include <string>
 #include <type_traits>
+#include <unordered_map>
 #include <vector>
 
 #include "core/context.h"
@@ -15,6 +18,7 @@
 #include "core/limits.h"
 #include "core/metal/device.h"
 #include "core/metal/pixel_format.h"
+#include "core/query.h"
 #include "core/texture_storage.h"
 #include "core/util/log.h"
 #include "gl_api.gen.h"
@@ -140,6 +144,9 @@ int maxLevelFor(GLenum target) {
 
 // ------------------------------------------------------------ transfers
 
+// STENCIL_INDEX textures (GL 4.4, GL_ARB_texture_stencil8).
+bool stencilTextures(Context& ctx) { return ctx.version() >= 44 || ctx.hasExtension("GL_ARB_texture_stencil8"); }
+
 bool isTypeEnum(GLenum type) {
     switch (type) {
     case GL_UNSIGNED_BYTE: case GL_BYTE: case GL_UNSIGNED_SHORT: case GL_SHORT: case GL_UNSIGNED_INT: case GL_INT:
@@ -193,7 +200,8 @@ bool unpackSource(Context& ctx, const void* pixels, size_t bytesNeeded, size_t a
     if (!pbo) return true;
     const uintptr_t offset = reinterpret_cast<uintptr_t>(pixels);
     if (pbo->mappedNonPersistent()) return ctx.setError(GL_INVALID_OPERATION), false;
-    if (offset + bytesNeeded > static_cast<size_t>(pbo->size)) return ctx.setError(GL_INVALID_OPERATION), false;
+    if (offset > static_cast<size_t>(pbo->size) || bytesNeeded > static_cast<size_t>(pbo->size) - offset)
+        return ctx.setError(GL_INVALID_OPERATION), false;
     if (alignment > 1 && offset % alignment) return ctx.setError(GL_INVALID_OPERATION), false;
     if (!pbo->mtl) {
         out = nullptr;
@@ -211,7 +219,8 @@ bool packDestination(Context& ctx, void* pixels, size_t bytesNeeded, size_t alig
     if (!pbo) return true;
     const uintptr_t offset = reinterpret_cast<uintptr_t>(pixels);
     if (pbo->mappedNonPersistent()) return ctx.setError(GL_INVALID_OPERATION), false;
-    if (offset + bytesNeeded > static_cast<size_t>(pbo->size)) return ctx.setError(GL_INVALID_OPERATION), false;
+    if (offset > static_cast<size_t>(pbo->size) || bytesNeeded > static_cast<size_t>(pbo->size) - offset)
+        return ctx.setError(GL_INVALID_OPERATION), false;
     if (alignment > 1 && offset % alignment) return ctx.setError(GL_INVALID_OPERATION), false;
     if (!pbo->mtl) {
         out = nullptr;
@@ -272,9 +281,21 @@ void uploadRegion(Context& ctx, Texture& tex, int face, int level, int x, int y,
         return;
     }
     const size_t texel = storageBytes(image.format->storage);
-    std::vector<uint8_t> texels(static_cast<size_t>(w) * h * d * texel);
-    unpackPixels(src, format, type, w, h, d, pixelStoreParams(ctx.state.unpack, threeDTarget(tex.target)), *image.format,
-                 texels.data());
+    const size_t bytes = static_cast<size_t>(w) * h * d * texel;
+    const PixelStoreParams ps = pixelStoreParams(ctx.state.unpack, threeDTarget(tex.target));
+    if (tex.mtl && tex.mtl.pixelFormat != MTLPixelFormatDepth32Float_Stencil8) {
+        // Converted straight into the staging memory the GPU copies from.
+        TransientAllocation staging = ctx.draw().transient().allocate(bytes, ctx.stream().serial(), 16);
+        if (!staging.data) return;
+        unpackPixels(src, format, type, w, h, d, ps, *image.format, staging.data);
+        metalRegion(tex, x, y, z, w, h, d);
+        uploadStaged(ctx, tex, face, level, x, y, z, w, h, d, staging, static_cast<size_t>(w) * texel,
+                     static_cast<size_t>(w) * h * texel);
+        imageChanged(ctx, tex);
+        return;
+    }
+    std::vector<uint8_t> texels(bytes);
+    unpackPixels(src, format, type, w, h, d, ps, *image.format, texels.data());
     metalRegion(tex, x, y, z, w, h, d);
     uploadTexels(ctx, tex, face, level, x, y, z, w, h, d, texels.data(), static_cast<size_t>(w) * texel,
                  static_cast<size_t>(w) * h * texel);
@@ -404,20 +425,23 @@ bool sizeAllowed(Context& ctx, const ImageTarget& t, GLint level, GLsizei w, GLs
 
 // TexImage/TexSubImage source formats for depth images: DEPTH_COMPONENT or
 // DEPTH_STENCIL data (the depth part is used for depth-only images);
-// STENCIL_INDEX uploads need stencil texturing (GL 4.4).
+// stencil-only images (GL 4.4) take STENCIL_INDEX data.
 bool textureTransferCompatible(GLenum format, GLenum type, const FormatInfo& info) {
+    if (info.stencilBits && !info.depthBits) return format == GL_STENCIL_INDEX;  // GL 4.4 stencil textures
     if (info.isDepthOrStencil()) return format == GL_DEPTH_COMPONENT || format == GL_DEPTH_STENCIL;
     return transferCompatible(format, type, info);
 }
 
 // Whether an internal format may be used with a target (depth formats only
-// on 1D/2D-like targets; compressed formats only on 2D-like targets).
+// on 1D/2D-like targets; compressed formats only on 2D-like targets, and
+// BPTC on 3D textures too: GL 4.6 table 8.14).
 bool formatAllowedOnTarget(const FormatInfo& info, GLenum target) {
     if (info.isDepthOrStencil())
         return target != GL_TEXTURE_3D;
     if (info.compressed)
         return target == GL_TEXTURE_2D || target == GL_TEXTURE_2D_ARRAY || target == GL_TEXTURE_CUBE_MAP ||
-               target == GL_TEXTURE_CUBE_MAP_ARRAY;
+               target == GL_TEXTURE_CUBE_MAP_ARRAY || (target == GL_TEXTURE_3D && info.storage >= Storage::BC6H_RGBFloat &&
+                                                       info.storage <= Storage::BC7_RGBAUnorm_sRGB);
     return true;
 }
 
@@ -427,7 +451,7 @@ void texImage(Context& ctx, int dims, GLenum target, GLint level, GLint internal
     if (!imageTarget(ctx, target, dims, true, t)) return;
     if (!checkFormatType(ctx, format, type)) return;
     const GLenum requested = static_cast<GLenum>(internalformat);
-    if (!isValidTextureInternalFormat(requested, ctx.isCompat())) return ctx.setError(GL_INVALID_VALUE);
+    if (!isValidTextureInternalFormat(requested, ctx.isCompat(), stencilTextures(ctx))) return ctx.setError(GL_INVALID_VALUE);
     bool tooLarge;
     if (!sizeAllowed(ctx, t, level, width, height, depth, border, tooLarge)) return;
     const FormatInfo* info = formatInfo(resolveInternalFormat(requested, format, type));
@@ -730,7 +754,7 @@ void copyTexImage(Context& ctx, int dims, GLenum target, GLint level, GLenum int
                   GLsizei width, GLsizei height, GLint border) {
     ImageTarget t;
     if (!imageTarget(ctx, target, dims, false, t)) return;
-    if (!isValidTextureInternalFormat(internalformat, ctx.isCompat())) return ctx.setError(GL_INVALID_VALUE);
+    if (!isValidTextureInternalFormat(internalformat, ctx.isCompat(), stencilTextures(ctx))) return ctx.setError(GL_INVALID_VALUE);
     bool tooLarge;
     if (!sizeAllowed(ctx, t, level, width, dims == 1 ? 1 : height, 1, border, tooLarge)) return;
     const FormatInfo* probe = formatInfo(resolveInternalFormat(internalformat, 0, 0));
@@ -816,10 +840,12 @@ ParamValues paramFloats(const GLfloat* v, int count) {
 
 bool isVectorParam(GLenum pname) { return pname == GL_TEXTURE_BORDER_COLOR || pname == GL_TEXTURE_SWIZZLE_RGBA; }
 
-// GL_CLAMP is compatibility-profile only.
-bool validWrap(GLenum v, bool compat) {
+// GL_CLAMP is compatibility-profile only; GL_MIRROR_CLAMP_TO_EDGE is GL 4.4
+// (GL_ARB_texture_mirror_clamp_to_edge).
+bool validWrap(GLenum v, Context& ctx) {
     return v == GL_CLAMP_TO_EDGE || v == GL_REPEAT || v == GL_MIRRORED_REPEAT || v == GL_CLAMP_TO_BORDER ||
-           (compat && v == GL_CLAMP);
+           (ctx.isCompat() && v == GL_CLAMP) ||
+           (v == GL_MIRROR_CLAMP_TO_EDGE && (ctx.version() >= 44 || ctx.hasExtension("GL_ARB_texture_mirror_clamp_to_edge")));
 }
 
 bool validCompareFunc(GLenum v) { return v >= GL_NEVER && v <= GL_ALWAYS; }
@@ -833,7 +859,7 @@ bool enumValue(const ParamValues& v, GLenum& out) {
 
 // Applies a sampler-state parameter. Returns GL_NO_ERROR, an error, or
 // GL_INVALID_ENUM for names that are not sampler state.
-GLenum setSamplerParam(SamplerParams& p, GLenum pname, const ParamValues& v, GLenum target, bool compat) {
+GLenum setSamplerParam(SamplerParams& p, GLenum pname, const ParamValues& v, GLenum target, Context& ctx) {
     const bool rect = target == GL_TEXTURE_RECTANGLE;
     GLenum e = 0;
     switch (pname) {
@@ -850,7 +876,7 @@ GLenum setSamplerParam(SamplerParams& p, GLenum pname, const ParamValues& v, GLe
         p.magFilter = e;
         return GL_NO_ERROR;
     case GL_TEXTURE_WRAP_S: case GL_TEXTURE_WRAP_T: case GL_TEXTURE_WRAP_R:
-        if (!enumValue(v, e) || !validWrap(e, compat)) return GL_INVALID_ENUM;
+        if (!enumValue(v, e) || !validWrap(e, ctx)) return GL_INVALID_ENUM;
         if (rect && e != GL_CLAMP_TO_EDGE && e != GL_CLAMP_TO_BORDER && e != GL_CLAMP) return GL_INVALID_ENUM;
         (pname == GL_TEXTURE_WRAP_S ? p.wrapS : pname == GL_TEXTURE_WRAP_T ? p.wrapT : p.wrapR) = e;
         return GL_NO_ERROR;
@@ -868,6 +894,10 @@ GLenum setSamplerParam(SamplerParams& p, GLenum pname, const ParamValues& v, GLe
     case GL_TEXTURE_MAX_ANISOTROPY:
         if (v.f[0] < 1.0) return GL_INVALID_VALUE;
         p.maxAnisotropy = static_cast<GLfloat>(std::min<double>(v.f[0], kMaxAnisotropy));
+        return GL_NO_ERROR;
+    case GL_TEXTURE_SRGB_DECODE_EXT:  // GL_EXT_texture_sRGB_decode
+        if (!enumValue(v, e) || (e != GL_DECODE_EXT && e != GL_SKIP_DECODE_EXT)) return GL_INVALID_ENUM;
+        p.srgbDecode = e;
         return GL_NO_ERROR;
     case GL_TEXTURE_BORDER_COLOR:
         for (int i = 0; i < 4; ++i) {
@@ -890,7 +920,7 @@ bool isSamplerParam(GLenum pname) {
     case GL_TEXTURE_MIN_FILTER: case GL_TEXTURE_MAG_FILTER: case GL_TEXTURE_WRAP_S: case GL_TEXTURE_WRAP_T:
     case GL_TEXTURE_WRAP_R: case GL_TEXTURE_MIN_LOD: case GL_TEXTURE_MAX_LOD: case GL_TEXTURE_LOD_BIAS:
     case GL_TEXTURE_COMPARE_MODE: case GL_TEXTURE_COMPARE_FUNC: case GL_TEXTURE_MAX_ANISOTROPY:
-    case GL_TEXTURE_BORDER_COLOR:
+    case GL_TEXTURE_BORDER_COLOR: case GL_TEXTURE_SRGB_DECODE_EXT:
         return true;
     default: return false;
     }
@@ -911,7 +941,7 @@ void texParameter(Context& ctx, GLenum target, GLenum pname, const ParamValues& 
         if (pname == GL_TEXTURE_MAX_ANISOTROPY && !ctx.hasExtension("GL_EXT_texture_filter_anisotropic") &&
             ctx.version() < 46)
             return ctx.setError(GL_INVALID_ENUM);
-        const GLenum error = setSamplerParam(tex->sampler, pname, v, target, ctx.isCompat());
+        const GLenum error = setSamplerParam(tex->sampler, pname, v, target, ctx);
         if (error) return ctx.setError(error);
         ctx.markDirty(kDirtyTextures);
         return;
@@ -971,6 +1001,7 @@ bool getSamplerParam(const SamplerParams& p, GLenum pname, ParamValues& out) {
     case GL_TEXTURE_COMPARE_MODE: setEnum(p.compareMode); return true;
     case GL_TEXTURE_COMPARE_FUNC: setEnum(p.compareFunc); return true;
     case GL_TEXTURE_MAX_ANISOTROPY: setFloat(p.maxAnisotropy); return true;
+    case GL_TEXTURE_SRGB_DECODE_EXT: setEnum(p.srgbDecode); return true;
     case GL_TEXTURE_BORDER_COLOR:
         out.count = 4;
         if (p.borderIsInteger) {
@@ -1063,6 +1094,10 @@ void getTexParameter(Context& ctx, GLenum target, GLenum pname, T* params, Param
     case GL_DEPTH_STENCIL_TEXTURE_MODE:
         if (ctx.version() < 43) return ctx.setError(GL_INVALID_ENUM);
         v.i[0] = tex->depthStencilMode;
+        break;
+    case GL_TEXTURE_TARGET:  // GL 4.5 / ARB_direct_state_access
+        if (ctx.version() < 45) return ctx.setError(GL_INVALID_ENUM);
+        v.i[0] = static_cast<GLint>(tex->target);
         break;
     default: return ctx.setError(GL_INVALID_ENUM);
     }
@@ -1493,7 +1528,7 @@ void texBuffer(Context& ctx, GLenum target, GLenum internalformat, GLuint buffer
     }
     if (object && range) {
         // GL 4.3 section 8.9: a range inside the buffer, aligned.
-        if (offset < 0 || size <= 0 || offset + size > object->size) return ctx.setError(GL_INVALID_VALUE);
+        if (offset < 0 || size <= 0 || size > object->size - offset) return ctx.setError(GL_INVALID_VALUE);
         if (offset % limits::kTextureBufferOffsetAlignment) return ctx.setError(GL_INVALID_VALUE);
     }
     tex->buffer = object;
@@ -1535,6 +1570,11 @@ int viewClass(GLenum f) {
     case GL_COMPRESSED_RG_RGTC2: case GL_COMPRESSED_SIGNED_RG_RGTC2: return 1002;
     case GL_COMPRESSED_RGBA_BPTC_UNORM: case GL_COMPRESSED_SRGB_ALPHA_BPTC_UNORM: return 1003;
     case GL_COMPRESSED_RGB_BPTC_SIGNED_FLOAT: case GL_COMPRESSED_RGB_BPTC_UNSIGNED_FLOAT: return 1004;
+    // GL_ARB_texture_view with S3TC and sRGB: wined3d's sRGB views of typeless BC textures.
+    case GL_COMPRESSED_RGB_S3TC_DXT1_EXT: case GL_COMPRESSED_SRGB_S3TC_DXT1_EXT: return 1005;
+    case GL_COMPRESSED_RGBA_S3TC_DXT1_EXT: case GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT1_EXT: return 1006;
+    case GL_COMPRESSED_RGBA_S3TC_DXT3_EXT: case GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT3_EXT: return 1007;
+    case GL_COMPRESSED_RGBA_S3TC_DXT5_EXT: case GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT5_EXT: return 1008;
     default: return 0;
     }
 }
@@ -1628,6 +1668,205 @@ void TextureView(Context& ctx, GLuint texture, GLenum target, GLuint origtexture
 void TexBufferRange(Context& ctx, GLenum target, GLenum internalformat, GLuint buffer, GLintptr offset, GLsizeiptr size) {
     if (ctx.version() < 43 && !ctx.hasExtension("GL_ARB_texture_buffer_range")) return ctx.unimplemented("glTexBufferRange");
     texBuffer(ctx, target, internalformat, buffer, offset, size, true);
+}
+
+// ------------------------------------------------------------ texture clears (GL 4.4)
+
+namespace {
+
+// glClearTexImage and glClearTexSubImage (GL 4.4 section 8.21): one texel of
+// `data` (zeros when it is null), converted as by TexSubImage without the
+// pixel store state, repeated over a region of one level. Cube maps clear
+// their faces as layers.
+// glClearTex(Sub)Image of a multisample image, which Metal cannot upload
+// to: a render pass per layer sets every sample of the region (a load
+// action for whole layers). Colour texels are written bit for bit through
+// an unsigned integer view of the storage.
+void clearMultisample(Context& ctx, Texture& tex, const FormatInfo& info, const uint8_t* texel, int x, int y, int z, int w,
+                      int h, int d) {
+    id<MTLTexture> mtl = tex.mtl;
+    const TextureImage& image = tex.image(0, 0);
+    const bool color = !info.isDepthOrStencil();
+    const size_t bytes = storageBytes(info.storage);
+    uint32_t words[4] = {};
+    float depth = 0.0f;
+    uint32_t stencil = 0;
+    id<MTLTexture> view = mtl;
+    if (color) {
+        const MTLPixelFormat uintFormat = bytes == 1 ? MTLPixelFormatR8Uint : bytes == 2 ? MTLPixelFormatR16Uint
+                                          : bytes == 4 ? MTLPixelFormatR32Uint : bytes == 8 ? MTLPixelFormatRG32Uint
+                                                                                            : MTLPixelFormatRGBA32Uint;
+        if (bytes == 1) words[0] = texel[0];
+        else if (bytes == 2) words[0] = static_cast<uint32_t>(texel[0]) | static_cast<uint32_t>(texel[1]) << 8;
+        else std::memcpy(words, texel, std::min<size_t>(bytes, sizeof(words)));
+        view = [mtl newTextureViewWithPixelFormat:uintFormat textureType:mtl.textureType levels:NSMakeRange(0, 1)
+                                           slices:NSMakeRange(0, mtl.arrayLength)];
+        if (!view) return;
+    } else {
+        // The texel as stored: 16-bit unorm or 32-bit float depth.
+        if (info.storage == Storage::Depth16Unorm) {
+            uint16_t unorm = 0;
+            std::memcpy(&unorm, texel, 2);
+            depth = unorm / 65535.0f;
+        } else if (info.depthBits) {
+            std::memcpy(&depth, texel, 4);
+        }
+        if (info.stencilBits) stencil = texel[info.depthBits ? 4 : 0];
+    }
+    static std::mutex mutex;
+    static std::unordered_map<std::string, id<MTLRenderPipelineState>> pipelines;
+    static id<MTLDepthStencilState> depthStencilStates[4];
+    const bool whole = x == 0 && y == 0 && w == image.width && h == image.height;
+    for (int layer = z; layer < z + d; ++layer) {
+        RenderTargetDesc target;
+        target.width = static_cast<uint32_t>(image.width);
+        target.height = static_cast<uint32_t>(image.height);
+        target.samples = static_cast<uint32_t>(mtl.sampleCount);
+        const RenderTargetDesc::Target t{view, 0, static_cast<uint32_t>(layer)};
+        if (color) target.color[0] = t;
+        if (info.depthBits) target.depth = t;
+        if (info.stencilBits) target.stencil = t;
+        if (whole) {
+            PendingClear clear;
+            clear.colorMask = color ? 1 : 0;
+            clear.color[0] = MTLClearColorMake(words[0], words[1], words[2], words[3]);
+            clear.depth = info.depthBits != 0;
+            clear.depthValue = depth;
+            clear.stencil = info.stencilBits != 0;
+            clear.stencilValue = stencil;
+            if (ctx.stream().clearWithLoadAction(target, clear)) continue;
+        }
+        id<MTLRenderPipelineState> pipeline;
+        id<MTLDepthStencilState> depthStencil;
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            const MTLPixelFormat depthFormat = info.depthBits ? mtl.pixelFormat : MTLPixelFormatInvalid;
+            const MTLPixelFormat stencilFormat = info.stencilBits ? mtl.pixelFormat : MTLPixelFormatInvalid;
+            const std::string key = std::to_string(color ? view.pixelFormat : 0) + "/" + std::to_string(depthFormat) + "/" +
+                                    std::to_string(stencilFormat) + "/" + std::to_string(target.samples);
+            pipeline = pipelines[key];
+            if (!pipeline) {
+                id<MTLLibrary> library = Device::get().utilityLibrary();
+                MTLRenderPipelineDescriptor* desc = [MTLRenderPipelineDescriptor new];
+                desc.vertexFunction = [library newFunctionWithName:@"wmgl_clear_vs"];
+                desc.fragmentFunction = [library newFunctionWithName:color ? @"wmgl_clear_uint_fs" : @"wmgl_clear_depth_only_fs"];
+                if (color) desc.colorAttachments[0].pixelFormat = view.pixelFormat;
+                desc.depthAttachmentPixelFormat = depthFormat;
+                desc.stencilAttachmentPixelFormat = stencilFormat;
+                desc.rasterSampleCount = target.samples;
+                NSError* error = nil;
+                pipeline = [Device::get().mtl() newRenderPipelineStateWithDescriptor:desc error:&error];
+                if (!pipeline) WMGL_ERR("multisample clear pipeline: %s", error.localizedDescription.UTF8String);
+                pipelines[key] = pipeline;
+            }
+            const int which = (info.depthBits ? 1 : 0) | (info.stencilBits ? 2 : 0);
+            if (!depthStencilStates[which]) {
+                MTLDepthStencilDescriptor* desc = [MTLDepthStencilDescriptor new];
+                desc.depthCompareFunction = MTLCompareFunctionAlways;
+                desc.depthWriteEnabled = info.depthBits != 0;
+                if (info.stencilBits) {
+                    MTLStencilDescriptor* face = [MTLStencilDescriptor new];
+                    face.stencilCompareFunction = MTLCompareFunctionAlways;
+                    face.depthStencilPassOperation = MTLStencilOperationReplace;
+                    face.writeMask = 0xff;
+                    desc.frontFaceStencil = desc.backFaceStencil = face;
+                }
+                depthStencilStates[which] = [Device::get().mtl() newDepthStencilStateWithDescriptor:desc];
+            }
+            depthStencil = depthStencilStates[which];
+        }
+        if (!pipeline) return;
+        id<MTLRenderCommandEncoder> encoder = ctx.stream().render(target);
+        queriesSuspendVisibility(ctx, encoder);  // not an application draw
+        [encoder setRenderPipelineState:pipeline];
+        [encoder setDepthStencilState:depthStencil];
+        [encoder setStencilReferenceValue:stencil];
+        [encoder setViewport:(MTLViewport){0, 0, static_cast<double>(image.width), static_cast<double>(image.height), 0, 1}];
+        [encoder setScissorRect:(MTLScissorRect){static_cast<NSUInteger>(x), static_cast<NSUInteger>(y), static_cast<NSUInteger>(w),
+                                                 static_cast<NSUInteger>(h)}];
+        const float position[4] = {depth, 0, 0, 0};
+        [encoder setVertexBytes:position length:sizeof(position) atIndex:0];
+        uint32_t colors[8][4] = {};
+        std::memcpy(colors[0], words, sizeof(words));
+        [encoder setFragmentBytes:colors length:sizeof(colors) atIndex:0];
+        [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+        ctx.stream().endEncoder();  // the pass's state is not the GL draws'
+    }
+}
+
+void clearTexture(Context& ctx, const char* command, GLuint texture, GLint level, GLint x, GLint y, GLint z, GLsizei w,
+                  GLsizei h, GLsizei d, bool whole, GLenum format, GLenum type, const void* data) {
+    if (ctx.version() < 44 && !ctx.hasExtension("GL_ARB_clear_texture")) return ctx.unimplemented(command);
+    Texture* tex = texture ? ctx.texture(texture) : nullptr;
+    if (!tex || tex->target == GL_TEXTURE_BUFFER) return ctx.setError(GL_INVALID_OPERATION);
+    if (!checkFormatType(ctx, format, type)) return;
+    if (level < 0 || level >= Texture::kMaxLevels) return ctx.setError(GL_INVALID_VALUE);
+    const TextureImage& image = tex->image(0, level);
+    if (!image.defined()) return ctx.setError(GL_INVALID_OPERATION);
+    const FormatInfo& info = *image.format;
+    if (info.compressed) return ctx.setError(GL_INVALID_OPERATION);
+    // The format names the image's kind: depth, depth/stencil, stencil or colour
+    // (and integer colour only with integer formats).
+    const bool depthOnly = info.depthBits && !info.stencilBits, stencilOnly = info.stencilBits && !info.depthBits;
+    const bool depthStencil = info.depthBits && info.stencilBits;
+    if (depthOnly != (format == GL_DEPTH_COMPONENT) || depthStencil != (format == GL_DEPTH_STENCIL) ||
+        stencilOnly != (format == GL_STENCIL_INDEX))
+        return ctx.setError(GL_INVALID_OPERATION);
+    if (!info.isDepthOrStencil() && !transferCompatible(format, type, info)) return ctx.setError(GL_INVALID_OPERATION);
+    const bool cube = tex->target == GL_TEXTURE_CUBE_MAP;
+    const int layers = cube ? 6 : image.depth;
+    if (whole) {
+        x = y = z = 0;
+        w = image.width;
+        h = image.height;
+        d = layers;
+    } else {
+        if (w < 0 || h < 0 || d < 0) return ctx.setError(GL_INVALID_VALUE);
+        if (x < 0 || y < 0 || z < 0 || w > image.width - x || h > image.height - y || d > layers - z)
+            return ctx.setError(GL_INVALID_OPERATION);
+    }
+    if (!w || !h || !d) return;
+    if (!ensureTextureStorage(ctx, *tex) || !imageHasStorage(ctx, *tex, 0, level)) return;
+    const size_t bytes = storageBytes(info.storage);
+    std::vector<uint8_t> texel(std::max<size_t>(bytes, 8), 0);
+    // Without data, zeros: converted like data, so what the format stores
+    // but does not have (the alpha of RGB formats) is still 1.
+    static const uint8_t zeros[16] = {};
+    PixelStoreParams tight;
+    tight.alignment = 1;
+    unpackPixels(data ? data : zeros, format, type, 1, 1, 1, tight, info, texel.data());
+    if (image.samples > 1) {
+        clearMultisample(ctx, *tex, info, texel.data(), x, y, z, w, h, d);
+        imageChanged(ctx, *tex);
+        return;
+    }
+    // One layer (or 3D slice, or cube face) at a time bounds the staging size.
+    std::vector<uint8_t> fill(static_cast<size_t>(w) * h * bytes);
+    for (size_t i = 0; i < fill.size(); i += bytes) std::memcpy(&fill[i], texel.data(), bytes);
+    if (tex->target == GL_TEXTURE_1D_ARRAY) {
+        // A 1D array's layers are its rows (y and height).
+        int rx = x, ry = y, rz = 0, rw = w, rh = h, rd = 1;
+        metalRegion(*tex, rx, ry, rz, rw, rh, rd);
+        uploadTexels(ctx, *tex, 0, level, rx, ry, rz, rw, rh, rd, fill.data(), static_cast<size_t>(rw) * bytes,
+                     static_cast<size_t>(rw) * rh * bytes);
+    } else {
+        for (int layer = z; layer < z + d; ++layer)
+            uploadTexels(ctx, *tex, cube ? layer : 0, level, x, y, cube ? 0 : layer, w, h, 1, fill.data(),
+                         static_cast<size_t>(w) * bytes, static_cast<size_t>(w) * h * bytes);
+    }
+    imageChanged(ctx, *tex);
+}
+
+}  // namespace
+
+void ClearTexImage(Context& ctx, GLuint texture, GLint level, GLenum format, GLenum type, const void* data) {
+    clearTexture(ctx, "glClearTexImage", texture, level, 0, 0, 0, 0, 0, 0, true, format, type, data);
+}
+
+void ClearTexSubImage(Context& ctx, GLuint texture, GLint level, GLint xoffset, GLint yoffset, GLint zoffset, GLsizei width,
+                      GLsizei height, GLsizei depth, GLenum format, GLenum type, const void* data) {
+    clearTexture(ctx, "glClearTexSubImage", texture, level, xoffset, yoffset, zoffset, width, height, depth, false, format,
+                 type, data);
 }
 
 void GenerateMipmap(Context& ctx, GLenum target) {
@@ -1757,7 +1996,8 @@ MTLPixelFormat linearCompressedFormat(Storage storage) {
     }
 }
 
-// Decodes one 2D slice of a compressed image into float RGBA texels.
+// Decodes one 2D slice of a compressed image into float RGBA texels: a
+// layer, or for a 3D texture (BPTC) the image at depth `slice`.
 void decodeCompressedSlice(Context& ctx, Texture& tex, Storage storage, NSUInteger level, NSUInteger slice, int width,
                            int height, float* out) {
     static id<MTLComputePipelineState> pipeline = [] {
@@ -1768,10 +2008,28 @@ void decodeCompressedSlice(Context& ctx, Texture& tex, Storage storage, NSUInteg
         return state;
     }();
     if (!pipeline || width <= 0 || height <= 0) return;
-    id<MTLTexture> view = [tex.mtl newTextureViewWithPixelFormat:linearCompressedFormat(storage)
-                                                     textureType:MTLTextureType2D
-                                                          levels:NSMakeRange(level, 1)
-                                                          slices:NSMakeRange(slice, 1)];
+    id<MTLTexture> view = nil;
+    if (tex.mtl.textureType == MTLTextureType3D) {
+        // Metal makes only 3D views of a 3D texture: the image is copied
+        // into a 2D texture of its own first.
+        MTLTextureDescriptor* desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:tex.mtl.pixelFormat
+                                                                                        width:static_cast<NSUInteger>(width)
+                                                                                       height:static_cast<NSUInteger>(height)
+                                                                                    mipmapped:NO];
+        desc.usage = MTLTextureUsageShaderRead | MTLTextureUsagePixelFormatView;
+        desc.storageMode = MTLStorageModePrivate;
+        id<MTLTexture> image = [Device::get().mtl() newTextureWithDescriptor:desc];
+        if (!image) return;
+        [ctx.stream().blit() copyFromTexture:tex.mtl sourceSlice:0 sourceLevel:level sourceOrigin:MTLOriginMake(0, 0, slice)
+                                  sourceSize:MTLSizeMake(static_cast<NSUInteger>(width), static_cast<NSUInteger>(height), 1)
+                                   toTexture:image destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0, 0, 0)];
+        view = [image newTextureViewWithPixelFormat:linearCompressedFormat(storage)];
+    } else {
+        view = [tex.mtl newTextureViewWithPixelFormat:linearCompressedFormat(storage)
+                                          textureType:MTLTextureType2D
+                                               levels:NSMakeRange(level, 1)
+                                               slices:NSMakeRange(slice, 1)];
+    }
     const size_t bytes = static_cast<size_t>(width) * height * 16;
     id<MTLBuffer> buffer = [Device::get().mtl() newBufferWithLength:bytes options:MTLResourceStorageModeShared];
     if (!view || !buffer) return;
@@ -1873,10 +2131,12 @@ void GetCompressedTexImage(Context& ctx, GLenum target, GLint level, void* img) 
                                                              options:MTLResourceStorageModeShared];
     id<MTLBlitCommandEncoder> blit = ctx.stream().blit();
     const int layers = image.depth;
+    const bool volume = t.tex->target == GL_TEXTURE_3D;  // z is a depth, not a slice
     for (int layer = 0; layer < layers; ++layer) {
-        const NSUInteger slice = static_cast<NSUInteger>(t.tex->target == GL_TEXTURE_CUBE_MAP ? t.face : layer);
+        const NSUInteger slice = static_cast<NSUInteger>(t.tex->target == GL_TEXTURE_CUBE_MAP ? t.face : volume ? 0 : layer);
         [blit copyFromTexture:t.tex->mtl sourceSlice:slice sourceLevel:static_cast<NSUInteger>(level)
-                 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(image.width, image.height, 1)
+                 sourceOrigin:MTLOriginMake(0, 0, volume ? static_cast<NSUInteger>(layer) : 0)
+                   sourceSize:MTLSizeMake(image.width, image.height, 1)
                      toBuffer:staging destinationOffset:imageBytes * static_cast<size_t>(layer)
        destinationBytesPerRow:rowBytes destinationBytesPerImage:imageBytes];
     }
@@ -1886,6 +2146,185 @@ void GetCompressedTexImage(Context& ctx, GLenum target, GLint level, void* img) 
         return;
     }
     // Scatter the blocks into the layout PACK_COMPRESSED_BLOCK_* describes.
+    const uint8_t* from = static_cast<const uint8_t*>(staging.contents);
+    for (size_t z = 0; z < layout.depth; ++z)
+        for (size_t y = 0; y < layout.blocksY; ++y, from += layout.blocksX * layout.blockBytes)
+            std::memcpy(dst + layout.start + z * layout.imageStride + y * layout.rowStride, from, layout.blocksX * layout.blockBytes);
+}
+
+namespace {
+
+// glGetTextureSubImage and glGetCompressedTextureSubImage (GL 4.5 section
+// 8.11.4): the texture and region checks they share. A cube map's faces are
+// its z (a cube map array's layer-faces are already).
+struct SubImage {
+    RefPtr<Texture> tex;
+    const TextureImage* image = nullptr;
+    int depth = 1;  // images in z
+};
+
+bool subImageRegion(Context& ctx, const char* command, GLuint texture, GLint level, GLint x, GLint y, GLint z, GLsizei w,
+                    GLsizei h, GLsizei d, SubImage& out) {
+    if (ctx.version() < 45 && !ctx.hasExtension("GL_ARB_get_texture_sub_image")) {
+        ctx.unimplemented(command);
+        return false;
+    }
+    {
+        ShareLock lock(ctx);
+        out.tex = texture ? ctx.share().textures.getRef(texture) : nullptr;
+    }
+    if (!out.tex || !out.tex->target) return ctx.setError(GL_INVALID_OPERATION), false;
+    const GLenum target = out.tex->target;
+    if (target == GL_TEXTURE_BUFFER || target == GL_TEXTURE_2D_MULTISAMPLE || target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY)
+        return ctx.setError(GL_INVALID_OPERATION), false;
+    if (level < 0 || level > maxLevelFor(target)) return ctx.setError(GL_INVALID_VALUE), false;
+    if (x < 0 || y < 0 || z < 0 || w < 0 || h < 0 || d < 0) return ctx.setError(GL_INVALID_VALUE), false;
+    if (target == GL_TEXTURE_1D && (y != 0 || h != 1)) return ctx.setError(GL_INVALID_VALUE), false;
+    if ((target == GL_TEXTURE_1D || target == GL_TEXTURE_1D_ARRAY || target == GL_TEXTURE_2D || target == GL_TEXTURE_RECTANGLE) &&
+        (z != 0 || d != 1))
+        return ctx.setError(GL_INVALID_VALUE), false;
+    out.image = &out.tex->image(0, level);
+    out.depth = target == GL_TEXTURE_CUBE_MAP ? 6 : out.image->depth;
+    if (target == GL_TEXTURE_CUBE_MAP)
+        for (int f = 1; f < 6; ++f) {
+            const TextureImage& face = out.tex->image(f, level);
+            if (!face.defined() || face.width != out.image->width || face.height != out.image->height ||
+                face.internalFormat != out.image->internalFormat)
+                out.depth = 0;  // not cube complete at this level
+        }
+    if (static_cast<int64_t>(x) + w > out.image->width || static_cast<int64_t>(y) + h > out.image->height ||
+        static_cast<int64_t>(z) + d > out.depth)
+        return ctx.setError(GL_INVALID_VALUE), false;
+    return true;
+}
+
+// The Metal slice of GL image z (a 1D array's layer is its y).
+uint32_t subImageSlice(const Texture& tex, int z) {
+    return tex.target == GL_TEXTURE_3D ? 0u : static_cast<uint32_t>(z);
+}
+
+// One slice of a compressed image decoded to float RGBA.
+std::vector<float> decodedSlice(Context& ctx, Texture& tex, const FormatInfo& info, int level, uint32_t slice, int width,
+                                int height) {
+    std::vector<float> rgba(static_cast<size_t>(width) * height * 4);
+    if (!isRgtcStorage(info.storage)) {
+        decodeCompressedSlice(ctx, tex, info.storage, static_cast<NSUInteger>(level), slice, width, height, rgba.data());
+        return rgba;
+    }
+    const size_t rowBytes = ((static_cast<size_t>(width) + 3) / 4) * storageBytes(info.storage);
+    const size_t imageBytes = rowBytes * ((static_cast<size_t>(height) + 3) / 4);
+    id<MTLBuffer> staging = [Device::get().mtl() newBufferWithLength:std::max<size_t>(1, imageBytes)
+                                                             options:MTLResourceStorageModeShared];
+    [ctx.stream().blit() copyFromTexture:tex.mtl sourceSlice:slice sourceLevel:static_cast<NSUInteger>(level)
+                            sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(width, height, 1) toBuffer:staging
+                       destinationOffset:0 destinationBytesPerRow:rowBytes destinationBytesPerImage:imageBytes];
+    ctx.stream().finish();
+    decodeRgtc(info.storage, static_cast<const uint8_t*>(staging.contents), width, height, 1, rgba.data());
+    return rgba;
+}
+
+}  // namespace
+
+void GetTextureSubImage(Context& ctx, GLuint texture, GLint level, GLint xoffset, GLint yoffset, GLint zoffset, GLsizei width,
+                        GLsizei height, GLsizei depth, GLenum format, GLenum type, GLsizei bufSize, void* pixels) {
+    SubImage sub;
+    if (!subImageRegion(ctx, "glGetTextureSubImage", texture, level, xoffset, yoffset, zoffset, width, height, depth, sub))
+        return;
+    if (!checkFormatType(ctx, format, type)) return;
+    Texture& tex = *sub.tex;
+    const TextureImage& image = *sub.image;
+    if (!width || !height || !depth || !image.defined()) return;
+    const FormatInfo& info = *image.format;
+    const bool depthRequest = format == GL_DEPTH_COMPONENT, stencilRequest = format == GL_STENCIL_INDEX,
+               depthStencilRequest = format == GL_DEPTH_STENCIL;
+    if ((depthRequest && !info.depthBits) || (depthStencilRequest && !(info.depthBits && info.stencilBits)) ||
+        (stencilRequest && !info.stencilBits) || (!depthRequest && !stencilRequest && !depthStencilRequest && info.isDepthOrStencil()))
+        return ctx.setError(GL_INVALID_OPERATION);
+    if (!info.isDepthOrStencil() && !transferCompatible(format, type, info)) return ctx.setError(GL_INVALID_OPERATION);
+    // Cube maps and arrays pack as three-dimensional images.
+    const bool threeD = tex.target == GL_TEXTURE_3D || tex.target == GL_TEXTURE_2D_ARRAY || tex.target == GL_TEXTURE_CUBE_MAP ||
+                        tex.target == GL_TEXTURE_CUBE_MAP_ARRAY;
+    const PixelStoreParams ps = pixelStoreParams(ctx.state.pack, threeD);
+    const TransferLayout layout = transferLayout(format, type, width, height, depth, ps);
+    if (bufSize < 0) return ctx.setError(GL_INVALID_VALUE);
+    if (!ctx.state.pixelPackBuffer && layout.bytesNeeded > static_cast<size_t>(bufSize)) return ctx.setError(GL_INVALID_OPERATION);
+    uint8_t* dst = nullptr;
+    if (!packDestination(ctx, pixels, layout.bytesNeeded, typeSize(type), dst)) return;
+    for (int f = 0; f < (tex.target == GL_TEXTURE_CUBE_MAP ? 6 : 1); ++f)
+        if (!imageHasStorage(ctx, tex, f, level)) return;
+    if (!dst) return;
+    if (info.compressed || isRgtcStorage(info.storage)) {
+        // Decode whole slices, keep the region.
+        std::vector<float> rgba(static_cast<size_t>(width) * height * depth * 4);
+        for (int k = 0; k < depth; ++k) {
+            // A 3D texture's image is chosen by its depth (decodeCompressedSlice).
+            const uint32_t z = tex.target == GL_TEXTURE_3D ? static_cast<uint32_t>(zoffset + k) : subImageSlice(tex, zoffset + k);
+            const std::vector<float> slice = decodedSlice(ctx, tex, info, level, z, image.width, image.height);
+            for (int row = 0; row < height; ++row)
+                std::memcpy(&rgba[((static_cast<size_t>(k) * height + row) * width) * 4],
+                            &slice[((static_cast<size_t>(yoffset) + row) * image.width + xoffset) * 4],
+                            static_cast<size_t>(width) * 16);
+        }
+        packPixels(rgba.data(), *formatInfo(GL_RGBA32F), width, height, depth, format, type, ps, false, dst);
+        return;
+    }
+    std::vector<uint8_t> texels;
+    if (tex.target == GL_TEXTURE_3D) {
+        texels = readImageTexels(ctx, tex.mtl, info.storage, static_cast<uint32_t>(level), 0, xoffset, yoffset, zoffset, width,
+                                 height, depth);
+    } else {
+        int x = xoffset, y = yoffset, z = zoffset, w = width, h = height, d = depth;
+        metalRegion(tex, x, y, z, w, h, d);
+        texels = readImageTexels(ctx, tex.mtl, info.storage, static_cast<uint32_t>(level), static_cast<uint32_t>(z), x, y, 0, w,
+                                 h, d);
+    }
+    packPixels(texels.data(), info, width, height, depth, format, type, ps, false, dst);
+}
+
+void GetCompressedTextureSubImage(Context& ctx, GLuint texture, GLint level, GLint xoffset, GLint yoffset, GLint zoffset,
+                                  GLsizei width, GLsizei height, GLsizei depth, GLsizei bufSize, void* pixels) {
+    SubImage sub;
+    if (!subImageRegion(ctx, "glGetCompressedTextureSubImage", texture, level, xoffset, yoffset, zoffset, width, height, depth,
+                        sub))
+        return;
+    Texture& tex = *sub.tex;
+    const TextureImage& image = *sub.image;
+    if (!image.defined() || !image.format->compressed) return ctx.setError(GL_INVALID_OPERATION);
+    // Whole 4x4 blocks, except where the region reaches the image's edge.
+    if (xoffset % 4 || yoffset % 4 || (width % 4 && xoffset + width != image.width) ||
+        (height % 4 && yoffset + height != image.height))
+        return ctx.setError(GL_INVALID_OPERATION);
+    const bool threeD = tex.target == GL_TEXTURE_3D || tex.target == GL_TEXTURE_2D_ARRAY || tex.target == GL_TEXTURE_CUBE_MAP ||
+                        tex.target == GL_TEXTURE_CUBE_MAP_ARRAY;
+    const size_t size = compressedSize(*image.format, width, height, depth);
+    const CompressedLayout layout = compressedLayout(ctx.state.pack, *image.format, threeD ? 3 : 2, width, height, depth);
+    const size_t needed = layout.active ? layout.bytesNeeded() : size;
+    if (bufSize < 0) return ctx.setError(GL_INVALID_VALUE);
+    if (!ctx.state.pixelPackBuffer && needed > static_cast<size_t>(bufSize)) return ctx.setError(GL_INVALID_OPERATION);
+    uint8_t* dst = nullptr;
+    if (!packDestination(ctx, pixels, needed, 1, dst)) return;
+    if (!width || !height || !depth) return;
+    for (int f = 0; f < (tex.target == GL_TEXTURE_CUBE_MAP ? 6 : 1); ++f)
+        if (!imageHasStorage(ctx, tex, f, level)) return;
+    if (!dst) return;
+    const size_t rowBytes = ((static_cast<size_t>(width) + 3) / 4) * storageBytes(image.format->storage);
+    const size_t imageBytes = rowBytes * ((static_cast<size_t>(height) + 3) / 4);
+    id<MTLBuffer> staging = [Device::get().mtl() newBufferWithLength:std::max<size_t>(1, size)
+                                                             options:MTLResourceStorageModeShared];
+    id<MTLBlitCommandEncoder> blit = ctx.stream().blit();
+    for (int k = 0; k < depth; ++k) {
+        const bool volume = tex.target == GL_TEXTURE_3D;
+        [blit copyFromTexture:tex.mtl sourceSlice:volume ? 0 : subImageSlice(tex, zoffset + k)
+                  sourceLevel:static_cast<NSUInteger>(level)
+                 sourceOrigin:MTLOriginMake(xoffset, yoffset, volume ? zoffset + k : 0)
+                   sourceSize:MTLSizeMake(width, height, 1) toBuffer:staging
+            destinationOffset:imageBytes * static_cast<size_t>(k) destinationBytesPerRow:rowBytes destinationBytesPerImage:imageBytes];
+    }
+    ctx.stream().finish();
+    if (!layout.active) {
+        std::memcpy(dst, staging.contents, size);
+        return;
+    }
     const uint8_t* from = static_cast<const uint8_t*>(staging.contents);
     for (size_t z = 0; z < layout.depth; ++z)
         for (size_t y = 0; y < layout.blocksY; ++y, from += layout.blocksX * layout.blockBytes)
@@ -1983,6 +2422,58 @@ void BindSampler(Context& ctx, GLuint unit, GLuint sampler) {
     ctx.markDirty(kDirtyTextures);
 }
 
+// glBindTextures and glBindSamplers (GL 4.4, GL_ARB_multi_bind): a range of
+// units at once. Zero (or a null array) resets every target of a unit to its
+// default texture, or removes its sampler. An error in one unit leaves it
+// alone; a range past the last unit changes nothing.
+void BindTextures(Context& ctx, GLuint first, GLsizei count, const GLuint* textures) {
+    if (ctx.version() < 44 && !ctx.hasExtension("GL_ARB_multi_bind")) return ctx.unimplemented("glBindTextures");
+    if (count < 0) return ctx.setError(GL_INVALID_VALUE);
+    if (static_cast<uint64_t>(first) + static_cast<uint64_t>(count) > static_cast<uint64_t>(kMaxCombinedTextureUnits))
+        return ctx.setError(GL_INVALID_OPERATION);
+    for (GLsizei i = 0; i < count; ++i) {
+        TextureUnit& unit = ctx.state.textureUnits[first + static_cast<GLuint>(i)];
+        const GLuint name = textures ? textures[i] : 0;
+        if (!name) {
+            for (size_t t = 0; t < unit.bound.size(); ++t) unit.bound[t] = ctx.defaultTextures[t];
+            continue;
+        }
+        RefPtr<Texture> tex;
+        {
+            ShareLock lock(ctx);
+            tex = ctx.share().textures.getRef(name);
+        }
+        const int index = tex ? textureTargetIndex(tex->target) : -1;
+        if (index < 0) {
+            ctx.setError(GL_INVALID_OPERATION);
+            continue;
+        }
+        unit.bound[static_cast<size_t>(index)] = tex;
+    }
+    ctx.markDirty(kDirtyTextures);
+}
+
+void BindSamplers(Context& ctx, GLuint first, GLsizei count, const GLuint* samplers) {
+    if (ctx.version() < 44 && !ctx.hasExtension("GL_ARB_multi_bind")) return ctx.unimplemented("glBindSamplers");
+    if (count < 0) return ctx.setError(GL_INVALID_VALUE);
+    if (static_cast<uint64_t>(first) + static_cast<uint64_t>(count) > static_cast<uint64_t>(kMaxCombinedTextureUnits))
+        return ctx.setError(GL_INVALID_OPERATION);
+    for (GLsizei i = 0; i < count; ++i) {
+        const GLuint name = samplers ? samplers[i] : 0;
+        RefPtr<Sampler> object;
+        if (name) {
+            ShareLock lock(ctx);
+            object = ctx.share().samplers.getRef(name);
+        }
+        if (name && !object) {
+            ctx.setError(GL_INVALID_OPERATION);
+            continue;
+        }
+        ctx.state.textureUnits[first + static_cast<GLuint>(i)].sampler = object;
+    }
+    ctx.markDirty(kDirtyTextures);
+}
+
 namespace {
 
 void samplerParameter(Context& ctx, GLuint sampler, GLenum pname, const ParamValues& v, bool vectorCall) {
@@ -1991,7 +2482,7 @@ void samplerParameter(Context& ctx, GLuint sampler, GLenum pname, const ParamVal
     if (!isSamplerParam(pname) || (!vectorCall && isVectorParam(pname))) return ctx.setError(GL_INVALID_ENUM);
     if (pname == GL_TEXTURE_MAX_ANISOTROPY && !ctx.hasExtension("GL_EXT_texture_filter_anisotropic") && ctx.version() < 46)
         return ctx.setError(GL_INVALID_ENUM);
-    const GLenum error = setSamplerParam(object->params, pname, v, 0, ctx.isCompat());
+    const GLenum error = setSamplerParam(object->params, pname, v, 0, ctx);
     if (error) return ctx.setError(error);
     ctx.markDirty(kDirtyTextures);
 }

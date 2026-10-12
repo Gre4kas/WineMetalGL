@@ -1067,7 +1067,17 @@ bool Lowering::lowerFunctions() {
             const uint32_t toType = itf.input ? itf.members[k] : itf.mappedMembers[k];
             code.push_back({Op::OpAccessChain, {pointerTo(itf.input ? storage : spv::StorageClassPrivate, fromType), from,
                                                 itf.input ? itf.vars[0] : itf.privateVar, index}});
-            code.push_back({Op::OpLoad, {fromType, loaded, from}});
+            valueTypes_[from] = pointerTo(itf.input ? storage : spv::StorageClassPrivate, fromType);
+            // A block member that is an array (a mapped double) is a native
+            // array in MSL: it moves element by element (SPIRV-Cross assigns
+            // whole arrays, which MSL rejects for native arrays).
+            if (itf.input) {
+                const uint32_t elements = loadElements(code, from, fromType);
+                code.push_back({Op::OpCopyObject, {fromType, loaded, elements}});
+            } else {
+                code.push_back({Op::OpLoad, {fromType, loaded, from}});
+            }
+            valueTypes_[loaded] = fromType;
             uint32_t value = loaded;
             if (fromType != toType) {
                 std::vector<uint32_t> words;
@@ -1082,7 +1092,9 @@ bool Lowering::lowerFunctions() {
             }
             code.push_back({Op::OpAccessChain, {pointerTo(itf.input ? spv::StorageClassPrivate : storage, toType), to,
                                                 itf.input ? itf.privateVar : itf.vars[0], index}});
-            code.push_back({Op::OpStore, {to, value}});
+            valueTypes_[to] = pointerTo(itf.input ? spv::StorageClassPrivate : storage, toType);
+            if (itf.input) code.push_back({Op::OpStore, {to, value}});
+            else storeElements(code, to, toType, value);
         }
     };
     auto convertInputs = [&](std::vector<Inst>& code) {
@@ -1245,8 +1257,18 @@ bool Lowering::lowerFunctions() {
         if (in.op == Op::OpLoad) {
             const uint32_t storage = storageOf(valueType(in.w[2]));
             if (storage == spv::StorageClassUniform || storage == spv::StorageClassStorageBuffer ||
-                storage == spv::StorageClassPushConstant)
+                storage == spv::StorageClassPushConstant) {
+                // So do arrays of doubles loaded from buffers: SPIRV-Cross
+                // copies a block's native arrays into spvUnsafeArray values by
+                // plain assignment, which MSL rejects.
+                const uint32_t type = pointee(valueType(in.w[2]));
+                const Inst* d = typeDef(type);
+                if (d && d->op == Op::OpTypeArray && containsDouble(type)) {
+                    out.push_back({Op::OpCopyObject, {type, in.w[1], loadElements(out, in.w[2], type)}});
+                    continue;
+                }
                 bufferLoads_.insert(in.w[1]);
+            }
         }
         if (!lowerInstruction(in, out)) return false;
     }

@@ -54,4 +54,47 @@ void BindImageTexture(Context& ctx, GLuint unit, GLuint texture, GLint level, GL
     ctx.markDirty(kDirtyTextures);
 }
 
+// glBindImageTextures (GL 4.4, GL_ARB_multi_bind): a range of image units,
+// each bound to level 0 of a texture, layered, read-write, in the format of
+// that level. Zero (or a null array) unbinds a unit.
+void BindImageTextures(Context& ctx, GLuint first, GLsizei count, const GLuint* textures) {
+    if (ctx.version() < 44 && !ctx.hasExtension("GL_ARB_multi_bind")) return ctx.unimplemented("glBindImageTextures");
+    if (!ctx.imageLoadStore()) return ctx.unimplemented("glBindImageTextures");
+    if (count < 0) return ctx.setError(GL_INVALID_VALUE);
+    if (static_cast<uint64_t>(first) + static_cast<uint64_t>(count) > static_cast<uint64_t>(ContextState::kMaxImageUnits))
+        return ctx.setError(GL_INVALID_OPERATION);
+    for (GLsizei i = 0; i < count; ++i) {
+        ImageUnit& u = ctx.state.imageUnits[first + static_cast<GLuint>(i)];
+        const GLuint name = textures ? textures[i] : 0;
+        if (!name) {
+            u = ImageUnit();
+            continue;
+        }
+        RefPtr<Texture> tex;
+        {
+            ShareLock lock(ctx);
+            tex = ctx.share().textures.getRef(name);
+        }
+        // Level 0 must exist (a buffer texture: its buffer) in an image format.
+        GLenum format = 0;
+        if (tex && tex->target == GL_TEXTURE_BUFFER) format = tex->buffer ? tex->bufferFormat : 0;
+        else if (tex && tex->image(0, 0).defined()) format = tex->image(0, 0).internalFormat;
+        if (!format || !isImageFormat(format)) {
+            ctx.setError(GL_INVALID_OPERATION);
+            continue;
+        }
+        u.texture = tex;
+        u.level = 0;
+        u.layered = true;
+        u.layer = 0;
+        u.access = GL_READ_WRITE;
+        u.format = format;
+        if (!tex->shaderWrite) {
+            tex->shaderWrite = true;
+            tex->storageDirty = true;
+        }
+    }
+    ctx.markDirty(kDirtyTextures);
+}
+
 }  // namespace wmgl::api

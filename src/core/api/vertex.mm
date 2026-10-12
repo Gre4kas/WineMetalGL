@@ -85,6 +85,8 @@ bool validFormat(Context& ctx, GLint size, GLenum type, bool normalized, bool in
         default: return fail(GL_INVALID_ENUM);
         }
         if (packed && size != 4 && size != GL_BGRA && type != GL_UNSIGNED_INT_10F_11F_11F_REV) return fail(GL_INVALID_OPERATION);
+        // GL_UNSIGNED_INT_10F_11F_11F_REV holds exactly three components (GL 4.4).
+        if (type == GL_UNSIGNED_INT_10F_11F_11F_REV && size != 3) return fail(GL_INVALID_OPERATION);
     }
     return true;
 }
@@ -170,14 +172,15 @@ void VertexAttribLPointer(Context& ctx, GLuint index, GLint size, GLenum type, G
 }
 
 // GL 3.3 core (appendix E) only makes VertexAttribPointer an error without a
-// bound VAO; GL 4.5 extends that to every command that changes VAO state.
+// bound VAO; GL 4.5 extends that to the commands that change VAO state.
+// Enabling an array is not checked: the CTS (get_uniform) enables one in a
+// core context without a VAO and expects no error, as drivers behave.
 static bool vaoStateWritable(Context& ctx) {
     return !(ctx.isCore() && ctx.version() >= 45 && currentVao(ctx) == ctx.defaultVertexArray.get());
 }
 
 void EnableVertexAttribArray(Context& ctx, GLuint index) {
     if (!checkIndex(ctx, index)) return;
-    if (!vaoStateWritable(ctx)) return ctx.setError(GL_INVALID_OPERATION);
     currentVao(ctx)->attribs[index].enabled = true;
     ++currentVao(ctx)->version;
     ctx.markDirty(kDirtyVertexInput);
@@ -185,7 +188,6 @@ void EnableVertexAttribArray(Context& ctx, GLuint index) {
 
 void DisableVertexAttribArray(Context& ctx, GLuint index) {
     if (!checkIndex(ctx, index)) return;
-    if (!vaoStateWritable(ctx)) return ctx.setError(GL_INVALID_OPERATION);
     currentVao(ctx)->attribs[index].enabled = false;
     ++currentVao(ctx)->version;
     ctx.markDirty(kDirtyVertexInput);
@@ -265,6 +267,54 @@ void BindVertexBuffer(Context& ctx, GLuint bindingindex, GLuint buffer, GLintptr
     b.offset = offset;
     b.stride = stride;
     vao.resolveBinding(bindingindex);
+    ctx.markDirty(kDirtyVertexInput);
+}
+
+// glBindVertexBuffers (GL 4.4, GL_ARB_multi_bind): a range of the current
+// vertex array's buffer bindings. A null array unbinds them (offset 0,
+// stride 16); an error in one binding leaves it alone.
+void BindVertexBuffers(Context& ctx, GLuint first, GLsizei count, const GLuint* buffers, const GLintptr* offsets,
+                       const GLsizei* strides) {
+    if (ctx.version() < 44 && !ctx.hasExtension("GL_ARB_multi_bind")) return ctx.unimplemented("glBindVertexBuffers");
+    if (!attribBindings(ctx, "glBindVertexBuffers") || !bindingStateWritable(ctx)) return;
+    if (count < 0) return ctx.setError(GL_INVALID_VALUE);
+    if (static_cast<uint64_t>(first) + static_cast<uint64_t>(count) > static_cast<uint64_t>(VertexArray::kMaxBindings))
+        return ctx.setError(GL_INVALID_OPERATION);
+    VertexArray& vao = *currentVao(ctx);
+    for (GLsizei i = 0; i < count; ++i) {
+        const GLuint index = first + static_cast<GLuint>(i);
+        VertexBinding& b = vao.bindings[index];
+        if (!buffers) {
+            b.buffer = nullptr;
+            b.offset = 0;
+            b.stride = 16;
+            vao.resolveBinding(index);
+            continue;
+        }
+        const GLintptr offset = offsets[i];
+        const GLsizei stride = strides[i];
+        if (offset < 0 || stride < 0 || stride > limits::kMaxVertexAttribStride) {
+            ctx.setError(GL_INVALID_VALUE);
+            continue;
+        }
+        RefPtr<Buffer> object;
+        if (buffers[i]) {
+            ShareLock lock(ctx);
+            object = ctx.share().buffers.getRef(buffers[i]);
+            if (!object && ctx.share().buffers.isGenerated(buffers[i])) {
+                object = makeRef<Buffer>(buffers[i]);
+                ctx.share().buffers.set(buffers[i], object);
+            }
+        }
+        if (buffers[i] && !object) {
+            ctx.setError(GL_INVALID_OPERATION);
+            continue;
+        }
+        b.buffer = object;
+        b.offset = offset;
+        b.stride = stride;
+        vao.resolveBinding(index);
+    }
     ctx.markDirty(kDirtyVertexInput);
 }
 

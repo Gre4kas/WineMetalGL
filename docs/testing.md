@@ -30,15 +30,21 @@ build/host/wmgl_gpu_tests            # or one test: build/host/wmgl_gpu_tests gp
 ## Wine fixtures
 
 Small Windows programs (`tests/wine/fixtures.txt`), each run as an x86_64 and
-an i386 guest in one fresh WoW64 prefix. Each prints markers that the script
-checks.
+an i386 guest in one fresh WoW64 prefix, through the Wine module. Each prints
+markers that the script checks.
 
 ```sh
+./scripts/build.sh && ./scripts/build-wine-module.sh /path/to/wine
+./scripts/install-wine-module.sh /path/to/wine
 WINEMETALGL_WINE_RUNTIME=/path/to/wine tests/wine/probe-opengl-wow64.sh
 ```
 
-The 59 gate fixtures run by default; `--all` adds the 10 fixtures kept for
-the later 4.x milestones, which need features of GL 4.4 or later.
+The script puts the module's `opengl32.dll` into its prefix
+(`WINEMETALGL_MODULE_DIR`, default `build/wine-module`). The gate runs on
+stock Wine 11.0 and on MetalSharp's Wine 11.17.
+
+All 70 fixtures are in the gate (the 10 that need GL 4.4 to 4.6 features
+joined it with GL 4.6), each run as an x86_64 and an i386 guest.
 
 ## Khronos CTS
 
@@ -80,7 +86,7 @@ leaves out a non-Pass case, and names the recheck commit next to the totals.
 Run times from the committed results:
 
 <!-- BEGIN GENERATED: cts-times (scripts/docs/generate.py) -->
-| Mustpass list | Cases | Under Wine, per run | Natively, per run | All 8 runs |
+| Mustpass list | Cases | Under Wine, per run | Natively, per run | All runs |
 |---|---:|---:|---:|---:|
 | `KHR-GL30` | 878 | 26 s to 50 s | 12 s to 13 s | 3.7 min |
 | `KHR-GL31` | 888 | 27 s to 35 s | 3 s to 4 s | 2.4 min |
@@ -90,7 +96,49 @@ Run times from the committed results:
 | `KHR-GL41` | 11,883 | 8.9 min to 10.8 min | 4.2 min | 56.1 min |
 | `KHR-GL42` | 12,305 | 10.0 min to 11.3 min | 4.3 min to 4.5 min | 60.6 min |
 | `KHR-GL43` | 16,085 | 9.6 min to 11.6 min | 4.7 min to 5.2 min | 62.5 min |
+| `KHR-GL46` | 19,714 | 7.2 min to 7.4 min | 4.7 min | 19.2 min |
 <!-- END GENERATED: cts-times -->
+
+## Direct3D through wined3d
+
+Wine's Direct3D 10 and 11 (wined3d) run on OpenGL, so they run on WineMetalGL
+when the prefix has the module. wined3d then reports feature level 11_1 (9_3
+on Apple's OpenGL). Wine's own conformance tests check it. They are built
+from a Wine 11.0 tree configured with tests enabled, and run one at a time:
+
+```sh
+make dlls/d3d11/tests/x86_64-windows/d3d11_test.exe dlls/d3d10core/tests/x86_64-windows/d3d10core_test.exe
+WINETEST_NO_MT_D3D=1 wine dlls/d3d11/tests/x86_64-windows/d3d11_test.exe
+```
+
+On stock Wine 11.0 with the module (Apple M4):
+
+| Test | Checks | Failures | Skipped |
+|---|---:|---:|---:|
+| `d3d11` (x86_64) | 561,394 | 230 | 9 |
+| `d3d11` (i386) | 561,394 | 230 | 9 |
+| `d3d10core` (x86_64) | 194,651 | 209 | 0 |
+| `d3d10core` (i386) | 194,651 | 209 | 0 |
+
+What the failures are:
+
+- 205 in each suite are `test_depth_bias` on D24 formats. Apple GPUs have no
+  24-bit depth format, so the depth is stored as `Depth32Float`. Its bias
+  units scale with the depth's exponent, which matches the 24-bit unit only
+  for depths in [0.5, 1).
+- `test_negative_viewports` expects D3D11 hardware's flooring of fractional
+  viewport corners. OpenGL viewports keep the fraction.
+- Single checks not yet explained:
+  - `test_sample_shading`;
+  - `test_depth_stencil_sampling`;
+  - `test_sm5_bufinfo_instruction`;
+  - `test_sample_mask`;
+  - `test_layered_rtv_mismatch`.
+- 32-bit programs keep their buffer storage below 4 GB: small buffers share
+  1 MiB chunks in 16 KiB pages, which leaves room for wined3d's 64 MB
+  persistent chunks (`test_deferred_context_map`).
+- `dxgi_test` fails on window and fullscreen geometry under Wine's macOS
+  driver, which is not OpenGL.
 
 ## Game corpus and frame times
 
@@ -116,7 +164,6 @@ Results: [Game corpus](games.md) and [Performance](performance.md).
 (`scripts/update-checksums.sh` refreshes both), that the generated docs match
 the committed evidence, that no evidence was recorded from a tree with
 uncommitted changes, that nothing uses Apple's OpenGL, and, once built, that
-the core targets macOS 15 and does not link OpenGL.framework. When
-`WINEMETALGL_WINE_SOURCE` names a Wine 11.17 tree, it also checks that the
-Wine patches apply. `check-forbidden-identifiers.sh` keeps code that
+the core targets macOS 15 and does not link OpenGL.framework.
+`check-forbidden-identifiers.sh` keeps code that
 recognises Khronos CTS shaders out of the source. CI runs both.

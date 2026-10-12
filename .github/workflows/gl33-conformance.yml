@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       wine_runtime:
-        description: Absolute path to the Wine installation on the self-hosted runner
+        description: Absolute path to a Wine 11.x installation on the self-hosted runner (llvm-mingw on PATH)
         required: true
         type: string
       cts_executable:
@@ -41,26 +41,34 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v4
 
-      - name: Build the core and stage it into the Wine runtime
+      - name: Build the core and the Wine module and install them
         env:
           WINE_RUNTIME: ${{ inputs.wine_runtime }}
+          TEMPLATE_PREFIX: ${{ inputs.template_prefix }}
         run: |
           set -eu
           ./scripts/build.sh
-          ./scripts/stage-wine.sh "$WINE_RUNTIME/lib/wine/x86_64-unix"
+          ./scripts/build-wine-module.sh "$WINE_RUNTIME"
+          # The template prefix gets the forwarding opengl32.dll and its override.
+          template=${TEMPLATE_PREFIX:-$RUNNER_TEMP/prefix-template}
+          if test ! -d "$template"; then
+            WINEPREFIX="$template" WINEARCH=wow64 WINEDLLOVERRIDES="mscoree,mshtml=" "$WINE_RUNTIME/bin/wine" wineboot -u
+            WINEPREFIX="$template" "$WINE_RUNTIME/bin/wineserver" -w
+          fi
+          ./scripts/install-wine-module.sh "$WINE_RUNTIME" "$template"
+          echo "TEMPLATE=$template" >> "$GITHUB_ENV"
 
       - name: Run KHR-GL33
         env:
           WINE_RUNTIME: ${{ inputs.wine_runtime }}
           CTS_EXECUTABLE: ${{ inputs.cts_executable }}
-          TEMPLATE_PREFIX: ${{ inputs.template_prefix }}
           CONFIG: ${{ inputs.config }}
           FILTER: ${{ inputs.filter }}
           SHARDS: ${{ inputs.shards }}
         run: |
           set -eu
           args="--wine $WINE_RUNTIME --cts $CTS_EXECUTABLE --config $CONFIG --shards $SHARDS --out $RUNNER_TEMP/results.txt"
-          test -z "$TEMPLATE_PREFIX" || args="$args --template $TEMPLATE_PREFIX"
+          args="$args --template $TEMPLATE"
           test -z "$FILTER" || args="$args --filter $FILTER"
           # --strict: any Fail, Crash, Timeout, InternalError or Missing case fails the job.
           status=0

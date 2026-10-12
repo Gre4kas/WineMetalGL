@@ -61,7 +61,6 @@ public:
     ShareGroup& share() { return *share_; }
     RefPtr<ShareGroup> shareRef() const { return share_; }
     NameTable<VertexArray> vertexArrays;
-    NameTable<Framebuffer> framebuffers;
     NameTable<Query> queries;
     NameTable<TransformFeedback> transformFeedbacks;
     NameTable<ProgramPipeline> programPipelines;
@@ -105,6 +104,14 @@ public:
     bool atomicCounters() const { return version() >= 42 || hasExtension("GL_ARB_shader_atomic_counters"); }
     // Sample shading: GL 4.0 or GL_ARB_sample_shading.
     bool sampleShading() const { return version() >= 40 || hasExtension("GL_ARB_sample_shading"); }
+    // GL_ARB_parallel_shader_compile / GL_KHR_parallel_shader_compile.
+    bool parallelShaderCompile() const {
+        return hasExtension("GL_ARB_parallel_shader_compile") || hasExtension("GL_KHR_parallel_shader_compile");
+    }
+    // SPIR-V shaders: GL 4.6 or GL_ARB_gl_spirv.
+    bool glSpirv() const { return version() >= 46 || hasExtension("GL_ARB_gl_spirv"); }
+    // Draw counts from PARAMETER_BUFFER: GL 4.6 or GL_ARB_indirect_parameters.
+    bool indirectParameters() const { return version() >= 46 || hasExtension("GL_ARB_indirect_parameters"); }
 
     // glUniformSubroutinesuiv selections per stage (api/subroutine.mm), for
     // the executable they were made with; reset by UseProgram and pipeline
@@ -118,8 +125,10 @@ public:
     // Occlusion-query slot of the current pass (see core/query.h).
     struct {
         uint64_t pass = 0, epoch = 0;
+        uint64_t samplesBound = 0;  // samples the slot's draws can have counted
         bool valid = false;
     } occlusionSlot;
+    uint64_t drawSampleBound = 0;  // samples the current draw can cover (queriesBeforeDraw)
     uint64_t occlusionEpoch = 1;
 
     // Debug output (KHR_debug / ARB_debug_output, core/api/debug.mm).

@@ -1,4 +1,4 @@
-// winemac.drv-facing ABI (include/winemetalgl/driver.h).
+// The driver ABI the Wine module uses (include/winemetalgl/driver.h).
 
 #include "winemetalgl/driver.h"
 
@@ -28,7 +28,7 @@ constexpr int kCoreBit = 0x1, kCompatBit = 0x2;
 constexpr int kLoseContextOnReset = 0x8252;
 
 // The highest version this core implements completely.
-constexpr int kHonestMajor = 4, kHonestMinor = 3;
+constexpr int kHonestMajor = 4, kHonestMinor = 6;
 
 void honestMaxVersion(int& major, int& minor) {
     major = kHonestMajor;
@@ -70,7 +70,7 @@ Surface* asSurface(wmgl_surface* s) { return reinterpret_cast<Surface*>(s); }
 
 WMGL_EXPORT int wmgl_initialize(unsigned int abi_version) {
     if (abi_version != WMGL_DRIVER_ABI_VERSION) {
-        WMGL_ERR("driver ABI mismatch: winemac %u, core %u", abi_version, WMGL_DRIVER_ABI_VERSION);
+        WMGL_ERR("driver ABI mismatch: caller %u, core %u", abi_version, WMGL_DRIVER_ABI_VERSION);
         return -1;
     }
     if (!Device::get().mtl()) return -1;
@@ -216,6 +216,16 @@ WMGL_EXPORT void* wmgl_get_proc_address(const char* name) { return lookupProc(na
 WMGL_EXPORT const char* wmgl_renderer_string(void) {
     // GL_RENDERER's string, WINEMETALGL_RENDERER included.
     return rendererString().c_str();
+}
+
+namespace wmgl::api {
+extern void* (*g_bufferAllocate)(size_t);
+extern void (*g_bufferRelease)(void*, size_t);
+}
+
+WMGL_EXPORT void wmgl_set_buffer_memory(void* (*allocate)(size_t), void (*release)(void*, size_t)) {
+    wmgl::api::g_bufferAllocate = allocate;
+    wmgl::api::g_bufferRelease = release;
 }
 
 WMGL_EXPORT void wmgl_version(int* major, int* minor, int* patch) {
