@@ -717,7 +717,6 @@ void uploadTexels(Context& ctx, Texture& tex, int face, int level, int x, int y,
                   const void* data, size_t bytesPerRow, size_t bytesPerImage) {
     if (!tex.mtl || width <= 0 || height <= 0 || depth <= 0) return;
     const bool array = tex.mtl.textureType == MTLTextureType2DArray || tex.mtl.textureType == MTLTextureTypeCubeArray;
-    const bool is3D = tex.mtl.textureType == MTLTextureType3D;
     const size_t total = bytesPerImage * static_cast<size_t>(depth);
     if (tex.mtl.pixelFormat == MTLPixelFormatDepth32Float_Stencil8) {
         // Storage texels are (float depth, uint8 stencil, pad); Metal uploads each aspect separately.
@@ -749,12 +748,20 @@ void uploadTexels(Context& ctx, Texture& tex, int face, int level, int x, int y,
         return;
     }
     TransientAllocation staging = ctx.draw().transient().allocate(total, ctx.stream().serial(), 16);
+    if (!staging.data) return;
     std::memcpy(staging.data, data, total);
+    uploadStaged(ctx, tex, face, level, x, y, z, width, height, depth, staging, bytesPerRow, bytesPerImage);
+}
+
+void uploadStaged(Context& ctx, Texture& tex, int face, int level, int x, int y, int z, int width, int height, int depth,
+                  const TransientAllocation& staging, size_t bytesPerRow, size_t bytesPerImage) {
+    const bool array = tex.mtl.textureType == MTLTextureType2DArray || tex.mtl.textureType == MTLTextureTypeCubeArray;
     id<MTLBlitCommandEncoder> blit = ctx.stream().blit();
-    if (is3D) {
+    if (tex.mtl.textureType == MTLTextureType3D) {
         [blit copyFromBuffer:staging.buffer sourceOffset:staging.offset sourceBytesPerRow:bytesPerRow
             sourceBytesPerImage:bytesPerImage sourceSize:MTLSizeMake(width, height, depth) toTexture:tex.mtl
                destinationSlice:0 destinationLevel:static_cast<NSUInteger>(level) destinationOrigin:MTLOriginMake(x, y, z)];
+        ++tex.version;
         return;
     }
     // Arrays (and 1D arrays, whose layers are rows of the GL image) upload one slice at a time.

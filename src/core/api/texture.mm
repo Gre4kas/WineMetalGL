@@ -281,9 +281,21 @@ void uploadRegion(Context& ctx, Texture& tex, int face, int level, int x, int y,
         return;
     }
     const size_t texel = storageBytes(image.format->storage);
-    std::vector<uint8_t> texels(static_cast<size_t>(w) * h * d * texel);
-    unpackPixels(src, format, type, w, h, d, pixelStoreParams(ctx.state.unpack, threeDTarget(tex.target)), *image.format,
-                 texels.data());
+    const size_t bytes = static_cast<size_t>(w) * h * d * texel;
+    const PixelStoreParams ps = pixelStoreParams(ctx.state.unpack, threeDTarget(tex.target));
+    if (tex.mtl && tex.mtl.pixelFormat != MTLPixelFormatDepth32Float_Stencil8) {
+        // Converted straight into the staging memory the GPU copies from.
+        TransientAllocation staging = ctx.draw().transient().allocate(bytes, ctx.stream().serial(), 16);
+        if (!staging.data) return;
+        unpackPixels(src, format, type, w, h, d, ps, *image.format, staging.data);
+        metalRegion(tex, x, y, z, w, h, d);
+        uploadStaged(ctx, tex, face, level, x, y, z, w, h, d, staging, static_cast<size_t>(w) * texel,
+                     static_cast<size_t>(w) * h * texel);
+        imageChanged(ctx, tex);
+        return;
+    }
+    std::vector<uint8_t> texels(bytes);
+    unpackPixels(src, format, type, w, h, d, ps, *image.format, texels.data());
     metalRegion(tex, x, y, z, w, h, d);
     uploadTexels(ctx, tex, face, level, x, y, z, w, h, d, texels.data(), static_cast<size_t>(w) * texel,
                  static_cast<size_t>(w) * h * texel);

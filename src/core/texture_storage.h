@@ -3,6 +3,7 @@
 
 #import <Metal/Metal.h>
 
+#include "core/metal/transient.h"
 #include "core/objects.h"
 #include "core/shader/border.h"
 
@@ -73,6 +74,9 @@ MTLTextureType mtlTextureType(GLenum target, GLsizei samples);
 // Uploads tightly packed texels in `storage` layout to a region of tex.mtl.
 void uploadTexels(Context& ctx, Texture& tex, int face, int level, int x, int y, int z, int width, int height,
                   int depth, const void* data, size_t bytesPerRow, size_t bytesPerImage);
+// The same from texels already in transient memory (not depth/stencil).
+void uploadStaged(Context& ctx, Texture& tex, int face, int level, int x, int y, int z, int width, int height, int depth,
+                  const TransientAllocation& staging, size_t bytesPerRow, size_t bytesPerImage);
 
 namespace api {
 // glGenerateMipmap of a depth or depth/stencil texture (api/blit.mm).
