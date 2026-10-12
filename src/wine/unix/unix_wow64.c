@@ -6,8 +6,8 @@
  *   as they are, coherent and persistent maps included.
  * - Strings the core returns are copied below 4 GB once.
  * - Sync objects become 32-bit handles.
- * - Arrays of 32-bit pointers are widened; pointers written through
- *   pointers are narrowed. */
+ * - Arrays of 32-bit pointers, GLintptr and GLsizeiptr are widened;
+ *   pointers written through pointers are narrowed. */
 
 #include "wmgl_unix.h"
 
@@ -19,29 +19,112 @@ static pthread_mutex_t wow64_lock = PTHREAD_MUTEX_INITIALIZER;
 /* Bytes of buffer storage below 4 GB, for the error when it runs out. */
 static LONG64 low_bytes;
 
-static void *low_alloc( size_t size )
+/* Small buffers share 1 MiB chunks in 16 KiB pages (one bit each), the
+ * smallest piece Metal can wrap: a reservation of its own takes 64 KiB of
+ * the 32-bit address space and a system call, and games make thousands of
+ * small buffers. Larger buffers get a reservation of their own. */
+#define CHUNK_SIZE (1 << 20)
+#define CHUNK_PAGE (16 << 10)
+
+struct chunk
+{
+    char *base;
+    UINT64 used;
+    struct chunk *next;
+};
+static struct chunk *chunks;
+static pthread_mutex_t chunk_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static void *reserve_low( size_t size )
 {
     void *memory = NULL;
     SIZE_T length = size;
     /* From the top: the 32-bit program's own heap grows from the bottom. */
     NTSTATUS status = NtAllocateVirtualMemory( GetCurrentProcess(), &memory, zero_bits, &length,
                                                MEM_COMMIT | MEM_RESERVE | MEM_TOP_DOWN, PAGE_READWRITE );
-    if (status)
+    if (!status) return memory;
+    WMGL_ERR( "no room below 4 GB for %zu bytes of buffer storage (status %#x, %lld MB in use)\n", size,
+              (unsigned int)status, (long long)(__atomic_load_n( &low_bytes, __ATOMIC_RELAXED ) >> 20) );
+    return NULL;
+}
+
+static void release_low( void *memory )
+{
+    SIZE_T length = 0;
+    NtFreeVirtualMemory( GetCurrentProcess(), &memory, &length, MEM_RELEASE );
+}
+
+/* Pages from a chunk with room, or from a new chunk. */
+static void *chunk_alloc( size_t size )
+{
+    unsigned int pages = (size + CHUNK_PAGE - 1) / CHUNK_PAGE, first;
+    UINT64 run = ((UINT64)1 << pages) - 1;
+    struct chunk *chunk;
+    char *base;
+
+    pthread_mutex_lock( &chunk_lock );
+    for (chunk = chunks; chunk; chunk = chunk->next)
     {
-        WMGL_ERR( "no room below 4 GB for %zu bytes of buffer storage (status %#x, %lld MB in use)\n", size,
-                  (unsigned int)status, (long long)(__atomic_load_n( &low_bytes, __ATOMIC_RELAXED ) >> 20) );
+        for (first = 0; first + pages <= 64; first++)
+        {
+            if (chunk->used & (run << first)) continue;
+            chunk->used |= run << first;
+            pthread_mutex_unlock( &chunk_lock );
+            return chunk->base + first * CHUNK_PAGE;
+        }
+    }
+    if (!(chunk = malloc( sizeof(*chunk) )) || !(base = reserve_low( CHUNK_SIZE )))
+    {
+        pthread_mutex_unlock( &chunk_lock );
+        free( chunk );
         return NULL;
     }
+    chunk->base = base;
+    chunk->used = run;
+    chunk->next = chunks;
+    chunks = chunk;
+    pthread_mutex_unlock( &chunk_lock );
+    return base;
+}
+
+/* Gives pages back; an empty chunk is released unless it is the newest. */
+static void chunk_free( void *memory, size_t size )
+{
+    unsigned int pages = (size + CHUNK_PAGE - 1) / CHUNK_PAGE;
+    struct chunk **link, *chunk;
+
+    pthread_mutex_lock( &chunk_lock );
+    for (link = &chunks; (chunk = *link); link = &chunk->next)
+    {
+        if ((char *)memory < chunk->base || (char *)memory >= chunk->base + CHUNK_SIZE) continue;
+        chunk->used &= ~((((UINT64)1 << pages) - 1) << ((char *)memory - chunk->base) / CHUNK_PAGE);
+        if (!chunk->used && chunk != chunks)
+        {
+            *link = chunk->next;
+            release_low( chunk->base );
+            free( chunk );
+        }
+        break;
+    }
+    pthread_mutex_unlock( &chunk_lock );
+}
+
+static void *low_alloc( size_t size )
+{
+    void *memory = size > CHUNK_SIZE / 2 ? reserve_low( size ) : chunk_alloc( size );
+
+    if (!memory) return NULL;
     __atomic_add_fetch( &low_bytes, (LONG64)size, __ATOMIC_RELAXED );
     WMGL_TRACE( "buffer storage %p, %zu bytes (%lld MB below 4 GB)\n", memory, size,
                 (long long)(__atomic_load_n( &low_bytes, __ATOMIC_RELAXED ) >> 20) );
     return memory;
 }
 
+/* On an application thread (the core queues what Metal releases). */
 static void low_free( void *memory, size_t size )
 {
-    SIZE_T length = 0;
-    NtFreeVirtualMemory( GetCurrentProcess(), &memory, &length, MEM_RELEASE );
+    if (size > CHUNK_SIZE / 2) release_low( memory );
+    else chunk_free( memory, size );
     __atomic_sub_fetch( &low_bytes, (LONG64)size, __ATOMIC_RELAXED );
 }
 
@@ -86,6 +169,8 @@ struct string_copy
 };
 static struct string_copy *strings;
 static unsigned int string_count, string_capacity;
+static char *string_pages;
+static size_t string_room;
 
 /* The core's strings are constant for its lifetime: one copy each. */
 static UINT wow64_string( const GLubyte *source )
@@ -106,11 +191,20 @@ static UINT wow64_string( const GLubyte *source )
         }
     }
     len = strlen( (const char *)source ) + 1;
-    if (!(copy = low_alloc( len )))
+    if (len > string_room)
     {
-        pthread_mutex_unlock( &wow64_lock );
-        return 0;
+        /* Strings share pages, and are never freed. */
+        string_room = len > CHUNK_PAGE ? len : CHUNK_PAGE;
+        if (!(string_pages = low_alloc( string_room )))
+        {
+            string_room = 0;
+            pthread_mutex_unlock( &wow64_lock );
+            return 0;
+        }
     }
+    copy = string_pages;
+    string_pages += len;
+    string_room -= len;
     memcpy( copy, source, len );
     if (string_count == string_capacity)
     {
@@ -265,6 +359,52 @@ static void **widen_pointers( UINT address, GLsizei count )
     if (!(out = malloc( count * sizeof(*out) ))) return NULL;
     for (i = 0; i < count; i++) out[i] = ULongToPtr( source[i] );
     return out;
+}
+
+/* An array of 32-bit GLintptr or GLsizeiptr values (signed), widened. */
+static GLintptr *widen_offsets( UINT address, GLsizei count )
+{
+    const INT *source = ULongToPtr( address );
+    GLintptr *out;
+    GLsizei i;
+
+    if (!source || count <= 0) return NULL;
+    if (!(out = malloc( count * sizeof(*out) ))) return NULL;
+    for (i = 0; i < count; i++) out[i] = source[i];
+    return out;
+}
+
+NTSTATUS wow64_manual_glBindBuffersRange( void *args )
+{
+    struct glBindBuffersRange_params32 *params = args;
+    GLintptr *offsets = widen_offsets( params->offsets, params->count );
+    GLintptr *sizes = widen_offsets( params->sizes, params->count );
+    core.p_glBindBuffersRange( params->target, params->first, params->count, (const GLuint *)ULongToPtr( params->buffers ),
+                               offsets, (const GLsizeiptr *)sizes );
+    free( offsets );
+    free( sizes );
+    return wmgl_after_call();
+}
+
+NTSTATUS wow64_manual_glBindVertexBuffers( void *args )
+{
+    struct glBindVertexBuffers_params32 *params = args;
+    GLintptr *offsets = widen_offsets( params->offsets, params->count );
+    core.p_glBindVertexBuffers( params->first, params->count, (const GLuint *)ULongToPtr( params->buffers ), offsets,
+                                (const GLsizei *)ULongToPtr( params->strides ) );
+    free( offsets );
+    return wmgl_after_call();
+}
+
+NTSTATUS wow64_manual_glVertexArrayVertexBuffers( void *args )
+{
+    struct glVertexArrayVertexBuffers_params32 *params = args;
+    GLintptr *offsets = widen_offsets( params->offsets, params->count );
+    core.p_glVertexArrayVertexBuffers( params->vaobj, params->first, params->count,
+                                       (const GLuint *)ULongToPtr( params->buffers ), offsets,
+                                       (const GLsizei *)ULongToPtr( params->strides ) );
+    free( offsets );
+    return wmgl_after_call();
 }
 
 NTSTATUS wow64_manual_glShaderSource( void *args )

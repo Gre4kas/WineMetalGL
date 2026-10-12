@@ -1542,7 +1542,7 @@ bool DrawState::issue(GLenum mode, GLint first, GLsizei count, GLsizei instances
     MTLPrimitiveType primitive = MTLPrimitiveTypeTriangle;
     id<MTLRenderCommandEncoder> encoder = prepare(points ? GL_POINTS : mode, primitive);
     if (!encoder) return false;
-    queriesBeforeDraw(ctx_, encoder);
+    queriesBeforeDraw(ctx_, encoder, instances);
     LinkedProgram& program = *current;
     PipelineKey key = lastKey_;
     // Vertices are renumbered from the first one used, so converted vertex
@@ -1776,7 +1776,7 @@ bool DrawState::runVertexCapture(LinkedProgram& lp, const std::vector<uint32_t>&
         // Rasterized with the current state (when it draws anything).
         MTLPrimitiveType primitive = MTLPrimitiveTypeTriangle;
         encoder = prepare(drawMode, primitive);
-        if (encoder) queriesBeforeDraw(ctx_, encoder);
+        if (encoder) queriesBeforeDraw(ctx_, encoder, instances);
         else drawMode = GL_NONE;
         key = lastKey_;
     }
@@ -2018,7 +2018,7 @@ void DrawState::drawWideLines(GLenum mode, const std::vector<uint32_t>& vertices
     ctx_.markDirty(kDirtyRaster);
     MTLPrimitiveType primitive = MTLPrimitiveTypeTriangle;
     if (id<MTLRenderCommandEncoder> encoder = prepare(GL_TRIANGLES, primitive)) {
-        queriesBeforeDraw(ctx_, encoder);
+        queriesBeforeDraw(ctx_, encoder, instances);
         PipelineKey key = lastKey_;
         linePartners_ = &partners;
         lineSides_ = &sides;
@@ -2115,7 +2115,7 @@ void DrawState::drawGeometry(GLenum mode, const std::vector<uint32_t>& vertices,
         MTLPrimitiveType primitive = MTLPrimitiveTypeTriangle;
         id<MTLRenderCommandEncoder> encoder = prepare(g.outputType, primitive);
         if (encoder) {
-            queriesBeforeDraw(ctx_, encoder);
+            queriesBeforeDraw(ctx_, encoder, instances);
             PipelineKey key = lastKey_;
             key.geometryPass = 1;
             id<MTLRenderPipelineState> pipeline = ctx_.share().pipelines().render(key, lp);

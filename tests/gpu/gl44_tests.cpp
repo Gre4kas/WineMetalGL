@@ -764,6 +764,16 @@ GPU_TEST_VERSION(gpu_gl44_amd_pinned_memory, 44) {
     glBufferSubData(GL_UNIFORM_BUFFER, 0, 16, zero);
     glFinish();
     CHECK(values[0] == 0.0f && values[3] == 0.0f);
+    // Specified again through another target, the buffer has storage of its
+    // own: the application's memory is neither written nor used.
+    const float ones[4] = {1, 1, 1, 1};
+    glBufferData(GL_UNIFORM_BUFFER, 16, ones, GL_DYNAMIC_DRAW);
+    CHECK(values[0] == 0.0f && values[3] == 0.0f);
+    values[0] = 5.0f;
+    float back[4] = {};
+    glGetBufferSubData(GL_UNIFORM_BUFFER, 0, 16, back);
+    CHECK(back[0] == 1.0f && back[3] == 1.0f);
+    CHECK_GL();
     glDeleteVertexArrays(1, &vao);
     glDeleteProgram(p);
     glDeleteBuffers(1, &buffer);

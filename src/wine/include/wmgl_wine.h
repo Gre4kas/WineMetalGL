@@ -43,6 +43,14 @@ struct wmgl_window_placement
     INT x, y, width, height;  /* the client area within the top-level window's client area */
     INT top_level_width, top_level_height;
     UINT screen_width;  /* the primary screen's width */
+    INT clip_x, clip_y, clip_width, clip_height;  /* the part of it its ancestors show, likewise */
+    BOOL visible;
+};
+
+/* forget_window: a destroyed window's drawable goes. */
+struct wmgl_forget_window_params
+{
+    UINT64 hwnd;
 };
 
 struct wmgl_init_params
@@ -103,6 +111,7 @@ struct wmgl_delete_context_params
 {
     UINT64 context;
     BOOL ret;
+    UINT error;      /* out: Win32 error code */
 };
 
 struct wmgl_make_current_params
@@ -156,11 +165,13 @@ struct wmgl_create_pbuffer_params
 struct wmgl_pbuffer_params
 {
     UINT64 pbuffer;
-    UINT64 hdc;      /* get/release_pbuffer_dc: the memory DC the PE side made for it */
+    UINT64 hdc;      /* get/release_pbuffer_dc: the memory DC the PE side made for it;
+                        get_pbuffer_dc: out, the pbuffer's DC (an earlier one if it has one) */
     INT attribute;   /* query_pbuffer; bind/release_tex_image: the buffer */
     INT value;       /* query_pbuffer: out */
     UINT64 attribs;  /* set_pbuffer_attrib: client array */
     BOOL ret;
+    UINT error;      /* out: Win32 error code, 0: ERROR_INVALID_HANDLE */
 };
 
 struct wmgl_query_renderer_params

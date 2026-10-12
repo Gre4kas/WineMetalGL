@@ -57,11 +57,12 @@ UINT wmgl_wow64_pointer( const void *pointer );
 NTSTATUS wmgl_after_call( void );
 
 /* The current context's debug callback (unix_main.c). */
+/* A context's debug callbacks (client pointers, 0: none): glDebugMessageCallback's
+ * and glDebugMessageCallbackAMD's. */
 struct wmgl_debug_target
 {
-    UINT64 callback;  /* client pointer, 0: none */
-    UINT64 user;
-    BOOL amd;
+    UINT64 callback, user;
+    UINT64 callback_amd, user_amd;
 };
 struct wmgl_debug_target *wmgl_current_debug_target( void );
 void wmgl_set_debug_callback( UINT64 callback, UINT64 user, BOOL amd );

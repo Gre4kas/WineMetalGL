@@ -14,6 +14,8 @@ struct wmgl_placement
     int32_t x, y, width, height;
     int32_t top_level_width, top_level_height;
     uint32_t screen_width;
+    int32_t clip_x, clip_y, clip_width, clip_height;
+    int32_t visible;
 };
 
 /* A CAMetalLayer over the window's client area (*layer), and the host that
@@ -23,6 +25,7 @@ struct wmgl_placement
  * which wmgl_window_place moves. */
 void *wmgl_window_create( const struct wmgl_placement *placement, void *device, void **layer );
 void wmgl_window_place( void *host, const struct wmgl_placement *placement );
+/* Takes the layer off the window, and frees the host. */
 void wmgl_window_destroy( void *host );
 /* The Metal device the core renders with. */
 void *wmgl_window_default_device( void );

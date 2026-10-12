@@ -18,6 +18,7 @@
 #include "core/limits.h"
 #include "core/metal/device.h"
 #include "core/metal/pixel_format.h"
+#include "core/query.h"
 #include "core/texture_storage.h"
 #include "core/util/log.h"
 #include "gl_api.gen.h"
@@ -1509,7 +1510,7 @@ void texBuffer(Context& ctx, GLenum target, GLenum internalformat, GLuint buffer
     }
     if (object && range) {
         // GL 4.3 section 8.9: a range inside the buffer, aligned.
-        if (offset < 0 || size <= 0 || offset + size > object->size) return ctx.setError(GL_INVALID_VALUE);
+        if (offset < 0 || size <= 0 || size > object->size - offset) return ctx.setError(GL_INVALID_VALUE);
         if (offset % limits::kTextureBufferOffsetAlignment) return ctx.setError(GL_INVALID_VALUE);
     }
     tex->buffer = object;
@@ -1751,6 +1752,7 @@ void clearMultisample(Context& ctx, Texture& tex, const FormatInfo& info, const 
         }
         if (!pipeline) return;
         id<MTLRenderCommandEncoder> encoder = ctx.stream().render(target);
+        queriesSuspendVisibility(ctx, encoder);  // not an application draw
         [encoder setRenderPipelineState:pipeline];
         [encoder setDepthStencilState:depthStencil];
         [encoder setStencilReferenceValue:stencil];

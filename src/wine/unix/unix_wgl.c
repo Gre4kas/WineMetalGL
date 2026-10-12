@@ -69,11 +69,12 @@ static unsigned int format_count, onscreen_count;
 static void *root_context;
 static void *metal_device;
 
+/* Allocated one by one, so they stay put while the table grows. */
 struct context
 {
     void *core;
     int format;
-    BOOL used;
+    const void *thread;  /* the thread it is current on (its current_context), or NULL */
     struct wmgl_debug_target debug;
 };
 
@@ -102,7 +103,7 @@ struct pbuffer
     BOOL used;
 };
 
-static struct context *contexts;
+static struct context **contexts;
 static unsigned int context_count;
 static struct window *windows;
 static unsigned int window_count;
@@ -113,6 +114,7 @@ static unsigned int pbuffer_count;
 
 /* This thread's current context and drawables. */
 static __thread UINT64 current_context;
+static __thread struct context *current_object;  /* current_context's, read without the lock */
 static __thread void *current_draw, *current_read;
 static __thread UINT64 current_draw_hwnd;
 
@@ -128,7 +130,7 @@ static void *grow( void *array, unsigned int *count, size_t size )
 static struct context *context_from_handle( UINT64 handle )
 {
     if (handle < HANDLE_BASE || handle - HANDLE_BASE >= context_count) return NULL;
-    return contexts[handle - HANDLE_BASE].used ? &contexts[handle - HANDLE_BASE] : NULL;
+    return contexts[handle - HANDLE_BASE];
 }
 
 static struct pbuffer *pbuffer_from_handle( UINT64 handle )
@@ -154,7 +156,15 @@ static struct window *find_window( UINT64 hwnd, BOOL create )
     if (!hwnd) return NULL;
     for (i = 0; i < window_count; i++)
         if (windows[i].hwnd == hwnd) return &windows[i];
-    if (!create || !(bigger = grow( windows, &window_count, sizeof(*windows) ))) return NULL;
+    if (!create) return NULL;
+    for (i = 0; i < window_count; i++)
+    {
+        if (windows[i].hwnd) continue;  /* forgotten */
+        windows[i].hwnd = hwnd;
+        windows[i].interval = 1;
+        return &windows[i];
+    }
+    if (!(bigger = grow( windows, &window_count, sizeof(*windows) ))) return NULL;
     windows = bigger;
     windows[window_count - 1].hwnd = hwnd;
     windows[window_count - 1].interval = 1;
@@ -197,6 +207,11 @@ static void to_placement( const struct wmgl_window_placement *from, struct wmgl_
     to->top_level_width = from->top_level_width;
     to->top_level_height = from->top_level_height;
     to->screen_width = from->screen_width;
+    to->clip_x = from->clip_x;
+    to->clip_y = from->clip_y;
+    to->clip_width = from->clip_width;
+    to->clip_height = from->clip_height;
+    to->visible = from->visible;
 }
 
 /* A window's surface, made on first use and kept on its client area. */
@@ -250,19 +265,26 @@ static void *dc_surface( UINT64 hdc, const struct wmgl_window_placement *placeme
     return (pbuffer = pbuffer_from_dc( hdc )) ? pbuffer->surface : NULL;
 }
 
+/* The current context cannot be deleted or made current elsewhere: only
+ * this thread uses its debug state. */
 struct wmgl_debug_target *wmgl_current_debug_target( void )
 {
-    struct context *context = context_from_handle( current_context );
-    return context ? &context->debug : NULL;
+    return current_object ? &current_object->debug : NULL;
 }
 
 void wmgl_set_debug_callback( UINT64 callback, UINT64 user, BOOL amd )
 {
-    struct context *context = context_from_handle( current_context );
-    if (!context) return;
-    context->debug.callback = callback;
-    context->debug.user = user;
-    context->debug.amd = amd;
+    if (!current_object) return;
+    if (amd)
+    {
+        current_object->debug.callback_amd = callback;
+        current_object->debug.user_amd = user;
+    }
+    else
+    {
+        current_object->debug.callback = callback;
+        current_object->debug.user = user;
+    }
 }
 
 /* ---------------------------------------------------------- pixel formats */
@@ -344,7 +366,7 @@ NTSTATUS wmgl_unix_create_context( void *args )
 {
     struct wmgl_create_context_params *params = args;
     const int *attribs = (const int *)(ULONG_PTR)params->attribs;
-    struct context *share = NULL, *slot = NULL, *bigger;
+    struct context *share = NULL, *context, **bigger;
     void *core, *share_core;
     int format, error = 0;
     unsigned int i;
@@ -370,24 +392,19 @@ NTSTATUS wmgl_unix_create_context( void *args )
                                                                             : ERROR_INVALID_PARAMETER;
         goto done;
     }
-    for (i = 0; i < context_count && !slot; i++)
-        if (!contexts[i].used) slot = &contexts[i];
-    if (!slot)
+    for (i = 0; i < context_count; i++)
+        if (!contexts[i]) break;
+    if (i == context_count && (bigger = grow( contexts, &context_count, sizeof(*contexts) ))) contexts = bigger;
+    if (i == context_count || !(context = calloc( 1, sizeof(*context) )))
     {
-        if (!(bigger = grow( contexts, &context_count, sizeof(*contexts) )))
-        {
-            wmgl.context_destroy( core );
-            params->error = ERROR_NOT_ENOUGH_MEMORY;
-            goto done;
-        }
-        contexts = bigger;
-        slot = &contexts[context_count - 1];
+        wmgl.context_destroy( core );
+        params->error = ERROR_NOT_ENOUGH_MEMORY;
+        goto done;
     }
-    memset( slot, 0, sizeof(*slot) );
-    slot->core = core;
-    slot->format = format;
-    slot->used = TRUE;
-    params->ret = HANDLE_BASE + (slot - contexts);
+    context->core = core;
+    context->format = format;
+    contexts[i] = context;
+    params->ret = HANDLE_BASE + i;
 done:
     pthread_mutex_unlock( &wgl_lock );
     return STATUS_SUCCESS;
@@ -399,16 +416,21 @@ NTSTATUS wmgl_unix_delete_context( void *args )
     struct context *context;
 
     pthread_mutex_lock( &wgl_lock );
-    if ((context = context_from_handle( params->context )))
+    if (!(context = context_from_handle( params->context ))) params->error = ERROR_INVALID_HANDLE;
+    /* Not while another thread has it current (as Windows). */
+    else if (context->thread && context->thread != &current_context) params->error = ERROR_BUSY;
+    else
     {
         if (current_context == params->context)
         {
             wmgl.make_current( NULL, NULL, NULL );
             current_context = 0;
+            current_object = NULL;
             current_draw = current_read = NULL;
         }
         wmgl.context_destroy( context->core );
-        memset( context, 0, sizeof(*context) );
+        contexts[params->context - HANDLE_BASE] = NULL;
+        free( context );
         params->ret = TRUE;
     }
     pthread_mutex_unlock( &wgl_lock );
@@ -428,7 +450,9 @@ NTSTATUS wmgl_unix_make_current( void *args )
     {
         wmgl.make_current( NULL, NULL, NULL );
         params->ret = TRUE;
+        if (current_object) current_object->thread = NULL;
         current_context = 0;
+        current_object = NULL;
         current_draw = current_read = NULL;
         current_draw_hwnd = 0;
         goto done;
@@ -438,10 +462,18 @@ NTSTATUS wmgl_unix_make_current( void *args )
         params->error = ERROR_INVALID_HANDLE;
         goto done;
     }
+    /* One thread at a time (as Windows). */
+    if (context->thread && context->thread != &current_context)
+    {
+        params->error = ERROR_BUSY;
+        goto done;
+    }
     if (!(draw = dc_surface( params->draw_hdc, &params->draw )) ||
         !(read = dc_surface( params->read_hdc, &params->read )))
     {
-        params->error = ERROR_INVALID_HANDLE;
+        params->error = dc_pixel_format( params->draw_hdc, params->draw.hwnd ) &&
+                        dc_pixel_format( params->read_hdc, params->read.hwnd ) ? ERROR_INVALID_HANDLE
+                                                                               : ERROR_INVALID_PIXEL_FORMAT;
         goto done;
     }
     if (!wmgl.make_current( context->core, draw, read))
@@ -449,7 +481,10 @@ NTSTATUS wmgl_unix_make_current( void *args )
         params->error = ERROR_INVALID_OPERATION;
         goto done;
     }
+    if (current_object) current_object->thread = NULL;
+    context->thread = &current_context;
     current_context = params->context;
+    current_object = context;
     current_draw = draw;
     current_read = read;
     current_draw_hwnd = params->draw.hwnd;
@@ -479,6 +514,25 @@ NTSTATUS wmgl_unix_copy_context( void *args )
     return STATUS_SUCCESS;
 }
 
+/* A destroyed window (the PE side notices): its surface and layer go.
+ * Contexts that drew to it keep the surface until they draw elsewhere. */
+NTSTATUS wmgl_unix_forget_window( void *args )
+{
+    struct wmgl_forget_window_params *params = args;
+    struct window *window;
+
+    pthread_mutex_lock( &wgl_lock );
+    if ((window = find_window( params->hwnd, FALSE )))
+    {
+        WMGL_TRACE( "window %#llx is gone: its drawable goes\n", (unsigned long long)params->hwnd );
+        if (window->surface) wmgl.surface_destroy( window->surface );
+        wmgl_window_destroy( window->host );
+        memset( window, 0, sizeof(*window) );
+    }
+    pthread_mutex_unlock( &wgl_lock );
+    return STATUS_SUCCESS;
+}
+
 /* ------------------------------------------------------------------ swaps */
 
 NTSTATUS wmgl_unix_swap_buffers( void *args )
@@ -503,7 +557,7 @@ NTSTATUS wmgl_unix_swap_buffers( void *args )
     }
     window_surface( &params->window );  /* follows the window */
     window_resize( &params->window );
-    surface = window->surface;  /* window surfaces live as long as the process */
+    surface = window->surface;  /* until the window is destroyed (wmgl_unix_forget_window) */
     pthread_mutex_unlock( &wgl_lock );
     /* A frame the core could not present (no drawable) is dropped, as a
      * compositor would; SwapBuffers itself succeeds. Presenting may wait for
@@ -648,7 +702,12 @@ NTSTATUS wmgl_unix_get_pbuffer_dc( void *args )
     struct pbuffer *pbuffer;
 
     pthread_mutex_lock( &wgl_lock );
-    if ((params->ret = (pbuffer = pbuffer_from_handle( params->pbuffer )) != NULL)) pbuffer->hdc = params->hdc;
+    if ((params->ret = (pbuffer = pbuffer_from_handle( params->pbuffer )) != NULL))
+    {
+        /* One DC per pbuffer until it is released. */
+        if (pbuffer->hdc) params->hdc = pbuffer->hdc;
+        else pbuffer->hdc = params->hdc;
+    }
     pthread_mutex_unlock( &wgl_lock );
     return STATUS_SUCCESS;
 }
@@ -685,7 +744,10 @@ NTSTATUS wmgl_unix_query_pbuffer( void *args )
         case WGL_MIPMAP_TEXTURE_ARB: params->value = FALSE; break;
         case WGL_MIPMAP_LEVEL_ARB: params->value = pbuffer->mipmap_level; break;
         case WGL_CUBE_MAP_FACE_ARB: params->value = pbuffer->cube_face; break;
-        default: params->ret = FALSE; break;
+        default:
+            params->ret = FALSE;
+            params->error = ERROR_INVALID_DATA;
+            break;
         }
     }
     pthread_mutex_unlock( &wgl_lock );

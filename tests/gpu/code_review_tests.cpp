@@ -229,3 +229,33 @@ GPU_TEST(gpu_cr_fence_on_idle_stream) {
     glDeleteSync(sync);
     CHECK_GL();
 }
+
+GPU_TEST(gpu_cr_buffer_range_checks) {
+    GLuint buffers[2] = {};
+    glGenBuffers(2, buffers);
+    glBindBuffer(GL_COPY_READ_BUFFER, buffers[0]);
+    glBufferData(GL_COPY_READ_BUFFER, 256, nullptr, GL_STATIC_DRAW);
+    glBindBuffer(GL_COPY_WRITE_BUFFER, buffers[1]);
+    glBufferData(GL_COPY_WRITE_BUFFER, 256, nullptr, GL_STATIC_DRAW);
+    // An offset and size whose sum wraps are out of range, not a write.
+    const char data[16] = {};
+    glBufferSubData(GL_COPY_READ_BUFFER, INT64_MAX - 8, 16, data);
+    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_INVALID_VALUE));
+    char out[16];
+    glGetBufferSubData(GL_COPY_READ_BUFFER, INT64_MAX - 8, 16, out);
+    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_INVALID_VALUE));
+    glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, INT64_MAX - 8, 0, 16);
+    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_INVALID_VALUE));
+    // Any non-persistent mapping fails reads and copies, wherever it is
+    // (GL 4.6 sections 6.6, 6.7); sub-data updates only where they overlap.
+    CHECK(glMapBufferRange(GL_COPY_WRITE_BUFFER, 0, 64, GL_MAP_WRITE_BIT) != nullptr);
+    glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 128, 16);
+    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_INVALID_OPERATION));
+    glGetBufferSubData(GL_COPY_WRITE_BUFFER, 128, 16, out);
+    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_INVALID_OPERATION));
+    glBufferSubData(GL_COPY_WRITE_BUFFER, 128, 16, data);
+    CHECK_GL();
+    glUnmapBuffer(GL_COPY_WRITE_BUFFER);
+    glDeleteBuffers(2, buffers);
+    CHECK_GL();
+}

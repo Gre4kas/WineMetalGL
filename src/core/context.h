@@ -129,6 +129,7 @@ public:
         uint64_t samplesBound = 0;  // samples the slot's draws can have counted
         bool valid = false;
     } occlusionSlot;
+    uint64_t drawSampleBound = 0;  // samples the current draw can cover (queriesBeforeDraw)
     uint64_t occlusionEpoch = 1;
 
     // Debug output (KHR_debug / ARB_debug_output, core/api/debug.mm).

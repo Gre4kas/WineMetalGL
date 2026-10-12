@@ -11,6 +11,7 @@
 #include <limits>
 #include <mutex>
 #include <tuple>
+#include <unistd.h>
 
 #include "core/context.h"
 #include "core/draw.h"
@@ -133,12 +134,20 @@ bool queryResultReady(Context& ctx, Query& q, bool wait) {
             return false;
         }
     }
-    // Completion handlers for timers run beside the queue's; wait for them briefly.
+    // Completion handlers for timers run beside the queue's, after it: a
+    // wait waits for them too (they always run, so the bound is only a guard).
     if (q.timer) {
         const bool needStart = q.target == GL_TIME_ELAPSED;
-        for (int spin = 0; spin < 100000 && (!q.timer->endSet || (needStart && !q.timer->startSet)); ++spin) {
+        for (int spin = 0; !q.timer->endSet || (needStart && !q.timer->startSet); ++spin) {
             if (!wait && spin > 0) return false;
-            sched_yield();
+            if (spin < 100000) {
+                sched_yield();
+            } else if (spin < 100000 + 50000) {
+                usleep(100);
+            } else {
+                logOnce(LogLevel::Warn, "timer-handler", "a timer query's completion handler did not run; its result is 0");
+                break;
+            }
         }
     }
     finalize(q);
@@ -208,8 +217,8 @@ bool queriesFragmentCounter(Context& ctx, __strong id<MTLBuffer>& buffer, NSUInt
     Query* q = ctx.state.activeQueries[kQueryStatisticsFirst + kStatFragmentShaderInvocations].get();
     if (!q) return false;
     const uint64_t serial = ctx.stream().serial();
-    if (q->visibilitySlots.empty() || q->counterSerial != serial) {
-        // A new zeroed counter per command buffer, from pages of 1024.
+    if (q->visibilitySlots.empty() || q->counterSerial != serial || q->counterBound + ctx.drawSampleBound >= (1ull << 31)) {
+        // A new zeroed counter per command buffer (or when it could wrap), from pages of 1024.
         constexpr uint32_t kPage = 4096;
         id<MTLBuffer> page = q->visibilitySlots.empty() ? nil : q->visibilitySlots.back().first;
         uint32_t next = q->visibilitySlots.empty() ? kPage : q->visibilitySlots.back().second + 4;
@@ -219,8 +228,10 @@ bool queriesFragmentCounter(Context& ctx, __strong id<MTLBuffer>& buffer, NSUInt
         }
         q->visibilitySlots.emplace_back(page, next);
         q->counterSerial = serial;
+        q->counterBound = 0;
         q->pendingSerial = std::max(q->pendingSerial, serial);
     }
+    q->counterBound += ctx.drawSampleBound;
     buffer = q->visibilitySlots.back().first;
     offset = q->visibilitySlots.back().second;
     return true;
@@ -230,16 +241,19 @@ void queriesPrepareVisibility(Context& ctx) {
     if (anyOcclusionActive(ctx) && !ctx.stream().visibilitySlotAvailable()) ctx.stream().flush();
 }
 
-void queriesBeforeDraw(Context& ctx, id<MTLRenderCommandEncoder> encoder) {
-    if (!anyOcclusionActive(ctx)) return;
-    auto& slot = ctx.occlusionSlot;
-    const uint64_t pass = ctx.stream().passGeneration();
+void queriesBeforeDraw(Context& ctx, id<MTLRenderCommandEncoder> encoder, GLsizei instances) {
     // Apple GPUs count a slot's samples in 32 bits: a slot takes draws while
-    // the samples they can cover (the whole target once each) fit in 31 bits,
-    // then the pass moves on to a new slot.
+    // the samples they can cover (the whole target once per instance) fit in
+    // 31 bits, then the pass moves on to a new slot.
     const RenderTargetDesc& target = ctx.stream().currentTarget();
     const uint64_t drawBound = static_cast<uint64_t>(target.width) * target.height * std::max(1u, target.samples) *
-                               std::max(1u, target.layers);
+                               std::max(1u, target.layers) * static_cast<uint64_t>(std::max(1, instances));
+    ctx.drawSampleBound = drawBound;
+    if (!anyOcclusionActive(ctx)) return;
+    if (drawBound >= (1ull << 32))
+        logOnce(LogLevel::Warn, "visibility-wrap", "a draw can cover 2^32 samples or more: occlusion counts may wrap");
+    auto& slot = ctx.occlusionSlot;
+    const uint64_t pass = ctx.stream().passGeneration();
     const bool current = slot.valid && slot.pass == pass && slot.epoch == ctx.occlusionEpoch;
     if (current && slot.samplesBound + drawBound < (1ull << 31)) {
         slot.samplesBound += drawBound;
@@ -307,11 +321,14 @@ double monotonicGpuTime(double t) {
     return last;
 }
 
-// Records the completion time of the current command buffer into the timer.
+// Records the completion time of the current command buffer into the timer:
+// monotonic for timestamps; as reported for elapsed time, which its start
+// (also as reported) is subtracted from.
 void markTimerEnd(Context& ctx, Query& q) {
     std::shared_ptr<Query::Timer> timer = q.timer;
+    const bool timestamp = q.target == GL_TIMESTAMP;
     [ctx.stream().commandBuffer() addCompletedHandler:^(id<MTLCommandBuffer> done) {
-        timer->end = monotonicGpuTime(done.GPUEndTime);
+        timer->end = timestamp ? monotonicGpuTime(done.GPUEndTime) : done.GPUEndTime;
         timer->endSet = true;
     }];
     q.pendingSerial = ctx.stream().flush();
@@ -448,7 +465,7 @@ void QueryCounter(Context& ctx, GLuint name, GLenum target) {
     if (!q) {
         q = makeRef<Query>(name);
         ctx.queries.set(name, q);
-    } else if (q->active || (q->everActive && q->target != GL_TIMESTAMP)) {
+    } else if (q->active || (q->target && q->target != GL_TIMESTAMP)) {  // used, or made by glCreateQueries
         return ctx.setError(GL_INVALID_OPERATION);
     }
     q->target = GL_TIMESTAMP;
@@ -511,8 +528,8 @@ void getQueryObject(Context& ctx, GLuint name, GLenum pname, T* params) {
     Buffer* queryBuffer = ctx.version() >= 44 ? ctx.state.queryBuffer.get() : nullptr;
     if (queryBuffer) {
         const intptr_t offset = reinterpret_cast<intptr_t>(params);
-        if (offset < 0 || offset % static_cast<intptr_t>(sizeof(T)) || offset + static_cast<intptr_t>(sizeof(T)) > queryBuffer->size)
-            return ctx.setError(GL_INVALID_OPERATION);
+        if (offset < 0) return ctx.setError(GL_INVALID_VALUE);
+        if (static_cast<intptr_t>(sizeof(T)) > queryBuffer->size - offset) return ctx.setError(GL_INVALID_OPERATION);
     }
     uint64_t value = 0;
     switch (pname) {
@@ -546,10 +563,19 @@ void getQueryObject(Context& ctx, GLuint name, GLenum pname, T* params) {
     // The result goes into the query buffer through an ordered GPU copy, so
     // draws before and after see the buffer in command order.
     if (!queryBuffer->mtl) return;
+    const intptr_t offset = reinterpret_cast<intptr_t>(params);
+    if (offset % 4) {
+        // Metal copies whole words: an unaligned result is written once
+        // the queued work using the buffer is done.
+        ctx.stream().waitFor(queryBuffer->lastUseSerial);
+        std::memcpy(static_cast<uint8_t*>(queryBuffer->mtl.contents) + offset, &result, sizeof(T));
+        ++queryBuffer->version;
+        return;
+    }
     TransientAllocation staging = ctx.draw().transient().allocate(sizeof(T), ctx.stream().serial(), 16);
     std::memcpy(staging.data, &result, sizeof(T));
     [ctx.stream().blit() copyFromBuffer:staging.buffer sourceOffset:staging.offset toBuffer:queryBuffer->mtl
-                        destinationOffset:static_cast<NSUInteger>(reinterpret_cast<intptr_t>(params)) size:sizeof(T)];
+                        destinationOffset:static_cast<NSUInteger>(offset) size:sizeof(T)];
     queryBuffer->lastUseSerial = queryBuffer->lastWriteSerial = ctx.stream().serial();
     ++queryBuffer->version;
 }

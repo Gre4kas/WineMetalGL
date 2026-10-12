@@ -546,7 +546,7 @@ void InvalidateBufferData(Context& ctx, GLuint buffer) {
 
 void InvalidateBufferSubData(Context& ctx, GLuint buffer, GLintptr offset, GLsizeiptr length) {
     Buffer* b = ctx.buffer(buffer);
-    if (!b || offset < 0 || length < 0 || offset + length > b->size) return ctx.setError(GL_INVALID_VALUE);
+    if (!b || offset < 0 || length < 0 || length > b->size - offset) return ctx.setError(GL_INVALID_VALUE);
     if (b->mappedNonPersistent()) ctx.setError(GL_INVALID_OPERATION);
 }
 

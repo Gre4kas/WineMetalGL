@@ -124,21 +124,67 @@ BOOL WINAPI DllMain( HINSTANCE instance, DWORD reason, LPVOID reserved )
     return TRUE;
 }
 
+/* Windows that have had a drawable, so their drawables go when they are
+ * destroyed: no window message reaches this module. */
+static SRWLOCK windows_lock = SRWLOCK_INIT;
+static HWND windows[256];
+static unsigned int window_count, window_checks;
+
+static void track_window( HWND hwnd )
+{
+    unsigned int i;
+
+    AcquireSRWLockExclusive( &windows_lock );
+    for (i = 0; i < window_count; i++)
+        if (windows[i] == hwnd) break;
+    if (i == window_count && window_count < sizeof(windows) / sizeof(windows[0])) windows[window_count++] = hwnd;
+    ReleaseSRWLockExclusive( &windows_lock );
+}
+
+static void forget_destroyed_windows(void)
+{
+    struct wmgl_forget_window_params params;
+    HWND destroyed[16];
+    unsigned int i, count = 0;
+
+    AcquireSRWLockExclusive( &windows_lock );
+    for (i = 0; i < window_count && count < sizeof(destroyed) / sizeof(destroyed[0]);)
+    {
+        if (IsWindow( windows[i] )) i++;
+        else destroyed[count++] = windows[i], windows[i] = windows[--window_count];
+    }
+    ReleaseSRWLockExclusive( &windows_lock );
+    for (i = 0; i < count; i++)
+    {
+        params.hwnd = (UINT64)(ULONG_PTR)destroyed[i];
+        wmgl_unix_call( unix_wmgl_forget_window, &params );
+    }
+}
+
 /* Where a DC's window is (wmgl_window_placement), in pixels no DPI
  * awareness has scaled. */
 static void window_placement( HDC hdc, struct wmgl_window_placement *placement )
 {
     DPI_AWARENESS_CONTEXT awareness;
-    HWND hwnd, top_level;
-    RECT client = {0}, around = {0};
+    HWND hwnd, top_level, parent;
+    RECT client = {0}, around = {0}, clip, shown;
 
     memset( placement, 0, sizeof(*placement) );
     if (!hdc || !(hwnd = WindowFromDC( hdc ))) return;
+    track_window( hwnd );
     awareness = SetThreadDpiAwarenessContext( DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 );
     top_level = GetAncestor( hwnd, GA_ROOT );
     GetClientRect( hwnd, &client );
     GetClientRect( top_level, &around );
     MapWindowPoints( hwnd, top_level, (POINT *)&client, 2 );
+    /* A child window shows only within its ancestors' client areas. */
+    IntersectRect( &clip, &client, &around );
+    for (parent = GetAncestor( hwnd, GA_PARENT ); parent && parent != top_level; parent = GetAncestor( parent, GA_PARENT ))
+    {
+        GetClientRect( parent, &shown );
+        MapWindowPoints( parent, top_level, (POINT *)&shown, 2 );
+        IntersectRect( &clip, &clip, &shown );
+    }
     placement->hwnd = (UINT64)(ULONG_PTR)hwnd;
     placement->top_level = (UINT64)(ULONG_PTR)top_level;
     placement->x = client.left;
@@ -148,6 +194,11 @@ static void window_placement( HDC hdc, struct wmgl_window_placement *placement )
     placement->top_level_width = around.right;
     placement->top_level_height = around.bottom;
     placement->screen_width = GetSystemMetrics( SM_CXSCREEN );
+    placement->clip_x = clip.left;
+    placement->clip_y = clip.top;
+    placement->clip_width = clip.right - clip.left;
+    placement->clip_height = clip.bottom - clip.top;
+    placement->visible = IsWindowVisible( hwnd );
     SetThreadDpiAwarenessContext( awareness );
 }
 
@@ -199,6 +250,7 @@ static BOOL make_current( HDC draw, HDC read, HGLRC context )
     if (!state) return FALSE;
     if (context)
     {
+        forget_destroyed_windows();
         window_placement( draw, &params.draw );
         window_placement( read, &params.read );
     }
@@ -235,7 +287,7 @@ BOOL WINAPI wglDeleteContext( HGLRC context )
 
     if (wmgl_unix_call( unix_wmgl_delete_context, &params ) || !params.ret)
     {
-        SetLastError( ERROR_INVALID_HANDLE );
+        SetLastError( params.error ? params.error : ERROR_INVALID_HANDLE );
         return FALSE;
     }
     /* Deleting this thread's current context releases it. */
@@ -315,6 +367,7 @@ BOOL WINAPI wglSetPixelFormatWINE( HDC hdc, int format )
 BOOL WINAPI wglSwapBuffers( HDC hdc )
 {
     struct wmgl_swap_buffers_params params = { .hdc = (UINT64)(ULONG_PTR)hdc };
+    if (!(InterlockedIncrement( (LONG *)&window_checks ) % 64)) forget_destroyed_windows();
     window_placement( hdc, &params.window );
     if (wmgl_unix_call( unix_wmgl_swap_buffers, &params )) return FALSE;
     return params.ret;
@@ -366,7 +419,7 @@ HPBUFFERARB WINAPI wglCreatePbufferARB( HDC hdc, int format, int width, int heig
 static BOOL pbuffer_call( unsigned int code, struct wmgl_pbuffer_params *params )
 {
     if (wmgl_unix_call( code, params )) return FALSE;
-    if (!params->ret) SetLastError( ERROR_INVALID_HANDLE );
+    if (!params->ret) SetLastError( params->error ? params->error : ERROR_INVALID_HANDLE );
     return params->ret;
 }
 
@@ -384,10 +437,11 @@ HDC WINAPI wglGetPbufferDCARB( HPBUFFERARB pbuffer )
 
     if (!hdc) return 0;
     params.hdc = (UINT64)(ULONG_PTR)hdc;
-    if (!pbuffer_call( unix_wmgl_get_pbuffer_dc, &params ))
+    if (!pbuffer_call( unix_wmgl_get_pbuffer_dc, &params ) || params.hdc != (UINT64)(ULONG_PTR)hdc)
     {
+        /* Failed, or the pbuffer has its DC already. */
         DeleteDC( hdc );
-        return 0;
+        return params.ret ? (HDC)(ULONG_PTR)params.hdc : 0;
     }
     return hdc;
 }

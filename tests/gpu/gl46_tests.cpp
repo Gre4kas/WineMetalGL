@@ -726,9 +726,18 @@ GPU_TEST_VERSION(gpu_gl46_occlusion_many_draws, 46) {
     glGenFramebuffers(1, &drawFbo);
     glBindFramebuffer(GL_FRAMEBUFFER, drawFbo);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+    // A buffer copy between draws ends the render pass each time, so each
+    // draw counts in a pass of its own (the first in visibility slot 0).
+    GLuint copies[2] = {};
+    glGenBuffers(2, copies);
+    glBindBuffer(GL_COPY_READ_BUFFER, copies[0]);
+    glBufferData(GL_COPY_READ_BUFFER, 16, red, GL_STATIC_DRAW);
+    glBindBuffer(GL_COPY_WRITE_BUFFER, copies[1]);
+    glBufferData(GL_COPY_WRITE_BUFFER, 16, nullptr, GL_STATIC_DRAW);
     for (int i = 0; i < 100; ++i) {
         glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(red), red);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        if (i % 2 == 0) glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0, 16);
     }
     glEndQuery(GL_SAMPLES_PASSED);
     GLuint64 samples = 0;
@@ -743,6 +752,45 @@ GPU_TEST_VERSION(gpu_gl46_occlusion_many_draws, 46) {
     glDeleteFramebuffers(1, &fbo);
     glDeleteTextures(1, &tex);
     glDeleteBuffers(1, &ubo);
+    glDeleteBuffers(2, copies);
+    glDeleteQueries(1, &query);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
+}
+
+// A framebuffer blit inside an occlusion query is not a draw: a scaled,
+// filtered blit into the framebuffer being drawn to counts nothing.
+GPU_TEST_VERSION(gpu_gl46_occlusion_ignores_blit, 46) {
+    GLuint p = gpu::program("#version 460 core\nlayout(location = 0) in vec2 position;\n"
+                            "void main() { gl_Position = vec4(position, 0.0, 1.0); }\n",
+                            "#version 460 core\nout vec4 o;\nvoid main() { o = vec4(1.0); }\n");
+    glUseProgram(p);
+    GLuint vao = gpu::quad(), tex[2] = {}, fbo[2] = {}, query = 0;
+    glGenTextures(2, tex);
+    glGenFramebuffers(2, fbo);
+    for (int i = 0; i < 2; ++i) {
+        glBindTexture(GL_TEXTURE_2D, tex[i]);
+        glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, i ? 32 : 64, i ? 32 : 64);
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo[i]);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex[i], 0);
+    }
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo[0]);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo[1]);
+    glViewport(0, 0, 64, 64);
+    glGenQueries(1, &query);
+    glBeginQuery(GL_SAMPLES_PASSED, query);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glBlitFramebuffer(0, 0, 32, 32, 0, 0, 64, 64, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glEndQuery(GL_SAMPLES_PASSED);
+    GLuint64 samples = 0;
+    glGetQueryObjectui64v(query, GL_QUERY_RESULT, &samples);
+    if (samples != 2 * 64 * 64) std::fprintf(stderr, "  %llu samples, expected %d\n", (unsigned long long)samples, 2 * 64 * 64);
+    CHECK(samples == 2 * 64 * 64);
+    CHECK_GL();
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(2, fbo);
+    glDeleteTextures(2, tex);
     glDeleteQueries(1, &query);
     glDeleteVertexArrays(1, &vao);
     glDeleteProgram(p);

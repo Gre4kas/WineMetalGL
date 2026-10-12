@@ -53,12 +53,13 @@ int queryTargetIndex(Context& ctx, GLenum target);  // -1 if not a query target
 int queryTargetIndex(Context& ctx, GLenum target, GLuint stream);
 
 // Draw-path hooks. queriesBeforeDraw points the encoder's visibility counter
-// at the active occlusion queries; queriesSuspendVisibility stops counting
-// for internal draws (clears); queriesCountPrimitives feeds PRIMITIVES_GENERATED.
+// at the active occlusion queries (`instances` bounds what the draw can
+// count); queriesSuspendVisibility stops counting for internal draws (clears,
+// blits); queriesCountPrimitives feeds PRIMITIVES_GENERATED.
 // Before a draw opens its pass: when the command buffer's occlusion slots
 // are used up, flushes it so the next pass gets a fresh visibility buffer.
 void queriesPrepareVisibility(Context& ctx);
-void queriesBeforeDraw(Context& ctx, id<MTLRenderCommandEncoder> encoder);
+void queriesBeforeDraw(Context& ctx, id<MTLRenderCommandEncoder> encoder, GLsizei instances = 1);
 void queriesSuspendVisibility(Context& ctx, id<MTLRenderCommandEncoder> encoder);
 void queriesCountPrimitives(Context& ctx, GLenum mode, GLsizei count, GLsizei instances);
 // Transform feedback of vertex stream `stream` dropped primitives for lack of
@@ -76,8 +77,9 @@ void queriesCountStatistic(Context& ctx, PipelineStatistic statistic, uint64_t n
 // or geometry shader), CLIPPING_INPUT/OUTPUT_PRIMITIVES. Metal does not
 // report what clipping does, so clipping output counts its input.
 void queriesCountSubmitted(Context& ctx, GLenum mode, GLsizei vertices, GLsizei instances, bool clipped);
-// FRAGMENT_SHADER_INVOCATIONS: the counter the current command buffer's
-// draws increment, or false with no query active.
+// FRAGMENT_SHADER_INVOCATIONS: the 32-bit counter the draw increments (a
+// new one per command buffer, and before what the draws since queriesBeforeDraw
+// can count passes 2^31), or false with no query active.
 bool queriesFragmentCounter(Context& ctx, __strong id<MTLBuffer>& buffer, NSUInteger& offset);
 uint64_t primitiveCount(GLenum mode, GLsizei count);
 

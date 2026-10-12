@@ -72,7 +72,8 @@ public:
     // Mapped in a way that forbids GPU use (persistent mappings allow it).
     bool mappedNonPersistent() const { return mapped && !(mapAccess & GL_MAP_PERSISTENT_BIT); }
     // Whether [offset, offset + size) overlaps a non-persistent mapping: the
-    // range commands' INVALID_OPERATION (GL 4.5 sections 6.2.2, 6.3, 6.6).
+    // INVALID_OPERATION of BufferSubData and ClearBufferSubData (GL 4.6
+    // sections 6.2.2, 6.3).
     bool rangeMapped(GLintptr offset, GLsizeiptr size) const {
         return mappedNonPersistent() && offset < mapOffset + mapLength && mapOffset < offset + size;
     }
@@ -379,6 +380,7 @@ public:
     // on completion.
     std::vector<std::pair<id<MTLBuffer>, uint32_t>> visibilitySlots;
     uint64_t counterSerial = 0;  // the command buffer of the last counter slot
+    uint64_t counterBound = 0;   // invocations the last counter slot's draws can have counted
     // GPU times (seconds, host time base) for TIME_ELAPSED and TIMESTAMP,
     // written by command-buffer completion handlers.
     struct Timer {

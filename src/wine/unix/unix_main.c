@@ -121,9 +121,13 @@ static void queue_message( BOOL amd, GLenum source, GLenum type, GLuint id, GLen
 {
     struct wmgl_debug_target *target = wmgl_current_debug_target();
     struct queued_message *slot;
+    UINT64 callback, user;
     size_t len;
 
-    if (!target || !target->callback || target->amd != amd) return;
+    if (!target) return;
+    callback = amd ? target->callback_amd : target->callback;
+    user = amd ? target->user_amd : target->user;
+    if (!callback) return;
     if (queued == delivered) queued = delivered = 0;
     if (queued >= MAX_QUEUED) return;  /* the application gets the first ones */
     slot = &queue[queued];
@@ -131,8 +135,8 @@ static void queue_message( BOOL amd, GLenum source, GLenum type, GLuint id, GLen
     if (!(slot->text = malloc( len + 1 ))) return;
     if (len) memcpy( slot->text, message, len );
     slot->text[len] = 0;
-    slot->callback = target->callback;
-    slot->user = target->user;
+    slot->callback = callback;
+    slot->user = user;
     slot->source = source;
     slot->type = type;
     slot->id = id;
@@ -280,7 +284,7 @@ static NTSTATUS wow64_get_pointer( GLenum pname, UINT out, void (*proc)( GLenum,
     if (!debug_pointer( pname, &value ))
     {
         proc( pname, &ptr );
-        value = (UINT64)(ULONG_PTR)ptr;
+        value = wmgl_wow64_pointer( ptr );
     }
     if (out) *(UINT *)ULongToPtr( out ) = (UINT)value;
     return wmgl_after_call();
