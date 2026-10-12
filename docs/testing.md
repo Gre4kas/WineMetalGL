@@ -98,6 +98,48 @@ Run times from the committed results:
 | `KHR-GL43` | 16,085 | 9.6 min to 11.6 min | 4.7 min to 5.2 min | 62.5 min |
 <!-- END GENERATED: cts-times -->
 
+## Direct3D through wined3d
+
+Wine's Direct3D 10 and 11 (wined3d) run on OpenGL, so they run on WineMetalGL
+when the prefix has the module. wined3d then reports feature level 11_1 (9_3
+on Apple's OpenGL). Wine's own conformance tests check it. They are built
+from a Wine 11.0 tree configured with tests enabled, and run one at a time:
+
+```sh
+make dlls/d3d11/tests/x86_64-windows/d3d11_test.exe dlls/d3d10core/tests/x86_64-windows/d3d10core_test.exe
+WINETEST_NO_MT_D3D=1 wine dlls/d3d11/tests/x86_64-windows/d3d11_test.exe
+```
+
+On stock Wine 11.0 with the module (Apple M4):
+
+| Test | Checks | Failures | Skipped |
+|---|---:|---:|---:|
+| `d3d11` (x86_64) | 561,394 | 231 | 9 |
+| `d3d10core` (x86_64) | 194,651 | 210 | 0 |
+| `d3d10core` (i386) | 194,651 | 210 | 0 |
+
+What the failures are:
+
+- 205 in each suite are `test_depth_bias` on D24 formats. Apple GPUs have no
+  24-bit depth format, so the depth is stored as `Depth32Float`. Its bias
+  units scale with the depth's exponent, which matches the 24-bit unit only
+  for depths in [0.5, 1).
+- `test_negative_viewports` expects D3D11 hardware's flooring of fractional
+  viewport corners. OpenGL viewports keep the fraction.
+- Single checks not yet explained:
+  - `test_sample_shading`;
+  - `test_occlusion_query` (one of 100 draws is not counted);
+  - `test_depth_stencil_sampling`;
+  - `test_sm5_bufinfo_instruction`;
+  - `test_sample_mask`;
+  - `test_layered_rtv_mismatch`.
+- `d3d11` as an i386 program stops in `test_deferred_context_map`. wined3d
+  maps a 64 MB persistent buffer chunk, no contiguous 64 MB remains below
+  2 GB in the test process, and wined3d asserts on the failed map. Wine's
+  test notes that macOS hosts exhaust the 32-bit address space.
+- `dxgi_test` fails on window and fullscreen geometry under Wine's macOS
+  driver, which is not OpenGL.
+
 ## Game corpus and frame times
 
 Demos and an apitrace trace, rendered on WineMetalGL and compared with

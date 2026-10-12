@@ -13,7 +13,9 @@ request (which Apple's OpenGL caps at 2.1) get the full 4.6 compatibility
 profile: fixed-function vertex and fragment processing, immediate mode,
 display lists, client arrays, legacy GLSL built-ins and the legacy pixel
 paths, together with every 3.x and 4.x feature. It runs x86_64 and i386
-Windows programs together in a WoW64 prefix.
+Windows programs together in a WoW64 prefix. Wine's Direct3D 10 and 11
+(wined3d), which draw through OpenGL, get feature level 11_1 on it
+([Test suite](docs/testing.md#direct3d-through-wined3d)).
 
 The core, `libwinemetalgl.dylib`, has no dependency on Apple's OpenGL. It
 compiles GLSL with glslang and SPIRV-Cross to the Metal Shading Language and
