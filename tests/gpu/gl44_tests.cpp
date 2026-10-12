@@ -770,3 +770,20 @@ GPU_TEST_VERSION(gpu_gl44_amd_pinned_memory, 44) {
     glDeleteBuffers(1, &other);
     free(memory);
 }
+
+// GL 4.5 derivative control (GL_ARB_derivative_control): fine and coarse
+// derivatives of the window position are one pixel per pixel.
+GPU_TEST_VERSION(gpu_gl45_derivative_control, 45) {
+    GLuint p = gpu::program("#version 450 core\nlayout(location = 0) in vec2 pos;\nvoid main() { gl_Position = vec4(pos, 0.0, 1.0); }\n",
+                            "#version 450 core\nout vec4 o;\nvoid main() {\n"
+                            "    o = vec4(dFdxFine(gl_FragCoord.x), dFdyCoarse(gl_FragCoord.y), fwidthFine(gl_FragCoord.x) * 0.5,\n"
+                            "             dFdxCoarse(gl_FragCoord.y) + 1.0);\n}\n");
+    GLuint vao = gpu::quad();
+    glUseProgram(p);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    CHECK_GL();
+    const uint8_t want[4] = {255, 255, 128, 255};
+    CHECK(gpu::near(gpu::readRGBA8(9, 9, 1, 1).data(), want, 2));
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
+}

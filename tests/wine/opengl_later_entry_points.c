@@ -3,7 +3,7 @@
  * glMemoryBarrier, glDispatchCompute and glMultiDrawElementsIndirect, which
  * Windows drivers return whatever the context's version; the 4.3 context a
  * 3.2 request gets offers them. Entry points of versions above the context's
- * (glCreateTextures, GL 4.5) Wine returns only for applications with
+ * (glSpecializeShader, GL 4.6) Wine returns only for applications with
  * HKCU\Software\Wine\AppDefaults\<app.exe>\OpenGL LaterEntryPoints = "Y"
  * (patch 0001), so this checks both: NULL without the setting, the entry
  * point with it.
@@ -48,9 +48,9 @@ int main(void) {
     for (int i = 0; i < 4; i++) {
         if (!wglGetProcAddress(names[i])) { printf("missing %s\n", names[i]); return 15; }
     }
-    if (wglGetProcAddress("glCreateTextures")) { printf("glCreateTextures without LaterEntryPoints\n"); return 17; }
+    if (wglGetProcAddress("glSpecializeShader")) { printf("glSpecializeShader without LaterEntryPoints\n"); return 17; }
     if (RegSetKeyValueA(HKEY_CURRENT_USER, key, "LaterEntryPoints", REG_SZ, "Y", 2)) return 18;
-    if (!wglGetProcAddress("glCreateTextures")) { printf("missing glCreateTextures\n"); return 15; }
+    if (!wglGetProcAddress("glSpecializeShader")) { printf("missing glSpecializeShader\n"); return 15; }
     PFNGLMEMORYBARRIERPROC barrier = (PFNGLMEMORYBARRIERPROC)wglGetProcAddress("glMemoryBarrier");
     while (glGetError() != GL_NO_ERROR) {}
     barrier(GL_ALL_BARRIER_BITS);
