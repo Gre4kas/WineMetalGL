@@ -23,12 +23,32 @@ bool validUsage(GLenum usage) {
     }
 }
 
+}  // namespace
+
+// The host's memory for buffer storage (wmgl_set_buffer_memory), or none.
+void* (*g_bufferAllocate)(size_t) = nullptr;
+void (*g_bufferRelease)(void*, size_t) = nullptr;
+
+namespace {
+
 id<MTLBuffer> newStorage(GLsizeiptr size) {
     if (size <= 0) return nil;
     // Padded to 256 bytes, so texture views of the buffer (texture buffers,
     // buffer images) have room for Metal's aligned rows at any size.
     const NSUInteger length = (static_cast<NSUInteger>(size) + 255) & ~NSUInteger(255);
-    return [Device::get().mtl() newBufferWithLength:length options:MTLResourceStorageModeShared];
+    if (!g_bufferAllocate) return [Device::get().mtl() newBufferWithLength:length options:MTLResourceStorageModeShared];
+    // In the host's memory (64 KiB pages), zero-filled like Metal's.
+    const NSUInteger pages = (length + 0xffff) & ~NSUInteger(0xffff);
+    void* memory = g_bufferAllocate(pages);
+    if (!memory) return nil;
+    std::memset(memory, 0, pages);
+    void (*release)(void*, size_t) = g_bufferRelease;
+    return [Device::get().mtl() newBufferWithBytesNoCopy:memory
+                                                  length:pages
+                                                 options:MTLResourceStorageModeShared
+                                             deallocator:^(void* pointer, NSUInteger bytes) {
+                                                 if (release) release(pointer, bytes);
+                                             }];
 }
 
 bool gpuBusy(Context& ctx, const Buffer& buffer) {

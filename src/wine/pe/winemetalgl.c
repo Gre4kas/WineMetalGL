@@ -1,0 +1,643 @@
+/* winemetalgl.dll: WGL and the unix call plumbing (wmgl_wine.h). The GL
+ * functions are generated (wine_gl_pe.gen.c), the pixel format functions
+ * adapted from Wine (wgl_formats.c). */
+
+#include "wmgl_pe.h"
+
+BOOL wmgl_debug;
+
+static unixlib_handle_t unixlib;
+static NTSTATUS (WINAPI *unix_call_dispatcher)( unixlib_handle_t, unsigned int, void * );
+static DWORD tls_index = TLS_OUT_OF_INDEXES;
+static char *wgl_extensions;
+
+/* The thread's current context and DCs (wglGetCurrent*). */
+struct thread_state
+{
+    HGLRC context;
+    HDC draw, read;
+    HGLRC extensions_context;  /* the context `extensions` lists the GL extensions of */
+    char *extensions;
+};
+
+static struct thread_state *thread_state( BOOL create )
+{
+    struct thread_state *state = TlsGetValue( tls_index );
+    if (!state && create && (state = calloc( 1, sizeof(*state) ))) TlsSetValue( tls_index, state );
+    return state;
+}
+
+static void deliver_debug_messages(void)
+{
+    char message[4096];
+    struct wmgl_debug_message_params params;
+
+    do
+    {
+        memset( &params, 0, sizeof(params) );
+        params.buffer = (UINT64)(ULONG_PTR)message;
+        params.size = sizeof(message);
+        if (unix_call_dispatcher( unixlib, unix_wmgl_debug_message, &params ) || !params.got) return;
+        if (!params.callback) continue;
+        if (params.amd)
+        {
+            GLDEBUGPROCAMD callback = (GLDEBUGPROCAMD)(ULONG_PTR)params.callback;
+            callback( params.id, params.type, params.severity, params.length, message, (void *)(ULONG_PTR)params.user );
+        }
+        else
+        {
+            GLDEBUGPROC callback = (GLDEBUGPROC)(ULONG_PTR)params.callback;
+            callback( params.source, params.type, params.id, params.severity, params.length, message,
+                      (const void *)(ULONG_PTR)params.user );
+        }
+    } while (params.more);
+}
+
+NTSTATUS wmgl_unix_call( unsigned int code, void *args )
+{
+    NTSTATUS status = unix_call_dispatcher( unixlib, code, args );
+    if (status == WMGL_STATUS_DEBUG_MESSAGES)
+    {
+        deliver_debug_messages();
+        status = 0;
+    }
+    return status;
+}
+
+static BOOL init_unix_calls( HINSTANCE instance )
+{
+    void **dispatcher = (void **)GetProcAddress( GetModuleHandleW( L"ntdll.dll" ), "__wine_unix_call_dispatcher" );
+    /* MemoryWineUnixFuncs: the handle of this builtin module's unix library. */
+    if (!dispatcher || NtQueryVirtualMemory( GetCurrentProcess(), instance, 1000, &unixlib, sizeof(unixlib), NULL ))
+        return FALSE;
+    unix_call_dispatcher = *dispatcher;
+    return TRUE;
+}
+
+static BOOL init_pixel_formats(void)
+{
+    struct wmgl_init_params init = {0};
+    struct wmgl_pixel_formats_params params = {0};
+    struct wmgl_pixel_format *formats;
+
+    if (wmgl_unix_call( unix_wmgl_init, &init ) || !init.ok || !init.format_count) return FALSE;
+    if (!(formats = calloc( init.format_count, sizeof(*formats) ))) return FALSE;
+    params.formats = (UINT64)(ULONG_PTR)formats;
+    params.max = init.format_count;
+    if (wmgl_unix_call( unix_wmgl_pixel_formats, &params ))
+    {
+        free( formats );
+        return FALSE;
+    }
+    wmgl_init_pixel_formats( formats, params.count, init.onscreen_count );
+    free( formats );
+    return TRUE;
+}
+
+BOOL WINAPI DllMain( HINSTANCE instance, DWORD reason, LPVOID reserved )
+{
+    switch (reason)
+    {
+    case DLL_PROCESS_ATTACH:
+        wmgl_debug = getenv( "WINEMETALGL_WINE_DEBUG" ) != NULL;
+        DisableThreadLibraryCalls( instance );
+        if ((tls_index = TlsAlloc()) == TLS_OUT_OF_INDEXES) return FALSE;
+        if (!init_unix_calls( instance ))
+        {
+            fprintf( stderr, "winemetalgl: winemetalgl.so is not loaded (is winemetalgl.dll installed as a builtin?)\n" );
+            return FALSE;
+        }
+        if (!init_pixel_formats())
+        {
+            fprintf( stderr, "winemetalgl: the WineMetalGL core did not start (libwinemetalgl.dylib)\n" );
+            return FALSE;
+        }
+        break;
+    case DLL_PROCESS_DETACH:
+        if (reserved) break;
+        if (thread_state( FALSE )) free( thread_state( FALSE )->extensions );
+        free( thread_state( FALSE ) );
+        TlsFree( tls_index );
+        free( wgl_extensions );
+        break;
+    }
+    return TRUE;
+}
+
+/* Where a DC's window is (wmgl_window_placement), in pixels no DPI
+ * awareness has scaled. */
+static void window_placement( HDC hdc, struct wmgl_window_placement *placement )
+{
+    DPI_AWARENESS_CONTEXT awareness;
+    HWND hwnd, top_level;
+    RECT client = {0}, around = {0};
+
+    memset( placement, 0, sizeof(*placement) );
+    if (!hdc || !(hwnd = WindowFromDC( hdc ))) return;
+    awareness = SetThreadDpiAwarenessContext( DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 );
+    top_level = GetAncestor( hwnd, GA_ROOT );
+    GetClientRect( hwnd, &client );
+    GetClientRect( top_level, &around );
+    MapWindowPoints( hwnd, top_level, (POINT *)&client, 2 );
+    placement->hwnd = (UINT64)(ULONG_PTR)hwnd;
+    placement->top_level = (UINT64)(ULONG_PTR)top_level;
+    placement->x = client.left;
+    placement->y = client.top;
+    placement->width = client.right - client.left;
+    placement->height = client.bottom - client.top;
+    placement->top_level_width = around.right;
+    placement->top_level_height = around.bottom;
+    placement->screen_width = GetSystemMetrics( SM_CXSCREEN );
+    SetThreadDpiAwarenessContext( awareness );
+}
+
+/* ------------------------------------------------------------ contexts */
+
+static HGLRC create_context( HDC hdc, HGLRC share, const int *attribs )
+{
+    struct wmgl_create_context_params params =
+    {
+        .hdc = (UINT64)(ULONG_PTR)hdc,
+        .hwnd = (UINT64)(ULONG_PTR)WindowFromDC( hdc ),
+        .share = (UINT64)(ULONG_PTR)share,
+        .attribs = (UINT64)(ULONG_PTR)attribs,
+    };
+    if (wmgl_unix_call( unix_wmgl_create_context, &params ) || !params.ret)
+    {
+        SetLastError( params.error ? params.error : ERROR_INVALID_PARAMETER );
+        return 0;
+    }
+    return (HGLRC)(ULONG_PTR)params.ret;
+}
+
+HGLRC WINAPI wglCreateContext( HDC hdc )
+{
+    return create_context( hdc, 0, NULL );
+}
+
+HGLRC WINAPI wglCreateContextAttribsARB( HDC hdc, HGLRC share, const int *attribs )
+{
+    return create_context( hdc, share, attribs );
+}
+
+HGLRC WINAPI wglCreateLayerContext( HDC hdc, int plane )
+{
+    if (plane == 0) return wglCreateContext( hdc );
+    SetLastError( ERROR_INVALID_PARAMETER );
+    return 0;
+}
+
+static BOOL make_current( HDC draw, HDC read, HGLRC context )
+{
+    struct thread_state *state = thread_state( TRUE );
+    struct wmgl_make_current_params params =
+    {
+        .draw_hdc = (UINT64)(ULONG_PTR)draw,
+        .read_hdc = (UINT64)(ULONG_PTR)read,
+        .context = (UINT64)(ULONG_PTR)context,
+    };
+    if (!state) return FALSE;
+    if (context)
+    {
+        window_placement( draw, &params.draw );
+        window_placement( read, &params.read );
+    }
+    if (wmgl_unix_call( unix_wmgl_make_current, &params ) || !params.ret)
+    {
+        SetLastError( params.error ? params.error : ERROR_INVALID_HANDLE );
+        return FALSE;
+    }
+    state->context = context;
+    state->draw = context ? draw : 0;
+    state->read = context ? read : 0;
+    return TRUE;
+}
+
+BOOL WINAPI wglMakeCurrent( HDC hdc, HGLRC context )
+{
+    if (!context)
+    {
+        struct thread_state *state = thread_state( FALSE );
+        if (!state || !state->context) return TRUE;
+    }
+    return make_current( hdc, hdc, context );
+}
+
+BOOL WINAPI wglMakeContextCurrentARB( HDC draw, HDC read, HGLRC context )
+{
+    return make_current( draw, read, context );
+}
+
+BOOL WINAPI wglDeleteContext( HGLRC context )
+{
+    struct thread_state *state = thread_state( FALSE );
+    struct wmgl_delete_context_params params = { .context = (UINT64)(ULONG_PTR)context };
+
+    if (wmgl_unix_call( unix_wmgl_delete_context, &params ) || !params.ret)
+    {
+        SetLastError( ERROR_INVALID_HANDLE );
+        return FALSE;
+    }
+    /* Deleting this thread's current context releases it. */
+    if (state && state->context == context) state->context = 0, state->draw = state->read = 0;
+    return TRUE;
+}
+
+HGLRC WINAPI wglGetCurrentContext(void)
+{
+    struct thread_state *state = thread_state( FALSE );
+    return state ? state->context : 0;
+}
+
+HDC WINAPI wglGetCurrentDC(void)
+{
+    struct thread_state *state = thread_state( FALSE );
+    return state && state->context ? state->draw : 0;
+}
+
+HDC WINAPI wglGetCurrentReadDCARB(void)
+{
+    struct thread_state *state = thread_state( FALSE );
+    return state && state->context ? state->read : 0;
+}
+
+BOOL WINAPI wglShareLists( HGLRC source, HGLRC dest )
+{
+    struct wmgl_share_lists_params params = { .source = (UINT64)(ULONG_PTR)source, .dest = (UINT64)(ULONG_PTR)dest };
+    if (wmgl_unix_call( unix_wmgl_share_lists, &params )) return FALSE;
+    if (!params.ret) SetLastError( ERROR_INVALID_OPERATION );
+    return params.ret;
+}
+
+BOOL WINAPI wglCopyContext( HGLRC source, HGLRC dest, UINT mask )
+{
+    struct wmgl_copy_context_params params =
+        { .source = (UINT64)(ULONG_PTR)source, .dest = (UINT64)(ULONG_PTR)dest, .mask = mask };
+    if (wmgl_unix_call( unix_wmgl_copy_context, &params )) return FALSE;
+    return params.ret;
+}
+
+/* ------------------------------------------------------- pixel formats */
+
+INT WINAPI wglGetPixelFormat( HDC hdc )
+{
+    struct wmgl_get_pixel_format_params params =
+        { .hdc = (UINT64)(ULONG_PTR)hdc, .hwnd = (UINT64)(ULONG_PTR)WindowFromDC( hdc ) };
+    if (wmgl_unix_call( unix_wmgl_get_pixel_format, &params )) return 0;
+    if (!params.ret) SetLastError( ERROR_INVALID_PIXEL_FORMAT );
+    return params.ret;
+}
+
+static BOOL set_pixel_format( HDC hdc, int format, BOOL internal )
+{
+    struct wmgl_set_pixel_format_params params =
+    {
+        .hdc = (UINT64)(ULONG_PTR)hdc, .hwnd = (UINT64)(ULONG_PTR)WindowFromDC( hdc ), .format = format,
+        .internal = internal,
+    };
+    if (wmgl_unix_call( unix_wmgl_set_pixel_format, &params )) return FALSE;
+    if (!params.ret) SetLastError( ERROR_INVALID_PIXEL_FORMAT );
+    return params.ret;
+}
+
+BOOL WINAPI wglSetPixelFormat( HDC hdc, int format, const PIXELFORMATDESCRIPTOR *pfd )
+{
+    return set_pixel_format( hdc, format, FALSE );
+}
+
+BOOL WINAPI wglSetPixelFormatWINE( HDC hdc, int format )
+{
+    return set_pixel_format( hdc, format, TRUE );
+}
+
+/* ---------------------------------------------------------------- swaps */
+
+BOOL WINAPI wglSwapBuffers( HDC hdc )
+{
+    struct wmgl_swap_buffers_params params = { .hdc = (UINT64)(ULONG_PTR)hdc };
+    window_placement( hdc, &params.window );
+    if (wmgl_unix_call( unix_wmgl_swap_buffers, &params )) return FALSE;
+    return params.ret;
+}
+
+BOOL WINAPI wglSwapLayerBuffers( HDC hdc, UINT planes )
+{
+    if (planes & WGL_SWAP_MAIN_PLANE) return wglSwapBuffers( hdc );
+    return TRUE;
+}
+
+BOOL WINAPI wglSwapIntervalEXT( int interval )
+{
+    struct wmgl_swap_interval_params params = { .interval = interval };
+    if (interval < 0)
+    {
+        SetLastError( ERROR_INVALID_DATA );
+        return FALSE;
+    }
+    if (wmgl_unix_call( unix_wmgl_swap_interval, &params )) return FALSE;
+    return params.ret;
+}
+
+int WINAPI wglGetSwapIntervalEXT(void)
+{
+    struct wmgl_swap_interval_params params = {0};
+    if (wmgl_unix_call( unix_wmgl_get_swap_interval, &params )) return 0;
+    return params.interval;
+}
+
+/* -------------------------------------------------------------- pbuffers */
+
+HPBUFFERARB WINAPI wglCreatePbufferARB( HDC hdc, int format, int width, int height, const int *attribs )
+{
+    struct wmgl_create_pbuffer_params params =
+    {
+        .hdc = (UINT64)(ULONG_PTR)hdc, .hwnd = (UINT64)(ULONG_PTR)WindowFromDC( hdc ),
+        .format = format, .width = width, .height = height,
+        .attribs = (UINT64)(ULONG_PTR)attribs,
+    };
+    if (wmgl_unix_call( unix_wmgl_create_pbuffer, &params ) || !params.ret)
+    {
+        SetLastError( params.error ? params.error : ERROR_INVALID_DATA );
+        return 0;
+    }
+    return (HPBUFFERARB)(ULONG_PTR)params.ret;
+}
+
+static BOOL pbuffer_call( unsigned int code, struct wmgl_pbuffer_params *params )
+{
+    if (wmgl_unix_call( code, params )) return FALSE;
+    if (!params->ret) SetLastError( ERROR_INVALID_HANDLE );
+    return params->ret;
+}
+
+BOOL WINAPI wglDestroyPbufferARB( HPBUFFERARB pbuffer )
+{
+    struct wmgl_pbuffer_params params = { .pbuffer = (UINT64)(ULONG_PTR)pbuffer };
+    return pbuffer_call( unix_wmgl_destroy_pbuffer, &params );
+}
+
+/* A pbuffer's DC is a memory DC the unix side knows as the pbuffer's. */
+HDC WINAPI wglGetPbufferDCARB( HPBUFFERARB pbuffer )
+{
+    struct wmgl_pbuffer_params params = { .pbuffer = (UINT64)(ULONG_PTR)pbuffer };
+    HDC hdc = CreateCompatibleDC( 0 );
+
+    if (!hdc) return 0;
+    params.hdc = (UINT64)(ULONG_PTR)hdc;
+    if (!pbuffer_call( unix_wmgl_get_pbuffer_dc, &params ))
+    {
+        DeleteDC( hdc );
+        return 0;
+    }
+    return hdc;
+}
+
+int WINAPI wglReleasePbufferDCARB( HPBUFFERARB pbuffer, HDC hdc )
+{
+    struct wmgl_pbuffer_params params = { .pbuffer = (UINT64)(ULONG_PTR)pbuffer, .hdc = (UINT64)(ULONG_PTR)hdc };
+    if (!pbuffer_call( unix_wmgl_release_pbuffer_dc, &params )) return 0;
+    DeleteDC( hdc );
+    return 1;
+}
+
+BOOL WINAPI wglQueryPbufferARB( HPBUFFERARB pbuffer, int attribute, int *value )
+{
+    struct wmgl_pbuffer_params params = { .pbuffer = (UINT64)(ULONG_PTR)pbuffer, .attribute = attribute };
+    if (!pbuffer_call( unix_wmgl_query_pbuffer, &params )) return FALSE;
+    *value = params.value;
+    return TRUE;
+}
+
+BOOL WINAPI wglBindTexImageARB( HPBUFFERARB pbuffer, int buffer )
+{
+    struct wmgl_pbuffer_params params = { .pbuffer = (UINT64)(ULONG_PTR)pbuffer, .attribute = buffer };
+    return pbuffer_call( unix_wmgl_bind_tex_image, &params );
+}
+
+BOOL WINAPI wglReleaseTexImageARB( HPBUFFERARB pbuffer, int buffer )
+{
+    struct wmgl_pbuffer_params params = { .pbuffer = (UINT64)(ULONG_PTR)pbuffer, .attribute = buffer };
+    return pbuffer_call( unix_wmgl_release_tex_image, &params );
+}
+
+BOOL WINAPI wglSetPbufferAttribARB( HPBUFFERARB pbuffer, const int *attribs )
+{
+    struct wmgl_pbuffer_params params = { .pbuffer = (UINT64)(ULONG_PTR)pbuffer, .attribs = (UINT64)(ULONG_PTR)attribs };
+    return pbuffer_call( unix_wmgl_set_pbuffer_attrib, &params );
+}
+
+/* ---------------------------------------------------- renderer queries */
+
+static BOOL query_renderer_integer( HDC hdc, GLint renderer, GLenum attribute, GLuint *value )
+{
+    struct wmgl_query_renderer_params params =
+        { .hdc = (UINT64)(ULONG_PTR)hdc, .renderer = renderer, .attribute = attribute, .value = (UINT64)(ULONG_PTR)value };
+    if (wmgl_unix_call( unix_wmgl_query_renderer_integer, &params )) return FALSE;
+    return params.ret;
+}
+
+static const GLchar *query_renderer_string( HDC hdc, GLint renderer, GLenum attribute )
+{
+    static char strings[2][256];  /* device, vendor: constant for the process */
+    char buffer[256];
+    struct wmgl_query_renderer_params params =
+    {
+        .hdc = (UINT64)(ULONG_PTR)hdc, .renderer = renderer, .attribute = attribute,
+        .buffer = (UINT64)(ULONG_PTR)buffer, .size = sizeof(buffer),
+    };
+    int slot = attribute == WGL_RENDERER_VENDOR_ID_WINE ? 1 : 0;
+    if (wmgl_unix_call( unix_wmgl_query_renderer_string, &params ) || !params.ret) return NULL;
+    lstrcpynA( strings[slot], buffer, sizeof(strings[slot]) );
+    return strings[slot];
+}
+
+BOOL WINAPI wglQueryCurrentRendererIntegerWINE( GLenum attribute, GLuint *value )
+{
+    return query_renderer_integer( 0, 0, attribute, value );
+}
+
+const GLchar *WINAPI wglQueryCurrentRendererStringWINE( GLenum attribute )
+{
+    return query_renderer_string( 0, 0, attribute );
+}
+
+BOOL WINAPI wglQueryRendererIntegerWINE( HDC dc, GLint renderer, GLenum attribute, GLuint *value )
+{
+    return query_renderer_integer( dc, renderer, attribute, value );
+}
+
+const GLchar *WINAPI wglQueryRendererStringWINE( HDC dc, GLint renderer, GLenum attribute )
+{
+    return query_renderer_string( dc, renderer, attribute );
+}
+
+/* ------------------------------------------------------ extension strings */
+
+static const char *extensions_string(void)
+{
+    struct wmgl_extensions_string_params params = {0};
+    char *string;
+
+    if (wgl_extensions) return wgl_extensions;
+    if (wmgl_unix_call( unix_wmgl_extensions_string, &params ) || !params.needed) return "";
+    if (!(string = calloc( 1, params.needed ))) return "";
+    params.buffer = (UINT64)(ULONG_PTR)string;
+    params.size = params.needed;
+    if (wmgl_unix_call( unix_wmgl_extensions_string, &params ))
+    {
+        free( string );
+        return "";
+    }
+    if (InterlockedCompareExchangePointer( (void **)&wgl_extensions, string, NULL )) free( string );
+    return wgl_extensions;
+}
+
+const char *WINAPI wglGetExtensionsStringARB( HDC hdc )
+{
+    return extensions_string();
+}
+
+const char *WINAPI wglGetExtensionsStringEXT(void)
+{
+    return extensions_string();
+}
+
+/* --------------------------------------------------------- proc addresses */
+
+static const struct
+{
+    const char *name;
+    PROC proc;
+    const char *extension;
+} wgl_procs[] =
+{
+    {"wglBindTexImageARB", (PROC)wglBindTexImageARB, "WGL_ARB_render_texture"},
+    {"wglChoosePixelFormatARB", (PROC)wglChoosePixelFormatARB, "WGL_ARB_pixel_format"},
+    {"wglCreateContextAttribsARB", (PROC)wglCreateContextAttribsARB, "WGL_ARB_create_context"},
+    {"wglCreatePbufferARB", (PROC)wglCreatePbufferARB, "WGL_ARB_pbuffer"},
+    {"wglDestroyPbufferARB", (PROC)wglDestroyPbufferARB, "WGL_ARB_pbuffer"},
+    {"wglGetCurrentReadDCARB", (PROC)wglGetCurrentReadDCARB, "WGL_ARB_make_current_read"},
+    {"wglGetExtensionsStringARB", (PROC)wglGetExtensionsStringARB, "WGL_ARB_extensions_string"},
+    {"wglGetExtensionsStringEXT", (PROC)wglGetExtensionsStringEXT, "WGL_EXT_extensions_string"},
+    {"wglGetPbufferDCARB", (PROC)wglGetPbufferDCARB, "WGL_ARB_pbuffer"},
+    {"wglGetPixelFormatAttribfvARB", (PROC)wglGetPixelFormatAttribfvARB, "WGL_ARB_pixel_format"},
+    {"wglGetPixelFormatAttribivARB", (PROC)wglGetPixelFormatAttribivARB, "WGL_ARB_pixel_format"},
+    {"wglGetSwapIntervalEXT", (PROC)wglGetSwapIntervalEXT, "WGL_EXT_swap_control"},
+    {"wglMakeContextCurrentARB", (PROC)wglMakeContextCurrentARB, "WGL_ARB_make_current_read"},
+    {"wglQueryCurrentRendererIntegerWINE", (PROC)wglQueryCurrentRendererIntegerWINE, "WGL_WINE_query_renderer"},
+    {"wglQueryCurrentRendererStringWINE", (PROC)wglQueryCurrentRendererStringWINE, "WGL_WINE_query_renderer"},
+    {"wglQueryPbufferARB", (PROC)wglQueryPbufferARB, "WGL_ARB_pbuffer"},
+    {"wglQueryRendererIntegerWINE", (PROC)wglQueryRendererIntegerWINE, "WGL_WINE_query_renderer"},
+    {"wglQueryRendererStringWINE", (PROC)wglQueryRendererStringWINE, "WGL_WINE_query_renderer"},
+    {"wglReleasePbufferDCARB", (PROC)wglReleasePbufferDCARB, "WGL_ARB_pbuffer"},
+    {"wglReleaseTexImageARB", (PROC)wglReleaseTexImageARB, "WGL_ARB_render_texture"},
+    {"wglSetPbufferAttribARB", (PROC)wglSetPbufferAttribARB, "WGL_ARB_render_texture"},
+    {"wglSetPixelFormatWINE", (PROC)wglSetPixelFormatWINE, "WGL_WINE_pixel_format_passthrough"},
+    {"wglSwapIntervalEXT", (PROC)wglSwapIntervalEXT, "WGL_EXT_swap_control"},
+};
+
+static BOOL has_extension( const char *list, const char *name )
+{
+    size_t len = strlen( name );
+    const char *p = list;
+    while ((p = strstr( p, name )))
+    {
+        if ((p == list || p[-1] == ' ') && (p[len] == ' ' || !p[len])) return TRUE;
+        p += len;
+    }
+    return FALSE;
+}
+
+/* The current context's GL extensions (one space-separated list per
+ * thread, rebuilt when another context becomes current there). */
+static BOOL context_has_extension( const char *name )
+{
+    struct thread_state *state = thread_state( FALSE );
+    HGLRC context = wglGetCurrentContext();
+    GLint count = 0, i;
+    size_t size = 1;
+    char *list;
+
+    if (!state || !context) return FALSE;
+    if (context != state->extensions_context || !state->extensions)
+    {
+        glGetIntegerv( GL_NUM_EXTENSIONS, &count );
+        for (i = 0; i < count; i++)
+        {
+            const char *ext = (const char *)glGetStringi( GL_EXTENSIONS, i );
+            if (ext) size += strlen( ext ) + 1;
+        }
+        if (!(list = calloc( 1, size ))) return FALSE;
+        for (i = 0; i < count; i++)
+        {
+            const char *ext = (const char *)glGetStringi( GL_EXTENSIONS, i );
+            if (!ext) continue;
+            if (*list) strcat( list, " " );
+            strcat( list, ext );
+        }
+        free( state->extensions );
+        state->extensions = list;
+        state->extensions_context = context;
+    }
+    return has_extension( state->extensions, name );
+}
+
+PROC WINAPI wglGetProcAddress( LPCSTR name )
+{
+    unsigned int lo = 0, hi = wmgl_proc_count, i;
+
+    if (!name) return NULL;
+    for (i = 0; i < sizeof(wgl_procs) / sizeof(wgl_procs[0]); i++)
+        if (!strcmp( wgl_procs[i].name, name ))
+            return has_extension( extensions_string(), wgl_procs[i].extension ) ? wgl_procs[i].proc : NULL;
+    if (!wglGetCurrentContext()) return NULL;
+    while (lo < hi)
+    {
+        unsigned int mid = (lo + hi) / 2;
+        int cmp = strcmp( name, wmgl_procs[mid].name );
+        if (!cmp)
+        {
+            const struct wmgl_proc *proc = &wmgl_procs[mid];
+            /* Commands of a GL version (every context is the newest) always,
+             * extension commands when the context offers the extension. */
+            if (proc->source[0] >= '0' && proc->source[0] <= '9') return proc->proc;
+            return context_has_extension( proc->source ) ? proc->proc : NULL;
+        }
+        if (cmp < 0) hi = mid;
+        else lo = mid + 1;
+    }
+    return NULL;
+}
+
+PROC WINAPI wglGetDefaultProcAddress( LPCSTR name )
+{
+    return NULL;
+}
+
+/* ----------------------------------------------------------- layer planes */
+
+BOOL WINAPI wglDescribeLayerPlane( HDC hdc, int format, int plane, UINT size, LAYERPLANEDESCRIPTOR *descr )
+{
+    return FALSE;
+}
+
+int WINAPI wglGetLayerPaletteEntries( HDC hdc, int plane, int start, int count, COLORREF *colors )
+{
+    return 0;
+}
+
+int WINAPI wglSetLayerPaletteEntries( HDC hdc, int plane, int start, int count, const COLORREF *colors )
+{
+    return 0;
+}
+
+BOOL WINAPI wglRealizeLayerPalette( HDC hdc, int plane, BOOL realize )
+{
+    return FALSE;
+}
+
+/* glDebugEntry (OPENGL32.@): undocumented, kept for the export list. */
+GLint WINAPI glDebugEntry( GLint unknown1, GLint unknown2 )
+{
+    return 0;
+}

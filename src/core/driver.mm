@@ -218,6 +218,16 @@ WMGL_EXPORT const char* wmgl_renderer_string(void) {
     return rendererString().c_str();
 }
 
+namespace wmgl::api {
+extern void* (*g_bufferAllocate)(size_t);
+extern void (*g_bufferRelease)(void*, size_t);
+}
+
+WMGL_EXPORT void wmgl_set_buffer_memory(void* (*allocate)(size_t), void (*release)(void*, size_t)) {
+    wmgl::api::g_bufferAllocate = allocate;
+    wmgl::api::g_bufferRelease = release;
+}
+
 WMGL_EXPORT void wmgl_version(int* major, int* minor, int* patch) {
     int v[3] = {0, 0, 0};
     std::sscanf(WMGL_VERSION, "%d.%d.%d", &v[0], &v[1], &v[2]);

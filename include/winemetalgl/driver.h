@@ -12,6 +12,8 @@
 #ifndef WINEMETALGL_DRIVER_H
 #define WINEMETALGL_DRIVER_H
 
+#include <stddef.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -84,6 +86,13 @@ void wmgl_max_versions(int *core_major, int *core_minor, int *compat_major, int 
 /* WineMetalGL's own version (WGL_RENDERER_VERSION_WINE). Optional: cores
  * before 2.0.0 do not export it. */
 void wmgl_version(int *major, int *minor, int *patch);
+/* Memory for buffer objects' storage, for hosts whose clients see part of
+ * the address space only (32-bit Windows applications under Wine's wow64,
+ * which must be able to address mapped buffers): `allocate` returns memory
+ * of at least `size` bytes aligned to 64 KiB (NULL on failure), `release`
+ * frees it. Call before creating contexts. Optional: cores before 3.0.0 do
+ * not export it. */
+void wmgl_set_buffer_memory(void *(*allocate)(size_t size), void (*release)(void *memory, size_t size));
 
 #ifdef __cplusplus
 }
