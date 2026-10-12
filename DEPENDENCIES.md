@@ -65,6 +65,10 @@ Local changes to vendored sources (each marked `WineMetalGL:` in the code):
   `sampler2DArrayShadow` and `samplerCubeArrayShadow`, `textureOffset` of
   `sampler2DArrayShadow`) are declared for fragment shaders only, as every
   lookup with a bias is.
+- glslang `glslang/MachineIndependent/ParseHelper.cpp`: `textureOffset` of
+  `sampler2DArrayShadow` without a bias is accepted before GLSL 4.30 when
+  `GL_EXT_texture_shadow_lod` is enabled (the check allowed only the form
+  with a bias).
 - glslang `glslang/MachineIndependent/{Versions.h,Versions.cpp,Initialize.cpp}`:
   `GL_ARB_texture_query_levels` (`textureQueryLevels` from GLSL 1.30 with the
   extension, as before from 4.30 without).

@@ -2350,7 +2350,10 @@ void TParseContext::builtInOpCheck(const TSourceLoc& loc, const TFunction& fnCan
                     if (
                         ((*argp)[1]->getAsTyped()->getType().getBasicType() == EbtFloat) && 
                         ((*argp)[1]->getAsTyped()->getType().getVectorSize() == 4) &&
-                        (fnCandidate.getParamCount() == 4)) {
+                        // GL_EXT_texture_shadow_lod adds the lookup with a bias and,
+                        // where core GLSL lacks it (before 4.30, ES), without one.
+                        (fnCandidate.getParamCount() == 4 ||
+                         (fnCandidate.getParamCount() == 3 && (isEsProfile() || version <= 420)))) {
                         featureString = fnCandidate.getName() + " for sampler2DArrayShadow";
                         feature = featureString.c_str();
                         requireExtensions(loc, 1, &E_GL_EXT_texture_shadow_lod, feature);
