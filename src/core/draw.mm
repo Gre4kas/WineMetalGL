@@ -1689,6 +1689,41 @@ std::vector<uint32_t> assembleForCapture(GLenum mode, const std::vector<uint32_t
     return out;
 }
 
+// The order that draws a captured list (assembleForCapture) with each
+// primitive's provoking vertex (GL 4.6 table 13.2) first, as Metal
+// flat-shades: a rotation of the primitive, which keeps its winding. Empty
+// when the list is in that order; false when no rotation gives it (quads
+// under the last-vertex convention, adjacency).
+bool provokingOrder(GLenum mode, bool last, size_t count, std::vector<uint32_t>& order) {
+    order.clear();
+    size_t per = 3;
+    int pattern = 0;  // the provoking vertex's place: 0, 1 or 2; 3: by parity (strips)
+    switch (mode) {
+    case GL_POINTS: case GL_POLYGON: return true;
+    case GL_QUADS: return !last;
+    case GL_LINES: case GL_LINE_STRIP: case GL_LINE_LOOP:
+        per = 2;
+        pattern = last ? 1 : 0;
+        break;
+    case GL_TRIANGLES: pattern = last ? 2 : 0; break;
+    case GL_TRIANGLE_STRIP: pattern = last ? 2 : 3; break;  // first: v[i], second in odd triangles' list
+    case GL_TRIANGLE_FAN: pattern = last ? 2 : 1; break;    // (v0, vi, vi+1): first convention vi
+    case GL_QUAD_STRIP:
+        if (!last) return true;
+        pattern = 4;  // (vi, vi+1, vi+3), (vi, vi+3, vi+2): vi+3
+        break;
+    default: return false;
+    }
+    if (pattern == 0) return true;
+    order.reserve(count);
+    for (size_t k = 0; k + per <= count; k += per) {
+        const size_t index = k / per;
+        const size_t at = pattern == 3 ? index % 2 : pattern == 4 ? (index % 2 ? 1 : 2) : static_cast<size_t>(pattern);
+        for (size_t j = 0; j < per; ++j) order.push_back(static_cast<uint32_t>(k + (at + j) % per));
+    }
+    return true;
+}
+
 }  // namespace
 
 void DrawState::bindCaptureDefaults(id<MTLRenderCommandEncoder> encoder, LinkedProgram& program) {
@@ -1744,16 +1779,21 @@ DrawState::Capture DrawState::captureTransformFeedback(GLenum mode, const std::v
         baseWords[b] = static_cast<uint32_t>((xfb.buffers[b].offset + xfb.written[b]) / 4);
     }
     // A vertex stage that writes memory must run once per vertex: the draw
-    // rasterizes the captured list (as independent primitives) itself, when
-    // nothing else rewrites it (provoking-vertex rotation, polygon points,
-    // wide lines, tessellation).
+    // rasterizes the captured list (as independent primitives, each with its
+    // provoking vertex first) itself, when nothing else rewrites it (polygon
+    // points, wide lines, tessellation).
     const GLenum drawn = listMode(mode);
+    std::vector<uint32_t> order;
+    const bool flat = lp->stage(Stage::Fragment).flatInputs;
     const bool drawHere = !ctx_.state.rasterizerDiscard && vertexWritesMemory(*lp) && !tessInputs_.active && !ffWideLines_ &&
-                          !pointPolygons(drawn) && !rotateProvoking(drawn, *lp);
+                          !pointPolygons(drawn) &&
+                          (!flat || provokingOrder(mode, ctx_.state.provokingVertex == GL_LAST_VERTEX_CONVENTION, list.size(), order));
     bool rasterized = false;
-    if (!runVertexCapture(*lp, list, instances, static_cast<uint32_t>(primitives * perPrimitive), link.xfbBufferCount, buffers,
-                          baseWords, link.xfbStride, drawHere ? drawn : GL_NONE, &rasterized))
-        return kNotCaptured;
+    captureOrder_ = order.empty() ? nullptr : &order;
+    const bool ran = runVertexCapture(*lp, list, instances, static_cast<uint32_t>(primitives * perPrimitive), link.xfbBufferCount,
+                                      buffers, baseWords, link.xfbStride, drawHere ? drawn : GL_NONE, &rasterized);
+    captureOrder_ = nullptr;
+    if (!ran) return kNotCaptured;
     const uint64_t serial = ctx_.stream().serial();
     for (int b = 0; b < link.xfbBufferCount; ++b) {
         if (!link.xfbBufferUsed(b)) continue;
@@ -1827,8 +1867,20 @@ bool DrawState::runVertexCapture(LinkedProgram& lp, const std::vector<uint32_t>&
     const MTLPrimitiveType primitive = drawMode == GL_LINES       ? MTLPrimitiveTypeLine
                                        : drawMode == GL_TRIANGLES ? MTLPrimitiveTypeTriangle
                                                                   : MTLPrimitiveTypePoint;
-    [encoder drawPrimitives:primitive vertexStart:0 vertexCount:list.size()
-              instanceCount:static_cast<NSUInteger>(std::max(1, instances)) baseInstance:baseInstance_];
+    TransientAllocation order;
+    if (captureOrder_ && drawMode != GL_NONE) {
+        // Each list position once, so the vertex stage still runs once per vertex.
+        order = transient_.allocate(captureOrder_->size() * 4, serial, 4);
+        if (!order.buffer) return false;
+        std::memcpy(order.data, captureOrder_->data(), captureOrder_->size() * 4);
+    }
+    if (order.buffer)
+        [encoder drawIndexedPrimitives:primitive indexCount:captureOrder_->size() indexType:MTLIndexTypeUInt32
+                           indexBuffer:order.buffer indexBufferOffset:order.offset
+                         instanceCount:static_cast<NSUInteger>(std::max(1, instances)) baseVertex:0 baseInstance:baseInstance_];
+    else
+        [encoder drawPrimitives:primitive vertexStart:0 vertexCount:list.size()
+                  instanceCount:static_cast<NSUInteger>(std::max(1, instances)) baseInstance:baseInstance_];
     // Later draws in this pass may read the captured data (as vertex,
     // uniform or texture buffers): Metal does not order work inside one
     // encoder, so order them after these writes.
@@ -2066,6 +2118,7 @@ void DrawState::drawGeometry(GLenum mode, const std::vector<uint32_t>& vertices,
 
     // 1. Vertex outputs of every input primitive, in primitive order.
     TransientAllocation input = transient_.allocate(total * g.verticesIn * g.inputStride * 4, serial, 16);
+    if (!input.buffer) return;  // too large for the device (logged)
     const id<MTLBuffer> inputBuffers[1] = {input.buffer};
     const uint32_t inputBase[1] = {static_cast<uint32_t>(input.offset / 4)};
     const uint32_t inputStride[1] = {g.inputStride};
@@ -2077,6 +2130,7 @@ void DrawState::drawGeometry(GLenum mode, const std::vector<uint32_t>& vertices,
     const size_t indexCount = threads * 2 * maxV;
     TransientAllocation output = transient_.allocate(threads * maxV * g.outputStride * 4, serial, 16);
     TransientAllocation indices = transient_.allocate(indexCount * 4, serial, 16);
+    if (!output.buffer || !indices.buffer) return;
     id<MTLComputeCommandEncoder> compute = ctx_.stream().compute();
     [compute setComputePipelineState:kernel];
     bindKernelResources(compute, lp, g.kernel.usesDefaultUniforms, static_cast<int>(Stage::Compute), &g.kernel);
@@ -2099,6 +2153,7 @@ void DrawState::drawGeometry(GLenum mode, const std::vector<uint32_t>& vertices,
             const uint32_t perThread = (g.outputType == GL_LINE_STRIP ? 2u : 3u) * maxV;
             lastListCount = static_cast<size_t>(threads) * perThread;
             lastList = transient_.allocate(lastListCount * 4, serial, 16);
+            if (!lastList.buffer) return;
             const uint32_t params[4] = {2 * maxV, perThread, g.outputType == GL_LINE_STRIP ? 0u : 1u,
                                         static_cast<uint32_t>(threads)};
             [compute setComputePipelineState:rotate];
@@ -2263,6 +2318,7 @@ void DrawState::drawPatches(const std::vector<uint32_t>& vertices, GLsizei insta
 
     // 1. The vertex outputs of every patch vertex, in patch order.
     TransientAllocation captured = transient_.allocate(total * patchVertices * t.inputStride * 4, serial, 16);
+    if (!captured.buffer) return;  // too large for the device (logged)
     {
         const id<MTLBuffer> buffers[1] = {captured.buffer};
         const uint32_t base[1] = {static_cast<uint32_t>(captured.offset / 4)};
@@ -2276,10 +2332,13 @@ void DrawState::drawPatches(const std::vector<uint32_t>& vertices, GLsizei insta
     const uint32_t recordWords = t.recordWords();
     if (t.hasControl) {
         const uint16_t borders = borderVariant(lp, static_cast<int>(Stage::TessControl));
+        id<MTLComputePipelineState> kernel =
+            borders ? lp.kernelWithBorders(t.control, static_cast<int>(Stage::TessControl), borders) : lp.tessControlKernel();
+        if (!kernel) return;  // the border variant did not compile (logged)
         TransientAllocation output = transient_.allocate(total * recordWords * 4, serial, 16);
+        if (!output.buffer) return;
         id<MTLComputeCommandEncoder> compute = ctx_.stream().compute();
-        [compute setComputePipelineState:borders ? lp.kernelWithBorders(t.control, static_cast<int>(Stage::TessControl), borders)
-                                                 : lp.tessControlKernel()];
+        [compute setComputePipelineState:kernel];
         bindKernelResources(compute, lp, t.control.usesDefaultUniforms, static_cast<int>(Stage::TessControl), &t.control);
         const uint32_t control[4] = {patchVertices, static_cast<uint32_t>(total), static_cast<uint32_t>(patches), 0};
         [compute setBuffer:captured.buffer offset:captured.offset atIndex:shader::kSlotFirstXfbBuffer];

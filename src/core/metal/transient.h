@@ -22,7 +22,8 @@ struct TransientAllocation {
 class TransientAllocator {
 public:
     explicit TransientAllocator(Queue& queue) : queue_(queue) {}
-    // Allocates `size` bytes for work recorded in command buffer `serial`.
+    // Allocates `size` bytes for work recorded in command buffer `serial`;
+    // an empty allocation (nil buffer) when the device has no memory for it.
     TransientAllocation allocate(size_t size, uint64_t serial, size_t alignment = 256);
 
 private:

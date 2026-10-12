@@ -4,6 +4,7 @@
 
 #include "core/metal/device.h"
 #include "core/stats.h"
+#include "core/util/log.h"
 
 namespace wmgl {
 
@@ -35,10 +36,23 @@ TransientAllocation TransientAllocator::allocate(size_t size, uint64_t serial, s
         current_ = i;
         return {chunk.buffer, 0, chunk.buffer.contents};
     }
+    if (size > kChunkSize) {
+        // Chunks made for one large allocation go once their work is done,
+        // so a few huge draws do not keep their memory.
+        for (size_t i = chunks_.size(); i-- > 0;) {
+            if (i == current_ || chunks_[i].buffer.length <= kChunkSize || !queue_.isComplete(chunks_[i].lastSerial)) continue;
+            chunks_.erase(chunks_.begin() + static_cast<long>(i));
+            if (current_ != SIZE_MAX && current_ > i) --current_;
+        }
+    }
     Chunk chunk;
     chunk.buffer = [Device::get().mtl() newBufferWithLength:std::max(kChunkSize, size)
                                                     options:MTLResourceStorageModeShared |
                                                             MTLResourceCPUCacheModeWriteCombined];
+    if (!chunk.buffer) {
+        logOnce(LogLevel::Warn, "transient-memory", "no GPU memory for %zu bytes of per-draw data", size);
+        return {};
+    }
     chunk.buffer.label = @"WineMetalGL transient";
     chunk.used = size;
     chunk.lastSerial = serial;

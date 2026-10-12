@@ -1084,3 +1084,80 @@ GPU_TEST_VERSION(gpu_gl46_dsa_corners, 46) {
     glDeleteTextures(1, &cube);
     CHECK_GL();
 }
+
+// Transform feedback with a vertex shader that writes memory and a flat
+// varying: the vertex stage runs once per captured vertex, and strips and fans take
+// their flat value from GL's provoking vertex in both conventions.
+GPU_TEST_VERSION(gpu_gl46_xfb_memory_flat_provoking, 46) {
+    const char* vs = "#version 460 core\nlayout(location = 0) in vec2 position;\n"
+                     "layout(binding = 0, offset = 0) uniform atomic_uint runs;\n"
+                     "flat out int id;\nout vec4 captured;\n"
+                     "void main() { atomicCounterIncrement(runs); id = gl_VertexID; captured = vec4(position, 0.0, 1.0);\n"
+                     "              gl_Position = captured; }\n";
+    const char* fs = "#version 460 core\nflat in int id;\nout vec4 o;\nvoid main() { o = vec4(float(id) * 0.25, 0.0, 0.0, 1.0); }\n";
+    GLuint vsh = glCreateShader(GL_VERTEX_SHADER), fsh = glCreateShader(GL_FRAGMENT_SHADER);
+    glShaderSource(vsh, 1, &vs, nullptr);
+    glCompileShader(vsh);
+    glShaderSource(fsh, 1, &fs, nullptr);
+    glCompileShader(fsh);
+    GLuint p = glCreateProgram();
+    glAttachShader(p, vsh);
+    glAttachShader(p, fsh);
+    const char* varyings[1] = {"captured"};
+    glTransformFeedbackVaryings(p, 1, varyings, GL_INTERLEAVED_ATTRIBS);
+    glLinkProgram(p);
+    glDeleteShader(vsh);
+    glDeleteShader(fsh);
+    GLint linked = 0;
+    glGetProgramiv(p, GL_LINK_STATUS, &linked);
+    CHECK(linked);
+    glUseProgram(p);
+    GLuint vao = 0, buffers[3] = {};
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(3, buffers);
+    glBindBufferBase(GL_ATOMIC_COUNTER_BUFFER, 0, buffers[1]);
+    glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 0, buffers[2]);
+    glBufferData(GL_TRANSFORM_FEEDBACK_BUFFER, 1024, nullptr, GL_DYNAMIC_COPY);
+    glBindBuffer(GL_ARRAY_BUFFER, buffers[0]);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
+    glEnableVertexAttribArray(0);
+    // Strip: T0 = (v0, v1, v2) lower left, T1 = (v1, v2, v3) upper right.
+    // Fan: T0 = (v0, v1, v2) lower right, T1 = (v0, v2, v3) upper left.
+    const float strip[8] = {-1, -1, 1, -1, -1, 1, 1, 1}, fan[8] = {-1, -1, 1, -1, 1, 1, -1, 1};
+    struct Case { GLenum mode; const float* positions; GLenum convention; int x0, y0, id0, x1, y1, id1; };
+    const Case cases[4] = {
+        {GL_TRIANGLE_STRIP, strip, GL_LAST_VERTEX_CONVENTION, 8, 8, 2, 56, 56, 3},
+        {GL_TRIANGLE_STRIP, strip, GL_FIRST_VERTEX_CONVENTION, 8, 8, 0, 56, 56, 1},
+        {GL_TRIANGLE_FAN, fan, GL_LAST_VERTEX_CONVENTION, 56, 8, 2, 8, 56, 3},
+        {GL_TRIANGLE_FAN, fan, GL_FIRST_VERTEX_CONVENTION, 56, 8, 1, 8, 56, 2},
+    };
+    for (const Case& c : cases) {
+        glBufferData(GL_ARRAY_BUFFER, sizeof(strip), c.positions, GL_STATIC_DRAW);
+        const GLuint zero = 0;
+        glBufferData(GL_ATOMIC_COUNTER_BUFFER, 4, &zero, GL_DYNAMIC_COPY);
+        glProvokingVertex(c.convention);
+        glClearColor(0, 0, 1, 1);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glBeginTransformFeedback(GL_TRIANGLES);
+        glDrawArrays(c.mode, 0, 4);
+        glEndTransformFeedback();
+        GLuint runs = 0;
+        glGetBufferSubData(GL_ATOMIC_COUNTER_BUFFER, 0, 4, &runs);
+        // Once per captured vertex (two triangles): not again to rasterize.
+        if (runs != 6) std::fprintf(stderr, "  mode %#x convention %#x: %u vertex runs\n", c.mode, c.convention, runs);
+        CHECK_EQ(runs, 6u);
+        const uint8_t want0[4] = {static_cast<uint8_t>(c.id0 * 64 - (c.id0 == 4)), 0, 0, 255};
+        const uint8_t want1[4] = {static_cast<uint8_t>(c.id1 * 64 - (c.id1 == 4)), 0, 0, 255};
+        const std::vector<uint8_t> got0 = gpu::readRGBA8(c.x0, c.y0, 1, 1), got1 = gpu::readRGBA8(c.x1, c.y1, 1, 1);
+        if (!gpu::near(got0.data(), want0, 2) || !gpu::near(got1.data(), want1, 2))
+            std::fprintf(stderr, "  mode %#x convention %#x: flat ids %d, %d (want %d, %d)\n", c.mode, c.convention,
+                         (got0[0] + 32) / 64, (got1[0] + 32) / 64, c.id0, c.id1);
+        CHECK(gpu::near(got0.data(), want0, 2) && gpu::near(got1.data(), want1, 2));
+    }
+    glProvokingVertex(GL_LAST_VERTEX_CONVENTION);
+    CHECK_GL();
+    glDeleteBuffers(3, buffers);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
+}

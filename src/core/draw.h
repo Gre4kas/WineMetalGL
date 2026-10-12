@@ -245,6 +245,8 @@ private:
     bool ffChosen_ = false, ffPointSize_ = false, ffWideLines_ = false;
     // Wide line draws: the other endpoint and side of each expanded vertex.
     const std::vector<uint32_t>* linePartners_ = nullptr;
+    // The order a capture pass draws its list in (provokingOrder), or none.
+    const std::vector<uint32_t>* captureOrder_ = nullptr;
     const std::vector<float>* lineSides_ = nullptr;
     Program* ffProgram_ = nullptr;
     struct {
