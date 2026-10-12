@@ -43,18 +43,18 @@ Dead Cells (Requires OpenGL 3.2+) running under MetalSharp Wine-11.17 Using Wine
 | 3.0 | 99.88% | GLSL 1.30, framebuffer objects, vertex array objects, transform feedback, integer textures | 2.28% |
 | 3.1 | 100% | Instancing, texture buffers, uniform buffers, primitive restart | 2.38% |
 | 3.2 | 100% | Profiles, geometry shaders, sync objects, multisample textures, base vertex | 0.69% |
-| 3.3 | 99.98% | GLSL 3.30, sampler objects, timer queries, instanced arrays, dual-source blending | 3.59% |
-| 4.0 | 99.98% | Tessellation, GLSL 4.00, double precision, indirect draws, per-sample shading | 12.18% |
-| 4.1 | 99.98% | Separate shader objects, program binaries, viewport arrays, 64-bit attributes | 12.15% |
-| 4.2 | 99.96% | Image load/store, atomic counters, immutable texture storage | 11.73% |
-| 4.3 | 99.96% | Compute shaders, shader storage buffers, debug output, texture views | 17.65% |
-| 4.4 | - | Buffer storage, multi-bind, texture clears, enhanced layouts | 100% |
-| 4.5 | - | Direct state access, clip control, robustness, cull distances | 100% |
-| 4.6 | - | SPIR-V shaders, anisotropic filtering, indirect draw counts | 100% |
+| 3.3 | 100% | GLSL 3.30, sampler objects, timer queries, instanced arrays, dual-source blending | 1.11% |
+| 4.0 | 99.99% | Tessellation, GLSL 4.00, double precision, indirect draws, per-sample shading | 10.11% |
+| 4.1 | 99.99% | Separate shader objects, program binaries, viewport arrays, 64-bit attributes | 10.08% |
+| 4.2 | 99.98% | Image load/store, atomic counters, immutable texture storage | 9.74% |
+| 4.3 | 99.97% | Compute shaders, shader storage buffers, debug output, texture views | 15.60% |
+| 4.4 | covered by KHR-GL46 | Buffer storage, multi-bind, texture clears, enhanced layouts | - |
+| 4.5 | covered by KHR-GL46 | Direct state access, clip control, robustness, cull distances | - |
+| 4.6 | 99.98% | SPIR-V shaders, anisotropic filtering, indirect draw counts | 22.33% |
 
-**Conformance %**: passing cases over applicable cases (cases that are not NotSupported) of the version's Khronos CTS mustpass list (`KHR-GL30` to `KHR-GL43`), in the worst of its 8 runs (configurations 1 to 4 of `mustpass.xml`, each under Wine and natively) at commit 14eaa75, 851476e, f4ecccd.
+**Conformance %**: passing cases over applicable cases (cases that are not NotSupported) of the version's Khronos CTS mustpass list (`KHR-GL30` to `KHR-GL43`, `KHR-GL46`), in the worst of its runs: 8 for `KHR-GL30` to `KHR-GL43` (configurations 1 to 4 of `mustpass.xml`, each under Wine and natively), 3 for `KHR-GL46` (configuration 1 natively, configurations 1 and 3 under Wine), at commit 14eaa75, 49c5099, 851476e, f4ecccd. OpenGL 4.4 and 4.5 have no list of their own: `KHR-GL46` runs their tests.
 
-The cases that were not Pass in `KHR-GL33`, `KHR-GL40`, `KHR-GL41`, `KHR-GL42` were run again at commit 0a20fbe, in the same configurations under Wine and natively (`tests/cts/recheck/`); those results replace the baselines' for those cases.
+The cases that were not Pass in `KHR-GL33`, `KHR-GL40`, `KHR-GL41`, `KHR-GL42`, `KHR-GL43` were run again at commit 49c5099, in the same configurations under Wine and natively (`tests/cts/recheck/`); those results replace the baselines' for those cases.
 
 What Unsupported % counts, and why each failing case fails: [Unsupported](docs/unsupported.md#conformance-notes).
 

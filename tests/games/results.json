@@ -1,7 +1,7 @@
 {
  "path": "new",
- "commit": "3ecbeea",
- "date": "2026-10-11",
+ "commit": "49c5099",
+ "date": "2026-10-12",
  "threshold": 8,
  "entries": [
   {
@@ -55,6 +55,27 @@
   },
   {
    "name": "scene4x-core43",
+   "tier": "B",
+   "status": "PASS",
+   "worst_fraction": 5.6e-05,
+   "min_psnr_db": 54.3
+  },
+  {
+   "name": "scene4x-core44",
+   "tier": "B",
+   "status": "PASS",
+   "worst_fraction": 5.6e-05,
+   "min_psnr_db": 54.3
+  },
+  {
+   "name": "scene4x-core45",
+   "tier": "B",
+   "status": "PASS",
+   "worst_fraction": 5.6e-05,
+   "min_psnr_db": 54.3
+  },
+  {
+   "name": "scene4x-core46",
    "tier": "B",
    "status": "PASS",
    "worst_fraction": 5.6e-05,

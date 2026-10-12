@@ -42,14 +42,21 @@ END = "<!-- END GENERATED: %s -->"
 STATUSES = ["Pass", "Fail", "NotSupported", "InternalError", "Crash", "Timeout", "Missing"]
 # Mustpass lists with committed baselines (tests/cts/baseline/<list>-cfgN-<runner>.txt).
 SUITES = [("gl30", "KHR-GL30"), ("gl31", "KHR-GL31"), ("gl32", "KHR-GL32"), ("gl33", "KHR-GL33"),
-          ("gl40", "KHR-GL40"), ("gl41", "KHR-GL41"), ("gl42", "KHR-GL42"), ("gl43", "KHR-GL43")]
+          ("gl40", "KHR-GL40"), ("gl41", "KHR-GL41"), ("gl42", "KHR-GL42"), ("gl43", "KHR-GL43"),
+          ("gl46", "KHR-GL46")]
 # The highest version contexts get (src/core/driver.mm).
-MAX_VERSION = "4.3"
+MAX_VERSION = "4.6"
 # mustpass.xml configurations that are run. Configurations 5 and 6 repeat the command
 # lines of 1 and 2: their only difference, useForFirstEGLConfig, applies to EGL.
 CONFIGS = (1, 2, 3, 4)
 CONFIGS_NOTE = ("configurations 1 to 4 of `mustpass.xml` (5 and 6 repeat the command lines of 1 and 2; their only "
                 "difference, `useForFirstEGLConfig`, applies to EGL)")
+# Lists run in fewer configurations: (configuration, runner) pairs. KHR-GL46, the
+# largest list, runs configuration 1 natively and configurations 1 and 3 (an FBO
+# surface) under Wine.
+SUITE_RUNS = {"gl46": {(1, "native"), (1, "wine"), (3, "wine")}}
+# A list that also measures earlier versions: their rows say so.
+COVERED_BY = "gl46"
 # Conformance totals rows: (version, what the version adds, mustpass list that measures it).
 # OpenGL 1.0 to 2.1 are the compatibility profile, which no public Khronos suite measures.
 VERSIONS = [
@@ -61,9 +68,9 @@ VERSIONS = [
     ("4.1", "Separate shader objects, program binaries, viewport arrays, 64-bit attributes", "gl41"),
     ("4.2", "Image load/store, atomic counters, immutable texture storage", "gl42"),
     ("4.3", "Compute shaders, shader storage buffers, debug output, texture views", "gl43"),
-    ("4.4", "Buffer storage, multi-bind, texture clears, enhanced layouts", None),
-    ("4.5", "Direct state access, clip control, robustness, cull distances", None),
-    ("4.6", "SPIR-V shaders, anisotropic filtering, indirect draw counts", None),
+    ("4.4", "Buffer storage, multi-bind, texture clears, enhanced layouts", "covered"),
+    ("4.5", "Direct state access, clip control, robustness, cull distances", "covered"),
+    ("4.6", "SPIR-V shaders, anisotropic filtering, indirect draw counts", "gl46"),
 ]
 # Extensions each 4.x version promoted to core (the version's "new features" appendix).
 PROMOTED = {
@@ -114,6 +121,9 @@ def load_baselines(suite):
         meta = {"file": os.path.relpath(path, ROOT), "config": int(m.group(1)), "runner": m.group(2)}
         if meta["config"] not in CONFIGS:
             raise SystemExit("%s: configuration %d is not run (%s)" % (meta["file"], meta["config"], CONFIGS_NOTE))
+        if suite in SUITE_RUNS and (meta["config"], meta["runner"]) not in SUITE_RUNS[suite]:
+            raise SystemExit("%s: %s is not run in configuration %d %s" % (meta["file"], suite, meta["config"],
+                                                                          meta["runner"]))
         for line in header:
             if line.startswith("# mustpass"):
                 meta["command_line"] = line.split(":", 1)[1].strip()
@@ -361,7 +371,9 @@ def render(suites):
           "Khronos CTS mustpass lists (`glNN-main.txt`) in %s. " % CONFIGS_NOTE +
           
           "`native` runs the core directly through its driver ABI (`tests/cts/native`); `wine` runs "
-          "`glcts.exe` in a WoW64 prefix through Wine's `opengl32`. Applicable cases are those that are not "
+          "`glcts.exe` in a WoW64 prefix: `KHR-GL46` and the rechecks on stock Wine 11.0 with the Wine module, "
+          "`KHR-GL30` to `KHR-GL43` on MetalSharp's Wine 11.17 with the 2.x patches. `KHR-GL46` runs "
+          "configuration 1 natively and configurations 1 and 3 under Wine. Applicable cases are those that are not "
           "NotSupported.", ""]
     for suite, package in SUITES:
         baselines = suites[suite]
@@ -503,7 +515,7 @@ def render(suites):
     blocks[("docs/unsupported.md", "notsupported")] = "\n".join(n)
 
     # ---- docs/testing.md: CTS run times from the result headers.
-    t = ["| Mustpass list | Cases | Under Wine, per run | Natively, per run | All %d runs |" % (2 * len(CONFIGS)),
+    t = ["| Mustpass list | Cases | Under Wine, per run | Natively, per run | All runs |",
          "|---|---:|---:|---:|---:|"]
     for suite, package in SUITES:
         baselines = suites[suite]
@@ -533,8 +545,10 @@ def render(suites):
     for version, adds, suite in VERSIONS:
         if version < "3.0":
             continue
-        baselines = suites.get(suite) if suite else None
-        if baselines:
+        baselines = suites.get(suite) if suite and suite != "covered" else None
+        if suite == "covered":
+            conformance_cell, unsupported_cell = "covered by %s" % dict(SUITES)[COVERED_BY], "-"
+        elif baselines:
             runs = sorted(baselines)
             rates = {k: applicable(baselines[k][1]) for k in runs}
             worst = min(runs, key=lambda k: (rates[k][0] / max(rates[k][1], 1), k))
@@ -548,8 +562,10 @@ def render(suites):
         lines.append("| %s | %s | %s | %s |" % (version, conformance_cell, adds, unsupported_cell))
     lines += ["",
               "**Conformance %%**: passing cases over applicable cases (cases that are not NotSupported) of the "
-              "version's Khronos CTS mustpass list (`KHR-GL30` to `KHR-GL43`), in the worst of its %d runs "
-              "(configurations %s of `mustpass.xml`, each under Wine and natively) at commit %s." % (
+              "version's Khronos CTS mustpass list (`KHR-GL30` to `KHR-GL43`, `KHR-GL46`), in the worst of its runs: "
+              "%d for `KHR-GL30` to `KHR-GL43` (configurations %s of `mustpass.xml`, each under Wine and natively), "
+              "3 for `KHR-GL46` (configuration 1 natively, configurations 1 and 3 under Wine), at commit %s. "
+              "OpenGL 4.4 and 4.5 have no list of their own: `KHR-GL46` runs their tests." % (
                   2 * len(CONFIGS), "%d to %d" % (CONFIGS[0], CONFIGS[-1]), ", ".join(commits)),
               ""]
     if rechecks:
@@ -569,10 +585,9 @@ def render(suites):
 
     # ---- docs/unsupported.md: what the README totals' Unsupported % counts, and the failing cases.
     notes = ["**Unsupported %** (README conformance totals): cases the CTS reports NotSupported because "
-             "WineMetalGL does not offer what they test (an extension it does not advertise or a newer GL "
-             "version), over the cases any implementation can run. Contexts stop at OpenGL " + MAX_VERSION +
-             ", so later versions are 100%; some of their features are available as extensions "
-             "([OpenGL 4.x](#opengl-4x))."]
+             "WineMetalGL does not offer what they test (an extension it does not advertise, or a limit above the "
+             "GL minimum), over the cases any implementation can run. Contexts are OpenGL " + MAX_VERSION +
+             ", the newest version; the unsupported cases are optional extensions ([OpenGL 4.x](#opengl-4x))."]
     failing = [(suite, case, f) for suite, _ in SUITES for case, f in sorted(failures.get(suite, {}).items())]
     if failing:
         explained = all(f["reason"] for _, case, f in failing)

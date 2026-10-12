@@ -2,7 +2,7 @@
  "project": "WineMetalGL",
  "generated_by": "scripts/docs/generate.py",
  "context": {
-  "versions": "up to 4.3",
+  "versions": "up to 4.6",
   "profiles": [
    "core",
    "compatibility"
@@ -13,9 +13,9 @@
   "minimum": "15.0",
   "architecture": "x86_64"
  },
- "core_commands_version": "4.3",
- "core_commands": 533,
- "implemented": 533,
+ "core_commands_version": "4.6",
+ "core_commands": 656,
+ "implemented": 656,
  "missing": [],
  "extensions": [
   "GL_ARB_compatibility",

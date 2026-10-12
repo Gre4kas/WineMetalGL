@@ -83,9 +83,9 @@ logged once.
 ## Conformance notes
 
 <!-- BEGIN GENERATED: totals-notes (scripts/docs/generate.py) -->
-**Unsupported %** (README conformance totals): cases the CTS reports NotSupported because WineMetalGL does not offer what they test (an extension it does not advertise or a newer GL version), over the cases any implementation can run. Contexts stop at OpenGL 4.3, so later versions are 100%; some of their features are available as extensions ([OpenGL 4.x](#opengl-4x)).
+**Unsupported %** (README conformance totals): cases the CTS reports NotSupported because WineMetalGL does not offer what they test (an extension it does not advertise, or a limit above the GL minimum), over the cases any implementation can run. Contexts are OpenGL 4.6, the newest version; the unsupported cases are optional extensions ([OpenGL 4.x](#opengl-4x)).
 
-Failing cases: `KHR-GL30.api.coverage`, `KHR-GL33.transform_feedback2.transform_feedback2_states`, `KHR-GL40.internalformat.renderbuffer.rgb9_e5`, `KHR-GL40.transform_feedback2.transform_feedback2_states`, `KHR-GL41.internalformat.renderbuffer.rgb9_e5`, `KHR-GL41.transform_feedback2.transform_feedback2_states`, `KHR-GL42.internalformat.renderbuffer.rgb9_e5`, `KHR-GL42.map_buffer_alignment.functional`, `KHR-GL42.texture_view.view_sampling`, `KHR-GL42.transform_feedback2.transform_feedback2_states`, `KHR-GL43.internalformat.renderbuffer.rgb9_e5`, `KHR-GL43.map_buffer_alignment.functional`, `KHR-GL43.texture_view.view_sampling`, `KHR-GL43.transform_feedback2.transform_feedback2_states`. [Conformance results](conformance.md) gives the reason for each.
+Failing cases: `KHR-GL30.api.coverage`, `KHR-GL40.internalformat.renderbuffer.rgb9_e5`, `KHR-GL41.internalformat.renderbuffer.rgb9_e5`, `KHR-GL42.internalformat.renderbuffer.rgb9_e5`, `KHR-GL42.texture_view.view_sampling`, `KHR-GL43.clear_tex_image.negative_gl_clear_tex_and_sub_image_compressed_texture`, `KHR-GL43.internalformat.renderbuffer.rgb9_e5`, `KHR-GL43.texture_view.view_sampling`, `KHR-GL46.clear_tex_image.negative_gl_clear_tex_and_sub_image_compressed_texture`, `KHR-GL46.internalformat.renderbuffer.rgb9_e5`, `KHR-GL46.texture_view.view_sampling`. [Conformance results](conformance.md) gives the reason for each.
 <!-- END GENERATED: totals-notes -->
 
 ## CTS cases reported NotSupported
@@ -93,48 +93,48 @@ Failing cases: `KHR-GL30.api.coverage`, `KHR-GL33.transform_feedback2.transform_
 <!-- BEGIN GENERATED: notsupported (scripts/docs/generate.py) -->
 Every NotSupported case in a committed result matches one entry of `tests/cts/notsupported.json`. `extension` and `version` cases test something WineMetalGL does not offer; `test-design` cases are skipped by the test itself on every implementation.
 
-| Pattern | Kind | KHR-GL30 | KHR-GL31 | KHR-GL32 | KHR-GL33 | KHR-GL40 | KHR-GL41 | KHR-GL42 | KHR-GL43 | Reason |
-|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|
-| `KHR-GL4?.sparse_texture_tests.*` | extension | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 1089 | GL_ARB_sparse_texture is not advertised. |
-| `KHR-GL4?.sparse_buffer_tests.*` | extension | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 82 | GL_ARB_sparse_buffer is not advertised. |
-| `KHR-GL4?.blend_equation_advanced.*` | extension | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 88 | GL_KHR_blend_equation_advanced is not advertised. |
-| `KHR-GL4?.shader_ballot_tests.*` | extension | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 4 | GL_ARB_shader_ballot and GL_ARB_gpu_shader_int64 are not advertised. |
-| `KHR-GL4?.clear_tex_image.*` | version | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 78 | The cases need GL 4.4 or GL_ARB_clear_texture, which is not advertised. |
-| `KHR-GL4?.indirect_parameters_tests.*` | version | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 3 | The cases need GL 4.6 or GL_ARB_indirect_parameters, which is not advertised. |
-| `KHR-GL4?.texture_buffer_size_clamping.*` | version | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 4 | The cases need GL 4.5 or GL_ARB_direct_state_access, which is not advertised. |
-| `KHR-GL4?.texture_query_lod.*` | test-design | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 3 | The cases need a render target of at least 256 x 256 (gl4cTextureQueryLodTests.cpp, TextureQueryLodBaseTest::iterate); the mustpass configurations use 64 x 64 surfaces, so they report NotSupported on every implementation. |
-| `KHR-GL4?.fragment_shading_rate.*` | extension | 0 | 0 | 0 | 0 | 1067 | 1067 | 1067 | 1067 | GL_EXT_fragment_shading_rate is not advertised. |
-| `KHR-GL4?.texture_view.*` | extension | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | GL_ARB_texture_view (GL 4.3) is not advertised. |
-| `KHR-GL4?.texture_barrier_ARB.*` | extension | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | GL_ARB_texture_barrier (GL 4.5) is not advertised. |
-| `KHR-GL4?.shader_subroutine.arrays_of_arrays_of_uniforms` | extension | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | GL_ARB_arrays_of_arrays (GL 4.3) is not advertised. |
-| `KHR-GL4?.shader_image_load_store.basic-allFormats-loadStoreComputeStage` | version | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | The case uses compute shaders (GL 4.3, GL_ARB_compute_shader), which are not advertised. |
-| `KHR-GL4?.shader_image_load_store.*-ms` | extension | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 1 | The case needs GL_MAX_IMAGE_SAMPLES of 4 or more. WineMetalGL reports 0, the GL minimum: Metal shaders cannot write multisample textures. |
-| `KHR-GL4?.shader_image_size.*-ms-*` | extension | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 36 | The case needs GL_MAX_IMAGE_SAMPLES of 4 or more. WineMetalGL reports 0, the GL minimum: Metal shaders cannot write multisample textures. |
-| `KHR-GL4?.shader_image_load_store.advanced-sso-perSample` | extension | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 1 | The case needs GL_MAX_IMAGE_SAMPLES of 4 or more. WineMetalGL reports 0, the GL minimum: Metal shaders cannot write multisample textures. |
-| `KHR-GL[34]?.shaders.shader_integer_mix.prototypes` | version | 0 | 0 | 0 | 1 | 1 | 1 | 1 | 1 | Without `#extension GL_EXT_shader_integer_mix` the case needs GLSL 4.50 (glcShaderIntegerMixTests.cpp, ShaderIntegerMixPrototypesCase). |
-| `KHR-GL4?.draw_elements_base_vertex_tests.valid_active_tf` | test-design | 0 | 0 | 0 | 0 | 1 | 1 | 1 | 1 | The case applies only to OpenGL ES contexts and reports NotSupported on every desktop context (esextcDrawElementsBaseVertexTests.cpp, DrawElementsBaseVertexNegativeActiveTransformFeedbackTest). |
-| `KHR-GL[34]?.cull_distance.*` | extension | 0 | 0 | 0 | 218 | 218 | 218 | 218 | 218 | GL_ARB_cull_distance is not advertised. |
-| `KHR-GL[34]?.ext_texture_shadow_lod.*` | extension | 15 | 15 | 15 | 15 | 15 | 15 | 15 | 15 | GL_EXT_texture_shadow_lod is not advertised. |
-| `KHR-GL[34]?.transform_feedback_overflow_query_ARB.*` | extension | 0 | 0 | 13 | 13 | 13 | 13 | 13 | 13 | GL_ARB_transform_feedback_overflow_query is not advertised. |
-| `KHR-GL[34]?.pipeline_statistics_query_tests_ARB.*` | extension | 0 | 0 | 0 | 10 | 10 | 10 | 10 | 10 | GL_ARB_pipeline_statistics_query is not advertised. |
-| `KHR-GL[34]?.texture_filter_minmax_tests.*` | extension | 0 | 0 | 0 | 5 | 5 | 5 | 5 | 5 | GL_ARB_texture_filter_minmax is not advertised. |
-| `KHR-GL3?.transform_feedback2.*` | extension | 1 | 1 | 1 | 0 | 0 | 0 | 0 | 0 | GL_ARB_transform_feedback2 is not advertised. |
-| `KHR-GL3?.transform_feedback3.*` | extension | 3 | 3 | 3 | 0 | 0 | 0 | 0 | 0 | GL_ARB_transform_feedback3 is not advertised. |
-| `KHR-GL3?.gpu_shader5_gl.*` | extension | 0 | 0 | 3 | 0 | 0 | 0 | 0 | 0 | GL_ARB_gpu_shader5 is not advertised. |
-| `KHR-GL3?.shaders.shader_integer_mix.*` | extension | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | GL_EXT_shader_integer_mix is not advertised. |
-| `KHR-GL[34]?.pixelstoragemodes.compressedteximage*.rgba_astc_*` | extension | 0 | 0 | 0 | 80 | 80 | 80 | 80 | 80 | ASTC formats need GL_KHR_texture_compression_astc_ldr, which is not advertised. |
-| `KHR-GL[34]?.packed_depth_stencil.stencil_texturing.*` | version | 0 | 0 | 2 | 2 | 2 | 2 | 2 | 0 | Stencil texturing needs GL 4.3 (GL_ARB_stencil_texturing is not advertised). |
-| `KHR-GL[34]?.CommonBugs.CommonBug_PerVertexValidation` | version | 0 | 1 | 1 | 1 | 1 | 0 | 0 | 0 | The case runs only on OpenGL 4.1 or newer contexts. |
-| `KHR-GL[34]?.texture_swizzle.*` | test-design | 0 | 0 | 0 | 263 | 263 | 263 | 249 | 241 | The case pairs a texture target with an access routine or format that the test marks invalid (gl3cTextureSwizzleTests.cpp isTargetSuppByAccess/isTargetSuppByFormat, or a format whose m_minimum_gl_context is above 3.3), so it reports NotSupported on every implementation. |
-| `KHR-GL3[012].frag_coord_conventions.multisample` | extension | 1 | 1 | 1 | 0 | 0 | 0 | 0 | 0 | Below a GL 3.3 context the case needs GL_ARB_sample_shading (glcFragCoordConventionsTests.cpp), which is not advertised; KHR-GL33 runs it. |
-| `KHR-GL31.clip_distance.*` | test-design | 0 | 3 | 0 | 0 | 0 | 0 | 0 | 0 | KHR-GL31 creates a forward-compatible 3.1 context, and glu::contextSupports (gluRenderContext.cpp) matches a forward-compatible context only against its exact version, so the case's check for a GL 3.0 context fails (glcClipDistance.cpp); KHR-GL30, KHR-GL32 and KHR-GL33 run it. |
-| `KHR-GL31.texture_lod_bias.texture_lod_bias_all` | test-design | 0 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | KHR-GL31 creates a forward-compatible 3.1 context, and glu::contextSupports (gluRenderContext.cpp) matches a forward-compatible context only against its exact version, so the case's check for a GL 3.0 context fails (glcTextureLodBiasTests.cpp); KHR-GL30, KHR-GL32 and KHR-GL33 run it. |
-| `KHR-GL4?.sparse_texture2_tests.*` | extension | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | GL_ARB_sparse_texture2 is not advertised. |
-| `KHR-GL4?.sparse_texture_clamp_tests.*` | extension | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | GL_ARB_sparse_texture_clamp is not advertised. |
-| `KHR-GL4?.negative_texture_lookup_functions_with_bias_tests.sparseTexture*` | extension | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | The sparseTexture*ARB lookups need GL_ARB_sparse_texture2, which is not advertised. |
-| `KHR-GL4?.post_depth_coverage_tests.*` | extension | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | GL_ARB_post_depth_coverage is not advertised: Metal has no post-depth-test sample coverage input. |
-| `KHR-GL4?.shader_texture_image_samples_tests.image_functional_test` | extension | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | The case needs GL_MAX_IMAGE_SAMPLES above 0. WineMetalGL reports 0, the GL minimum: Metal shaders cannot write multisample textures. |
-| `KHR-GL4?.*sample_variables.*samples_8*` | extension | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | The case needs 8 samples; GL_MAX_SAMPLES is 4, the most every color and depth format takes on the Metal device. |
-| `KHR-GL4?.tessellation_shader.tessellation_shader_tessellation.max_in_out_attributes` | extension | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | The case needs GL_MAX_VERTEX_OUTPUT_COMPONENTS to cover GL_MAX_TESS_CONTROL_INPUT_COMPONENTS (esextcTessellationShaderTessellation.cpp, TessellationShaderTessellationMaxInOut::initTest). WineMetalGL reports the GL minimums, 64 and 128. |
-| `KHR-GL4?.texture_cube_map_array.generate_mip_map_non_filterable_*` | test-design | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | The cases run only in OpenGL ES contexts and report NotSupported on every desktop context (esextcTextureCubeMapArrayGenerateMipMap.cpp). |
+| Pattern | Kind | KHR-GL30 | KHR-GL31 | KHR-GL32 | KHR-GL33 | KHR-GL40 | KHR-GL41 | KHR-GL42 | KHR-GL43 | KHR-GL46 | Reason |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| `KHR-GL4?.sparse_texture_tests.*` | extension | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 1089 | 1089 | GL_ARB_sparse_texture is not advertised. |
+| `KHR-GL4?.sparse_buffer_tests.*` | extension | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 82 | 82 | GL_ARB_sparse_buffer is not advertised. |
+| `KHR-GL4?.blend_equation_advanced.*` | extension | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 88 | 88 | GL_KHR_blend_equation_advanced is not advertised. |
+| `KHR-GL4?.shader_ballot_tests.*` | extension | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 4 | 4 | GL_ARB_shader_ballot and GL_ARB_gpu_shader_int64 are not advertised. |
+| `KHR-GL4?.clear_tex_image.*` | version | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | The cases need GL 4.4 or GL_ARB_clear_texture, which is not advertised. |
+| `KHR-GL4?.indirect_parameters_tests.*` | version | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | The cases need GL 4.6 or GL_ARB_indirect_parameters, which is not advertised. |
+| `KHR-GL4?.texture_buffer_size_clamping.*` | version | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | The cases need GL 4.5 or GL_ARB_direct_state_access, which is not advertised. |
+| `KHR-GL4?.texture_query_lod.*` | test-design | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 3 | 3 | The cases need a render target of at least 256 x 256 (gl4cTextureQueryLodTests.cpp, TextureQueryLodBaseTest::iterate); the mustpass configurations use 64 x 64 surfaces, so they report NotSupported on every implementation. |
+| `KHR-GL4?.fragment_shading_rate.*` | extension | 0 | 0 | 0 | 0 | 1067 | 1067 | 1067 | 1067 | 1067 | GL_EXT_fragment_shading_rate is not advertised. |
+| `KHR-GL4?.texture_view.*` | extension | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | GL_ARB_texture_view (GL 4.3) is not advertised. |
+| `KHR-GL4?.texture_barrier_ARB.*` | extension | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | GL_ARB_texture_barrier (GL 4.5) is not advertised. |
+| `KHR-GL4?.shader_subroutine.arrays_of_arrays_of_uniforms` | extension | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | GL_ARB_arrays_of_arrays (GL 4.3) is not advertised. |
+| `KHR-GL4?.shader_image_load_store.basic-allFormats-loadStoreComputeStage` | version | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | The case uses compute shaders (GL 4.3, GL_ARB_compute_shader), which are not advertised. |
+| `KHR-GL4?.shader_image_load_store.*-ms` | extension | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 1 | 1 | The case needs GL_MAX_IMAGE_SAMPLES of 4 or more. WineMetalGL reports 0, the GL minimum: Metal shaders cannot write multisample textures. |
+| `KHR-GL4?.shader_image_size.*-ms-*` | extension | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 36 | 36 | The case needs GL_MAX_IMAGE_SAMPLES of 4 or more. WineMetalGL reports 0, the GL minimum: Metal shaders cannot write multisample textures. |
+| `KHR-GL4?.shader_image_load_store.advanced-sso-perSample` | extension | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 1 | 1 | The case needs GL_MAX_IMAGE_SAMPLES of 4 or more. WineMetalGL reports 0, the GL minimum: Metal shaders cannot write multisample textures. |
+| `KHR-GL[34]?.shaders.shader_integer_mix.prototypes` | version | 0 | 0 | 0 | 1 | 1 | 1 | 1 | 1 | 1 | Without `#extension GL_EXT_shader_integer_mix` the case needs GLSL 4.50 (glcShaderIntegerMixTests.cpp, ShaderIntegerMixPrototypesCase). |
+| `KHR-GL4?.draw_elements_base_vertex_tests.valid_active_tf` | test-design | 0 | 0 | 0 | 0 | 1 | 1 | 1 | 1 | 1 | The case applies only to OpenGL ES contexts and reports NotSupported on every desktop context (esextcDrawElementsBaseVertexTests.cpp, DrawElementsBaseVertexNegativeActiveTransformFeedbackTest). |
+| `KHR-GL[34]?.cull_distance.*` | extension | 0 | 0 | 0 | 16 | 16 | 16 | 16 | 16 | 16 | GL_ARB_cull_distance is not advertised. |
+| `KHR-GL[34]?.ext_texture_shadow_lod.*` | extension | 15 | 15 | 15 | 0 | 0 | 0 | 0 | 0 | 0 | GL_EXT_texture_shadow_lod is not advertised. |
+| `KHR-GL[34]?.transform_feedback_overflow_query_ARB.*` | extension | 0 | 0 | 13 | 0 | 0 | 0 | 0 | 0 | 0 | GL_ARB_transform_feedback_overflow_query is not advertised. |
+| `KHR-GL[34]?.pipeline_statistics_query_tests_ARB.*` | extension | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | GL_ARB_pipeline_statistics_query is not advertised. |
+| `KHR-GL[34]?.texture_filter_minmax_tests.*` | extension | 0 | 0 | 0 | 5 | 5 | 5 | 5 | 5 | 5 | GL_ARB_texture_filter_minmax is not advertised. |
+| `KHR-GL3?.transform_feedback2.*` | extension | 1 | 1 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | GL_ARB_transform_feedback2 is not advertised. |
+| `KHR-GL3?.transform_feedback3.*` | extension | 3 | 3 | 3 | 0 | 0 | 0 | 0 | 0 | 0 | GL_ARB_transform_feedback3 is not advertised. |
+| `KHR-GL3?.gpu_shader5_gl.*` | extension | 0 | 0 | 3 | 0 | 0 | 0 | 0 | 0 | 0 | GL_ARB_gpu_shader5 is not advertised. |
+| `KHR-GL3?.shaders.shader_integer_mix.*` | extension | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | GL_EXT_shader_integer_mix is not advertised. |
+| `KHR-GL[34]?.pixelstoragemodes.compressedteximage*.rgba_astc_*` | extension | 0 | 0 | 0 | 80 | 80 | 80 | 80 | 80 | 80 | ASTC formats need GL_KHR_texture_compression_astc_ldr, which is not advertised. |
+| `KHR-GL[34]?.packed_depth_stencil.stencil_texturing.*` | version | 0 | 0 | 2 | 2 | 2 | 2 | 2 | 0 | 0 | Stencil texturing needs GL 4.3 (GL_ARB_stencil_texturing is not advertised). |
+| `KHR-GL[34]?.CommonBugs.CommonBug_PerVertexValidation` | version | 0 | 1 | 1 | 1 | 1 | 0 | 0 | 0 | 0 | The case runs only on OpenGL 4.1 or newer contexts. |
+| `KHR-GL[34]?.texture_swizzle.*` | test-design | 0 | 0 | 0 | 263 | 263 | 263 | 249 | 241 | 192 | The case pairs a texture target with an access routine or format that the test marks invalid (gl3cTextureSwizzleTests.cpp isTargetSuppByAccess/isTargetSuppByFormat, or a format whose m_minimum_gl_context is above 3.3), so it reports NotSupported on every implementation. |
+| `KHR-GL3[012].frag_coord_conventions.multisample` | extension | 1 | 1 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | Below a GL 3.3 context the case needs GL_ARB_sample_shading (glcFragCoordConventionsTests.cpp), which is not advertised; KHR-GL33 runs it. |
+| `KHR-GL31.clip_distance.*` | test-design | 0 | 3 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | KHR-GL31 creates a forward-compatible 3.1 context, and glu::contextSupports (gluRenderContext.cpp) matches a forward-compatible context only against its exact version, so the case's check for a GL 3.0 context fails (glcClipDistance.cpp); KHR-GL30, KHR-GL32 and KHR-GL33 run it. |
+| `KHR-GL31.texture_lod_bias.texture_lod_bias_all` | test-design | 0 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | KHR-GL31 creates a forward-compatible 3.1 context, and glu::contextSupports (gluRenderContext.cpp) matches a forward-compatible context only against its exact version, so the case's check for a GL 3.0 context fails (glcTextureLodBiasTests.cpp); KHR-GL30, KHR-GL32 and KHR-GL33 run it. |
+| `KHR-GL4?.sparse_texture2_tests.*` | extension | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 1204 | GL_ARB_sparse_texture2 is not advertised. |
+| `KHR-GL4?.sparse_texture_clamp_tests.*` | extension | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 575 | GL_ARB_sparse_texture_clamp is not advertised. |
+| `KHR-GL4?.negative_texture_lookup_functions_with_bias_tests.sparseTexture*` | extension | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 27 | The sparseTexture*ARB lookups need GL_ARB_sparse_texture2, which is not advertised. |
+| `KHR-GL4?.post_depth_coverage_tests.*` | extension | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 2 | GL_ARB_post_depth_coverage is not advertised: Metal has no post-depth-test sample coverage input. |
+| `KHR-GL4?.shader_texture_image_samples_tests.image_functional_test` | extension | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | The case needs GL_MAX_IMAGE_SAMPLES above 0. WineMetalGL reports 0, the GL minimum: Metal shaders cannot write multisample textures. |
+| `KHR-GL4?.*sample_variables.*samples_8*` | extension | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 76 | The case needs 8 samples; GL_MAX_SAMPLES is 4, the most every color and depth format takes on the Metal device. |
+| `KHR-GL4?.tessellation_shader.tessellation_shader_tessellation.max_in_out_attributes` | extension | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | The case needs GL_MAX_VERTEX_OUTPUT_COMPONENTS to cover GL_MAX_TESS_CONTROL_INPUT_COMPONENTS (esextcTessellationShaderTessellation.cpp, TessellationShaderTessellationMaxInOut::initTest). WineMetalGL reports the GL minimums, 64 and 128. |
+| `KHR-GL4?.texture_cube_map_array.generate_mip_map_non_filterable_*` | test-design | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 2 | The cases run only in OpenGL ES contexts and report NotSupported on every desktop context (esextcTextureCubeMapArrayGenerateMipMap.cpp). |
 <!-- END GENERATED: notsupported -->

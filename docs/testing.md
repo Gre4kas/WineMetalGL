@@ -86,7 +86,7 @@ leaves out a non-Pass case, and names the recheck commit next to the totals.
 Run times from the committed results:
 
 <!-- BEGIN GENERATED: cts-times (scripts/docs/generate.py) -->
-| Mustpass list | Cases | Under Wine, per run | Natively, per run | All 8 runs |
+| Mustpass list | Cases | Under Wine, per run | Natively, per run | All runs |
 |---|---:|---:|---:|---:|
 | `KHR-GL30` | 878 | 26 s to 50 s | 12 s to 13 s | 3.7 min |
 | `KHR-GL31` | 888 | 27 s to 35 s | 3 s to 4 s | 2.4 min |
@@ -96,6 +96,7 @@ Run times from the committed results:
 | `KHR-GL41` | 11,883 | 8.9 min to 10.8 min | 4.2 min | 56.1 min |
 | `KHR-GL42` | 12,305 | 10.0 min to 11.3 min | 4.3 min to 4.5 min | 60.6 min |
 | `KHR-GL43` | 16,085 | 9.6 min to 11.6 min | 4.7 min to 5.2 min | 62.5 min |
+| `KHR-GL46` | 19,714 | 7.2 min to 7.4 min | 4.7 min | 19.2 min |
 <!-- END GENERATED: cts-times -->
 
 ## Direct3D through wined3d
