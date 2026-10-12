@@ -83,6 +83,16 @@ void finalize(Query& q) {
             samples += value;
         }
         q.result = q.target == GL_SAMPLES_PASSED ? samples : (samples ? 1 : 0);
+        if (logEnabled(LogLevel::Trace)) {
+            WMGL_TRACE("occlusion query: %zu slots, %llu samples", q.visibilitySlots.size(),
+                       static_cast<unsigned long long>(samples));
+            for (size_t i = 0; i < q.visibilitySlots.size(); ++i) {
+                uint64_t value;
+                std::memcpy(&value, static_cast<const uint8_t*>(q.visibilitySlots[i].first.contents) + q.visibilitySlots[i].second,
+                            sizeof(value));
+                if (!value) WMGL_TRACE("occlusion query: slot %zu (offset %u) counted nothing", i, q.visibilitySlots[i].second);
+            }
+        }
         q.visibilitySlots.clear();
         break;
     }

@@ -705,6 +705,13 @@ GPU_TEST_VERSION(gpu_gl46_occlusion_many_draws, 46) {
                             "void main() { o = color; }\n");
     glUseProgram(p);
     GLuint tex = 0, fbo = 0, ubo = 0, vao = gpu::quad(), query = 0;
+    glGenBuffers(1, &ubo);
+    glBindBufferBase(GL_UNIFORM_BUFFER, 0, ubo);
+    const float red[4] = {1, 0, 0, 1};
+    glBufferData(GL_UNIFORM_BUFFER, sizeof(red), red, GL_DYNAMIC_DRAW);
+    glGenQueries(1, &query);
+    // As wined3d does: the target is created and cleared inside the query.
+    glBeginQuery(GL_SAMPLES_PASSED, query);
     glGenTextures(1, &tex);
     glBindTexture(GL_TEXTURE_2D, tex);
     glTexStorage2D(GL_TEXTURE_2D, 1, GL_R8, 8192, 8192);
@@ -712,12 +719,13 @@ GPU_TEST_VERSION(gpu_gl46_occlusion_many_draws, 46) {
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
     glViewport(0, 0, 8192, 8192);
-    glGenBuffers(1, &ubo);
-    glBindBufferBase(GL_UNIFORM_BUFFER, 0, ubo);
-    const float red[4] = {1, 0, 0, 1};
-    glBufferData(GL_UNIFORM_BUFFER, sizeof(red), red, GL_DYNAMIC_DRAW);
-    glGenQueries(1, &query);
-    glBeginQuery(GL_SAMPLES_PASSED, query);
+    glClearColor(0, 0, 0, 0);
+    glClear(GL_COLOR_BUFFER_BIT);
+    // wined3d draws through a second framebuffer object on the same texture.
+    GLuint drawFbo = 0;
+    glGenFramebuffers(1, &drawFbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, drawFbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
     for (int i = 0; i < 100; ++i) {
         glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(red), red);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
@@ -731,6 +739,7 @@ GPU_TEST_VERSION(gpu_gl46_occlusion_many_draws, 46) {
     CHECK_GL();
     glViewport(0, 0, 64, 64);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &drawFbo);
     glDeleteFramebuffers(1, &fbo);
     glDeleteTextures(1, &tex);
     glDeleteBuffers(1, &ubo);

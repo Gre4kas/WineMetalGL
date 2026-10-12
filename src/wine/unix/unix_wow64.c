@@ -16,13 +16,25 @@
 static ULONG_PTR zero_bits;
 static pthread_mutex_t wow64_lock = PTHREAD_MUTEX_INITIALIZER;
 
+/* Bytes of buffer storage below 4 GB, for the error when it runs out. */
+static LONG64 low_bytes;
+
 static void *low_alloc( size_t size )
 {
     void *memory = NULL;
     SIZE_T length = size;
-    if (NtAllocateVirtualMemory( GetCurrentProcess(), &memory, zero_bits, &length, MEM_COMMIT | MEM_RESERVE,
-                                 PAGE_READWRITE ))
+    /* From the top: the 32-bit program's own heap grows from the bottom. */
+    NTSTATUS status = NtAllocateVirtualMemory( GetCurrentProcess(), &memory, zero_bits, &length,
+                                               MEM_COMMIT | MEM_RESERVE | MEM_TOP_DOWN, PAGE_READWRITE );
+    if (status)
+    {
+        WMGL_ERR( "no room below 4 GB for %zu bytes of buffer storage (status %#x, %lld MB in use)\n", size,
+                  (unsigned int)status, (long long)(__atomic_load_n( &low_bytes, __ATOMIC_RELAXED ) >> 20) );
         return NULL;
+    }
+    __atomic_add_fetch( &low_bytes, (LONG64)size, __ATOMIC_RELAXED );
+    WMGL_TRACE( "buffer storage %p, %zu bytes (%lld MB below 4 GB)\n", memory, size,
+                (long long)(__atomic_load_n( &low_bytes, __ATOMIC_RELAXED ) >> 20) );
     return memory;
 }
 
@@ -30,6 +42,7 @@ static void low_free( void *memory, size_t size )
 {
     SIZE_T length = 0;
     NtFreeVirtualMemory( GetCurrentProcess(), &memory, &length, MEM_RELEASE );
+    __atomic_sub_fetch( &low_bytes, (LONG64)size, __ATOMIC_RELAXED );
 }
 
 extern NTSTATUS wmgl_unix_init( void *args );
