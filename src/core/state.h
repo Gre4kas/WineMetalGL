@@ -186,7 +186,7 @@ struct ContextState {
     // Bindings.
     RefPtr<Buffer> arrayBuffer, copyReadBuffer, copyWriteBuffer, pixelPackBuffer, pixelUnpackBuffer,
         textureBuffer, uniformBuffer, transformFeedbackBuffer, drawIndirectBuffer, dispatchIndirectBuffer,
-        shaderStorageBuffer, atomicCounterBuffer, queryBuffer,
+        shaderStorageBuffer, atomicCounterBuffer, queryBuffer, parameterBuffer,
         externalVirtualMemoryBuffer;  // GL_AMD_pinned_memory
     static constexpr int kMaxUniformBufferBindings = 84;  // = limits::kMaxUniformBufferBindings (GL 4.5 minimum)
     std::array<IndexedBufferBinding, kMaxUniformBufferBindings> uniformBufferBindings;
@@ -213,7 +213,7 @@ struct ContextState {
     GLenum defaultReadBuffer = GL_BACK;
 
     // Active queries by target index.
-    std::array<RefPtr<Query>, 12> activeQueries;  // by QueryIndex slot (core/query.h)
+    std::array<RefPtr<Query>, 28> activeQueries;  // by QueryIndex slot (core/query.h: kQuerySlotCount)
     struct {
         RefPtr<Query> query;
         GLenum mode = 0;

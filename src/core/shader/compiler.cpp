@@ -464,6 +464,20 @@ std::string fragmentWithCullDistances(const std::string& msl, int count) {
     return out;
 }
 
+std::string fragmentCountingInvocations(const std::string& msl) {
+    std::string out = msl;
+    size_t fn = out.find("fragment main0_out main0(");
+    if (fn == std::string::npos) fn = out.find("fragment void main0(");
+    if (fn == std::string::npos) return std::string();
+    const size_t open = out.find('(', fn);
+    const bool noParameters = out[open + 1] == ')';
+    out.insert(open + 1, "device atomic_uint* wmgl_fs_invocations [[buffer(" + std::to_string(kSlotFragmentInvocations) + ")]]" +
+                             (noParameters ? "" : ", "));
+    out.insert(out.find('{', out.find(')', fn)) + 1,
+               "\n    atomic_fetch_add_explicit(wmgl_fs_invocations, 1u, memory_order_relaxed);");
+    return out;
+}
+
 std::string fragmentWithSampleMask(const std::string& msl) {
     const std::string signature = "fragment main0_out main0(", member = "struct main0_out\n{\n";
     const size_t structAt = msl.find(member);
@@ -2392,6 +2406,17 @@ static LinkResult linkImplCore(const LinkInput& input, const CaptureCode* captur
         for (const auto& ssbo : resources.storage_buffers) {
             const int binding = atomicCounterBlockBinding(compiler.get_name(ssbo.base_type_id));
             if (binding < 0) continue;
+            // Only the counters the stage's code uses are active in it.
+            bool all = false;
+            const std::set<uint32_t> accessed = accessedMembers(compiler, ssbo.id, all);
+            const spirv_cross::SPIRType& blockType = compiler.get_type(ssbo.base_type_id);
+            for (uint32_t m = 0; m < blockType.member_types.size(); ++m) {
+                const spirv_cross::SPIRType& memberType = compiler.get_type(blockType.member_types[m]);
+                uint32_t elements = 1;
+                for (uint32_t d : memberType.array) elements *= std::max(1u, d);
+                stageCounters += elements;
+            }
+            if (accessed.empty() && !all) continue;
             auto buffer = std::find_if(result.atomicBuffers.begin(), result.atomicBuffers.end(),
                                        [&](const AtomicCounterBufferInfo& b) { return b.binding == static_cast<GLuint>(binding); });
             if (buffer == result.atomicBuffers.end()) {
@@ -2411,8 +2436,8 @@ static LinkResult linkImplCore(const LinkInput& input, const CaptureCode* captur
                 // Every element of an array of arrays is a counter.
                 uint32_t elements = 1;
                 for (uint32_t d : memberType.array) elements *= std::max(1u, d);
-                stageCounters += elements;
                 buffer->dataSize = std::max<GLint>(buffer->dataSize, static_cast<GLint>(offset + 4 * elements));
+                if (!all && !accessed.count(m)) continue;
                 const std::string glName = memberType.array.empty() ? name : name + "[0]";
                 auto it = std::find_if(result.uniforms.begin(), result.uniforms.end(),
                                        [&](const UniformInfo& u) { return u.name == glName && u.atomicBufferIndex >= 0; });
@@ -2518,6 +2543,9 @@ static LinkResult linkImplCore(const LinkInput& input, const CaptureCode* captur
                 if (name == "DepthRange.far") result.builtinUniforms.depthRange[1] = static_cast<int>(u.offset);
                 if (name == "DepthRange.diff") result.builtinUniforms.depthRange[2] = static_cast<int>(u.offset);
                 if (name == "NumSamples") result.builtinUniforms.numSamples = static_cast<int>(u.offset);
+                if (name == "BaseVertex") result.builtinUniforms.baseVertex = static_cast<int>(u.offset);
+                if (name == "BaseInstance") result.builtinUniforms.baseInstance = static_cast<int>(u.offset);
+                if (name == "DrawID") result.builtinUniforms.drawId = static_cast<int>(u.offset);
                 continue;
             }
             if (u.blockIndex < 0 && isSubroutineSelectionUniform(u.name)) {
@@ -2882,7 +2910,7 @@ static LinkResult linkImplCore(const LinkInput& input, const CaptureCode* captur
                 {"wmgl_TcsControl", kSlotFirstXfbBuffer + 2}, {"wmgl_TesVertices", kSlotTessVertices},
                 {"wmgl_TesPatches", kSlotTessPatches}, {"wmgl_TesControl", kSlotTessControl},
             };
-            uint32_t nextAtomicSlot = kSlotFirstAtomicCounterBuffer;
+            uint32_t nextAtomicSlot = kSlotFirstAtomicCounterBuffer, vertexCounterBuffers = 0;
             stage.storageArgs.clear();
             for (const auto& ssbo : resources.storage_buffers) {
                 const std::string blockName = msl.get_name(ssbo.base_type_id);
@@ -2900,7 +2928,9 @@ static LinkResult linkImplCore(const LinkInput& input, const CaptureCode* captur
                         stage.storageArgs.push_back(
                             {it == result.storageBlocks.end() ? -1 : static_cast<int>(it - result.storageBlocks.begin()), writes});
                     }
-                    if (stage.storageArgs.size() > kMaxStageStorageBlocks) {
+                    if (std::count_if(stage.storageArgs.begin(), stage.storageArgs.end(),
+                                      [](const StageOutput::StorageArg& a) { return a.counterBinding < 0; }) >
+                        static_cast<long>(kMaxStageStorageBlocks)) {
                         result.log += "error: too many shader storage blocks in one stage\n";
                         return result;
                     }
@@ -2924,15 +2954,25 @@ static LinkResult linkImplCore(const LinkInput& input, const CaptureCode* captur
                 const int counterBinding = atomicCounterBlockBinding(blockName);
                 if (auto internal = kInternalBuffers.find(blockName); internal != kInternalBuffers.end()) b.msl_buffer = internal->second;
                 else if (blockName.rfind("wmgl_XfbData", 0) == 0) b.msl_buffer = kSlotFirstXfbBuffer + std::stoul(blockName.substr(12));
-                else if (counterBinding >= 0) {
-                    const bool vertexStage = s == static_cast<int>(Stage::Vertex);
-                    if (!vertexStage && s != static_cast<int>(Stage::Fragment) && s != static_cast<int>(Stage::Compute)) {
+                else if (counterBinding >= 0 && s == static_cast<int>(Stage::Vertex)) {
+                    // A vertex function's counter buffers: argument buffer entries (it has no free slots).
+                    const uint32_t id = static_cast<uint32_t>(stage.storageArgs.size());
+                    if (++vertexCounterBuffers > kMaxVertexAtomicCounterBuffers) {
+                        result.log += "error: too many atomic counter buffers in one stage\n";
+                        return result;
+                    }
+                    stage.storageArgs.push_back({-1, true, counterBinding});
+                    msl.set_decoration(ssbo.id, spv::DecorationDescriptorSet, 1);
+                    b.desc_set = 1;
+                    b.count = 1;
+                    b.msl_buffer = id;
+                    b.msl_texture = id;
+                } else if (counterBinding >= 0) {
+                    if (s != static_cast<int>(Stage::Fragment) && s != static_cast<int>(Stage::Compute)) {
                         result.log += "error: atomic counters are not supported in this shader stage\n";
                         return result;
                     }
-                    const uint32_t slotEnd = vertexStage ? kSlotVertexAtomicCounterBuffer + kMaxVertexAtomicCounterBuffers
-                                                         : kSlotFirstAtomicCounterBuffer + kMaxStageAtomicCounterBuffers;
-                    if (vertexStage && nextAtomicSlot < kSlotVertexAtomicCounterBuffer) nextAtomicSlot = kSlotVertexAtomicCounterBuffer;
+                    const uint32_t slotEnd = kSlotFirstAtomicCounterBuffer + kMaxStageAtomicCounterBuffers;
                     if (nextAtomicSlot >= slotEnd) {
                         result.log += "error: too many atomic counter buffers in one stage\n";
                         return result;

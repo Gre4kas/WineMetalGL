@@ -368,8 +368,11 @@ public:
     uint64_t result = 0;
     uint64_t pendingSerial = 0;   // result is final once this serial completes
     bool resultFinal = true;      // result holds the final value
-    // Visibility-result slots used by occlusion queries (summed on completion).
+    // Visibility-result slots used by occlusion queries, or the 32-bit
+    // counters of FRAGMENT_SHADER_INVOCATIONS (one per command buffer); summed
+    // on completion.
     std::vector<std::pair<id<MTLBuffer>, uint32_t>> visibilitySlots;
+    uint64_t counterSerial = 0;  // the command buffer of the last counter slot
     // GPU times (seconds, host time base) for TIME_ELAPSED and TIMESTAMP,
     // written by command-buffer completion handlers.
     struct Timer {

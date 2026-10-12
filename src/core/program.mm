@@ -132,13 +132,17 @@ int LinkedProgram::outputFlags() const {
 bool LinkedProgram::writesSampleMask() { return (outputFlags() & kWritesSampleMask) != 0; }
 
 id<MTLFunction> LinkedProgram::fragmentVariant(bool sampleMask, unsigned logicOp, const uint16_t colorFormats[8],
-                                               bool sampleRate, bool ignoreSampleMask, unsigned cull, uint16_t borders) {
+                                               bool sampleRate, bool ignoreSampleMask, unsigned cull, uint16_t borders,
+                                               bool countInvocations) {
     if (pipeline) {
         const auto& fs = stageExecutable[static_cast<int>(shader::Stage::Fragment)];
-        return fs ? fs->fragmentVariant(sampleMask, logicOp, colorFormats, sampleRate, ignoreSampleMask, cull, borders) : nil;
+        return fs ? fs->fragmentVariant(sampleMask, logicOp, colorFormats, sampleRate, ignoreSampleMask, cull, borders,
+                                        countInvocations)
+                  : nil;
     }
     std::string key = std::string(sampleMask ? "m" : "-") + (sampleRate ? "s" : "-") + (ignoreSampleMask ? "i" : "-") +
-                      std::to_string(logicOp) + "c" + std::to_string(cull) + "b" + std::to_string(borders);
+                      (countInvocations ? "n" : "-") + std::to_string(logicOp) + "c" + std::to_string(cull) + "b" +
+                      std::to_string(borders);
     if (logicOp)
         for (int i = 0; i < 8; ++i) key += "/" + std::to_string(colorFormats[i]);
     std::lock_guard<std::mutex> lock(mutex_);
@@ -146,6 +150,8 @@ id<MTLFunction> LinkedProgram::fragmentVariant(bool sampleMask, unsigned logicOp
     const shader::StageOutput& output = link.stages[static_cast<int>(shader::Stage::Fragment)];
     std::string msl = output.present ? output.msl : std::string();
     if (!msl.empty() && borders) msl = shader::mslWithBorders(msl, shader::borderVariantDefinitions(borders));
+    // Counted before the cull test is added, which then runs first: culled primitives have no fragments.
+    if (!msl.empty() && countInvocations) msl = shader::fragmentCountingInvocations(msl);
     if (!msl.empty() && cull) msl = shader::fragmentWithCullDistances(msl, static_cast<int>(cull));
     if (!msl.empty() && logicOp) {
         shader::LogicOpTarget targets[8];

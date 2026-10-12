@@ -290,6 +290,7 @@ tests/gpu/geometry_tests.cpp
 tests/gpu/gl4_tests.cpp
 tests/gpu/gl43_tests.cpp
 tests/gpu/gl44_tests.cpp
+tests/gpu/gl46_tests.cpp
 tests/gpu/gpu.h
 tests/gpu/main.cpp
 tests/gpu/pipeline_tests.cpp

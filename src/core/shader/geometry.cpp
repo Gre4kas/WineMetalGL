@@ -106,7 +106,17 @@ int layoutStream(const std::string& decl) {
 // The declaration without its stream qualifier (vertex shaders have none).
 std::string withoutStream(const std::string& decl) {
     std::string out = decl;
-    for (size_t at = out.find("stream"); at != std::string::npos; at = out.find("stream", at)) {
+    // The word "stream" inside a layout qualifier, not in a name such as "out_stream0".
+    auto qualifier = [&](size_t from) {
+        for (size_t at = out.find("stream", from); at != std::string::npos; at = out.find("stream", at + 1)) {
+            const bool word = (at == 0 || !(std::isalnum(static_cast<unsigned char>(out[at - 1])) || out[at - 1] == '_')) &&
+                              (at + 6 >= out.size() || !(std::isalnum(static_cast<unsigned char>(out[at + 6])) || out[at + 6] == '_'));
+            const size_t layout = out.rfind("layout(", at);
+            if (word && layout != std::string::npos && out.find(')', layout) > at) return at;
+        }
+        return std::string::npos;
+    };
+    for (size_t at = qualifier(0); at != std::string::npos; at = qualifier(at)) {
         size_t end = at + 6;
         while (end < out.size() && (out[end] == ' ' || out[end] == '=' || std::isdigit(static_cast<unsigned char>(out[end])))) ++end;
         size_t start = at;

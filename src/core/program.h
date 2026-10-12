@@ -44,9 +44,10 @@ struct LinkedProgram {
     // `cull`: the drawing vertex function's cull distance count, 0 for none
     // (shader::fragmentWithCullDistances).
     // `borders`: the clamp-to-border emulation variant (shader::borderVariantId; 0: none).
+    // `countInvocations`: FRAGMENT_SHADER_INVOCATIONS (shader::fragmentCountingInvocations).
     id<MTLFunction> fragmentVariant(bool sampleMask, unsigned logicOp, const uint16_t colorFormats[8],
                                     bool sampleRate = false, bool ignoreSampleMask = false, unsigned cull = 0,
-                                    uint16_t borders = 0);
+                                    uint16_t borders = 0, bool countInvocations = false);
     // The vertex function (with rasterization, with or without [[point_size]],
     // or without rasterization) with clamp-to-border emulation variant `borders`.
     id<MTLFunction> vertexWithBorders(bool rasterization, bool pointSize, uint16_t borders);

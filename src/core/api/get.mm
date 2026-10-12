@@ -202,11 +202,15 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
         if (ctx.version() < 43 && !ctx.hasExtension("GL_ARB_explicit_uniform_location")) return false;
         out = ints({kMaxUniformLocations});
         return true;
-    // GL 4.3 shader storage blocks (limits.h): vertex, fragment and compute stages.
     case GL_QUERY_BUFFER_BINDING:  // GL 4.4, GL_ARB_query_buffer_object
         if (ctx.version() < 44) return false;
         out = ints({nameOf(s.queryBuffer)});
         return true;
+    case GL_PARAMETER_BUFFER_BINDING:  // GL 4.6, GL_ARB_indirect_parameters
+        if (!ctx.indirectParameters()) return false;
+        out = ints({nameOf(s.parameterBuffer)});
+        return true;
+    // GL 4.3 shader storage blocks (limits.h): vertex, fragment and compute stages.
     case GL_SHADER_STORAGE_BUFFER_BINDING: case GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS: case GL_MAX_SHADER_STORAGE_BLOCK_SIZE:
     case GL_SHADER_STORAGE_BUFFER_OFFSET_ALIGNMENT: case GL_MAX_VERTEX_SHADER_STORAGE_BLOCKS:
     case GL_MAX_TESS_CONTROL_SHADER_STORAGE_BLOCKS: case GL_MAX_TESS_EVALUATION_SHADER_STORAGE_BLOCKS:
@@ -268,7 +272,7 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
         if (!ctx.tessellationShaders()) return false;
         out = bools({false});
         return true;
-    // GL 4.2 atomic counters (limits.h); vertex and tessellation stages have none.
+    // GL 4.2 atomic counters (limits.h); tessellation stages have none.
     case GL_ATOMIC_COUNTER_BUFFER_BINDING: case GL_MAX_ATOMIC_COUNTER_BUFFER_BINDINGS: case GL_MAX_ATOMIC_COUNTER_BUFFER_SIZE:
     case GL_MAX_VERTEX_ATOMIC_COUNTER_BUFFERS: case GL_MAX_TESS_CONTROL_ATOMIC_COUNTER_BUFFERS:
     case GL_MAX_TESS_EVALUATION_ATOMIC_COUNTER_BUFFERS: case GL_MAX_GEOMETRY_ATOMIC_COUNTER_BUFFERS:

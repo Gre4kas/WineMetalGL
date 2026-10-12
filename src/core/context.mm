@@ -156,7 +156,7 @@ void Context::initStrings() {
     for (const char* name : {"GL_KHR_robustness", "GL_ARB_robustness", "GL_ARB_internalformat_query",
                              "GL_ARB_invalidate_subdata", "GL_ARB_copy_image", "GL_NVX_gpu_memory_info", "GL_ATI_meminfo"})
         extensions_.push_back(name);
-    // The extensions GL 4.0 to 4.5 made core, in contexts of the
+    // The extensions GL 4.0 to 4.6 made core, in contexts of the
     // version that includes them (their features are gated on the version).
     const int version = config_.major * 10 + config_.minor;
     if (version >= 40)
@@ -196,6 +196,11 @@ void Context::initStrings() {
              {"GL_ARB_conditional_render_inverted", "GL_ARB_cull_distance", "GL_ARB_derivative_control",
               "GL_ARB_direct_state_access", "GL_ARB_ES3_1_compatibility", "GL_ARB_get_texture_sub_image",
               "GL_ARB_shader_texture_image_samples", "GL_KHR_context_flush_control"})
+            extensions_.push_back(name);
+    if (version >= 46)
+        for (const char* name : {"GL_ARB_indirect_parameters", "GL_ARB_pipeline_statistics_query", "GL_ARB_shader_atomic_counter_ops",
+                                 "GL_ARB_shader_draw_parameters", "GL_ARB_shader_group_vote",
+                                 "GL_ARB_transform_feedback_overflow_query"})
             extensions_.push_back(name);
     // Later extensions the core implements, in 4.x contexts: wined3d reads
     // EXT_shader_integer_mix and polygon_offset_clamp for its feature level.
@@ -315,6 +320,7 @@ RefPtr<Buffer>* Context::bufferBinding(GLenum target) {
     if (storageBuffers() && target == GL_SHADER_STORAGE_BUFFER) return &state.shaderStorageBuffer;
     if (atomicCounters() && target == GL_ATOMIC_COUNTER_BUFFER) return &state.atomicCounterBuffer;
     if (version() >= 44 && target == GL_QUERY_BUFFER) return &state.queryBuffer;
+    if (indirectParameters() && target == GL_PARAMETER_BUFFER) return &state.parameterBuffer;
     if (target == GL_EXTERNAL_VIRTUAL_MEMORY_BUFFER_AMD) return &state.externalVirtualMemoryBuffer;
     return nullptr;
 }

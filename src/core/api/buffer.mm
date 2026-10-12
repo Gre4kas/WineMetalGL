@@ -120,7 +120,7 @@ void DeleteBuffers(Context& ctx, GLsizei n, const GLuint* buffers) {
         for (RefPtr<Buffer>* b : {&s.arrayBuffer, &s.copyReadBuffer, &s.copyWriteBuffer, &s.pixelPackBuffer,
                                   &s.pixelUnpackBuffer, &s.textureBuffer, &s.uniformBuffer, &s.transformFeedbackBuffer,
                                   &s.drawIndirectBuffer, &s.dispatchIndirectBuffer, &s.shaderStorageBuffer,
-                                  &s.atomicCounterBuffer, &s.queryBuffer})
+                                  &s.atomicCounterBuffer, &s.queryBuffer, &s.parameterBuffer, &s.externalVirtualMemoryBuffer})
             if (*b == buffer) b->reset();
         if (s.vertexArray->elementBuffer == buffer) s.vertexArray->elementBuffer.reset();
         for (VertexAttrib& a : s.vertexArray->attribs)

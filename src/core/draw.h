@@ -81,6 +81,12 @@ public:
         ~BaseInstanceScope() { draw.baseInstance_ = 0; }
         DrawState& draw;
     };
+    // gl_DrawID of the draws in scope: their index in a multi-draw command.
+    struct DrawIdScope {
+        DrawIdScope(DrawState& d, GLsizei id) : draw(d) { draw.drawId_ = id; }
+        ~DrawIdScope() { draw.drawId_ = 0; }
+        DrawState& draw;
+    };
 
 private:
     bool validateDraw(GLenum mode);
@@ -98,14 +104,23 @@ private:
                           GLint firstVertex, GLsizei vertexCount, GLsizei instances,
                           const std::vector<uint32_t>* gather = nullptr);
     // Writes the transform feedback output of a draw: `vertices` are the
-    // vertex numbers (gl_VertexID) in draw order.
-    void captureTransformFeedback(GLenum mode, const std::vector<uint32_t>& vertices, GLsizei instances);
+    // vertex numbers (gl_VertexID) in draw order. Returns kNotCaptured (the
+    // draw still has to run its vertex stage), kCaptured (a capture pass ran
+    // it for every vertex) or kCapturedAndDrawn (the draw is done: a vertex
+    // stage that writes memory captures while rasterizing, so it runs once).
+    enum Capture { kNotCaptured, kCaptured, kCapturedAndDrawn };
+    Capture captureTransformFeedback(GLenum mode, const std::vector<uint32_t>& vertices, GLsizei instances);
     // Runs the program's capture vertex function (rasterization off) over
     // `list`, writing vertex k of instance i to capture slot
     // k + i * list.size() (below `limit`) of each buffer at its base word.
+    // With `drawMode` (GL_POINTS, GL_LINES or GL_TRIANGLES) the list is drawn
+    // as those primitives with the current state instead, rasterized, and
+    // *rasterized says whether it was (not when the state draws nothing).
     bool runVertexCapture(LinkedProgram& program, const std::vector<uint32_t>& list, GLsizei instances, uint32_t limit,
                           int bufferCount, const __strong id<MTLBuffer>* buffers, const uint32_t* baseWords,
-                          const uint32_t* strides);
+                          const uint32_t* strides, GLenum drawMode = GL_NONE, bool* rasterized = nullptr);
+    // The vertex stage writes memory (storage blocks, atomic counters or images).
+    static bool vertexWritesMemory(LinkedProgram& program);
     // Draws `vertices` (vertex numbers in draw order, one restart-free
     // segment) through the geometry shader emulation (shader/geometry.h).
     // primitiveBase is the gl_PrimitiveIDIn of the first primitive.
@@ -207,6 +222,8 @@ private:
     TransientAllocator transient_;
     uint64_t lastPassGeneration_ = 0;
     GLuint baseInstance_ = 0;
+    GLint glBaseVertex_ = 0;  // the command's base vertex (gl_BaseVertex), 0 for array draws
+    GLsizei drawId_ = 0;
     // First vertex of the draw being bound when issue() renumbers vertices from it.
     GLint vertexRebase_ = 0;
     // GL sample mask the current draw's fragment function writes (~0: none; prepare()).

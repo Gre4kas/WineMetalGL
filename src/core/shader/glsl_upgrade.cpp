@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <map>
+#include <regex>
 #include <set>
 #include <sstream>
 #include <vector>
@@ -629,13 +630,24 @@ std::string checkReservedWords(const std::string& source) {
 
 std::string lowerBuiltinUniforms(Stage stage, const std::string& source) {
     const bool fragment = stage == Stage::Fragment;
+    // Vertex shaders' draw parameters (GL 4.6 names, or the ARB ones with the extension).
+    bool drawParameters = false, drawParametersArb = false;
+    if (stage == Stage::Vertex && (source.find("gl_BaseVertex") != std::string::npos ||
+                                   source.find("gl_BaseInstance") != std::string::npos ||
+                                   source.find("gl_DrawID") != std::string::npos)) {
+        static const std::regex kVersion(R"(#[ \t]*version[ \t]+([0-9]+))");
+        std::smatch m;
+        drawParameters = std::regex_search(source, m, kVersion) && std::stoi(m[1]) >= 460;
+        drawParametersArb = source.find("GL_ARB_shader_draw_parameters") != std::string::npos;
+    }
     if (source.find("gl_DepthRange") == std::string::npos &&
-        (!fragment || source.find("gl_NumSamples") == std::string::npos))
+        (!fragment || source.find("gl_NumSamples") == std::string::npos) && !drawParameters && !drawParametersArb)
         return source;
     const std::string prefix = kBuiltinUniformPrefix;
     std::string out;
     out.reserve(source.size() + 256);
     bool depthRange = false, numSamples = false, lineStart = true;
+    std::set<std::string> parameters;  // draw parameters used: "BaseVertex", "BaseInstance", "DrawID"
     size_t insertAt = std::string::npos;  // before the first token, outside any #if block
     int conditionalDepth = 0;
     size_t conditionalStart = 0;
@@ -706,6 +718,12 @@ std::string lowerBuiltinUniforms(Stage stage, const std::string& source) {
             } else if (fragment && word == "gl_NumSamples") {
                 numSamples = true;
                 out += prefix + word.substr(3);
+            } else if ((drawParameters && (word == "gl_BaseVertex" || word == "gl_BaseInstance" || word == "gl_DrawID")) ||
+                       (drawParametersArb &&
+                        (word == "gl_BaseVertexARB" || word == "gl_BaseInstanceARB" || word == "gl_DrawIDARB"))) {
+                const std::string name = word.substr(3, word.size() - 3 - (word.back() == 'B' ? 3 : 0));
+                parameters.insert(name);
+                out += prefix + name;
             } else {
                 out += word;
             }
@@ -719,6 +737,7 @@ std::string lowerBuiltinUniforms(Stage stage, const std::string& source) {
         decls += "struct " + prefix + "DepthRangeParameters { float near; float far; float diff; };\n"
                  "uniform " + prefix + "DepthRangeParameters " + prefix + "DepthRange;\n";
     if (numSamples) decls += "uniform int " + prefix + "NumSamples;\n";
+    for (const std::string& name : parameters) decls += "uniform int " + prefix + name + ";\n";
     if (decls.empty()) return source;
     if (insertAt == std::string::npos) insertAt = out.size();
     const long line = 1 + std::count(out.begin(), out.begin() + static_cast<long>(insertAt), '\n');

@@ -62,3 +62,48 @@ The errors only the named commands have (the GL 4.5 rules on names, targets and 
 - One function variant per distinct set of borders, compiled on first use.
 - Arrays of samplers, `textureGatherOffsets` and cube maps are not emulated. Cube maps filter seamlessly, so they have no border.
 - Hand filtering ignores anisotropy at the image's edge.
+
+## Draw parameters and indirect counts (GL 4.6)
+
+**Question.** `gl_BaseVertex`, `gl_BaseInstance` and `gl_DrawID` have no Metal equivalent that holds GL's values. Metal's `[[base_vertex]]` is not GL's after WineMetalGL rebases or rewrites indices, and Metal draws have no index within a multi-draw.
+
+**Decision.**
+- The vertex shader's draw parameters (the GL 4.60 names, and the ARB names with `GL_ARB_shader_draw_parameters`) become hidden default-block uniforms, like `gl_DepthRange` (`lowerBuiltinUniforms`).
+- The draw path fills them from the GL command:
+  - the base vertex of an elements draw (0 for array draws);
+  - the base instance;
+  - the index within the multi-draw, set by `DrawState::DrawIdScope` around each draw of `glMultiDraw*`.
+- `glMultiDraw*IndirectCount` reads the count from `PARAMETER_BUFFER` on the CPU, after any GPU write to it, as the other indirect draws read their commands. The count is clamped to `maxdrawcount`, and `maxdrawcount` commands must fit in the indirect buffer.
+
+**Cost.** One default-uniform upload per draw, which every draw already makes. A read-back wait when the GPU wrote the parameter buffer.
+
+## Pipeline statistics and transform feedback overflow (GL 4.6)
+
+**Question.** Apple GPUs expose no pipeline statistics counters to Metal.
+
+**Decision.** Count on the CPU from what the draw paths already know, and in the shader only where nothing else can count:
+- **Vertices and primitives submitted**: per restart-delimited run of the command.
+- **Vertex shader invocations**: one per submitted vertex. Metal can reuse transformed vertices of indexed draws, so the true count can be lower.
+- **Tessellation control patches and evaluation invocations**: from the CPU tessellator's domain points.
+- **Geometry shader invocations and emitted primitives**: from the emulation's kernel size and its read-back output.
+- **Compute invocations**: from the dispatch size, read from the indirect buffer for indirect dispatches.
+- **Clipping input**: the primitives reaching the rasterizer (submitted, tessellated, or emitted on stream 0).
+- **Clipping output**: counts the clipping input, because Metal does not report what clipping does.
+- **Fragment shader invocations**: a fragment function variant (pipeline key `countFragments`) increments a 32-bit counter at buffer 16. The counter is fresh for each command buffer the query spans, and the query sums them.
+- **Overflow queries**: set when the capture clamps a stream's primitives to the space left in its buffers.
+
+**Cost.** A pipeline variant only while a `FRAGMENT_SHADER_INVOCATIONS` query is active.
+
+## Vertex-stage atomic counters and side effects with transform feedback
+
+**Question.**
+- A vertex function had one free buffer slot for atomic counter buffers, and GL 4.6 tests use two.
+- Transform feedback runs the vertex stage in a capture pass before the draw, so a vertex shader that writes memory ran twice.
+
+**Decision.**
+- **Counter buffers.** A vertex function's counter buffers are entries of its storage block argument buffer (buffer 28), so `MAX_VERTEX_ATOMIC_COUNTER_BUFFERS` is 8.
+- **Discarding draws.** With rasterizer discard, the capture pass is the only vertex-stage run, and the draw is skipped.
+- **Rasterizing draws.** When the vertex stage writes memory (storage blocks, counters or images) and rasterizes, the capture pass rasterizes the assembled list of independent primitives itself, with the current state.
+- **Fallback.** That capture-while-drawing path is skipped when something else rewrites the list: provoking-vertex rotation for flat inputs, polygon-mode points, wide lines, tessellation. Those draws keep two passes.
+
+**Cost and limits.** Those remaining two-pass draws still run a memory-writing vertex shader twice.

@@ -437,13 +437,11 @@ VertexFetch vertexFetch(const shader::StageOutput::VertexInput& input, const Ver
 }  // namespace
 
 size_t DrawState::vertexBufferSlots(LinkedProgram& program) {
-    // A vertex function's atomic counter buffer takes the last vertex buffer slot.
+    // A vertex function's storage block argument buffer (storage blocks and
+    // atomic counter buffers) takes slot 28.
     const size_t vertex = static_cast<size_t>(Stage::Vertex);
-    // Its storage block argument buffer takes slot 28 (and leaves 29 for a counter buffer).
     if (!program.link.stages[vertex].storageArgs.empty())
         return shader::kSlotStorageBlocks - shader::kSlotFirstVertexBuffer;
-    for (const shader::AtomicCounterBufferInfo& b : program.link.atomicBuffers)
-        if (b.stageSlot[vertex] >= 0) return shader::kMaxVertexBufferSlots - shader::kMaxVertexAtomicCounterBuffers;
     return shader::kMaxVertexBufferSlots;
 }
 
@@ -792,7 +790,7 @@ std::pair<Program*, size_t> DrawState::imageSource(LinkedProgram& program, size_
 }
 
 void DrawState::applyBuiltinUniforms(Program& program) {
-    // gl_DepthRange (viewport 0's) and gl_NumSamples (glsl_upgrade.h).
+    // gl_DepthRange (viewport 0's), gl_NumSamples and the draw parameters (glsl_upgrade.h).
     if (!program.linked) return;
     const shader::LinkResult::BuiltinUniforms& b = program.linked->link.builtinUniforms;
     auto store = [&](int offset, const void* value) {
@@ -811,6 +809,11 @@ void DrawState::applyBuiltinUniforms(Program& program) {
         const int32_t samples = std::max<int32_t>(1, lastKey_.sampleCount);
         store(b.numSamples, &samples);
     }
+    // Draw parameters: the command's base vertex (0 for array draws), base instance and draw index.
+    const int32_t parameters[3] = {glBaseVertex_, static_cast<int32_t>(baseInstance_), drawId_};
+    const int offsets[3] = {b.baseVertex, b.baseInstance, b.drawId};
+    for (int i = 0; i < 3; ++i)
+        if (offsets[i] >= 0) store(offsets[i], &parameters[i]);
 }
 
 GLint DrawState::imageUnit(LinkedProgram& program, size_t index) {
@@ -863,6 +866,7 @@ LinkedProgram* DrawState::executable() {
 
 void DrawState::beginDraw(GLenum mode) {
     drawMode_ = mode;
+    glBaseVertex_ = 0;
     ffChosen_ = false;
     ffProgram_ = nullptr;
     ffPointSize_ = false;
@@ -1005,11 +1009,15 @@ bool DrawState::storageArguments(const shader::StageOutput& stage, const Program
         id<MTLBuffer> buffer = scratch;
         NSUInteger offset = 0;
         uint32_t size = 0;
-        const GLuint binding = owner && arg.block >= 0 && static_cast<size_t>(arg.block) < owner->storageBlockBindings.size()
+        const bool counter = arg.counterBinding >= 0;
+        const GLuint binding = counter ? static_cast<GLuint>(arg.counterBinding)
+                               : owner && arg.block >= 0 && static_cast<size_t>(arg.block) < owner->storageBlockBindings.size()
                                    ? owner->storageBlockBindings[static_cast<size_t>(arg.block)]
                                    : 0;
-        if (binding < static_cast<GLuint>(ContextState::kMaxShaderStorageBufferBindings)) {
-            const IndexedBufferBinding& ib = ctx_.state.shaderStorageBufferBindings[binding];
+        if (binding < static_cast<GLuint>(counter ? ContextState::kMaxAtomicCounterBufferBindings
+                                                  : ContextState::kMaxShaderStorageBufferBindings)) {
+            const IndexedBufferBinding& ib = counter ? ctx_.state.atomicCounterBufferBindings[binding]
+                                                     : ctx_.state.shaderStorageBufferBindings[binding];
             if (ib.buffer && ib.buffer->mtl && ib.offset >= 0 && ib.offset < ib.buffer->size) {
                 buffer = ib.buffer->mtl;
                 offset = static_cast<NSUInteger>(ib.offset);
@@ -1293,6 +1301,8 @@ id<MTLRenderCommandEncoder> DrawState::prepare(GLenum mode, MTLPrimitiveType& pr
     key.cull = static_cast<uint8_t>(program->cullDistances());
     key.borders[0] = borders[0];
     key.borders[1] = key.rasterization ? borders[1] : 0;
+    // FRAGMENT_SHADER_INVOCATIONS: a fragment function variant counts them.
+    key.countFragments = key.rasterization && queriesCounting(ctx_, kStatFragmentShaderInvocations);
     for (int i = 0; i < 8; ++i) key.colorFormats[i] = static_cast<uint16_t>(formats.color[i]);
     // GL_COLOR_LOGIC_OP replaces blending on unsigned normalized and integer
     // attachments; the fragment function applies the operation (framebuffer
@@ -1630,6 +1640,10 @@ void DrawState::bindDrawState(id<MTLRenderCommandEncoder> encoder, LinkedProgram
     [encoder setScissorRects:lastScissors_ count:ContextState::kMaxViewports];
     bindUniforms(encoder, program);
     bindTextures(encoder, program);
+    id<MTLBuffer> counter = nil;
+    NSUInteger counterOffset = 0;
+    if (lastKey_.countFragments && queriesFragmentCounter(ctx_, counter, counterOffset))
+        [encoder setFragmentBuffer:counter offset:counterOffset atIndex:shader::kSlotFragmentInvocations];
 }
 
 // ------------------------------------------------------ transform feedback
@@ -1684,20 +1698,30 @@ void DrawState::bindCaptureDefaults(id<MTLRenderCommandEncoder> encoder, LinkedP
         [encoder setVertexBuffer:zero offset:0 atIndex:shader::kSlotFirstXfbBuffer + static_cast<NSUInteger>(b)];
 }
 
-void DrawState::captureTransformFeedback(GLenum mode, const std::vector<uint32_t>& vertices, GLsizei instances) {
+bool DrawState::vertexWritesMemory(LinkedProgram& program) {
+    const int vertex = static_cast<int>(Stage::Vertex);
+    for (const shader::StageOutput::StorageArg& arg : program.link.stages[vertex].storageArgs)
+        if (arg.writes) return true;
+    for (const shader::ImageSlotInfo& image : program.link.images)
+        if (image.stageTexture[vertex] >= 0) return true;
+    return false;
+}
+
+DrawState::Capture DrawState::captureTransformFeedback(GLenum mode, const std::vector<uint32_t>& vertices, GLsizei instances) {
     TransformFeedback& xfb = *ctx_.state.transformFeedback;
     LinkedProgram* lp = executable();
-    if (!xfb.active || xfb.paused || !lp || !lp->link.xfbVertexCapture) return;
+    if (!xfb.active || xfb.paused || !lp || !lp->link.xfbVertexCapture) return kNotCaptured;
     const shader::LinkResult& link = lp->link;
     const uint32_t perPrimitive = xfb.primitiveMode == GL_POINTS ? 1 : xfb.primitiveMode == GL_LINES ? 2 : 3;
     const std::vector<uint32_t> list = assembleForCapture(mode, vertices);
-    if (list.empty()) return;
+    if (list.empty()) return kNotCaptured;
     // Whole primitives that fit in every bound buffer.
-    uint64_t primitives = (list.size() / perPrimitive) * static_cast<uint64_t>(std::max(1, instances));
+    const uint64_t requested = (list.size() / perPrimitive) * static_cast<uint64_t>(std::max(1, instances));
+    uint64_t primitives = requested;
     for (int b = 0; b < link.xfbBufferCount; ++b) {
         if (!link.xfbBufferUsed(b)) continue;
         const TransformFeedback::Binding& binding = xfb.buffers[b];
-        if (!binding.buffer || !binding.buffer->mtl) return;
+        if (!binding.buffer || !binding.buffer->mtl) return kNotCaptured;
         // The bound range, clamped to the buffer's current size (it may have shrunk since binding).
         const int64_t available = std::max<int64_t>(0, binding.buffer->size - binding.offset);
         const int64_t size = binding.size ? std::min<int64_t>(binding.size, available) : available;
@@ -1706,8 +1730,9 @@ void DrawState::captureTransformFeedback(GLenum mode, const std::vector<uint32_t
         if (vertexBytes) primitives = std::min<uint64_t>(primitives, static_cast<uint64_t>(remaining) / vertexBytes / perPrimitive);
     }
     if (Query* q = ctx_.state.activeQueries[kQueryXfbPrimitivesWritten].get()) q->result += primitives;
+    if (primitives < requested) queriesNoteXfbOverflow(ctx_, 0);
     xfb.primitivesWritten[0] += primitives;
-    if (!primitives) return;
+    if (!primitives) return kNotCaptured;
 
     id<MTLBuffer> buffers[4] = {};
     uint32_t baseWords[4] = {};
@@ -1716,9 +1741,17 @@ void DrawState::captureTransformFeedback(GLenum mode, const std::vector<uint32_t
         buffers[b] = xfb.buffers[b].buffer->mtl;
         baseWords[b] = static_cast<uint32_t>((xfb.buffers[b].offset + xfb.written[b]) / 4);
     }
+    // A vertex stage that writes memory must run once per vertex: the draw
+    // rasterizes the captured list (as independent primitives) itself, when
+    // nothing else rewrites it (provoking-vertex rotation, polygon points,
+    // wide lines, tessellation).
+    const GLenum drawn = listMode(mode);
+    const bool drawHere = !ctx_.state.rasterizerDiscard && vertexWritesMemory(*lp) && !tessInputs_.active && !ffWideLines_ &&
+                          !pointPolygons(drawn) && !rotateProvoking(drawn, *lp);
+    bool rasterized = false;
     if (!runVertexCapture(*lp, list, instances, static_cast<uint32_t>(primitives * perPrimitive), link.xfbBufferCount, buffers,
-                          baseWords, link.xfbStride))
-        return;
+                          baseWords, link.xfbStride, drawHere ? drawn : GL_NONE, &rasterized))
+        return kNotCaptured;
     const uint64_t serial = ctx_.stream().serial();
     for (int b = 0; b < link.xfbBufferCount; ++b) {
         if (!link.xfbBufferUsed(b)) continue;
@@ -1727,34 +1760,51 @@ void DrawState::captureTransformFeedback(GLenum mode, const std::vector<uint32_t
         buffer.lastUseSerial = buffer.lastWriteSerial = serial;
         ++buffer.version;
     }
+    return rasterized ? kCapturedAndDrawn : kCaptured;
 }
 
 bool DrawState::runVertexCapture(LinkedProgram& lp, const std::vector<uint32_t>& list, GLsizei instances, uint32_t limit,
                                  int bufferCount, const __strong id<MTLBuffer>* buffers, const uint32_t* baseWords,
-                                 const uint32_t* strides) {
+                                 const uint32_t* strides, GLenum drawMode, bool* rasterized) {
     waitForCpuVertexReads(lp, true);
     prepareSamplerStorage(lp);
-    const uint16_t borders = borderVariant(lp, static_cast<int>(Stage::Vertex));
-    RenderTargetDesc target;
-    TargetFormats formats;
-    if (!drawTarget(target, formats, false)) return false;
-    id<MTLRenderCommandEncoder> encoder = ctx_.stream().render(target);
+    id<MTLRenderCommandEncoder> encoder = nil;
     PipelineKey key;
-    std::memset(&key, 0, sizeof(key));
-    key.programId = lp.uid;
-    key.borders[0] = borders;
-    key.sampleCount = static_cast<uint8_t>(target.samples);
-    key.rasterization = 0;
-    key.topologyClass = static_cast<uint8_t>(MTLPrimitiveTopologyClassPoint);
-    for (int i = 0; i < 8; ++i) key.colorFormats[i] = static_cast<uint16_t>(formats.color[i]);
-    key.depthFormat = static_cast<uint16_t>(formats.depth);
-    key.stencilFormat = static_cast<uint16_t>(formats.stencil);
+    if (drawMode != GL_NONE) {
+        // Rasterized with the current state (when it draws anything).
+        MTLPrimitiveType primitive = MTLPrimitiveTypeTriangle;
+        encoder = prepare(drawMode, primitive);
+        if (encoder) queriesBeforeDraw(ctx_, encoder);
+        else drawMode = GL_NONE;
+        key = lastKey_;
+    }
+    if (rasterized) *rasterized = drawMode != GL_NONE;
+    if (drawMode == GL_NONE) {
+        const uint16_t borders = borderVariant(lp, static_cast<int>(Stage::Vertex));
+        RenderTargetDesc target;
+        TargetFormats formats;
+        if (!drawTarget(target, formats, false)) return false;
+        encoder = ctx_.stream().render(target);
+        std::memset(&key, 0, sizeof(key));
+        key.programId = lp.uid;
+        key.borders[0] = borders;
+        key.sampleCount = static_cast<uint8_t>(target.samples);
+        key.rasterization = 0;
+        key.topologyClass = static_cast<uint8_t>(MTLPrimitiveTopologyClassPoint);
+        for (int i = 0; i < 8; ++i) key.colorFormats[i] = static_cast<uint16_t>(formats.color[i]);
+        key.depthFormat = static_cast<uint16_t>(formats.depth);
+        key.stencilFormat = static_cast<uint16_t>(formats.stencil);
+    }
     if (!bindVertexInputs(encoder, key, lp, 0, static_cast<GLsizei>(list.size()), instances, &list)) return false;
     id<MTLRenderPipelineState> pipeline = ctx_.share().pipelines().render(key, lp);
     if (!pipeline) return false;
     [encoder setRenderPipelineState:pipeline];
-    bindUniforms(encoder, lp);
-    bindTextures(encoder, lp);
+    if (drawMode != GL_NONE) {
+        bindDrawState(encoder, lp);
+    } else {
+        bindUniforms(encoder, lp);
+        bindTextures(encoder, lp);
+    }
     const uint64_t serial = ctx_.stream().serial();
     // Control block: active, vertex count, slot limit, pad, base[4], stride[4], vertex ids.
     const size_t controlBytes = 12 * 4 + list.size() * 4;
@@ -1772,7 +1822,10 @@ bool DrawState::runVertexCapture(LinkedProgram& lp, const std::vector<uint32_t>&
     }
     std::memcpy(words + 12, list.data(), list.size() * 4);
     [encoder setVertexBuffer:control.buffer offset:control.offset atIndex:shader::kSlotXfbControl];
-    [encoder drawPrimitives:MTLPrimitiveTypePoint vertexStart:0 vertexCount:list.size()
+    const MTLPrimitiveType primitive = drawMode == GL_LINES       ? MTLPrimitiveTypeLine
+                                       : drawMode == GL_TRIANGLES ? MTLPrimitiveTypeTriangle
+                                                                  : MTLPrimitiveTypePoint;
+    [encoder drawPrimitives:primitive vertexStart:0 vertexCount:list.size()
               instanceCount:static_cast<NSUInteger>(std::max(1, instances)) baseInstance:baseInstance_];
     // Later draws in this pass may read the captured data (as vertex,
     // uniform or texture buffers): Metal does not order work inside one
@@ -1911,6 +1964,12 @@ void DrawState::dispatch(GLuint x, GLuint y, GLuint z, Buffer* indirect, GLintpt
                         &lp.stage(Stage::Compute));
     const uint32_t* local = lp.link.computeLocalSize;
     const MTLSize threads = MTLSizeMake(local[0], local[1], local[2]);
+    if (queriesCounting(ctx_, kStatComputeShaderInvocations)) {
+        uint32_t groups[3] = {x, y, z};
+        if (indirect) std::memcpy(groups, indirect->contents() + offset, sizeof(groups));  // written by the GPU before the wait above
+        queriesCountStatistic(ctx_, kStatComputeShaderInvocations,
+                              uint64_t{groups[0]} * groups[1] * groups[2] * local[0] * local[1] * local[2]);
+    }
     if (indirect) {
         indirect->lastUseSerial = ctx_.stream().serial();
         [encoder dispatchThreadgroupsWithIndirectBuffer:indirect->mtl indirectBufferOffset:static_cast<NSUInteger>(offset)
@@ -1991,6 +2050,7 @@ void DrawState::drawGeometry(GLenum mode, const std::vector<uint32_t>& vertices,
     const uint64_t total = static_cast<uint64_t>(primitives) * copies;
     // Kernel threads: one per input primitive and invocation (GS instancing).
     const uint64_t threads = total * static_cast<uint64_t>(std::max(1, g.invocations));
+    queriesCountStatistic(ctx_, kStatGeometryShaderInvocations, threads);
     const uint32_t maxV = static_cast<uint32_t>(g.maxVertices);
     const uint16_t borders = borderVariant(lp, static_cast<int>(Stage::Compute));  // the kernel's samplers
     id<MTLComputePipelineState> kernel =
@@ -2093,6 +2153,10 @@ void DrawState::drawGeometry(GLenum mode, const std::vector<uint32_t>& vertices,
         writtenQuery[s] = ctx_.state.activeQueries[queryTargetIndex(ctx_, GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN, s)].get();
         anyQuery |= generated[s] || writtenQuery[s];
     }
+    const bool statistics = queriesCounting(ctx_, kStatGeometryShaderPrimitivesEmitted) ||
+                            queriesCounting(ctx_, kStatClippingInputPrimitives) ||
+                            queriesCounting(ctx_, kStatClippingOutputPrimitives);
+    anyQuery |= statistics;
     if (!capture && !anyQuery) return;
     ctx_.stream().waitFor(serial);
     const auto* slots = static_cast<const uint32_t*>(indices.data);
@@ -2121,8 +2185,13 @@ void DrawState::drawGeometry(GLenum mode, const std::vector<uint32_t>& vertices,
         }
     }
     const uint32_t perPrimitive = g.outputType == GL_POINTS ? 1 : g.outputType == GL_LINE_STRIP ? 2 : 3;
-    for (int s = 0; s < kMaxVertexStreams; ++s)
+    for (int s = 0; s < kMaxVertexStreams; ++s) {
         if (generated[s]) generated[s]->result += emitted[s].size() / perPrimitive;
+        queriesCountStatistic(ctx_, kStatGeometryShaderPrimitivesEmitted, emitted[s].size() / perPrimitive);
+    }
+    // Stream 0 is the one rasterized.
+    queriesCountStatistic(ctx_, kStatClippingInputPrimitives, emitted[0].size() / perPrimitive);
+    queriesCountStatistic(ctx_, kStatClippingOutputPrimitives, emitted[0].size() / perPrimitive);
     if (!capture) return;
     const shader::LinkResult& link = lp.link;
     // Primitives each stream writes: what fits in every buffer it feeds;
@@ -2145,6 +2214,7 @@ void DrawState::drawGeometry(GLenum mode, const std::vector<uint32_t>& vertices,
     }
     for (int s = 0; s < kMaxVertexStreams; ++s) {
         if (!captured[s]) written[s] = 0;
+        else if (written[s] < emitted[s].size() / perPrimitive) queriesNoteXfbOverflow(ctx_, static_cast<GLuint>(s));
         if (writtenQuery[s]) writtenQuery[s]->result += written[s];
         xfb.primitivesWritten[static_cast<size_t>(s)] += written[s];
     }
@@ -2259,6 +2329,13 @@ void DrawState::drawPatches(const std::vector<uint32_t>& vertices, GLsizei insta
         for (uint32_t index : patch.indices) indices.push_back(base + index);
     }
     const GLenum listMode = t.pointMode ? GL_POINTS : t.mode == GL_ISOLINES ? GL_LINES : GL_TRIANGLES;
+    if (t.hasControl) queriesCountStatistic(ctx_, kStatTessControlShaderPatches, total);
+    queriesCountStatistic(ctx_, kStatTessEvaluationShaderInvocations, points.size() / 4);
+    if (!evaluation->link.geometry.active) {
+        const uint64_t primitives = indices.size() / (listMode == GL_POINTS ? 1 : listMode == GL_LINES ? 2 : 3);
+        queriesCountStatistic(ctx_, kStatClippingInputPrimitives, primitives);
+        queriesCountStatistic(ctx_, kStatClippingOutputPrimitives, primitives);
+    }
     if (indices.empty()) return;
 
     // 4. The evaluation stage over the domain points, drawn (or captured, or
@@ -2292,9 +2369,12 @@ void DrawState::drawPatches(const std::vector<uint32_t>& vertices, GLsizei insta
         uint32_t primitiveBase = 0;
         drawGeometry(listMode, indices, 1, primitiveBase);
     } else {
-        if (ctx_.state.transformFeedback->active) captureTransformFeedback(listMode, indices, 1);
-        issue(listMode, 0, static_cast<GLsizei>(indices.size()), 1, indices.data(), nil, 0, MTLIndexTypeUInt32, 0, 0,
-              static_cast<GLsizei>(points.size() / 4));
+        const Capture captured = ctx_.state.transformFeedback->active ? captureTransformFeedback(listMode, indices, 1) : kNotCaptured;
+        if (captured == kCaptured && ctx_.state.rasterizerDiscard)
+            queriesCountPrimitives(ctx_, listMode, static_cast<GLsizei>(indices.size()), 1);
+        else
+            issue(listMode, 0, static_cast<GLsizei>(indices.size()), 1, indices.data(), nil, 0, MTLIndexTypeUInt32, 0, 0,
+                  static_cast<GLsizei>(points.size() / 4));
     }
     override_ = nullptr;
     tessInputs_ = {};
@@ -2309,6 +2389,8 @@ void DrawState::drawArrays(GLenum mode, GLint first, GLsizei count, GLsizei inst
     }
     if (!validateDraw(mode)) return;
     if (count == 0 || instances == 0 || !conditionalRenderAllows(ctx_)) return;
+    // Pipeline statistics of the command; tessellation and geometry shaders count their own clipping.
+    queriesCountSubmitted(ctx_, mode, count, instances, mode != GL_PATCHES && executable() && !executable()->link.geometry.active);
     if (executable() && ffWideLines_) {
         std::vector<uint32_t> vertices(static_cast<size_t>(count));
         for (GLsizei i = 0; i < count; ++i) vertices[static_cast<size_t>(i)] = static_cast<uint32_t>(first + i);
@@ -2331,7 +2413,12 @@ void DrawState::drawArrays(GLenum mode, GLint first, GLsizei count, GLsizei inst
     if (ctx_.state.transformFeedback->active) {
         std::vector<uint32_t> vertices(static_cast<size_t>(count));
         for (GLsizei i = 0; i < count; ++i) vertices[static_cast<size_t>(i)] = static_cast<uint32_t>(first + i);
-        captureTransformFeedback(mode, vertices, instances);
+        // Once the capture ran the vertex stage, a discarding draw has nothing left to do.
+        const Capture captured = captureTransformFeedback(mode, vertices, instances);
+        if (captured == kCapturedAndDrawn || (captured == kCaptured && ctx_.state.rasterizerDiscard)) {
+            queriesCountPrimitives(ctx_, mode, count, instances);
+            return;
+        }
     }
     issue(mode, first, count, instances, nullptr, nil, 0, MTLIndexTypeUInt16, 0, first, count);
 }
@@ -2340,6 +2427,7 @@ void DrawState::drawElements(GLenum mode, GLsizei count, GLenum type, const void
                              GLint baseVertex) {
     ImageShadowScope shadows(*this);
     beginDraw(mode);
+    glBaseVertex_ = baseVertex;
     if (count < 0 || instances < 0) {
         ctx_.setError(GL_INVALID_VALUE);
         return;
@@ -2453,6 +2541,16 @@ void DrawState::drawElements(GLenum mode, GLsizei count, GLenum type, const void
         }
     };
     const uint32_t bias = static_cast<uint32_t>(baseVertex);
+    if (queriesCountingStatistics(ctx_)) {
+        // Restart indices are not vertices; each run between them counts its primitives.
+        const bool clipped = mode != GL_PATCHES && !executable()->link.geometry.active;
+        if (hasRestart && mode != GL_PATCHES)
+            forEachSegment(0, [&](const std::vector<uint32_t>& segment) {
+                queriesCountSubmitted(ctx_, mode, static_cast<GLsizei>(segment.size()), instances, clipped);
+            });
+        else
+            queriesCountSubmitted(ctx_, mode, count, instances, clipped);
+    }
     if (ffWideLines_) {
         std::vector<uint32_t> lines;
         forEachSegment(bias, [&](const std::vector<uint32_t>& segment) {
@@ -2488,7 +2586,11 @@ void DrawState::drawElements(GLenum mode, GLsizei count, GLenum type, const void
             const std::vector<uint32_t> part = assembleForCapture(mode, segment);
             captured.insert(captured.end(), part.begin(), part.end());
         });
-        if (!captured.empty()) captureTransformFeedback(listMode(mode), captured, instances);
+        const Capture done = captured.empty() ? kNotCaptured : captureTransformFeedback(listMode(mode), captured, instances);
+        if (done == kCapturedAndDrawn || (done == kCaptured && ctx_.state.rasterizerDiscard)) {
+            queriesCountPrimitives(ctx_, listMode(mode), static_cast<GLsizei>(captured.size()), instances);
+            return;
+        }
     }
     const GLint spanFirst = static_cast<GLint>(minIndex) + baseVertex;
     const GLsizei span = static_cast<GLsizei>(std::min<uint64_t>(uint64_t{maxIndex} - minIndex + 1, INT32_MAX));

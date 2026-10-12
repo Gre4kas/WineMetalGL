@@ -33,6 +33,9 @@ constexpr uint32_t kSlotFirstXfbBuffer = 16;   // buffers 16..19: transform feed
 constexpr uint32_t kSlotFirstVertexBuffer = 20;  // buffers 20..29: vertex buffers
 constexpr uint32_t kMaxVertexBufferSlots = 10;
 constexpr uint32_t kSlotXfbControl = 30;       // buffer 30: transform feedback capture control
+// Fragment functions bind no transform feedback buffers: buffer 16 of a
+// fragment function counting its invocations (fragmentCountingInvocations).
+constexpr uint32_t kSlotFragmentInvocations = kSlotFirstXfbBuffer;
 constexpr uint32_t kMaxStageSamplers = 16;     // textures/samplers 0..15
 // Tessellation emulation (tessellation.h): the control kernel reads the
 // captured vertices and writes patch records through buffers 16..18; the
@@ -41,11 +44,10 @@ constexpr uint32_t kMaxStageSamplers = 16;     // textures/samplers 0..15
 constexpr uint32_t kSlotTessVertices = 20, kSlotTessPatches = 21, kSlotTessControl = 22;
 // Atomic counter buffers (GL 4.2): buffers 20..27 of fragment and compute
 // functions (the geometry kernel included), which bind no vertex buffers.
-// A vertex function's one counter buffer takes the last vertex buffer slot
-// (29), leaving its program 9 vertex buffers (DrawState::vertexBufferSlots).
+// A vertex function's counter buffers are entries of its storage block
+// argument buffer (kSlotStorageBlocks), after or between its storage blocks.
 constexpr uint32_t kSlotFirstAtomicCounterBuffer = 20;
-constexpr uint32_t kSlotVertexAtomicCounterBuffer = kSlotFirstVertexBuffer + kMaxVertexBufferSlots - 1;
-constexpr uint32_t kMaxVertexAtomicCounterBuffers = 1;
+constexpr uint32_t kMaxVertexAtomicCounterBuffers = 8;
 // Image uniforms (GL 4.2 image load/store): textures 16..23 of every stage.
 constexpr uint32_t kSlotFirstImage = 16;
 constexpr uint32_t kMaxStageImages = 8;
@@ -231,8 +233,9 @@ struct StageOutput {
     struct FragOutput { GLint location; GLint index; char kind; };
     std::vector<FragOutput> fragOutputs;
     // Storage blocks in the kSlotStorageBlocks argument buffer: entry i (id i)
-    // is element `block` of the LinkResult that compiled this stage.
-    struct StorageArg { int block; bool writes; };
+    // is element `block` of the LinkResult that compiled this stage, or, when
+    // counterBinding >= 0, the atomic counter buffer bound there (vertex stage).
+    struct StorageArg { int block; bool writes; int counterBinding = -1; };
     std::vector<StorageArg> storageArgs;
 };
 
@@ -358,6 +361,7 @@ struct LinkResult {
     struct BuiltinUniforms {
         int depthRange[3] = {-1, -1, -1};
         int numSamples = -1;
+        int baseVertex = -1, baseInstance = -1, drawId = -1;
     } builtinUniforms;
     std::vector<TransformFeedbackVarying> transformFeedback;
     uint32_t xfbStride[4] = {};      // 32-bit words per captured vertex, per buffer
@@ -426,6 +430,11 @@ std::string fragmentIgnoringSampleMask(const std::string& msl);
 // distances negative at every vertex (the [[user(wmgl_cullN)]] varyings,
 // addCullDistances). Empty if the stage has no entry point.
 std::string fragmentWithCullDistances(const std::string& msl, int count);
+
+// GL 4.6 FRAGMENT_SHADER_INVOCATIONS: the fragment function counts its
+// invocations into the uint at buffer kSlotFragmentInvocations. Empty if the
+// stage has no entry point.
+std::string fragmentCountingInvocations(const std::string& msl);
 
 LinkResult link(const LinkInput& input);
 

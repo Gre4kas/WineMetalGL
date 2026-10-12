@@ -28,11 +28,11 @@ constexpr GLint kMaxComputeSharedMemorySize = 32768;
 constexpr GLint kMaxPatchVertices = 32, kMaxTessGenLevel = 64;
 // GL 4.2 image load/store and atomic counters. Counters live in fragment,
 // geometry (a compute kernel) and compute functions, whose Metal buffer
-// slots have room for 8 counter buffers; vertex functions have none left
-// (shader/compiler.h).
+// slots have room for 8 counter buffers, and in vertex functions, which keep
+// theirs in the storage block argument buffer (shader/compiler.h).
 constexpr GLint kMaxImageUnits = 8, kMaxImageUniformsPerStage = 8, kMaxCombinedImageUniforms = 48;
 constexpr GLint kMaxAtomicCounterBufferBindings = 8, kMaxStageAtomicCounterBuffers = 8, kMaxStageAtomicCounters = 8;
-constexpr GLint kMaxVertexAtomicCounterBuffers = 1;
+constexpr GLint kMaxVertexAtomicCounterBuffers = 8;
 constexpr GLint kMaxAtomicCounterBufferSize = 16384;
 // GL 4.3 shader storage blocks: an argument buffer per stage function,
 // emulated geometry and tessellation stages included (shader/compiler.h).

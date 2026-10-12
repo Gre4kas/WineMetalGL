@@ -9,6 +9,7 @@
 #include <cstring>
 
 #include "core/context.h"
+#include "core/query.h"
 #include "core/draw.h"
 #include "core/format/formats.h"
 #include "core/format/pixel_transfer.h"
@@ -145,6 +146,13 @@ void CreateQueries(Context& ctx, GLenum target, GLsizei n, GLuint* ids) {
     switch (target) {
     case GL_SAMPLES_PASSED: case GL_ANY_SAMPLES_PASSED: case GL_ANY_SAMPLES_PASSED_CONSERVATIVE: case GL_TIME_ELAPSED:
     case GL_TIMESTAMP: case GL_PRIMITIVES_GENERATED: case GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN:
+        break;
+    case GL_TRANSFORM_FEEDBACK_OVERFLOW: case GL_TRANSFORM_FEEDBACK_STREAM_OVERFLOW: case GL_VERTICES_SUBMITTED:
+    case GL_PRIMITIVES_SUBMITTED: case GL_VERTEX_SHADER_INVOCATIONS: case GL_TESS_CONTROL_SHADER_PATCHES:
+    case GL_TESS_EVALUATION_SHADER_INVOCATIONS: case GL_GEOMETRY_SHADER_INVOCATIONS:
+    case GL_GEOMETRY_SHADER_PRIMITIVES_EMITTED: case GL_FRAGMENT_SHADER_INVOCATIONS: case GL_COMPUTE_SHADER_INVOCATIONS:
+    case GL_CLIPPING_INPUT_PRIMITIVES: case GL_CLIPPING_OUTPUT_PRIMITIVES:
+        if (queryTargetIndex(ctx, target) < 0) return ctx.setError(GL_INVALID_ENUM);
         break;
     default: return ctx.setError(GL_INVALID_ENUM);
     }

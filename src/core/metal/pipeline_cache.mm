@@ -39,9 +39,10 @@ id<MTLRenderPipelineState> PipelineCache::render(const PipelineKey& key, LinkedP
                              : key.geometryPass   ? program.geometryPassthrough()
                                                   : program.function(shader::Stage::Vertex);
     id<MTLFunction> fragment =
-        key.sampleMask || key.logicOp || key.sampleShading || key.ignoreSampleMask || key.cull || key.borders[1]
+        key.sampleMask || key.logicOp || key.sampleShading || key.ignoreSampleMask || key.cull || key.borders[1] ||
+                key.countFragments
             ? program.fragmentVariant(key.sampleMask, key.logicOp, key.colorFormats, key.sampleShading, key.ignoreSampleMask,
-                                      key.cull, key.borders[1])
+                                      key.cull, key.borders[1], key.countFragments)
             : program.function(shader::Stage::Fragment);
     if (!vertex) return nil;
     MTLRenderPipelineDescriptor* desc = [MTLRenderPipelineDescriptor new];

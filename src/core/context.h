@@ -105,6 +105,8 @@ public:
     bool atomicCounters() const { return version() >= 42 || hasExtension("GL_ARB_shader_atomic_counters"); }
     // Sample shading: GL 4.0 or GL_ARB_sample_shading.
     bool sampleShading() const { return version() >= 40 || hasExtension("GL_ARB_sample_shading"); }
+    // Draw counts from PARAMETER_BUFFER: GL 4.6 or GL_ARB_indirect_parameters.
+    bool indirectParameters() const { return version() >= 46 || hasExtension("GL_ARB_indirect_parameters"); }
 
     // glUniformSubroutinesuiv selections per stage (api/subroutine.mm), for
     // the executable they were made with; reset by UseProgram and pipeline

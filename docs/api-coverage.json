@@ -190,6 +190,12 @@
   "GL_ARB_get_texture_sub_image",
   "GL_ARB_shader_texture_image_samples",
   "GL_KHR_context_flush_control",
+  "GL_ARB_indirect_parameters",
+  "GL_ARB_pipeline_statistics_query",
+  "GL_ARB_shader_atomic_counter_ops",
+  "GL_ARB_shader_draw_parameters",
+  "GL_ARB_shader_group_vote",
+  "GL_ARB_transform_feedback_overflow_query",
   "GL_EXT_shader_integer_mix",
   "GL_ARB_polygon_offset_clamp",
   "GL_EXT_polygon_offset_clamp"
