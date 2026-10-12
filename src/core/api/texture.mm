@@ -1979,6 +1979,184 @@ void GetCompressedTexImage(Context& ctx, GLenum target, GLint level, void* img) 
             std::memcpy(dst + layout.start + z * layout.imageStride + y * layout.rowStride, from, layout.blocksX * layout.blockBytes);
 }
 
+namespace {
+
+// glGetTextureSubImage and glGetCompressedTextureSubImage (GL 4.5 section
+// 8.11.4): the texture and region checks they share. A cube map's faces are
+// its z (a cube map array's layer-faces are already).
+struct SubImage {
+    RefPtr<Texture> tex;
+    const TextureImage* image = nullptr;
+    int depth = 1;  // images in z
+};
+
+bool subImageRegion(Context& ctx, const char* command, GLuint texture, GLint level, GLint x, GLint y, GLint z, GLsizei w,
+                    GLsizei h, GLsizei d, SubImage& out) {
+    if (ctx.version() < 45 && !ctx.hasExtension("GL_ARB_get_texture_sub_image")) {
+        ctx.unimplemented(command);
+        return false;
+    }
+    {
+        ShareLock lock(ctx);
+        out.tex = texture ? ctx.share().textures.getRef(texture) : nullptr;
+    }
+    if (!out.tex || !out.tex->target) return ctx.setError(GL_INVALID_OPERATION), false;
+    const GLenum target = out.tex->target;
+    if (target == GL_TEXTURE_BUFFER || target == GL_TEXTURE_2D_MULTISAMPLE || target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY)
+        return ctx.setError(GL_INVALID_OPERATION), false;
+    if (level < 0 || level > maxLevelFor(target)) return ctx.setError(GL_INVALID_VALUE), false;
+    if (x < 0 || y < 0 || z < 0 || w < 0 || h < 0 || d < 0) return ctx.setError(GL_INVALID_VALUE), false;
+    if (target == GL_TEXTURE_1D && (y != 0 || h != 1)) return ctx.setError(GL_INVALID_VALUE), false;
+    if ((target == GL_TEXTURE_1D || target == GL_TEXTURE_1D_ARRAY || target == GL_TEXTURE_2D || target == GL_TEXTURE_RECTANGLE) &&
+        (z != 0 || d != 1))
+        return ctx.setError(GL_INVALID_VALUE), false;
+    out.image = &out.tex->image(0, level);
+    out.depth = target == GL_TEXTURE_CUBE_MAP ? 6 : out.image->depth;
+    if (target == GL_TEXTURE_CUBE_MAP)
+        for (int f = 1; f < 6; ++f) {
+            const TextureImage& face = out.tex->image(f, level);
+            if (!face.defined() || face.width != out.image->width || face.height != out.image->height ||
+                face.internalFormat != out.image->internalFormat)
+                out.depth = 0;  // not cube complete at this level
+        }
+    if (static_cast<int64_t>(x) + w > out.image->width || static_cast<int64_t>(y) + h > out.image->height ||
+        static_cast<int64_t>(z) + d > out.depth)
+        return ctx.setError(GL_INVALID_VALUE), false;
+    return true;
+}
+
+// The Metal slice of GL image z (a 1D array's layer is its y).
+uint32_t subImageSlice(const Texture& tex, int z) {
+    return tex.target == GL_TEXTURE_3D ? 0u : static_cast<uint32_t>(z);
+}
+
+// One slice of a compressed image decoded to float RGBA.
+std::vector<float> decodedSlice(Context& ctx, Texture& tex, const FormatInfo& info, int level, uint32_t slice, int width,
+                                int height) {
+    std::vector<float> rgba(static_cast<size_t>(width) * height * 4);
+    if (!isRgtcStorage(info.storage)) {
+        decodeCompressedSlice(ctx, tex, info.storage, static_cast<NSUInteger>(level), slice, width, height, rgba.data());
+        return rgba;
+    }
+    const size_t rowBytes = ((static_cast<size_t>(width) + 3) / 4) * storageBytes(info.storage);
+    const size_t imageBytes = rowBytes * ((static_cast<size_t>(height) + 3) / 4);
+    id<MTLBuffer> staging = [Device::get().mtl() newBufferWithLength:std::max<size_t>(1, imageBytes)
+                                                             options:MTLResourceStorageModeShared];
+    [ctx.stream().blit() copyFromTexture:tex.mtl sourceSlice:slice sourceLevel:static_cast<NSUInteger>(level)
+                            sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(width, height, 1) toBuffer:staging
+                       destinationOffset:0 destinationBytesPerRow:rowBytes destinationBytesPerImage:imageBytes];
+    ctx.stream().finish();
+    decodeRgtc(info.storage, static_cast<const uint8_t*>(staging.contents), width, height, 1, rgba.data());
+    return rgba;
+}
+
+}  // namespace
+
+void GetTextureSubImage(Context& ctx, GLuint texture, GLint level, GLint xoffset, GLint yoffset, GLint zoffset, GLsizei width,
+                        GLsizei height, GLsizei depth, GLenum format, GLenum type, GLsizei bufSize, void* pixels) {
+    SubImage sub;
+    if (!subImageRegion(ctx, "glGetTextureSubImage", texture, level, xoffset, yoffset, zoffset, width, height, depth, sub))
+        return;
+    if (!checkFormatType(ctx, format, type)) return;
+    Texture& tex = *sub.tex;
+    const TextureImage& image = *sub.image;
+    if (!width || !height || !depth || !image.defined()) return;
+    const FormatInfo& info = *image.format;
+    const bool depthRequest = format == GL_DEPTH_COMPONENT, stencilRequest = format == GL_STENCIL_INDEX,
+               depthStencilRequest = format == GL_DEPTH_STENCIL;
+    if ((depthRequest && !info.depthBits) || (depthStencilRequest && !(info.depthBits && info.stencilBits)) ||
+        (stencilRequest && !info.stencilBits) || (!depthRequest && !stencilRequest && !depthStencilRequest && info.isDepthOrStencil()))
+        return ctx.setError(GL_INVALID_OPERATION);
+    if (!info.isDepthOrStencil() && !transferCompatible(format, type, info)) return ctx.setError(GL_INVALID_OPERATION);
+    // Cube maps and arrays pack as three-dimensional images.
+    const bool threeD = tex.target == GL_TEXTURE_3D || tex.target == GL_TEXTURE_2D_ARRAY || tex.target == GL_TEXTURE_CUBE_MAP ||
+                        tex.target == GL_TEXTURE_CUBE_MAP_ARRAY;
+    const PixelStoreParams ps = pixelStoreParams(ctx.state.pack, threeD);
+    const TransferLayout layout = transferLayout(format, type, width, height, depth, ps);
+    if (bufSize < 0) return ctx.setError(GL_INVALID_VALUE);
+    if (!ctx.state.pixelPackBuffer && layout.bytesNeeded > static_cast<size_t>(bufSize)) return ctx.setError(GL_INVALID_OPERATION);
+    uint8_t* dst = nullptr;
+    if (!packDestination(ctx, pixels, layout.bytesNeeded, typeSize(type), dst)) return;
+    for (int f = 0; f < (tex.target == GL_TEXTURE_CUBE_MAP ? 6 : 1); ++f)
+        if (!imageHasStorage(ctx, tex, f, level)) return;
+    if (!dst) return;
+    if (info.compressed || isRgtcStorage(info.storage)) {
+        // Decode whole slices, keep the region.
+        std::vector<float> rgba(static_cast<size_t>(width) * height * depth * 4);
+        for (int k = 0; k < depth; ++k) {
+            const std::vector<float> slice =
+                decodedSlice(ctx, tex, info, level, subImageSlice(tex, zoffset + k), image.width, image.height);
+            for (int row = 0; row < height; ++row)
+                std::memcpy(&rgba[((static_cast<size_t>(k) * height + row) * width) * 4],
+                            &slice[((static_cast<size_t>(yoffset) + row) * image.width + xoffset) * 4],
+                            static_cast<size_t>(width) * 16);
+        }
+        packPixels(rgba.data(), *formatInfo(GL_RGBA32F), width, height, depth, format, type, ps, false, dst);
+        return;
+    }
+    std::vector<uint8_t> texels;
+    if (tex.target == GL_TEXTURE_3D) {
+        texels = readImageTexels(ctx, tex.mtl, info.storage, static_cast<uint32_t>(level), 0, xoffset, yoffset, zoffset, width,
+                                 height, depth);
+    } else {
+        int x = xoffset, y = yoffset, z = zoffset, w = width, h = height, d = depth;
+        metalRegion(tex, x, y, z, w, h, d);
+        texels = readImageTexels(ctx, tex.mtl, info.storage, static_cast<uint32_t>(level), static_cast<uint32_t>(z), x, y, 0, w,
+                                 h, d);
+    }
+    packPixels(texels.data(), info, width, height, depth, format, type, ps, false, dst);
+}
+
+void GetCompressedTextureSubImage(Context& ctx, GLuint texture, GLint level, GLint xoffset, GLint yoffset, GLint zoffset,
+                                  GLsizei width, GLsizei height, GLsizei depth, GLsizei bufSize, void* pixels) {
+    SubImage sub;
+    if (!subImageRegion(ctx, "glGetCompressedTextureSubImage", texture, level, xoffset, yoffset, zoffset, width, height, depth,
+                        sub))
+        return;
+    Texture& tex = *sub.tex;
+    const TextureImage& image = *sub.image;
+    if (!image.defined() || !image.format->compressed) return ctx.setError(GL_INVALID_OPERATION);
+    // Whole 4x4 blocks, except where the region reaches the image's edge.
+    if (xoffset % 4 || yoffset % 4 || (width % 4 && xoffset + width != image.width) ||
+        (height % 4 && yoffset + height != image.height))
+        return ctx.setError(GL_INVALID_OPERATION);
+    const bool threeD = tex.target == GL_TEXTURE_3D || tex.target == GL_TEXTURE_2D_ARRAY || tex.target == GL_TEXTURE_CUBE_MAP ||
+                        tex.target == GL_TEXTURE_CUBE_MAP_ARRAY;
+    const size_t size = compressedSize(*image.format, width, height, depth);
+    const CompressedLayout layout = compressedLayout(ctx.state.pack, *image.format, threeD ? 3 : 2, width, height, depth);
+    const size_t needed = layout.active ? layout.bytesNeeded() : size;
+    if (bufSize < 0) return ctx.setError(GL_INVALID_VALUE);
+    if (!ctx.state.pixelPackBuffer && needed > static_cast<size_t>(bufSize)) return ctx.setError(GL_INVALID_OPERATION);
+    uint8_t* dst = nullptr;
+    if (!packDestination(ctx, pixels, needed, 1, dst)) return;
+    if (!width || !height || !depth) return;
+    for (int f = 0; f < (tex.target == GL_TEXTURE_CUBE_MAP ? 6 : 1); ++f)
+        if (!imageHasStorage(ctx, tex, f, level)) return;
+    if (!dst) return;
+    const size_t rowBytes = ((static_cast<size_t>(width) + 3) / 4) * storageBytes(image.format->storage);
+    const size_t imageBytes = rowBytes * ((static_cast<size_t>(height) + 3) / 4);
+    id<MTLBuffer> staging = [Device::get().mtl() newBufferWithLength:std::max<size_t>(1, size)
+                                                             options:MTLResourceStorageModeShared];
+    id<MTLBlitCommandEncoder> blit = ctx.stream().blit();
+    for (int k = 0; k < depth; ++k) {
+        const bool volume = tex.target == GL_TEXTURE_3D;
+        [blit copyFromTexture:tex.mtl sourceSlice:volume ? 0 : subImageSlice(tex, zoffset + k)
+                  sourceLevel:static_cast<NSUInteger>(level)
+                 sourceOrigin:MTLOriginMake(xoffset, yoffset, volume ? zoffset + k : 0)
+                   sourceSize:MTLSizeMake(width, height, 1) toBuffer:staging
+            destinationOffset:imageBytes * static_cast<size_t>(k) destinationBytesPerRow:rowBytes destinationBytesPerImage:imageBytes];
+    }
+    ctx.stream().finish();
+    if (!layout.active) {
+        std::memcpy(dst, staging.contents, size);
+        return;
+    }
+    const uint8_t* from = static_cast<const uint8_t*>(staging.contents);
+    for (size_t z = 0; z < layout.depth; ++z)
+        for (size_t y = 0; y < layout.blocksY; ++y, from += layout.blocksX * layout.blockBytes)
+            std::memcpy(dst + layout.start + z * layout.imageStride + y * layout.rowStride, from, layout.blocksX * layout.blockBytes);
+}
+
 void GetTexLevelParameteriv(Context& ctx, GLenum target, GLint level, GLenum pname, GLint* params) {
     getTexLevelParameter(ctx, target, level, pname, params);
 }

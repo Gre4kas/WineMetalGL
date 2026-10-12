@@ -153,7 +153,7 @@ void Context::initStrings() {
     for (const char* name : {"GL_KHR_robustness", "GL_ARB_robustness", "GL_ARB_internalformat_query",
                              "GL_ARB_invalidate_subdata", "GL_ARB_copy_image", "GL_NVX_gpu_memory_info", "GL_ATI_meminfo"})
         extensions_.push_back(name);
-    // The extensions GL 4.0 to 4.3 made core, in contexts of the
+    // The extensions GL 4.0 to 4.5 made core, in contexts of the
     // version that includes them (their features are gated on the version).
     const int version = config_.major * 10 + config_.minor;
     if (version >= 40)
@@ -182,6 +182,17 @@ void Context::initStrings() {
               "GL_ARB_shader_image_size", "GL_ARB_stencil_texturing",
               // GL 4.5, implemented: the Khronos CTS calls glTextureBarrier in GL 4.3 view tests
               "GL_ARB_texture_barrier"})
+            extensions_.push_back(name);
+    if (version >= 44)
+        for (const char* name :
+             {"GL_ARB_clear_texture", "GL_ARB_enhanced_layouts", "GL_ARB_multi_bind", "GL_ARB_query_buffer_object",
+              "GL_ARB_texture_mirror_clamp_to_edge", "GL_ARB_texture_stencil8", "GL_ARB_vertex_type_10f_11f_11f_rev"})
+            extensions_.push_back(name);
+    if (version >= 45)
+        for (const char* name :
+             {"GL_ARB_conditional_render_inverted", "GL_ARB_cull_distance", "GL_ARB_derivative_control",
+              "GL_ARB_direct_state_access", "GL_ARB_ES3_1_compatibility", "GL_ARB_get_texture_sub_image",
+              "GL_ARB_shader_texture_image_samples", "GL_KHR_context_flush_control"})
             extensions_.push_back(name);
     // Later extensions the core implements, in 4.x contexts: wined3d reads
     // EXT_shader_integer_mix and polygon_offset_clamp for its feature level.

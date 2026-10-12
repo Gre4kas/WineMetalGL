@@ -172,14 +172,15 @@ void VertexAttribLPointer(Context& ctx, GLuint index, GLint size, GLenum type, G
 }
 
 // GL 3.3 core (appendix E) only makes VertexAttribPointer an error without a
-// bound VAO; GL 4.5 extends that to every command that changes VAO state.
+// bound VAO; GL 4.5 extends that to the commands that change VAO state.
+// Enabling an array is not checked: the CTS (get_uniform) enables one in a
+// core context without a VAO and expects no error, as drivers behave.
 static bool vaoStateWritable(Context& ctx) {
     return !(ctx.isCore() && ctx.version() >= 45 && currentVao(ctx) == ctx.defaultVertexArray.get());
 }
 
 void EnableVertexAttribArray(Context& ctx, GLuint index) {
     if (!checkIndex(ctx, index)) return;
-    if (!vaoStateWritable(ctx)) return ctx.setError(GL_INVALID_OPERATION);
     currentVao(ctx)->attribs[index].enabled = true;
     ++currentVao(ctx)->version;
     ctx.markDirty(kDirtyVertexInput);
@@ -187,7 +188,6 @@ void EnableVertexAttribArray(Context& ctx, GLuint index) {
 
 void DisableVertexAttribArray(Context& ctx, GLuint index) {
     if (!checkIndex(ctx, index)) return;
-    if (!vaoStateWritable(ctx)) return ctx.setError(GL_INVALID_OPERATION);
     currentVao(ctx)->attribs[index].enabled = false;
     ++currentVao(ctx)->version;
     ctx.markDirty(kDirtyVertexInput);

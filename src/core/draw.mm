@@ -1067,7 +1067,14 @@ void DrawState::samplerBinding(LinkedProgram& program, size_t index, __strong id
         if (texture->target == GL_TEXTURE_BUFFER && texture->buffer) texture->buffer->lastUseSerial = texture->lastUseSerial;
     } else {
         view = dummyTexture(slot.type);
-        sampler = samplerState(ctx_, SamplerParams(), slot.shadow);
+        // Shadow lookups of an incomplete texture return 0 (the CTS's
+        // incomplete_texture_access): a comparison that never passes.
+        SamplerParams params;
+        if (slot.shadow) {
+            params.compareMode = GL_COMPARE_REF_TO_TEXTURE;
+            params.compareFunc = GL_NEVER;
+        }
+        sampler = samplerState(ctx_, params, slot.shadow);
     }
 }
 

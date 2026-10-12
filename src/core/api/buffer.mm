@@ -338,12 +338,13 @@ void BufferSubData(Context& ctx, GLenum target, GLintptr offset, GLsizeiptr size
     Buffer* buffer = boundBuffer(ctx, target);
     if (!buffer) return;
     if (offset + size > buffer->size) return ctx.setError(GL_INVALID_VALUE);
-    if (buffer->mapped && !(buffer->mapAccess & GL_MAP_PERSISTENT_BIT)) return ctx.setError(GL_INVALID_OPERATION);
+    if (buffer->rangeMapped(offset, size)) return ctx.setError(GL_INVALID_OPERATION);
     if (buffer->immutable && !(buffer->storageFlags & GL_DYNAMIC_STORAGE_BIT)) return ctx.setError(GL_INVALID_OPERATION);
     if (!size || !data || !buffer->mtl) return;
     if (gpuBusy(ctx, *buffer)) {
-        // Immutable storage keeps its memory (it may be persistently mapped).
-        if (!buffer->immutable && (size == buffer->size || buffer->size <= (256 << 10))) {
+        // Immutable storage keeps its memory (it may be persistently mapped),
+        // and so does a mapped buffer.
+        if (!buffer->immutable && !buffer->mapped && (size == buffer->size || buffer->size <= (256 << 10))) {
             // Small or whole-buffer updates: copy-on-write.
             rename(ctx, *buffer, size != buffer->size);
         } else {
@@ -387,7 +388,7 @@ void ClearBufferSubData(Context& ctx, GLenum target, GLenum internalformat, GLin
     if (!transferCompatible(format, type, *info)) return ctx.setError(GL_INVALID_OPERATION);
     if (offset < 0 || size < 0 || offset + size > buffer->size) return ctx.setError(GL_INVALID_VALUE);
     if (offset % static_cast<GLintptr>(element) || size % static_cast<GLsizeiptr>(element)) return ctx.setError(GL_INVALID_VALUE);
-    if (buffer->mapped && !(buffer->mapAccess & GL_MAP_PERSISTENT_BIT)) return ctx.setError(GL_INVALID_OPERATION);
+    if (buffer->rangeMapped(offset, size)) return ctx.setError(GL_INVALID_OPERATION);
     if (!size || !buffer->mtl) return;
     // The element, as stored (RGB32 texels are stored with a fourth component).
     uint8_t texel[16] = {};
@@ -417,7 +418,7 @@ void GetBufferSubData(Context& ctx, GLenum target, GLintptr offset, GLsizeiptr s
     Buffer* buffer = boundBuffer(ctx, target);
     if (!buffer) return;
     if (offset + size > buffer->size) return ctx.setError(GL_INVALID_VALUE);
-    if (buffer->mapped && !(buffer->mapAccess & GL_MAP_PERSISTENT_BIT)) return ctx.setError(GL_INVALID_OPERATION);
+    if (buffer->rangeMapped(offset, size)) return ctx.setError(GL_INVALID_OPERATION);
     if (!size || !data || !buffer->mtl) return;
     waitForGpuUnlocked(ctx, buffer->lastUseSerial);
     // Another context may have respecified the buffer during the wait.
@@ -530,7 +531,7 @@ void CopyBufferSubData(Context& ctx, GLenum readTarget, GLenum writeTarget, GLin
         return ctx.setError(GL_INVALID_VALUE);
     if (src == dst && std::max(readOffset, writeOffset) < std::min(readOffset, writeOffset) + size)
         return ctx.setError(GL_INVALID_VALUE);
-    if (src->mappedNonPersistent() || dst->mappedNonPersistent()) return ctx.setError(GL_INVALID_OPERATION);
+    if (src->rangeMapped(readOffset, size) || dst->rangeMapped(writeOffset, size)) return ctx.setError(GL_INVALID_OPERATION);
     if (!size) return;
     [ctx.stream().blit() copyFromBuffer:src->mtl sourceOffset:static_cast<NSUInteger>(readOffset) toBuffer:dst->mtl
                         destinationOffset:static_cast<NSUInteger>(writeOffset) size:static_cast<NSUInteger>(size)];

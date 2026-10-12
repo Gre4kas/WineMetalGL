@@ -68,6 +68,11 @@ public:
     uint8_t* contents() const { return mtl ? static_cast<uint8_t*>(mtl.contents) : nullptr; }
     // Mapped in a way that forbids GPU use (persistent mappings allow it).
     bool mappedNonPersistent() const { return mapped && !(mapAccess & GL_MAP_PERSISTENT_BIT); }
+    // Whether [offset, offset + size) overlaps a non-persistent mapping: the
+    // range commands' INVALID_OPERATION (GL 4.5 sections 6.2.2, 6.3, 6.6).
+    bool rangeMapped(GLintptr offset, GLsizeiptr size) const {
+        return mappedNonPersistent() && offset < mapOffset + mapLength && mapOffset < offset + size;
+    }
 };
 
 // --------------------------------------------------------------- samplers

@@ -71,7 +71,8 @@
     X(glTextureSubImage2D) X(glGetTextureImage) X(glCreateFramebuffers) X(glNamedFramebufferTexture)                \
     X(glCheckNamedFramebufferStatus) X(glClearNamedFramebufferfv) X(glCreateVertexArrays) X(glVertexArrayVertexBuffer) \
     X(glVertexArrayAttribFormat) X(glVertexArrayAttribBinding) X(glEnableVertexArrayAttrib) X(glBindTextureUnit)  \
-    X(glTextureParameteri) X(glGetNamedBufferSubData) X(glBlitNamedFramebuffer)
+    X(glTextureParameteri) X(glGetNamedBufferSubData) X(glBlitNamedFramebuffer) X(glGetTextureSubImage)          \
+    X(glGetCompressedTextureSubImage) X(glTextureStorage3D) X(glTextureSubImage3D)
 
 #define WMGL_DECLARE_FUNC(name) extern PFN_##name name;
 WMGL_GPU_FUNCS(WMGL_DECLARE_FUNC)

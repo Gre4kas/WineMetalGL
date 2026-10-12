@@ -166,9 +166,12 @@ void queriesSuspendVisibility(Context& ctx, id<MTLRenderCommandEncoder> encoder)
 bool conditionalRenderAllows(Context& ctx) {
     auto& cr = ctx.state.conditionalRender;
     if (!cr.active || !cr.query) return true;
-    const bool wait = cr.mode == GL_QUERY_WAIT || cr.mode == GL_QUERY_BY_REGION_WAIT;
+    // GL 4.5 / ARB_conditional_render_inverted: the *_INVERTED modes render when no samples passed.
+    const bool inverted = cr.mode >= GL_QUERY_WAIT_INVERTED && cr.mode <= GL_QUERY_BY_REGION_NO_WAIT_INVERTED;
+    const bool wait = cr.mode == GL_QUERY_WAIT || cr.mode == GL_QUERY_BY_REGION_WAIT || cr.mode == GL_QUERY_WAIT_INVERTED ||
+                      cr.mode == GL_QUERY_BY_REGION_WAIT_INVERTED;
     if (!queryResultReady(ctx, *cr.query, wait)) return true;  // NO_WAIT: render while unknown
-    return cr.query->result != 0;
+    return (cr.query->result != 0) != inverted;
 }
 
 }  // namespace wmgl
@@ -442,8 +445,10 @@ void GetQueryObjectui64v(Context& ctx, GLuint name, GLenum pname, GLuint64* para
 // ------------------------------------------------------------ conditional rendering
 
 void BeginConditionalRender(Context& ctx, GLuint name, GLenum mode) {
+    const bool inverted = (ctx.version() >= 45 || ctx.hasExtension("GL_ARB_conditional_render_inverted")) &&
+                          mode >= GL_QUERY_WAIT_INVERTED && mode <= GL_QUERY_BY_REGION_NO_WAIT_INVERTED;
     if (mode != GL_QUERY_WAIT && mode != GL_QUERY_NO_WAIT && mode != GL_QUERY_BY_REGION_WAIT &&
-        mode != GL_QUERY_BY_REGION_NO_WAIT)
+        mode != GL_QUERY_BY_REGION_NO_WAIT && !inverted)
         return ctx.setError(GL_INVALID_ENUM);
     auto& cr = ctx.state.conditionalRender;
     if (cr.active) return ctx.setError(GL_INVALID_OPERATION);

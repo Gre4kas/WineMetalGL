@@ -405,3 +405,96 @@ void main() {
     glDeleteProgram(p);
     glDeleteProgram(withGs);
 }
+
+// GL 4.5 glGetTextureSubImage: a region of a 2D array (two layers) and of a
+// cube map (faces as z), its errors, and glGetCompressedTextureSubImage's
+// block alignment.
+GPU_TEST_VERSION(gpu_gl45_get_texture_sub_image, 45) {
+    GLuint tex[3];
+    glCreateTextures(GL_TEXTURE_2D_ARRAY, 1, &tex[0]);
+    glTextureStorage3D(tex[0], 1, GL_RGBA8, 4, 4, 3);
+    std::vector<uint8_t> texels(4 * 4 * 3 * 4);
+    for (size_t i = 0; i < texels.size(); ++i) texels[i] = static_cast<uint8_t>(i);
+    glTextureSubImage3D(tex[0], 0, 0, 0, 0, 4, 4, 3, GL_RGBA, GL_UNSIGNED_BYTE, texels.data());
+    uint8_t region[2 * 2 * 2 * 4] = {};
+    glGetTextureSubImage(tex[0], 0, 1, 2, 1, 2, 2, 2, GL_RGBA, GL_UNSIGNED_BYTE, sizeof(region), region);
+    CHECK_GL();
+    for (int z = 0; z < 2; ++z)
+        for (int y = 0; y < 2; ++y)
+            for (int x = 0; x < 2; ++x)
+                for (int c = 0; c < 4; ++c) {
+                    const size_t src = (((static_cast<size_t>(1 + z) * 4 + 2 + y) * 4) + 1 + x) * 4 + c;
+                    CHECK_EQ(static_cast<int>(region[((z * 2 + y) * 2 + x) * 4 + c]), static_cast<int>(texels[src]));
+                }
+    // Past the image, a negative offset, and a buffer too small.
+    glGetTextureSubImage(tex[0], 0, 3, 0, 0, 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, sizeof(region), region);
+    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_INVALID_VALUE));
+    glGetTextureSubImage(tex[0], 0, -1, 0, 0, 1, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, sizeof(region), region);
+    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_INVALID_VALUE));
+    glGetTextureSubImage(tex[0], 0, 0, 0, 0, 2, 2, 2, GL_RGBA, GL_UNSIGNED_BYTE, 4, region);
+    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_INVALID_OPERATION));
+    // Cube map faces 2 and 3 (one texel each).
+    glCreateTextures(GL_TEXTURE_CUBE_MAP, 1, &tex[1]);
+    glTextureStorage2D(tex[1], 1, GL_RGBA8, 2, 2);
+    for (int f = 0; f < 6; ++f) {
+        const uint8_t face[16] = {static_cast<uint8_t>(f), 0, 0, 255, static_cast<uint8_t>(f), 0, 0, 255,
+                                  static_cast<uint8_t>(f), 0, 0, 255, static_cast<uint8_t>(f), 0, 0, 255};
+        glTextureSubImage3D(tex[1], 0, 0, 0, f, 2, 2, 1, GL_RGBA, GL_UNSIGNED_BYTE, face);
+    }
+    uint8_t faces[8] = {};
+    glGetTextureSubImage(tex[1], 0, 1, 1, 2, 1, 1, 2, GL_RGBA, GL_UNSIGNED_BYTE, sizeof(faces), faces);
+    CHECK_GL();
+    CHECK_EQ(static_cast<int>(faces[0]), 2);
+    CHECK_EQ(static_cast<int>(faces[4]), 3);
+    // Compressed: whole 4x4 blocks only.
+    glCreateTextures(GL_TEXTURE_2D, 1, &tex[2]);
+    glTextureStorage2D(tex[2], 1, GL_COMPRESSED_RGBA_S3TC_DXT5_EXT, 8, 8);
+    uint8_t blocks[64] = {};
+    glGetCompressedTextureSubImage(tex[2], 0, 4, 0, 0, 4, 8, 1, sizeof(blocks), blocks);
+    CHECK_GL();
+    glGetCompressedTextureSubImage(tex[2], 0, 2, 0, 0, 4, 4, 1, sizeof(blocks), blocks);
+    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_INVALID_OPERATION));
+    glDeleteTextures(3, tex);
+}
+
+// GL 4.5 conditional rendering inverted: a draw runs only if the query
+// passed no samples; and GL 4.5 range rules for a mapped buffer's sub-data.
+GPU_TEST_VERSION(gpu_gl45_conditional_render_inverted, 45) {
+    GLuint p = gpu::program("#version 450 core\nlayout(location = 0) in vec2 pos;\nvoid main() { gl_Position = vec4(pos, 0.0, 1.0); }\n",
+                            "#version 450 core\nout vec4 o;\nvoid main() { o = vec4(1.0); }\n");
+    GLuint vao = gpu::quad();
+    glUseProgram(p);
+    GLuint queries[2];
+    glGenQueries(2, queries);
+    glBeginQuery(GL_ANY_SAMPLES_PASSED, queries[0]);  // passes samples
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glEndQuery(GL_ANY_SAMPLES_PASSED);
+    glBeginQuery(GL_ANY_SAMPLES_PASSED, queries[1]);  // passes none
+    glEndQuery(GL_ANY_SAMPLES_PASSED);
+    const uint8_t white[4] = {255, 255, 255, 255}, black[4] = {0, 0, 0, 0};
+    for (int i = 0; i < 2; ++i) {
+        glClearColor(0, 0, 0, 0);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glBeginConditionalRender(queries[i], GL_QUERY_WAIT_INVERTED);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        glEndConditionalRender();
+        CHECK_GL();
+        const std::vector<uint8_t> px = gpu::readRGBA8(8, 8, 1, 1);
+        CHECK(gpu::near(px.data(), i == 0 ? black : white));
+    }
+    GLuint buffer = 0;
+    glGenBuffers(1, &buffer);
+    glBindBuffer(GL_ARRAY_BUFFER, buffer);
+    glBufferData(GL_ARRAY_BUFFER, 64, nullptr, GL_DYNAMIC_DRAW);
+    glMapBufferRange(GL_ARRAY_BUFFER, 16, 16, GL_MAP_WRITE_BIT);
+    const uint8_t bytes[16] = {};
+    glBufferSubData(GL_ARRAY_BUFFER, 32, 16, bytes);  // outside the mapping
+    CHECK_GL();
+    glBufferSubData(GL_ARRAY_BUFFER, 24, 16, bytes);  // across it
+    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_INVALID_OPERATION));
+    glUnmapBuffer(GL_ARRAY_BUFFER);
+    glDeleteBuffers(1, &buffer);
+    glDeleteQueries(2, queries);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
+}
