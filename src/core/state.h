@@ -200,7 +200,7 @@ struct ContextState {
     // GL 4.3 shader storage buffer bindings.
     static constexpr int kMaxShaderStorageBufferBindings = 16;  // = limits::kMaxShaderStorageBufferBindings
     std::array<IndexedBufferBinding, kMaxShaderStorageBufferBindings> shaderStorageBufferBindings;
-    static constexpr int kMaxImageUnits = 8;  // = limits::kMaxImageUnits
+    static constexpr int kMaxImageUnits = 16;  // = limits::kMaxImageUnits
     std::array<ImageUnit, kMaxImageUnits> imageUnits;
     static constexpr int kMaxTextureUnits = 80;
     std::array<TextureUnit, kMaxTextureUnits> textureUnits;

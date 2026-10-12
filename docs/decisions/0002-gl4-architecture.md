@@ -130,3 +130,13 @@ The program binary keeps the translated GLSL, as for GLSL programs.
 - A translation per `glSpecializeShader`.
 - Transform feedback varyings of a SPIR-V program report empty names even when the module names them.
 - Modules are not validated beyond what the translation and the GLSL compiler reject. `GL_SPIR_V_EXTENSIONS` lists the extensions the translation handles; others are refused.
+
+## Image uniforms past Metal's read_write limit
+
+**Question.** A Metal function takes at most 8 `read_write` textures, and images were all declared `read_write`. Programs (and the CTS) use more images per stage than that, mostly ones they only read or only write. Should images move into an argument buffer?
+
+**Decision.** No. A SPIR-V pass (`inferStorageImageAccess`) decorates every image a stage only reads `NonWritable`, and every image it only writes `NonReadable`, so they become `access::read` and `access::write` textures. Atomics, images passed to functions and any other use keep both accesses. A stage binds up to 16 images (textures 16..31), at most 8 of them `read_write`. Image units are binding points only, so `GL_MAX_IMAGE_UNITS` is 16. The per-stage image uniform limits stay 8, since 8 images that are both read and written are all a stage can be guaranteed.
+
+**Cost and limits.**
+- A stage with more than 8 images that are each read and written fails to link.
+- An argument buffer of images was tried. Format views of one texture then lost writes (`shader_image_load_store.multiple-uniforms`), so it was dropped.

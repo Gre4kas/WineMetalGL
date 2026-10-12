@@ -325,4 +325,102 @@ std::vector<uint32_t> flattenArraysOfArrays(std::vector<uint32_t> spirv) {
     return out;
 }
 
+namespace {
+
+constexpr uint32_t kOpTypeImageOp = 25, kOpTypeArrayOp = 28, kOpTypeRuntimeArray = 29, kOpTypePointerOp = 32,
+                   kOpFunctionFirst = 54, kOpVariableOp = 59, kOpLoadOp = 61,
+                   kOpAccessChainOp = 65, kOpInBoundsAccessChainOp = 66, kOpDecorateOp = 71, kOpMemberDecorate = 72,
+                   kOpDecorationGroup = 73, kOpGroupDecorate = 74, kOpGroupMemberDecorate = 75, kOpCopyObject = 83,
+                   kOpImageRead = 98, kOpImageWrite = 99, kOpImageQuerySizeLod = 103, kOpImageQuerySizeOp = 104,
+                   kOpImageQueryLod = 105, kOpImageQueryLevels = 106, kOpImageQuerySamples = 107,
+                   kOpImageSparseRead = 320, kOpDecorateId = 332, kOpDecorateString = 5632,
+                   kOpMemberDecorateString = 5633;
+constexpr uint32_t kDecorationNonWritable = 24, kDecorationNonReadable = 25;
+constexpr uint32_t kRead = 1, kWrite = 2;
+
+bool isAnnotation(uint32_t op) {
+    return (op >= kOpDecorateOp && op <= kOpGroupMemberDecorate) || op == kOpDecorateId || op == kOpDecorateString ||
+           op == kOpMemberDecorateString;
+}
+
+}  // namespace
+
+std::vector<uint32_t> inferStorageImageAccess(std::vector<uint32_t> spirv) {
+    if (spirv.size() < 5) return spirv;
+    std::set<uint32_t> imageTypes, pointerTypes;
+    std::map<uint32_t, uint32_t> access;   // storage image variable -> kRead | kWrite
+    std::map<uint32_t, uint32_t> origin;   // loads and access chains of one -> the variable
+    std::map<uint32_t, std::set<uint32_t>> decorations;
+    size_t firstFunction = 0, annotationsEnd = 0, firstType = 0;
+    for (size_t i = 5; i < spirv.size();) {
+        const uint32_t count = spirv[i] >> 16, op = spirv[i] & 0xffff;
+        if (!count || i + count > spirv.size()) return spirv;
+        if (op == kOpFunctionFirst) {
+            firstFunction = i;
+            break;
+        }
+        if (isAnnotation(op)) annotationsEnd = i + count;
+        if (op == kOpDecorateOp && count >= 3) decorations[spirv[i + 1]].insert(spirv[i + 2]);
+        if (op == kOpTypeImageOp && count >= 9 && spirv[i + 7] == 2) imageTypes.insert(spirv[i + 1]);
+        if ((op == kOpTypeArrayOp || op == kOpTypeRuntimeArray) && count >= 3 && imageTypes.count(spirv[i + 2]))
+            imageTypes.insert(spirv[i + 1]);
+        if (op == kOpTypePointerOp && count >= 4 && imageTypes.count(spirv[i + 3])) pointerTypes.insert(spirv[i + 1]);
+        if (op == kOpVariableOp && count >= 4 && pointerTypes.count(spirv[i + 1])) access[spirv[i + 2]] = 0;
+        if (!firstType && op >= 19 && op <= 39) firstType = i;
+        i += count;
+    }
+    if (access.empty() || !firstFunction) return spirv;
+    for (auto& [variable, mask] : access) origin[variable] = variable;
+    auto mark = [&](uint32_t id, uint32_t bits) {
+        if (auto it = origin.find(id); it != origin.end()) access[it->second] |= bits;
+    };
+    for (size_t i = firstFunction; i < spirv.size();) {
+        const uint32_t count = spirv[i] >> 16, op = spirv[i] & 0xffff;
+        if (!count || i + count > spirv.size()) return spirv;
+        switch (op) {
+        case kOpLoadOp:
+        case kOpAccessChainOp:
+        case kOpInBoundsAccessChainOp:
+        case kOpCopyObject:
+            if (count >= 4) {
+                if (auto it = origin.find(spirv[i + 3]); it != origin.end()) origin[spirv[i + 2]] = it->second;
+                for (uint32_t w = 4; w < count; ++w) mark(spirv[i + w], kRead | kWrite);
+            }
+            break;
+        case kOpImageRead:
+        case kOpImageSparseRead:
+            if (count >= 4) mark(spirv[i + 3], kRead);
+            break;
+        case kOpImageWrite:
+            if (count >= 2) mark(spirv[i + 1], kWrite);
+            break;
+        case kOpImageQuerySizeLod:
+        case kOpImageQuerySizeOp:
+        case kOpImageQueryLod:
+        case kOpImageQueryLevels:
+        case kOpImageQuerySamples:
+            break;
+        default:
+            // Atomics (OpImageTexelPointer), function arguments and anything
+            // else: read and written, as without this pass.
+            for (uint32_t w = 1; w < count; ++w) mark(spirv[i + w], kRead | kWrite);
+            break;
+        }
+        i += count;
+    }
+    std::vector<uint32_t> added;
+    for (const auto& [variable, mask] : access) {
+        const std::set<uint32_t>& has = decorations[variable];
+        if (!(mask & kWrite) && !has.count(kDecorationNonWritable))
+            added.insert(added.end(), {(3u << 16) | kOpDecorateOp, variable, kDecorationNonWritable});
+        else if (!(mask & kRead) && !has.count(kDecorationNonReadable))
+            added.insert(added.end(), {(3u << 16) | kOpDecorateOp, variable, kDecorationNonReadable});
+    }
+    if (added.empty()) return spirv;
+    const size_t at = annotationsEnd ? annotationsEnd : firstType;
+    if (!at) return spirv;
+    spirv.insert(spirv.begin() + static_cast<long>(at), added.begin(), added.end());
+    return spirv;
+}
+
 }  // namespace wmgl::shader

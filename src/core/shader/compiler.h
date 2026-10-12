@@ -48,10 +48,12 @@ constexpr uint32_t kSlotTessVertices = 20, kSlotTessPatches = 21, kSlotTessContr
 // argument buffer (kSlotStorageBlocks), after or between its storage blocks.
 constexpr uint32_t kSlotFirstAtomicCounterBuffer = 20;
 constexpr uint32_t kMaxVertexAtomicCounterBuffers = 8;
-// Image uniforms (GL 4.2 image load/store): textures 16..23 of every stage
-// (Metal allows 8 read_write textures per function).
+// Image uniforms (GL 4.2 image load/store): textures 16..31 of every stage,
+// at most 8 of them read_write (Metal's limit per function); images a stage
+// only reads or only writes are access::read or access::write textures.
 constexpr uint32_t kSlotFirstImage = 16;
-constexpr uint32_t kMaxStageImages = 8;
+constexpr uint32_t kMaxStageImages = 16;
+constexpr uint32_t kMaxStageReadWriteImages = 8;
 constexpr uint32_t kMaxStageAtomicCounterBuffers = 8;
 // Shader storage blocks (GL 4.3): one argument buffer per stage function at
 // buffer 28 (geometry and tessellation emulation kernels and the evaluation

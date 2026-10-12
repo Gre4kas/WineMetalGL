@@ -398,9 +398,9 @@ TEST(shader_glsl420_pack_rules) {
                                    "out vec4 o; void main() { o = v; }\n").ok);
     CHECK(!compile(Stage::Vertex, "#version 420\ninvariant in vec4 v; void main() { gl_Position = v; }\n").ok);
     // Image bindings name image units; block bindings stay below GL_MAX_UNIFORM_BUFFER_BINDINGS.
-    CHECK(compile(Stage::Fragment, "#version 420\nlayout(binding = 7, rgba8) readonly uniform image2D i;\n"
+    CHECK(compile(Stage::Fragment, "#version 420\nlayout(binding = 15, rgba8) readonly uniform image2D i;\n"
                                    "out vec4 o; void main() { o = imageLoad(i, ivec2(0)); }\n").ok);
-    CHECK(!compile(Stage::Fragment, "#version 420\nlayout(binding = 8, rgba8) readonly uniform image2D i;\n"
+    CHECK(!compile(Stage::Fragment, "#version 420\nlayout(binding = 16, rgba8) readonly uniform image2D i;\n"
                                     "out vec4 o; void main() { o = imageLoad(i, ivec2(0)); }\n").ok);
     CHECK(compile(Stage::Fragment, "#version 420\nlayout(std140, binding = 82) uniform B { vec4 a; } b[2];\n"
                                    "out vec4 o; void main() { o = b[1].a; }\n").ok);

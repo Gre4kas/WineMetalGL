@@ -282,3 +282,58 @@ GPU_TEST_VERSION(gpu_gl46_atomic_counter_buffer_stages, 46) {
     CHECK_GL();
     glDeleteProgram(p);
 }
+
+// More images in one stage than Metal's 8 read_write textures: images the
+// shader only reads or only writes (no qualifiers) are read-only or
+// write-only Metal textures; one read and written atomically is read_write.
+GPU_TEST_VERSION(gpu_gl46_many_images, 46) {
+    const char* const source = "#version 460 core\n"
+                               "layout(local_size_x = 1) in;\n"
+                               "layout(binding = 0, r32ui) uniform uimage2D sources[6];\n"
+                               "layout(binding = 6, r32ui) uniform uimage2D results[6];\n"
+                               "layout(binding = 12, r32ui) uniform uimage2D total;\n"
+                               "void main() {\n"
+                               "    uint sum = 0u;\n"
+                               "    for (int i = 0; i < 6; ++i) {\n"
+                               "        uint v = imageLoad(sources[i], ivec2(0)).x;\n"
+                               "        imageStore(results[i], ivec2(0), uvec4(v * 2u));\n"
+                               "        sum += v;\n"
+                               "    }\n"
+                               "    imageAtomicAdd(total, ivec2(0), sum);\n"
+                               "}\n";
+    GLint units = 0, perStage = 0;
+    glGetIntegerv(GL_MAX_IMAGE_UNITS, &units);
+    glGetIntegerv(GL_MAX_COMPUTE_IMAGE_UNIFORMS, &perStage);
+    CHECK(units >= 13);
+    CHECK_EQ(perStage, 8);
+    GLuint p = glCreateShaderProgramv(GL_COMPUTE_SHADER, 1, &source);
+    GLint linked = 0;
+    glGetProgramiv(p, GL_LINK_STATUS, &linked);
+    if (!linked) {
+        char log[2048] = {};
+        glGetProgramInfoLog(p, sizeof(log), nullptr, log);
+        std::fprintf(stderr, "  link failed:\n%s\n", log);
+    }
+    CHECK(linked);
+    GLuint textures[13];
+    glGenTextures(13, textures);
+    for (GLuint i = 0; i < 13; ++i) {
+        glBindTexture(GL_TEXTURE_2D, textures[i]);
+        glTexStorage2D(GL_TEXTURE_2D, 1, GL_R32UI, 1, 1);
+        const GLuint value = i < 6 ? i + 1 : i == 12 ? 5 : 0;
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 1, 1, GL_RED_INTEGER, GL_UNSIGNED_INT, &value);
+    }
+    glBindImageTextures(0, 13, textures);
+    glUseProgram(p);
+    glDispatchCompute(1, 1, 1);
+    glMemoryBarrier(GL_TEXTURE_UPDATE_BARRIER_BIT);
+    CHECK_GL();
+    for (GLuint i = 6; i < 13; ++i) {
+        GLuint value = 0;
+        glBindTexture(GL_TEXTURE_2D, textures[i]);
+        glGetTexImage(GL_TEXTURE_2D, 0, GL_RED_INTEGER, GL_UNSIGNED_INT, &value);
+        CHECK_EQ(value, i < 12 ? 2 * (i - 5) : 26u);
+    }
+    glDeleteTextures(13, textures);
+    glDeleteProgram(p);
+}

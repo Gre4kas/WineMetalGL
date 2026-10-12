@@ -25,4 +25,10 @@ std::vector<uint32_t> cubeStorageImagesAs2DArrays(std::vector<uint32_t> spirv);
 // any other way (a partial access, a whole copy) is left as it is.
 std::vector<uint32_t> flattenArraysOfArrays(std::vector<uint32_t> spirv);
 
+// Storage images a stage only reads get NonWritable, and those it only
+// writes NonReadable, so they become access::read or access::write Metal
+// textures: a Metal function takes only 8 read_write textures. Atomics,
+// images passed to functions and any other use keep both accesses.
+std::vector<uint32_t> inferStorageImageAccess(std::vector<uint32_t> spirv);
+
 }  // namespace wmgl::shader

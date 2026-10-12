@@ -2852,7 +2852,8 @@ static LinkResult linkImplCore(const LinkInput& input, const CaptureCode* captur
         try {
             // Doubles become soft-float code (fp64.h); no-op without them.
             std::vector<uint32_t> spirv =
-                flattenArraysOfArrays(cubeStorageImagesAs2DArrays(lowerGatherOffsets(rectImagesAs2D(stage.spirv))));
+                inferStorageImageAccess(
+                    flattenArraysOfArrays(cubeStorageImagesAs2DArrays(lowerGatherOffsets(rectImagesAs2D(stage.spirv)))));
             if (!lowerFp64(spirv, result.log)) return result;
             BorderMsl msl(std::move(spirv));
             spirv_cross::CompilerMSL::Options mslOptions;
@@ -3041,8 +3042,9 @@ static LinkResult linkImplCore(const LinkInput& input, const CaptureCode* captur
                     return result;
                 }
             }
-            // Images: textures kSlotFirstImage.. (read_write textures).
-            uint32_t nextImage = kSlotFirstImage;
+            // Images: textures kSlotFirstImage..; at most 8 of them read_write
+            // (inferStorageImageAccess).
+            uint32_t nextImage = kSlotFirstImage, readWriteImages = 0;
             for (const auto& image : resources.storage_images) {
                 const std::string name = unescapeName(msl.get_name(image.id));
                 const spirv_cross::SPIRType& type = msl.get_type(image.type_id);
@@ -3060,7 +3062,10 @@ static LinkResult linkImplCore(const LinkInput& input, const CaptureCode* captur
                     for (uint32_t e = 0; e < count; ++e) result.images[first + e].stageTexture[s] = static_cast<int>(nextImage + e);
                 }
                 nextImage += count;
-                if (nextImage > kSlotFirstImage + kMaxStageImages) {
+                if (!msl.has_decoration(image.id, spv::DecorationNonWritable) &&
+                    !msl.has_decoration(image.id, spv::DecorationNonReadable))
+                    readWriteImages += count;
+                if (nextImage > kSlotFirstImage + kMaxStageImages || readWriteImages > kMaxStageReadWriteImages) {
                     result.log += "error: too many images in one stage\n";
                     return result;
                 }

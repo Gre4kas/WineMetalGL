@@ -29,8 +29,11 @@ constexpr GLint kMaxPatchVertices = 32, kMaxTessGenLevel = 64;
 // GL 4.2 image load/store and atomic counters. Counters live in fragment,
 // geometry (a compute kernel) and compute functions, whose Metal buffer
 // slots have room for 8 counter buffers, and in vertex functions, which keep
-// theirs in the storage block argument buffer (shader/compiler.h).
-constexpr GLint kMaxImageUnits = 8, kMaxImageUniformsPerStage = 8, kMaxCombinedImageUniforms = 48;
+// theirs in the storage block argument buffer (shader/compiler.h). Image
+// units are binding points only; a stage takes 8 images that it reads and
+// writes (Metal's read_write textures), and more that it only reads or only
+// writes (shader/compiler.h), so the per-stage limits stay at 8.
+constexpr GLint kMaxImageUnits = 16, kMaxImageUniformsPerStage = 8, kMaxCombinedImageUniforms = 48;
 constexpr GLint kMaxAtomicCounterBufferBindings = 8, kMaxStageAtomicCounterBuffers = 8, kMaxStageAtomicCounters = 8;
 constexpr GLint kMaxVertexAtomicCounterBuffers = 8;
 constexpr GLint kMaxAtomicCounterBufferSize = 16384;
@@ -38,7 +41,7 @@ constexpr GLint kMaxAtomicCounterBufferSize = 16384;
 // emulated geometry and tessellation stages included (shader/compiler.h).
 constexpr GLint kMaxShaderStorageBufferBindings = 16, kMaxStageStorageBlocks = 16, kMaxCombinedStorageBlocks = 48;
 constexpr GLint kMaxShaderStorageBlockSize = 1 << 27, kShaderStorageBufferOffsetAlignment = 16;
-constexpr GLint kMaxCombinedShaderOutputResources = kMaxCombinedStorageBlocks + kMaxImageUnits + kMaxDrawBuffers;
+constexpr GLint kMaxCombinedShaderOutputResources = kMaxCombinedStorageBlocks + kMaxImageUniformsPerStage + kMaxDrawBuffers;
 constexpr GLint kMaxUniformLocations = 1024;  // GL 4.3 explicit uniform locations
 // GL 4.3 vertex attribute bindings (GL_MAX_VERTEX_ATTRIB_RELATIVE_OFFSET), GL 4.4 stride limit.
 constexpr GLint kMaxVertexAttribRelativeOffset = 2047, kMaxVertexAttribStride = 2048;
