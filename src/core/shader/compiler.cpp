@@ -12,10 +12,12 @@
 #include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <list>
 #include <memory>
 #include <mutex>
 #include <set>
 #include <sstream>
+#include <unordered_map>
 
 #include "core/shader/border.h"
 #include "core/shader/fp64.h"
@@ -1462,7 +1464,46 @@ std::string checkBlockBindings(glslang::TShader& shader) {
 
 }  // namespace
 
-CompileResult compile(Stage stage, const std::string& original) {
+namespace {
+
+CompileResult compileUncached(Stage stage, const std::string& original);
+
+}  // namespace
+
+CompileResult compile(Stage stage, const std::string& source) {
+    // Results of recent compiles by stage and source (the parse depends on
+    // nothing else): shaders compiled again from the same source, as
+    // applications and shader caches do, skip the parse.
+    static std::mutex mutex;
+    static std::list<std::string> order;  // most recently used first
+    static std::unordered_map<std::string, std::pair<CompileResult, std::list<std::string>::iterator>> cache;
+    constexpr size_t kEntries = 512;
+    std::string key(1, static_cast<char>(stage));
+    key += source;
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        auto it = cache.find(key);
+        if (it != cache.end()) {
+            order.splice(order.begin(), order, it->second.second);
+            return it->second.first;
+        }
+    }
+    CompileResult result = compileUncached(stage, source);
+    std::lock_guard<std::mutex> lock(mutex);
+    if (!cache.count(key)) {
+        order.push_front(key);
+        cache.emplace(std::move(key), std::make_pair(result, order.begin()));
+        while (cache.size() > kEntries) {
+            cache.erase(order.back());
+            order.pop_back();
+        }
+    }
+    return result;
+}
+
+namespace {
+
+CompileResult compileUncached(Stage stage, const std::string& original) {
     initGlslang();
     CompileResult result;
     // Subroutines are lowered first: glslang does not implement them.
@@ -1529,6 +1570,8 @@ CompileResult compile(Stage stage, const std::string& original) {
     }
     return result;
 }
+
+}  // namespace
 
 // ---------------------------------------------------------------- link
 
@@ -3490,7 +3533,9 @@ LinkInput withGeometryPrimitiveId(const LinkInput& input) {
 
 }  // namespace
 
-LinkResult link(const LinkInput& original) {
+namespace {
+
+LinkResult linkUncached(const LinkInput& original) {
     const LinkInput input = withGeometryPrimitiveId(original);
     GeometryShaderInfo geometry;
     LinkResult geometryCapture;
@@ -3518,6 +3563,85 @@ LinkResult link(const LinkInput& original) {
         return result;
     }
     result.xfbVertexCapture = true;
+    return result;
+}
+
+// Every input a link depends on, as one string: the link is a function of
+// it alone (the limits are constants).
+std::string linkKey(const LinkInput& input) {
+    std::string key;
+    auto add = [&](const std::string& text) {
+        const uint64_t size = text.size();
+        key.append(reinterpret_cast<const char*>(&size), sizeof(size));
+        key += text;
+    };
+    auto addNumber = [&](uint64_t value) { key.append(reinterpret_cast<const char*>(&value), sizeof(value)); };
+    addNumber(input.shaders.size());
+    for (const ShaderSource& shader : input.shaders) {
+        addNumber(static_cast<uint64_t>(shader.stage));
+        add(shader.source);
+    }
+    addNumber(input.attribBindings.size());
+    for (const auto& [name, location] : input.attribBindings) {
+        add(name);
+        addNumber(location);
+    }
+    addNumber(input.fragDataBindings.size());
+    for (const auto& [name, binding] : input.fragDataBindings) {
+        add(name);
+        addNumber(binding.first);
+        addNumber(binding.second);
+    }
+    addNumber(input.transformFeedbackVaryings.size());
+    for (const std::string& varying : input.transformFeedbackVaryings) add(varying);
+    addNumber(input.transformFeedbackMode);
+    addNumber(uint64_t{input.separable} | uint64_t{input.internal} << 1 | uint64_t{input.captureLayout} << 2 |
+              uint64_t{input.spirv} << 3 | uint64_t{input.spirvUnnamed} << 4);
+    return key;
+}
+
+// Results of recent links by their inputs: programs linked again from the
+// same shaders and bindings (a pipeline built per draw setup, shader caches
+// that relink) skip compiling and translating, as drivers' shader caches do.
+class LinkCache {
+public:
+    std::shared_ptr<const LinkResult> find(const std::string& key) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = entries_.find(key);
+        if (it == entries_.end()) return nullptr;
+        order_.splice(order_.begin(), order_, it->second.position);  // most recently used first
+        return it->second.result;
+    }
+    void add(std::string key, std::shared_ptr<const LinkResult> result) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (entries_.count(key)) return;
+        order_.push_front(key);
+        entries_.emplace(std::move(key), Entry{std::move(result), order_.begin()});
+        while (entries_.size() > kEntries) {
+            entries_.erase(order_.back());
+            order_.pop_back();
+        }
+    }
+
+private:
+    static constexpr size_t kEntries = 256;
+    struct Entry {
+        std::shared_ptr<const LinkResult> result;
+        std::list<std::string>::iterator position;
+    };
+    std::mutex mutex_;
+    std::list<std::string> order_;
+    std::unordered_map<std::string, Entry> entries_;
+};
+
+}  // namespace
+
+LinkResult link(const LinkInput& input) {
+    static LinkCache cache;
+    std::string key = linkKey(input);
+    if (std::shared_ptr<const LinkResult> cached = cache.find(key)) return *cached;
+    LinkResult result = linkUncached(input);
+    cache.add(std::move(key), std::make_shared<const LinkResult>(result));
     return result;
 }
 

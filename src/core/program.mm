@@ -2,6 +2,10 @@
 
 #include <algorithm>
 #include <atomic>
+#include <list>
+#include <mutex>
+#include <string>
+#include <unordered_map>
 
 #include "core/metal/device.h"
 #include "core/objects.h"
@@ -17,7 +21,52 @@ uint64_t nextLinkedProgramId() {
 
 namespace {
 
+// Compiled functions by their source and entry point: programs linked
+// again from the same shaders (shader::link's cache) and stages shared
+// between programs compile once.
+struct FunctionCache {
+    static constexpr size_t kEntries = 512;
+    std::mutex mutex;
+    std::list<std::string> order;  // most recently used first
+    std::unordered_map<std::string, std::pair<id<MTLFunction>, std::list<std::string>::iterator>> entries;
+};
+
+FunctionCache& functionCache() {
+    static FunctionCache cache;
+    return cache;
+}
+
+id<MTLFunction> compileFunctionUncached(const std::string& msl, const std::string& entryPoint, int stage);
+
 id<MTLFunction> compileFunction(const std::string& msl, const std::string& entryPoint, int stage) {
+    FunctionCache& cache = functionCache();
+    std::string key = entryPoint;
+    key += '\0';
+    key += msl;
+    {
+        std::lock_guard<std::mutex> lock(cache.mutex);
+        auto it = cache.entries.find(key);
+        if (it != cache.entries.end()) {
+            cache.order.splice(cache.order.begin(), cache.order, it->second.second);
+            return it->second.first;
+        }
+    }
+    // Compiled outside the lock: other threads compile other functions meanwhile.
+    id<MTLFunction> function = compileFunctionUncached(msl, entryPoint, stage);
+    if (!function) return nil;
+    std::lock_guard<std::mutex> lock(cache.mutex);
+    if (!cache.entries.count(key)) {
+        cache.order.push_front(key);
+        cache.entries.emplace(std::move(key), std::make_pair(function, cache.order.begin()));
+        while (cache.entries.size() > FunctionCache::kEntries) {
+            cache.entries.erase(cache.order.back());
+            cache.order.pop_back();
+        }
+    }
+    return function;
+}
+
+id<MTLFunction> compileFunctionUncached(const std::string& msl, const std::string& entryPoint, int stage) {
     MTLCompileOptions* options = [MTLCompileOptions new];
     options.languageVersion = MTLLanguageVersion3_1;  // texture atomics
     options.mathMode = MTLMathModeSafe;  // GL requires IEEE behaviour for inf/nan propagation
