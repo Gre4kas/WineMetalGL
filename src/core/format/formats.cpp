@@ -264,7 +264,7 @@ GLenum resolveInternalFormat(GLenum internalFormat, GLenum format, GLenum type) 
     }
 }
 
-bool isValidTextureInternalFormat(GLenum internalFormat, bool compatibility) {
+bool isValidTextureInternalFormat(GLenum internalFormat, bool compatibility, bool stencilTextures) {
     switch (internalFormat) {
     case GL_RED: case GL_RG: case GL_RGB: case GL_RGBA: case GL_DEPTH_COMPONENT: case GL_DEPTH_STENCIL:
     case GL_COMPRESSED_RED: case GL_COMPRESSED_RG: case GL_COMPRESSED_RGB: case GL_COMPRESSED_RGBA:
@@ -272,9 +272,10 @@ bool isValidTextureInternalFormat(GLenum internalFormat, bool compatibility) {
         return true;
     case 1: case 2: case 3: case 4: case GL_ALPHA: case GL_LUMINANCE: case GL_LUMINANCE_ALPHA: case GL_INTENSITY:
         return compatibility;
-    case GL_STENCIL_INDEX:
-    case GL_STENCIL_INDEX1: case GL_STENCIL_INDEX4: case GL_STENCIL_INDEX8: case GL_STENCIL_INDEX16:
-        return false;  // stencil texturing is GL 4.4
+    case GL_STENCIL_INDEX: case GL_STENCIL_INDEX8:
+        return stencilTextures;  // GL 4.4, GL_ARB_texture_stencil8
+    case GL_STENCIL_INDEX1: case GL_STENCIL_INDEX4: case GL_STENCIL_INDEX16:
+        return false;
     default: break;
     }
     const FormatInfo* info = formatInfo(internalFormat);

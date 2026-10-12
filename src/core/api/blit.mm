@@ -422,7 +422,11 @@ void BlitFramebuffer(Context& ctx, GLint srcX0, GLint srcY0, GLint srcX1, GLint 
             if (pipeline) drawBlit(ctx, target, pipeline, view, paramsFor(depthW, depthH), scissor, true, false);
         }
     }
-    if (doStencil)
+    // Stencil-only images of one format and sample count copy directly, every
+    // sample included (KHR-GL46.texture_stencil8.multisample); otherwise the
+    // CPU path, which resolves a multisample source.
+    if (doStencil && !(srcStencil.texture.pixelFormat == MTLPixelFormatStencil8 &&
+                       tryCopy(ctx, srcStencil, stencilW, stencilH, dst.stencil, dst.width, dst.height, srcRect, dstRect)))
         blitStencil(ctx, srcStencil, stencilW, stencilH, dst.stencil, dstFormats.depth, dst.samples, dst.width, dst.height,
                     srcRect, dstRect);
     // Draws after the blit start a fresh pass with their own state.

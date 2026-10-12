@@ -144,3 +144,35 @@ GPU_TEST_VERSION(gpu_gl44_query_buffer, 44) {
     glDeleteVertexArrays(1, &vao);
     glDeleteProgram(p);
 }
+
+// GL_ARB_texture_stencil8: a STENCIL_INDEX8 texture uploaded, read back and
+// sampled as unsigned integers; GL_MIRROR_CLAMP_TO_EDGE is a wrap mode.
+GPU_TEST_VERSION(gpu_gl44_stencil8_texture, 44) {
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    const uint8_t stencil[4] = {7, 42, 200, 255};
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_STENCIL_INDEX8, 2, 2, 0, GL_STENCIL_INDEX, GL_UNSIGNED_BYTE, stencil);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_MIRROR_CLAMP_TO_EDGE);
+    CHECK_GL();
+    uint8_t back[4] = {};
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glGetTexImage(GL_TEXTURE_2D, 0, GL_STENCIL_INDEX, GL_UNSIGNED_BYTE, back);
+    CHECK_GL();
+    CHECK(std::memcmp(back, stencil, 4) == 0);
+    GLuint p = gpu::program("#version 440 core\nin vec2 position;\nvoid main() { gl_Position = vec4(position, 0.0, 1.0); }\n",
+                            "#version 440 core\nuniform usampler2D s;\nout vec4 o;\n"
+                            "void main() { o = vec4(float(texelFetch(s, ivec2(1, 0), 0).r) / 255.0, 0.0, 0.0, 1.0); }\n");
+    glUseProgram(p);
+    GLuint vao = gpu::quad();
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    CHECK_GL();
+    const uint8_t want[4] = {42, 0, 0, 255};
+    CHECK(gpu::near(gpu::readRGBA8(32, 32, 1, 1).data(), want));
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
+    glDeleteTextures(1, &tex);
+}

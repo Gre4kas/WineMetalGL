@@ -140,6 +140,9 @@ int maxLevelFor(GLenum target) {
 
 // ------------------------------------------------------------ transfers
 
+// STENCIL_INDEX textures (GL 4.4, GL_ARB_texture_stencil8).
+bool stencilTextures(Context& ctx) { return ctx.version() >= 44 || ctx.hasExtension("GL_ARB_texture_stencil8"); }
+
 bool isTypeEnum(GLenum type) {
     switch (type) {
     case GL_UNSIGNED_BYTE: case GL_BYTE: case GL_UNSIGNED_SHORT: case GL_SHORT: case GL_UNSIGNED_INT: case GL_INT:
@@ -404,8 +407,9 @@ bool sizeAllowed(Context& ctx, const ImageTarget& t, GLint level, GLsizei w, GLs
 
 // TexImage/TexSubImage source formats for depth images: DEPTH_COMPONENT or
 // DEPTH_STENCIL data (the depth part is used for depth-only images);
-// STENCIL_INDEX uploads need stencil texturing (GL 4.4).
+// stencil-only images (GL 4.4) take STENCIL_INDEX data.
 bool textureTransferCompatible(GLenum format, GLenum type, const FormatInfo& info) {
+    if (info.stencilBits && !info.depthBits) return format == GL_STENCIL_INDEX;  // GL 4.4 stencil textures
     if (info.isDepthOrStencil()) return format == GL_DEPTH_COMPONENT || format == GL_DEPTH_STENCIL;
     return transferCompatible(format, type, info);
 }
@@ -427,7 +431,7 @@ void texImage(Context& ctx, int dims, GLenum target, GLint level, GLint internal
     if (!imageTarget(ctx, target, dims, true, t)) return;
     if (!checkFormatType(ctx, format, type)) return;
     const GLenum requested = static_cast<GLenum>(internalformat);
-    if (!isValidTextureInternalFormat(requested, ctx.isCompat())) return ctx.setError(GL_INVALID_VALUE);
+    if (!isValidTextureInternalFormat(requested, ctx.isCompat(), stencilTextures(ctx))) return ctx.setError(GL_INVALID_VALUE);
     bool tooLarge;
     if (!sizeAllowed(ctx, t, level, width, height, depth, border, tooLarge)) return;
     const FormatInfo* info = formatInfo(resolveInternalFormat(requested, format, type));
@@ -730,7 +734,7 @@ void copyTexImage(Context& ctx, int dims, GLenum target, GLint level, GLenum int
                   GLsizei width, GLsizei height, GLint border) {
     ImageTarget t;
     if (!imageTarget(ctx, target, dims, false, t)) return;
-    if (!isValidTextureInternalFormat(internalformat, ctx.isCompat())) return ctx.setError(GL_INVALID_VALUE);
+    if (!isValidTextureInternalFormat(internalformat, ctx.isCompat(), stencilTextures(ctx))) return ctx.setError(GL_INVALID_VALUE);
     bool tooLarge;
     if (!sizeAllowed(ctx, t, level, width, dims == 1 ? 1 : height, 1, border, tooLarge)) return;
     const FormatInfo* probe = formatInfo(resolveInternalFormat(internalformat, 0, 0));
@@ -816,10 +820,12 @@ ParamValues paramFloats(const GLfloat* v, int count) {
 
 bool isVectorParam(GLenum pname) { return pname == GL_TEXTURE_BORDER_COLOR || pname == GL_TEXTURE_SWIZZLE_RGBA; }
 
-// GL_CLAMP is compatibility-profile only.
-bool validWrap(GLenum v, bool compat) {
+// GL_CLAMP is compatibility-profile only; GL_MIRROR_CLAMP_TO_EDGE is GL 4.4
+// (GL_ARB_texture_mirror_clamp_to_edge).
+bool validWrap(GLenum v, Context& ctx) {
     return v == GL_CLAMP_TO_EDGE || v == GL_REPEAT || v == GL_MIRRORED_REPEAT || v == GL_CLAMP_TO_BORDER ||
-           (compat && v == GL_CLAMP);
+           (ctx.isCompat() && v == GL_CLAMP) ||
+           (v == GL_MIRROR_CLAMP_TO_EDGE && (ctx.version() >= 44 || ctx.hasExtension("GL_ARB_texture_mirror_clamp_to_edge")));
 }
 
 bool validCompareFunc(GLenum v) { return v >= GL_NEVER && v <= GL_ALWAYS; }
@@ -833,7 +839,7 @@ bool enumValue(const ParamValues& v, GLenum& out) {
 
 // Applies a sampler-state parameter. Returns GL_NO_ERROR, an error, or
 // GL_INVALID_ENUM for names that are not sampler state.
-GLenum setSamplerParam(SamplerParams& p, GLenum pname, const ParamValues& v, GLenum target, bool compat) {
+GLenum setSamplerParam(SamplerParams& p, GLenum pname, const ParamValues& v, GLenum target, Context& ctx) {
     const bool rect = target == GL_TEXTURE_RECTANGLE;
     GLenum e = 0;
     switch (pname) {
@@ -850,7 +856,7 @@ GLenum setSamplerParam(SamplerParams& p, GLenum pname, const ParamValues& v, GLe
         p.magFilter = e;
         return GL_NO_ERROR;
     case GL_TEXTURE_WRAP_S: case GL_TEXTURE_WRAP_T: case GL_TEXTURE_WRAP_R:
-        if (!enumValue(v, e) || !validWrap(e, compat)) return GL_INVALID_ENUM;
+        if (!enumValue(v, e) || !validWrap(e, ctx)) return GL_INVALID_ENUM;
         if (rect && e != GL_CLAMP_TO_EDGE && e != GL_CLAMP_TO_BORDER && e != GL_CLAMP) return GL_INVALID_ENUM;
         (pname == GL_TEXTURE_WRAP_S ? p.wrapS : pname == GL_TEXTURE_WRAP_T ? p.wrapT : p.wrapR) = e;
         return GL_NO_ERROR;
@@ -911,7 +917,7 @@ void texParameter(Context& ctx, GLenum target, GLenum pname, const ParamValues& 
         if (pname == GL_TEXTURE_MAX_ANISOTROPY && !ctx.hasExtension("GL_EXT_texture_filter_anisotropic") &&
             ctx.version() < 46)
             return ctx.setError(GL_INVALID_ENUM);
-        const GLenum error = setSamplerParam(tex->sampler, pname, v, target, ctx.isCompat());
+        const GLenum error = setSamplerParam(tex->sampler, pname, v, target, ctx);
         if (error) return ctx.setError(error);
         ctx.markDirty(kDirtyTextures);
         return;
@@ -2124,7 +2130,7 @@ void samplerParameter(Context& ctx, GLuint sampler, GLenum pname, const ParamVal
     if (!isSamplerParam(pname) || (!vectorCall && isVectorParam(pname))) return ctx.setError(GL_INVALID_ENUM);
     if (pname == GL_TEXTURE_MAX_ANISOTROPY && !ctx.hasExtension("GL_EXT_texture_filter_anisotropic") && ctx.version() < 46)
         return ctx.setError(GL_INVALID_ENUM);
-    const GLenum error = setSamplerParam(object->params, pname, v, 0, ctx.isCompat());
+    const GLenum error = setSamplerParam(object->params, pname, v, 0, ctx);
     if (error) return ctx.setError(error);
     ctx.markDirty(kDirtyTextures);
 }
