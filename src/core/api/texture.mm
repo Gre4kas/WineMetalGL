@@ -5,7 +5,10 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <mutex>
+#include <string>
 #include <type_traits>
+#include <unordered_map>
 #include <vector>
 
 #include "core/context.h"
@@ -1644,6 +1647,114 @@ namespace {
 // `data` (zeros when it is null), converted as by TexSubImage without the
 // pixel store state, repeated over a region of one level. Cube maps clear
 // their faces as layers.
+// glClearTex(Sub)Image of a multisample image, which Metal cannot upload
+// to: a render pass per layer sets every sample of the region (a load
+// action for whole layers). Colour texels are written bit for bit through
+// an unsigned integer view of the storage.
+void clearMultisample(Context& ctx, Texture& tex, const FormatInfo& info, const uint8_t* texel, int x, int y, int z, int w,
+                      int h, int d) {
+    id<MTLTexture> mtl = tex.mtl;
+    const TextureImage& image = tex.image(0, 0);
+    const bool color = !info.isDepthOrStencil();
+    const size_t bytes = storageBytes(info.storage);
+    uint32_t words[4] = {};
+    float depth = 0.0f;
+    uint32_t stencil = 0;
+    id<MTLTexture> view = mtl;
+    if (color) {
+        const MTLPixelFormat uintFormat = bytes == 1 ? MTLPixelFormatR8Uint : bytes == 2 ? MTLPixelFormatR16Uint
+                                          : bytes == 4 ? MTLPixelFormatR32Uint : bytes == 8 ? MTLPixelFormatRG32Uint
+                                                                                            : MTLPixelFormatRGBA32Uint;
+        if (bytes == 1) words[0] = texel[0];
+        else if (bytes == 2) words[0] = static_cast<uint32_t>(texel[0]) | static_cast<uint32_t>(texel[1]) << 8;
+        else std::memcpy(words, texel, std::min<size_t>(bytes, sizeof(words)));
+        view = [mtl newTextureViewWithPixelFormat:uintFormat textureType:mtl.textureType levels:NSMakeRange(0, 1)
+                                           slices:NSMakeRange(0, mtl.arrayLength)];
+        if (!view) return;
+    } else {
+        if (info.depthBits) std::memcpy(&depth, texel, 4);
+        if (info.stencilBits) stencil = texel[info.depthBits ? 4 : 0];
+    }
+    static std::mutex mutex;
+    static std::unordered_map<std::string, id<MTLRenderPipelineState>> pipelines;
+    static id<MTLDepthStencilState> depthStencilStates[4];
+    const bool whole = x == 0 && y == 0 && w == image.width && h == image.height;
+    for (int layer = z; layer < z + d; ++layer) {
+        RenderTargetDesc target;
+        target.width = static_cast<uint32_t>(image.width);
+        target.height = static_cast<uint32_t>(image.height);
+        target.samples = static_cast<uint32_t>(mtl.sampleCount);
+        const RenderTargetDesc::Target t{view, 0, static_cast<uint32_t>(layer)};
+        if (color) target.color[0] = t;
+        if (info.depthBits) target.depth = t;
+        if (info.stencilBits) target.stencil = t;
+        if (whole) {
+            PendingClear clear;
+            clear.colorMask = color ? 1 : 0;
+            clear.color[0] = MTLClearColorMake(words[0], words[1], words[2], words[3]);
+            clear.depth = info.depthBits != 0;
+            clear.depthValue = depth;
+            clear.stencil = info.stencilBits != 0;
+            clear.stencilValue = stencil;
+            if (ctx.stream().clearWithLoadAction(target, clear)) continue;
+        }
+        id<MTLRenderPipelineState> pipeline;
+        id<MTLDepthStencilState> depthStencil;
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            const MTLPixelFormat depthFormat = info.depthBits ? mtl.pixelFormat : MTLPixelFormatInvalid;
+            const MTLPixelFormat stencilFormat = info.stencilBits ? mtl.pixelFormat : MTLPixelFormatInvalid;
+            const std::string key = std::to_string(color ? view.pixelFormat : 0) + "/" + std::to_string(depthFormat) + "/" +
+                                    std::to_string(stencilFormat) + "/" + std::to_string(target.samples);
+            pipeline = pipelines[key];
+            if (!pipeline) {
+                id<MTLLibrary> library = Device::get().utilityLibrary();
+                MTLRenderPipelineDescriptor* desc = [MTLRenderPipelineDescriptor new];
+                desc.vertexFunction = [library newFunctionWithName:@"wmgl_clear_vs"];
+                desc.fragmentFunction = [library newFunctionWithName:color ? @"wmgl_clear_uint_fs" : @"wmgl_clear_depth_only_fs"];
+                if (color) desc.colorAttachments[0].pixelFormat = view.pixelFormat;
+                desc.depthAttachmentPixelFormat = depthFormat;
+                desc.stencilAttachmentPixelFormat = stencilFormat;
+                desc.rasterSampleCount = target.samples;
+                NSError* error = nil;
+                pipeline = [Device::get().mtl() newRenderPipelineStateWithDescriptor:desc error:&error];
+                if (!pipeline) WMGL_ERR("multisample clear pipeline: %s", error.localizedDescription.UTF8String);
+                pipelines[key] = pipeline;
+            }
+            const int which = (info.depthBits ? 1 : 0) | (info.stencilBits ? 2 : 0);
+            if (!depthStencilStates[which]) {
+                MTLDepthStencilDescriptor* desc = [MTLDepthStencilDescriptor new];
+                desc.depthCompareFunction = MTLCompareFunctionAlways;
+                desc.depthWriteEnabled = info.depthBits != 0;
+                if (info.stencilBits) {
+                    MTLStencilDescriptor* face = [MTLStencilDescriptor new];
+                    face.stencilCompareFunction = MTLCompareFunctionAlways;
+                    face.depthStencilPassOperation = MTLStencilOperationReplace;
+                    face.writeMask = 0xff;
+                    desc.frontFaceStencil = desc.backFaceStencil = face;
+                }
+                depthStencilStates[which] = [Device::get().mtl() newDepthStencilStateWithDescriptor:desc];
+            }
+            depthStencil = depthStencilStates[which];
+        }
+        if (!pipeline) return;
+        id<MTLRenderCommandEncoder> encoder = ctx.stream().render(target);
+        [encoder setRenderPipelineState:pipeline];
+        [encoder setDepthStencilState:depthStencil];
+        [encoder setStencilReferenceValue:stencil];
+        [encoder setViewport:(MTLViewport){0, 0, static_cast<double>(image.width), static_cast<double>(image.height), 0, 1}];
+        [encoder setScissorRect:(MTLScissorRect){static_cast<NSUInteger>(x), static_cast<NSUInteger>(y), static_cast<NSUInteger>(w),
+                                                 static_cast<NSUInteger>(h)}];
+        const float position[4] = {depth, 0, 0, 0};
+        [encoder setVertexBytes:position length:sizeof(position) atIndex:0];
+        uint32_t colors[8][4] = {};
+        std::memcpy(colors[0], words, sizeof(words));
+        [encoder setFragmentBytes:colors length:sizeof(colors) atIndex:0];
+        [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+        ctx.stream().endEncoder();  // the pass's state is not the GL draws'
+    }
+}
+
 void clearTexture(Context& ctx, const char* command, GLuint texture, GLint level, GLint x, GLint y, GLint z, GLsizei w,
                   GLsizei h, GLsizei d, bool whole, GLenum format, GLenum type, const void* data) {
     if (ctx.version() < 44 && !ctx.hasExtension("GL_ARB_clear_texture")) return ctx.unimplemented(command);
@@ -1676,17 +1787,18 @@ void clearTexture(Context& ctx, const char* command, GLuint texture, GLint level
             return ctx.setError(GL_INVALID_OPERATION);
     }
     if (!w || !h || !d) return;
-    if (image.samples > 1) {
-        logOnce(LogLevel::Warn, "clear-tex-ms", "%s of a multisample texture is not implemented", command);
-        return;
-    }
     if (!ensureTextureStorage(ctx, *tex) || !imageHasStorage(ctx, *tex, 0, level)) return;
     const size_t bytes = storageBytes(info.storage);
-    std::vector<uint8_t> texel(bytes, 0);
+    std::vector<uint8_t> texel(std::max<size_t>(bytes, 8), 0);
     if (data) {
         PixelStoreParams tight;
         tight.alignment = 1;
         unpackPixels(data, format, type, 1, 1, 1, tight, info, texel.data());
+    }
+    if (image.samples > 1) {
+        clearMultisample(ctx, *tex, info, texel.data(), x, y, z, w, h, d);
+        imageChanged(ctx, *tex);
+        return;
     }
     // One layer (or 3D slice, or cube face) at a time bounds the staging size.
     std::vector<uint8_t> fill(static_cast<size_t>(w) * h * bytes);

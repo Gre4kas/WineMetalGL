@@ -603,3 +603,35 @@ void main() {
     glDeleteTextures(5, tex);
     glDeleteProgram(p);
 }
+
+// glClearTexSubImage of a multisample texture: the whole image, then a
+// region, read back through a resolving blit.
+GPU_TEST_VERSION(gpu_gl44_clear_texture_multisample, 44) {
+    GLuint tex[2], fbo[2];
+    glGenTextures(2, tex);
+    glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, tex[0]);
+    glTexImage2DMultisample(GL_TEXTURE_2D_MULTISAMPLE, 4, GL_RGBA8, 4, 4, GL_TRUE);
+    glBindTexture(GL_TEXTURE_2D, tex[1]);
+    glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, 4, 4);
+    const uint8_t red[4] = {255, 0, 0, 255}, blue[4] = {0, 0, 255, 255};
+    glClearTexImage(tex[0], 0, GL_RGBA, GL_UNSIGNED_BYTE, red);
+    glClearTexSubImage(tex[0], 0, 1, 1, 0, 2, 2, 1, GL_RGBA, GL_UNSIGNED_BYTE, blue);
+    CHECK_GL();
+    glGenFramebuffers(2, fbo);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo[0]);
+    glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D_MULTISAMPLE, tex[0], 0);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo[1]);
+    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex[1], 0);
+    glBlitFramebuffer(0, 0, 4, 4, 0, 0, 4, 4, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    CHECK_GL();
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo[1]);
+    const std::vector<uint8_t> px = gpu::readRGBA8(0, 0, 4, 4);
+    for (int y = 0; y < 4; ++y)
+        for (int x = 0; x < 4; ++x) {
+            const bool inside = x >= 1 && x <= 2 && y >= 1 && y <= 2;
+            CHECK(gpu::near(&px[static_cast<size_t>(y * 4 + x) * 4], inside ? blue : red));
+        }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(2, fbo);
+    glDeleteTextures(2, tex);
+}
