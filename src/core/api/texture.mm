@@ -200,7 +200,8 @@ bool unpackSource(Context& ctx, const void* pixels, size_t bytesNeeded, size_t a
     if (!pbo) return true;
     const uintptr_t offset = reinterpret_cast<uintptr_t>(pixels);
     if (pbo->mappedNonPersistent()) return ctx.setError(GL_INVALID_OPERATION), false;
-    if (offset + bytesNeeded > static_cast<size_t>(pbo->size)) return ctx.setError(GL_INVALID_OPERATION), false;
+    if (offset > static_cast<size_t>(pbo->size) || bytesNeeded > static_cast<size_t>(pbo->size) - offset)
+        return ctx.setError(GL_INVALID_OPERATION), false;
     if (alignment > 1 && offset % alignment) return ctx.setError(GL_INVALID_OPERATION), false;
     if (!pbo->mtl) {
         out = nullptr;
@@ -218,7 +219,8 @@ bool packDestination(Context& ctx, void* pixels, size_t bytesNeeded, size_t alig
     if (!pbo) return true;
     const uintptr_t offset = reinterpret_cast<uintptr_t>(pixels);
     if (pbo->mappedNonPersistent()) return ctx.setError(GL_INVALID_OPERATION), false;
-    if (offset + bytesNeeded > static_cast<size_t>(pbo->size)) return ctx.setError(GL_INVALID_OPERATION), false;
+    if (offset > static_cast<size_t>(pbo->size) || bytesNeeded > static_cast<size_t>(pbo->size) - offset)
+        return ctx.setError(GL_INVALID_OPERATION), false;
     if (alignment > 1 && offset % alignment) return ctx.setError(GL_INVALID_OPERATION), false;
     if (!pbo->mtl) {
         out = nullptr;
@@ -1080,6 +1082,10 @@ void getTexParameter(Context& ctx, GLenum target, GLenum pname, T* params, Param
     case GL_DEPTH_STENCIL_TEXTURE_MODE:
         if (ctx.version() < 43) return ctx.setError(GL_INVALID_ENUM);
         v.i[0] = tex->depthStencilMode;
+        break;
+    case GL_TEXTURE_TARGET:  // GL 4.5 / ARB_direct_state_access
+        if (ctx.version() < 45) return ctx.setError(GL_INVALID_ENUM);
+        v.i[0] = static_cast<GLint>(tex->target);
         break;
     default: return ctx.setError(GL_INVALID_ENUM);
     }

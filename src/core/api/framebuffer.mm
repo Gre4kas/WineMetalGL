@@ -171,10 +171,13 @@ void attachTexture(Context& ctx, GLenum target, GLenum attachment, GLenum textar
                 return ctx.setError(GL_INVALID_VALUE);
         } else if (layerCall) {
             const GLenum t = tex->target;
+            // GL 4.5: a cube map's layer is a face.
+            const bool cube = t == GL_TEXTURE_CUBE_MAP && ctx.version() >= 45;
             if (t != GL_TEXTURE_3D && t != GL_TEXTURE_2D_ARRAY && t != GL_TEXTURE_1D_ARRAY && t != GL_TEXTURE_2D_MULTISAMPLE_ARRAY &&
-                t != GL_TEXTURE_CUBE_MAP_ARRAY)
+                t != GL_TEXTURE_CUBE_MAP_ARRAY && !cube)
                 return ctx.setError(GL_INVALID_OPERATION);
-            if (layer < 0) return ctx.setError(GL_INVALID_VALUE);
+            if (layer < 0 || (cube && layer >= 6)) return ctx.setError(GL_INVALID_VALUE);
+            if (cube) a.cubeFace = GL_TEXTURE_CUBE_MAP_POSITIVE_X + static_cast<GLenum>(layer);
             // A layer past the target's limit (MAX_3D_TEXTURE_SIZE or MAX_ARRAY_TEXTURE_LAYERS).
             if (layer >= (t == GL_TEXTURE_3D ? limits::kMax3DTextureSize : limits::kMaxArrayLayers))
                 return ctx.setError(GL_INVALID_VALUE);
@@ -784,7 +787,8 @@ void ReadPixels(Context& ctx, GLint x, GLint y, GLsizei width, GLsizei height, G
     if (pbo) {
         const TransferLayout layout = transferLayout(format, type, width, height, 1, ps);
         const uintptr_t offset = reinterpret_cast<uintptr_t>(pixels);
-        if (pbo->mappedNonPersistent() || !pbo->mtl || offset + layout.bytesNeeded > static_cast<size_t>(pbo->size))
+        if (pbo->mappedNonPersistent() || !pbo->mtl || offset > static_cast<size_t>(pbo->size) ||
+            layout.bytesNeeded > static_cast<size_t>(pbo->size) - offset)
             return ctx.setError(GL_INVALID_OPERATION);
         ctx.stream().waitFor(pbo->lastUseSerial);
         destination = pbo->contents() + offset;

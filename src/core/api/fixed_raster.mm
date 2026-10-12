@@ -268,7 +268,8 @@ bool bitmapSource(Context& ctx, const GLubyte* bits, GLsizei width, GLsizei heig
     if (!pbo) return true;
     const uintptr_t offset = reinterpret_cast<uintptr_t>(bits);
     if (pbo->mappedNonPersistent() || !pbo->mtl ||
-        offset + bitmapBytes(ctx.state.unpack, width, height) > static_cast<size_t>(pbo->size)) {
+        offset > static_cast<size_t>(pbo->size) ||
+        bitmapBytes(ctx.state.unpack, width, height) > static_cast<size_t>(pbo->size) - offset) {
         ctx.setError(GL_INVALID_OPERATION);
         return false;
     }
@@ -412,7 +413,7 @@ void DrawPixels(Context& ctx, GLsizei width, GLsizei height, GLenum format, GLen
         if (Buffer* pbo = ctx.state.pixelUnpackBuffer.get()) {
             const uintptr_t offset = reinterpret_cast<uintptr_t>(pixels);
             source = nullptr;
-            if (pbo->mtl && offset + bytes <= static_cast<size_t>(pbo->size)) {
+            if (pbo->mtl && offset <= static_cast<size_t>(pbo->size) && bytes <= static_cast<size_t>(pbo->size) - offset) {
                 if (pbo->lastWriteSerial) ctx.stream().waitFor(pbo->lastWriteSerial);
                 source = pbo->contents() + offset;
             }

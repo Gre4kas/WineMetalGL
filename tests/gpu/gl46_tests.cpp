@@ -1017,3 +1017,70 @@ GPU_TEST_VERSION(gpu_gl46_view_render_stencil_complete, 46) {
     glDeleteFramebuffers(1, &fbo);
     glDeleteTextures(3, tex);
 }
+
+// Direct state access corners: a cube map face attached by layer, the
+// texture target query, a glGenBuffers name never bound as a vertex buffer,
+// INVALID_VALUE for a buffer that does not exist, and a cube map's faces
+// written and read as one image with images skipped.
+GPU_TEST_VERSION(gpu_gl46_dsa_corners, 46) {
+    GLuint cube = 0, fbo = 0;
+    glCreateTextures(GL_TEXTURE_CUBE_MAP, 1, &cube);
+    glTextureStorage2D(cube, 1, GL_RGBA8, 4, 4);
+    glCreateFramebuffers(1, &fbo);
+    glNamedFramebufferTextureLayer(fbo, GL_COLOR_ATTACHMENT0, cube, 0, 3);
+    CHECK_GL();
+    CHECK_EQ(glCheckNamedFramebufferStatus(fbo, GL_FRAMEBUFFER), static_cast<GLenum>(GL_FRAMEBUFFER_COMPLETE));
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glClearColor(0, 0, 1, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glNamedFramebufferTextureLayer(fbo, GL_COLOR_ATTACHMENT0, cube, 0, 6);
+    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_INVALID_VALUE));
+    GLint target = 0;
+    glGetTextureParameteriv(cube, GL_TEXTURE_TARGET, &target);
+    CHECK_EQ(target, GL_TEXTURE_CUBE_MAP);
+    // Faces 0..5 read as the images of one 3D image after one skipped image.
+    std::vector<uint8_t> faces(7 * 4 * 4 * 4, 0xee);
+    glPixelStorei(GL_PACK_SKIP_IMAGES, 1);
+    glGetTextureImage(cube, 0, GL_RGBA, GL_UNSIGNED_BYTE, static_cast<GLsizei>(faces.size()), faces.data());
+    glPixelStorei(GL_PACK_SKIP_IMAGES, 0);
+    CHECK_GL();
+    CHECK(faces[0] == 0xee);                               // the skipped image
+    const uint8_t blue[4] = {0, 0, 255, 255};
+    CHECK(gpu::near(&faces[(1 + 3) * 64], blue, 0));        // face 3
+    CHECK(faces[(1 + 2) * 64 + 2] != 255);                 // face 2 untouched by the clear
+    glGetTextureImage(cube, 0, GL_RGBA, GL_UNSIGNED_BYTE, -1, faces.data());
+    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_INVALID_VALUE));
+    // Faces written as one image with an image skipped.
+    std::vector<uint8_t> red(3 * 4 * 4 * 4, 0);
+    for (size_t i = 64; i < red.size(); i += 4) red[i] = red[i + 3] = 255;
+    glPixelStorei(GL_UNPACK_SKIP_IMAGES, 1);
+    glTextureSubImage3D(cube, 0, 0, 0, 4, 4, 4, 2, GL_RGBA, GL_UNSIGNED_BYTE, red.data());
+    glPixelStorei(GL_UNPACK_SKIP_IMAGES, 0);
+    glTextureSubImage3D(cube, 0, 0, 0, INT_MAX, 4, 4, 1, GL_RGBA, GL_UNSIGNED_BYTE, red.data());
+    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_INVALID_VALUE));
+    glGetTextureImage(cube, 0, GL_RGBA, GL_UNSIGNED_BYTE, static_cast<GLsizei>(faces.size()), faces.data());
+    const uint8_t opaqueRed[4] = {255, 0, 0, 255};
+    CHECK(gpu::near(&faces[4 * 64], opaqueRed, 0) && gpu::near(&faces[5 * 64 + 60], opaqueRed, 0));
+    CHECK_GL();
+    // A name from glGenBuffers, never bound, is a vertex buffer.
+    GLuint vao = 0, buffer = 0;
+    glCreateVertexArrays(1, &vao);
+    glGenBuffers(1, &buffer);
+    glVertexArrayVertexBuffer(vao, 0, buffer, 16, 8);
+    CHECK_GL();
+    GLint64 offset = 0;
+    glGetVertexArrayIndexed64iv(vao, 0, GL_VERTEX_BINDING_OFFSET, &offset);
+    CHECK_EQ(offset, 16);
+    // A transform feedback buffer that does not exist.
+    GLuint xfb = 0;
+    glCreateTransformFeedbacks(1, &xfb);
+    glTransformFeedbackBufferBase(xfb, 0, 12345);
+    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_INVALID_VALUE));
+    glDeleteTransformFeedbacks(1, &xfb);
+    glDeleteBuffers(1, &buffer);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &cube);
+    CHECK_GL();
+}

@@ -1041,3 +1041,19 @@ COMPAT_TEST(compat_array_element_generic_zero) {
     glDisableClientState(GL_VERTEX_ARRAY);
     CHECK_GL();
 }
+
+// In a compatibility context, vertex array 0 of the DSA commands is the
+// default vertex array (ARB_direct_state_access).
+TEST(compat_dsa_default_vertex_array) {
+    gpu::Fixture fixture_(64, 64, false, 46);
+    CHECK(fixture_.ok);
+    if (!fixture_.ok) return;
+    glBindVertexArray(0);
+    glEnableVertexArrayAttrib(0, 3);
+    CHECK_GL();
+    GLint enabled = 0;
+    glGetVertexAttribiv(3, GL_VERTEX_ATTRIB_ARRAY_ENABLED, &enabled);
+    CHECK_EQ(enabled, 1);
+    glDisableVertexArrayAttrib(0, 3);
+    CHECK_GL();
+}

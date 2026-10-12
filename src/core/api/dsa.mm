@@ -371,12 +371,14 @@ void TextureSubImage3D(Context& ctx, GLuint texture, GLint level, GLint xoffset,
     TextureScope scope(ctx, tex);
     if (tex->target != GL_TEXTURE_CUBE_MAP)
         return TexSubImage3D(ctx, tex->target, level, xoffset, yoffset, zoffset, width, height, depth, format, type, pixels);
-    // A cube map's faces are its layers.
-    if (zoffset < 0 || depth < 0 || zoffset + depth > 6) return ctx.setError(GL_INVALID_VALUE);
+    // A cube map's faces are its layers: each a two-dimensional image (rows
+    // and pixels skipped) at its place in the three-dimensional one.
+    if (zoffset < 0 || depth < 0 || zoffset > 6 || depth > 6 - zoffset) return ctx.setError(GL_INVALID_VALUE);
     const size_t stride = imageStride(ctx, format, type, width, height);
+    const size_t first = static_cast<size_t>(std::max(0, ctx.state.unpack.skipImages)) * stride;
     for (GLsizei i = 0; i < depth; ++i)
         TexSubImage2D(ctx, GL_TEXTURE_CUBE_MAP_POSITIVE_X + static_cast<GLenum>(zoffset + i), level, xoffset, yoffset, width,
-                      height, format, type, static_cast<const uint8_t*>(pixels) + i * stride);
+                      height, format, type, static_cast<const uint8_t*>(pixels) + first + i * stride);
 }
 
 void CompressedTextureSubImage1D(Context& ctx, GLuint texture, GLint level, GLint xoffset, GLsizei width, GLenum format,
@@ -405,7 +407,9 @@ void CompressedTextureSubImage3D(Context& ctx, GLuint texture, GLint level, GLin
     if (tex->target != GL_TEXTURE_CUBE_MAP)
         return CompressedTexSubImage3D(ctx, tex->target, level, xoffset, yoffset, zoffset, width, height, depth, format,
                                        imageSize, data);
-    if (zoffset < 0 || depth <= 0 || zoffset + depth > 6 || imageSize % depth) return ctx.setError(GL_INVALID_VALUE);
+    if (zoffset < 0 || depth < 0 || zoffset > 6 || depth > 6 - zoffset) return ctx.setError(GL_INVALID_VALUE);
+    if (!depth) return;
+    if (imageSize < 0 || imageSize % depth) return ctx.setError(GL_INVALID_VALUE);
     const GLsizei faceSize = imageSize / depth;
     for (GLsizei i = 0; i < depth; ++i)
         CompressedTexSubImage2D(ctx, GL_TEXTURE_CUBE_MAP_POSITIVE_X + static_cast<GLenum>(zoffset + i), level, xoffset, yoffset,
@@ -577,14 +581,18 @@ void GetTextureImage(Context& ctx, GLuint texture, GLint level, GLenum format, G
         if (!a.defined() || !b.defined() || a.width != b.width || a.height != b.height || a.internalFormat != b.internalFormat)
             return ctx.setError(GL_INVALID_OPERATION);
     }
-    // A cube map: its six faces, one image after another.
-    const TextureImage& image = tex->image(0, level >= 0 && level < Texture::kMaxLevels ? level : 0);
-    PixelStoreParams ps = pixelStoreParams(ctx.state.pack, true);
-    const size_t face = transferLayout(format, type, image.width, image.height, 2, ps).imageStride;
-    if (face && static_cast<size_t>(bufSize) < 6 * face) return ctx.setError(GL_INVALID_OPERATION);
+    // A cube map: its six faces as the images of a three-dimensional image
+    // (pack parameters included); bufSize bounds client memory only.
+    const TextureImage& image = tex->image(0, level);
+    const PixelStoreParams ps = pixelStoreParams(ctx.state.pack, true);
+    const TransferLayout layout = transferLayout(format, type, image.width, image.height, 6, ps);
+    if (bufSize < 0) return ctx.setError(GL_INVALID_VALUE);
+    if (!ctx.state.pixelPackBuffer && layout.bytesNeeded > static_cast<size_t>(bufSize)) return ctx.setError(GL_INVALID_OPERATION);
+    // Each face is a two-dimensional image (rows and pixels skipped) at its place.
+    const size_t first = static_cast<size_t>(ps.skipImages) * layout.imageStride;
     for (int f = 0; f < 6; ++f)
-        GetnTexImage(ctx, GL_TEXTURE_CUBE_MAP_POSITIVE_X + static_cast<GLenum>(f), level, format, type,
-                     static_cast<GLsizei>(face), static_cast<uint8_t*>(pixels) + f * face);
+        GetTexImage(ctx, GL_TEXTURE_CUBE_MAP_POSITIVE_X + static_cast<GLenum>(f), level, format, type,
+                    static_cast<uint8_t*>(pixels) + first + f * layout.imageStride);
 }
 
 void GetCompressedTextureImage(Context& ctx, GLuint texture, GLint level, GLsizei bufSize, void* pixels) {
@@ -592,7 +600,9 @@ void GetCompressedTextureImage(Context& ctx, GLuint texture, GLint level, GLsize
     if (tex->target != GL_TEXTURE_CUBE_MAP) return GetnCompressedTexImage(ctx, tex->target, level, bufSize, pixels);
     GLint size = 0;
     GetTexLevelParameteriv(ctx, GL_TEXTURE_CUBE_MAP_POSITIVE_X, level, GL_TEXTURE_COMPRESSED_IMAGE_SIZE, &size);
-    if (static_cast<int64_t>(bufSize) < 6 * static_cast<int64_t>(size)) return ctx.setError(GL_INVALID_OPERATION);
+    if (bufSize < 0) return ctx.setError(GL_INVALID_VALUE);
+    if (!ctx.state.pixelPackBuffer && static_cast<int64_t>(bufSize) < 6 * static_cast<int64_t>(size))
+        return ctx.setError(GL_INVALID_OPERATION);
     for (int f = 0; f < 6; ++f)
         GetnCompressedTexImage(ctx, GL_TEXTURE_CUBE_MAP_POSITIVE_X + static_cast<GLenum>(f), level, size,
                                static_cast<uint8_t*>(pixels) + f * size);
@@ -803,9 +813,12 @@ void GetNamedRenderbufferParameteriv(Context& ctx, GLuint renderbuffer, GLenum p
 
 // ------------------------------------------------------------ vertex arrays
 
+// vaobj 0 is the default vertex array of a compatibility context.
 #define WMGL_NAMED_VAO(command, name)                                             \
     if (!dsa(ctx, command)) return;                                               \
-    RefPtr<VertexArray> vao_ = (name) ? ctx.vertexArrays.getRef(name) : nullptr;    \
+    RefPtr<VertexArray> vao_ = (name)          ? ctx.vertexArrays.getRef(name)     \
+                               : ctx.isCore() ? nullptr                            \
+                                              : ctx.defaultVertexArray;            \
     if (!vao_) return ctx.setError(GL_INVALID_OPERATION);                        \
     BindingSwap<RefPtr<VertexArray>> vaoSwap_(ctx.state.vertexArray, vao_);        \
     ctx.markDirty(kDirtyVertexInput)
@@ -819,7 +832,6 @@ void VertexArrayElementBuffer(Context& ctx, GLuint vaobj, GLuint buffer) {
 
 void VertexArrayVertexBuffer(Context& ctx, GLuint vaobj, GLuint bindingindex, GLuint buffer, GLintptr offset, GLsizei stride) {
     WMGL_NAMED_VAO("glVertexArrayVertexBuffer", vaobj);
-    if (buffer && !namedBuffer(ctx, buffer)) return ctx.setError(GL_INVALID_OPERATION);
     BindVertexBuffer(ctx, bindingindex, buffer, offset, stride);
 }
 
@@ -901,7 +913,8 @@ void transformFeedbackBuffer(Context& ctx, const char* command, GLuint xfb, GLui
     if (!dsa(ctx, command)) return;
     RefPtr<TransformFeedback> object = xfb ? ctx.transformFeedbacks.getRef(xfb) : ctx.defaultTransformFeedback;
     if (!object) return ctx.setError(GL_INVALID_OPERATION);
-    if (buffer && !namedBuffer(ctx, buffer)) return ctx.setError(GL_INVALID_OPERATION);
+    // Not an existing buffer: INVALID_VALUE (GL 4.6 section 13.2.2).
+    if (buffer && !namedBuffer(ctx, buffer)) return ctx.setError(GL_INVALID_VALUE);
     BindingSwap<RefPtr<TransformFeedback>> bound(ctx.state.transformFeedback, object);
     BindingSwap<RefPtr<Buffer>> generic(ctx.state.transformFeedbackBuffer, ctx.state.transformFeedbackBuffer);
     if (range) BindBufferRange(ctx, GL_TRANSFORM_FEEDBACK_BUFFER, index, buffer, offset, size);

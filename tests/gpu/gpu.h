@@ -75,7 +75,9 @@
     X(glGetCompressedTextureSubImage) X(glTextureStorage3D) X(glTextureSubImage3D) X(glVertexAttrib4fv)          \
     X(glMultiDrawArrays) X(glMultiDrawArraysIndirectCount) X(glDrawElementsBaseVertex) X(glBeginQueryIndexed)     \
     X(glEndQueryIndexed) X(glGetProgramInterfaceiv) X(glCompressedTexSubImage2D) X(glSampleMaski) X(glDeleteRenderbuffers) \
-    X(glCopyBufferSubData) X(glCompressedTexImage3D) X(glTexStorage2DMultisample)
+    X(glCopyBufferSubData) X(glCompressedTexImage3D) X(glTexStorage2DMultisample) X(glNamedFramebufferTextureLayer) \
+    X(glGetTextureParameteriv) X(glTransformFeedbackBufferBase) X(glCreateTransformFeedbacks) X(glGetVertexArrayIndexed64iv) \
+    X(glDisableVertexArrayAttrib)
 
 #define WMGL_DECLARE_FUNC(name) extern PFN_##name name;
 WMGL_GPU_FUNCS(WMGL_DECLARE_FUNC)
