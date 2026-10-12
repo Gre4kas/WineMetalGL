@@ -59,6 +59,9 @@ for library in "$output"/module/x86_64-unix/*; do
 done
 cp "$project_root/scripts/install-wine-module.sh" "$output/install-wine-module.sh"
 cp "$project_root/README.md" "$output/README.md"
+# The README's screenshots.
+mkdir -p "$output/docs/images"
+cp "$project_root"/docs/images/* "$output/docs/images/"
 # LGPL-3.0-or-later: LICENSE, the GPL-3.0 it builds on and the third-party licenses.
 cp "$project_root/LICENSE" "$output/LICENSE"
 cp -R "$project_root/LICENSES" "$output/LICENSES"

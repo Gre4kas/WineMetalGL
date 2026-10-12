@@ -21,6 +21,8 @@ docs/conformance.md
 docs/decisions/0001-gl-implementation-strategy.md
 docs/decisions/0002-gl4-architecture.md
 docs/games.md
+docs/images/doom-2016-gameplay.jpg
+docs/images/doom-2016-settings.jpg
 docs/performance.md
 docs/release.md
 docs/testing.md
