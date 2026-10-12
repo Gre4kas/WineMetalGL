@@ -40,6 +40,11 @@ for path in "$core" "$unix"; do
     arch=$(lipo -archs "$path")
     test "$arch" = x86_64 || { printf 'unexpected Mach-O architecture %s: %s\n' "$arch" "$path" >&2; exit 1; }
     codesign --verify "$path" 2>/dev/null || { printf 'not validly signed: %s\n' "$path" >&2; exit 1; }
+    # A release signed with WINEMETALGL_SIGN_IDENTITY carries that authority.
+    if test -n "${WINEMETALGL_SIGN_IDENTITY:-}"; then
+        codesign -dvv "$path" 2>&1 | grep -qxF "Authority=$WINEMETALGL_SIGN_IDENTITY" ||
+            { printf 'not signed by %s: %s\n' "$WINEMETALGL_SIGN_IDENTITY" "$path" >&2; exit 1; }
+    fi
 done
 
 minos=$(otool -l "$core" | awk '/LC_BUILD_VERSION/{found=1} found && /minos/{print $2; exit}')

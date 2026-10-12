@@ -23,10 +23,19 @@ version:
 | 4.6 | SPIR-V shaders, anisotropic filtering, indirect draw counts | `GL_ARB_gl_spirv`, `GL_ARB_indirect_parameters`, `GL_ARB_pipeline_statistics_query`, `GL_ARB_polygon_offset_clamp`, `GL_ARB_shader_atomic_counter_ops`, `GL_ARB_shader_draw_parameters`, `GL_ARB_shader_group_vote`, `GL_ARB_spirv_extensions`, `GL_ARB_texture_filter_anisotropic`, `GL_ARB_transform_feedback_overflow_query`, `GL_KHR_no_error` (11 of 11) | none |
 <!-- END GENERATED: gl4 -->
 
-`GL_ARB_compute_shader` is not advertised even though the core runs compute
-kernels internally (geometry shader, tessellation control and transform
-feedback emulation): compute shaders come with GL 4.3 and its shader storage
-buffers, which are the next milestone.
+### macOS 15
+
+The evidence runs on macOS 26 and newer. On macOS 15:
+
+- Texture LOD bias set on a texture or sampler (`GL_TEXTURE_LOD_BIAS`, and
+  `glTexEnv`'s `GL_TEXTURE_FILTER_CONTROL`) has no effect: Metal's sampler
+  LOD bias is macOS 26 API. Bias passed to the GLSL lookup functions works.
+- Indexed draws whose converted vertex attributes start far into the arrays
+  draw with a negative Metal base vertex, which GitHub's macOS 15 virtual
+  GPU does not honour (Apple silicon hardware on macOS 26 and newer does).
+
+The Metal CI workflow runs on macOS 15 and reports these cases without
+requiring them (`WMGL_GPU_NOT_REQUIRED` in `.github/workflows/metal.yml`).
 
 ### Double precision
 

@@ -39,12 +39,16 @@ cp "$MODULE/x86_64-windows/winemetalgl.dll" "$LIB/x86_64-windows/winemetalgl.dll
 cp "$MODULE/i386-windows/winemetalgl.dll" "$LIB/i386-windows/winemetalgl.dll"
 cp "$MODULE/x86_64-unix/winemetalgl.so" "$LIB/x86_64-unix/winemetalgl.so"
 if test "$CORE" != "$LIB/x86_64-unix/libwinemetalgl.dylib"; then cp "$CORE" "$LIB/x86_64-unix/libwinemetalgl.dylib"; fi
-# Ad-hoc signatures for the copies (codesign reports each replaced signature).
-if ! out=$(codesign -f -s - "$LIB/x86_64-unix/winemetalgl.so" "$LIB/x86_64-unix/libwinemetalgl.dylib" 2>&1); then
-    echo "$out" >&2
-    echo "codesign failed" >&2
-    exit 1
-fi
+# Copies keep a valid signature (a release's Developer ID one); others are
+# signed ad hoc.
+for f in "$LIB/x86_64-unix/winemetalgl.so" "$LIB/x86_64-unix/libwinemetalgl.dylib"; do
+    codesign --verify "$f" 2>/dev/null && continue
+    if ! out=$(codesign -f -s - "$f" 2>&1); then
+        echo "$out" >&2
+        echo "codesign failed: $f" >&2
+        exit 1
+    fi
+done
 echo "Installed winemetalgl into $LIB"
 
 if test -n "$PREFIX"; then

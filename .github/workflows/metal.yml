@@ -37,6 +37,14 @@ jobs:
         run: cmake --build build/host --parallel 4
 
       - name: Run the GPU tests
+        # Run and reported, not required, on this macOS 15 runner
+        # (docs/unsupported.md#macos-15):
+        # - compat_texture_unit_lod_bias, gpu_texture_lod_bias_vertex: sampler
+        #   LOD bias is macOS 26 Metal API.
+        # - gpu_review_converted_attributes_far_first: the virtual GPU ignores
+        #   a negative base vertex.
+        env:
+          WMGL_GPU_NOT_REQUIRED: compat_texture_unit_lod_bias,gpu_texture_lod_bias_vertex,gpu_review_converted_attributes_far_first
         run: ./build/host/wmgl_gpu_tests
 
       - name: Run the draw overhead benchmark

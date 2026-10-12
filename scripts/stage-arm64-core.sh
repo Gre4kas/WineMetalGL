@@ -44,7 +44,12 @@ fi
 
 mkdir -p "$output/lib" "$output/include/winemetalgl" "$output/docs" "$output/evidence/cts"
 cp "$core" "$output/lib/libwinemetalgl.dylib"
-codesign --force --sign - "$output/lib/libwinemetalgl.dylib"
+# WINEMETALGL_SIGN_IDENTITY: a Developer ID signature (stage-release.sh); else ad hoc.
+if test -n "${WINEMETALGL_SIGN_IDENTITY:-}"; then
+    codesign --force --options runtime --timestamp --sign "$WINEMETALGL_SIGN_IDENTITY" "$output/lib/libwinemetalgl.dylib"
+else
+    codesign --force --sign - "$output/lib/libwinemetalgl.dylib"
+fi
 cp "$project_root/include/winemetalgl/driver.h" "$output/include/winemetalgl/driver.h"
 cp "$project_root/README.md" "$output/README.md"
 # LGPL-3.0-or-later: LICENSE, the GPL-3.0 it builds on and the third-party licenses.

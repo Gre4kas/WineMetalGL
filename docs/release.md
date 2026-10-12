@@ -5,7 +5,7 @@
 `scripts/stage-release.sh /path/to/wine-headers OUTPUT` builds the core
 (`scripts/build.sh`) and the Wine module (`scripts/build-wine-module.sh`, with
 the headers of a Wine 11.x installation or source tree) from the checkout,
-ad-hoc signs the Mach-O libraries and stages a release. `STAGED-FROM.txt`
+signs the Mach-O libraries and stages a release. `STAGED-FROM.txt`
 records the commit, and says so when the tree had uncommitted changes:
 
 ```text
@@ -50,6 +50,18 @@ released with two archives and `SHA256SUMS.txt`:
 
 The two cores are not interchangeable: a library of the other architecture
 does not load.
+
+## Signing and notarization
+
+Both staging scripts sign ad hoc unless `WINEMETALGL_SIGN_IDENTITY` names a
+Developer ID Application identity; releases set it, which signs the Mach-O
+libraries (`libwinemetalgl.dylib`, `winemetalgl.so`) with the hardened
+runtime and a secure timestamp, and `verify-release.sh` then checks that
+authority. The libraries are notarized as a zip of the staged Mach-O files
+(`xcrun notarytool submit --wait`); loose libraries cannot be stapled, so
+Gatekeeper checks the ticket online. The Windows DLLs are PE files and carry
+no Apple signature. `install-wine-module.sh` keeps a valid signature on the
+copies it installs and signs ad hoc only those without one.
 
 ## MetalSharp
 

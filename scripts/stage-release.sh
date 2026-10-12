@@ -46,10 +46,16 @@ cp "$module/x86_64-unix/winemetalgl.so" "$output/module/x86_64-unix/winemetalgl.
 for arch in x86_64 i386; do
     cp "$module/$arch-windows/winemetalgl.dll" "$module/$arch-windows/opengl32.dll" "$output/module/$arch-windows/"
 done
-# Ad-hoc signatures: a runtime that requires signed code refuses unsigned
-# libraries.
+# Signatures: WINEMETALGL_SIGN_IDENTITY (a Developer ID Application
+# identity) signs with the hardened runtime and a secure timestamp, as
+# notarization requires; without it, ad-hoc signatures (a runtime that
+# requires signed code refuses unsigned libraries).
 for library in "$output"/module/x86_64-unix/*; do
-    codesign --force --sign - "$library"
+    if test -n "${WINEMETALGL_SIGN_IDENTITY:-}"; then
+        codesign --force --options runtime --timestamp --sign "$WINEMETALGL_SIGN_IDENTITY" "$library"
+    else
+        codesign --force --sign - "$library"
+    fi
 done
 cp "$project_root/scripts/install-wine-module.sh" "$output/install-wine-module.sh"
 cp "$project_root/README.md" "$output/README.md"
