@@ -176,3 +176,62 @@ GPU_TEST_VERSION(gpu_gl44_stencil8_texture, 44) {
     glDeleteProgram(p);
     glDeleteTextures(1, &tex);
 }
+
+// GL_ARB_enhanced_layouts: transform feedback declared in the shader (two
+// buffers, an explicit stride with a gap) without glTransformFeedbackVaryings,
+// and layout(offset) in a uniform block.
+GPU_TEST_VERSION(gpu_gl44_enhanced_layouts, 44) {
+    const char* vs = R"(#version 440 core
+layout(xfb_buffer = 0, xfb_offset = 0) out vec4 a;
+layout(xfb_buffer = 0, xfb_offset = 16) out float b;
+layout(xfb_buffer = 1, xfb_stride = 16, xfb_offset = 4) out vec2 c;
+layout(std140) uniform Block { layout(offset = 32) vec4 shift; };
+void main() {
+    a = vec4(gl_VertexID, 1.0, 2.0, 3.0) + shift;
+    b = 10.0 + float(gl_VertexID);
+    c = vec2(20.0, 21.0) + float(gl_VertexID);
+    gl_Position = vec4(0.0);
+})";
+    const char* fs = "#version 440 core\nout vec4 o;\nvoid main() { o = vec4(1.0); }\n";
+    GLuint p = gpu::program(vs, fs);
+    glUseProgram(p);
+    GLuint block = glGetUniformBlockIndex(p, "Block");
+    GLint dataSize = 0;
+    glGetActiveUniformBlockiv(p, block, GL_UNIFORM_BLOCK_DATA_SIZE, &dataSize);
+    CHECK_EQ(dataSize, 48);
+    float ubo[12] = {0, 0, 0, 0, 0, 0, 0, 0, 0.5f, 0.5f, 0.5f, 0.5f};
+    GLuint buffers[3], vao = 0;
+    glGenBuffers(3, buffers);
+    glBindBufferBase(GL_UNIFORM_BUFFER, 0, buffers[2]);
+    glBufferData(GL_UNIFORM_BUFFER, sizeof(ubo), ubo, GL_STATIC_DRAW);
+    glUniformBlockBinding(p, block, 0);
+    std::vector<float> zeros(64, -1.0f);
+    for (int i = 0; i < 2; ++i) {
+        glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, static_cast<GLuint>(i), buffers[i]);
+        glBufferData(GL_TRANSFORM_FEEDBACK_BUFFER, 64 * sizeof(float), zeros.data(), GL_DYNAMIC_READ);
+    }
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glEnable(GL_RASTERIZER_DISCARD);
+    glBeginTransformFeedback(GL_POINTS);
+    glDrawArrays(GL_POINTS, 0, 2);
+    glEndTransformFeedback();
+    glDisable(GL_RASTERIZER_DISCARD);
+    CHECK_GL();
+    float out0[10] = {}, out1[8] = {};
+    glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, buffers[0]);
+    glGetBufferSubData(GL_TRANSFORM_FEEDBACK_BUFFER, 0, sizeof(out0), out0);
+    glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, buffers[1]);
+    glGetBufferSubData(GL_TRANSFORM_FEEDBACK_BUFFER, 0, sizeof(out1), out1);
+    // Buffer 0: stride 20 bytes (a, b); buffer 1: stride 16 bytes, c at byte 4.
+    const float want0[10] = {0.5f, 1.5f, 2.5f, 3.5f, 10.0f, 1.5f, 1.5f, 2.5f, 3.5f, 11.0f};
+    for (int i = 0; i < 10; ++i) CHECK(std::fabs(out0[i] - want0[i]) < 1e-6f);
+    const float want1[8] = {-1.0f, 20.0f, 21.0f, -1.0f, -1.0f, 21.0f, 22.0f, -1.0f};
+    for (int i = 0; i < 8; ++i) {
+        if (std::fabs(out1[i] - want1[i]) >= 1e-6f) std::fprintf(stderr, "  buffer 1 word %d: %g, expected %g\n", i, out1[i], want1[i]);
+        CHECK(std::fabs(out1[i] - want1[i]) < 1e-6f);
+    }
+    glDeleteVertexArrays(1, &vao);
+    glDeleteBuffers(3, buffers);
+    glDeleteProgram(p);
+}

@@ -66,7 +66,7 @@
 // GL 4.4-4.6 entry points (gl44_tests.cpp and later).
 #define WMGL_GPU_FUNCS_GL44(X)                                                                        \
     X(glClearTexImage) X(glClearTexSubImage) X(glBindBuffersBase) X(glBindBuffersRange) X(glBindTextures)         \
-    X(glBindSamplers) X(glBindImageTextures) X(glBindVertexBuffers) X(glGetInteger64i_v)
+    X(glBindSamplers) X(glBindImageTextures) X(glBindVertexBuffers) X(glGetInteger64i_v) X(glGetActiveUniformBlockiv)
 
 #define WMGL_DECLARE_FUNC(name) extern PFN_##name name;
 WMGL_GPU_FUNCS(WMGL_DECLARE_FUNC)

@@ -1375,6 +1375,72 @@ std::vector<StageOutputVar> captureableOutputs(glslang::TIntermediate* intermedi
     return outputs;
 }
 
+// Transform feedback declared in the shader (GL 4.4, enhanced layouts:
+// xfb_buffer, xfb_offset, xfb_stride on the last vertex processing stage's
+// outputs). It replaces glTransformFeedbackVaryings. Returns false when the
+// stage declares none.
+bool layoutShaderTransformFeedback(glslang::TIntermediate* last, const std::vector<StageOutputVar>& outputs, LinkResult& result) {
+    if (!last || !last->getXfbMode()) return false;
+    glslang::TIntermAggregate* root = last->getTreeRoot() ? last->getTreeRoot()->getAsAggregate() : nullptr;
+    if (!root) return false;
+    std::vector<TransformFeedbackVarying> varyings;
+    auto add = [&](const std::string& name, const glslang::TType& type, const glslang::TQualifier& q) {
+        if (!q.hasXfbOffset()) return;
+        TransformFeedbackVarying v;
+        v.name = name;
+        v.type = glTypeOfAst(type);
+        v.size = type.isSizedArray() ? type.getOuterArraySize() : 1;
+        v.array = type.isSizedArray();
+        v.components = glTypeWords(v.type) * v.size;
+        v.buffer = q.hasXfbBuffer() ? static_cast<int>(q.layoutXfbBuffer) : 0;
+        v.offset = q.layoutXfbOffset / 4;
+        v.expression = name;
+        v.source = name;
+        for (const StageOutputVar& o : outputs)
+            if (o.name == name) {
+                if (!o.expression.empty()) v.expression = o.expression;
+                if (!o.qualified.empty()) v.source = o.qualified;
+            }
+        varyings.push_back(v);
+    };
+    for (TIntermNode* node : root->getSequence()) {
+        glslang::TIntermAggregate* objects = node->getAsAggregate();
+        if (!objects || objects->getOp() != glslang::EOpLinkerObjects) continue;
+        for (TIntermNode* object : objects->getSequence()) {
+            glslang::TIntermSymbol* symbol = object->getAsSymbolNode();
+            if (!symbol || symbol->getQualifier().storage != glslang::EvqVaryingOut) continue;
+            const glslang::TType& type = symbol->getType();
+            if (type.getBasicType() == glslang::EbtBlock) {
+                const std::string blockName = unescapeName(type.getTypeName().c_str());
+                const bool anonymous = glslang::IsAnonymous(symbol->getName());
+                for (const glslang::TTypeLoc& member : *type.getStruct()) {
+                    const std::string field = unescapeName(member.type->getFieldName().c_str());
+                    const std::string name = field.rfind("gl_", 0) == 0 || anonymous ? field : blockName + "." + field;
+                    add(name, *member.type, member.type->getQualifier());
+                }
+                continue;
+            }
+            add(unescapeName(symbol->getName().c_str()), type, symbol->getQualifier());
+        }
+    }
+    if (varyings.empty()) return false;
+    std::sort(varyings.begin(), varyings.end(), [](const TransformFeedbackVarying& a, const TransformFeedbackVarying& b) {
+        return a.buffer != b.buffer ? a.buffer < b.buffer : a.offset < b.offset;
+    });
+    int buffers = 0;
+    for (const TransformFeedbackVarying& v : varyings) buffers = std::max(buffers, v.buffer + 1);
+    for (int b = 0; b < buffers; ++b) {
+        const unsigned stride = last->getXfbStride(b);
+        uint32_t words = stride != glslang::TQualifier::layoutXfbStrideEnd ? stride / 4 : 0;
+        for (const TransformFeedbackVarying& v : varyings)
+            if (v.buffer == b) words = std::max(words, v.offset + static_cast<uint32_t>(v.components));
+        result.xfbStride[b] = words;
+    }
+    result.transformFeedback = varyings;
+    result.xfbBufferCount = buffers;
+    return true;
+}
+
 }  // namespace
 
 namespace {
@@ -1626,7 +1692,16 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
     // GL accepts them without checking (unlike OpenGL ES).
     const bool controlOnly = input.separable && stagePresent[static_cast<int>(Stage::TessControl)] && !tessellated &&
                              !stagePresent[static_cast<int>(Stage::Geometry)] && !stagePresent[static_cast<int>(Stage::Vertex)];
-    if (!capture && !input.transformFeedbackVaryings.empty() && !controlOnly) {
+    // Transform feedback declared in the shader (GL 4.4) replaces the API's varyings.
+    bool shaderCapture = false;
+    if (!capture && !controlOnly) {
+        const bool geometry = stagePresent[static_cast<int>(Stage::Geometry)];
+        glslang::TIntermediate* last = program.getIntermediate(geometry      ? EShLangGeometry
+                                                               : tessellated ? EShLangTessEvaluation
+                                                                             : EShLangVertex);
+        shaderCapture = last && layoutShaderTransformFeedback(last, captureableOutputs(last), result);
+    }
+    if (!capture && !shaderCapture && !input.transformFeedbackVaryings.empty() && !controlOnly) {
         const bool geometry = stagePresent[static_cast<int>(Stage::Geometry)];
         if (!geometry && !tessellated && !stagePresent[static_cast<int>(Stage::Vertex)]) {
             result.log += "error: transform feedback varyings need a vertex or geometry shader\n";
