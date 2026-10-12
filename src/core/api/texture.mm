@@ -1630,6 +1630,87 @@ void TexBufferRange(Context& ctx, GLenum target, GLenum internalformat, GLuint b
     texBuffer(ctx, target, internalformat, buffer, offset, size, true);
 }
 
+// ------------------------------------------------------------ texture clears (GL 4.4)
+
+namespace {
+
+// glClearTexImage and glClearTexSubImage (GL 4.4 section 8.21): one texel of
+// `data` (zeros when it is null), converted as by TexSubImage without the
+// pixel store state, repeated over a region of one level. Cube maps clear
+// their faces as layers.
+void clearTexture(Context& ctx, const char* command, GLuint texture, GLint level, GLint x, GLint y, GLint z, GLsizei w,
+                  GLsizei h, GLsizei d, bool whole, GLenum format, GLenum type, const void* data) {
+    if (ctx.version() < 44 && !ctx.hasExtension("GL_ARB_clear_texture")) return ctx.unimplemented(command);
+    Texture* tex = texture ? ctx.texture(texture) : nullptr;
+    if (!tex || tex->target == GL_TEXTURE_BUFFER) return ctx.setError(GL_INVALID_OPERATION);
+    if (!checkFormatType(ctx, format, type)) return;
+    if (level < 0 || level >= Texture::kMaxLevels) return ctx.setError(GL_INVALID_VALUE);
+    const TextureImage& image = tex->image(0, level);
+    if (!image.defined()) return ctx.setError(GL_INVALID_OPERATION);
+    const FormatInfo& info = *image.format;
+    if (info.compressed) return ctx.setError(GL_INVALID_OPERATION);
+    // The format names the image's kind: depth, depth/stencil, stencil or colour
+    // (and integer colour only with integer formats).
+    const bool depthOnly = info.depthBits && !info.stencilBits, stencilOnly = info.stencilBits && !info.depthBits;
+    const bool depthStencil = info.depthBits && info.stencilBits;
+    if (depthOnly != (format == GL_DEPTH_COMPONENT) || depthStencil != (format == GL_DEPTH_STENCIL) ||
+        stencilOnly != (format == GL_STENCIL_INDEX))
+        return ctx.setError(GL_INVALID_OPERATION);
+    if (!info.isDepthOrStencil() && !transferCompatible(format, type, info)) return ctx.setError(GL_INVALID_OPERATION);
+    const bool cube = tex->target == GL_TEXTURE_CUBE_MAP;
+    const int layers = cube ? 6 : image.depth;
+    if (whole) {
+        x = y = z = 0;
+        w = image.width;
+        h = image.height;
+        d = layers;
+    } else {
+        if (w < 0 || h < 0 || d < 0) return ctx.setError(GL_INVALID_VALUE);
+        if (x < 0 || y < 0 || z < 0 || x + w > image.width || y + h > image.height || z + d > layers)
+            return ctx.setError(GL_INVALID_OPERATION);
+    }
+    if (!w || !h || !d) return;
+    if (image.samples > 1) {
+        logOnce(LogLevel::Warn, "clear-tex-ms", "%s of a multisample texture is not implemented", command);
+        return;
+    }
+    if (!ensureTextureStorage(ctx, *tex) || !imageHasStorage(ctx, *tex, 0, level)) return;
+    const size_t bytes = storageBytes(info.storage);
+    std::vector<uint8_t> texel(bytes, 0);
+    if (data) {
+        PixelStoreParams tight;
+        tight.alignment = 1;
+        unpackPixels(data, format, type, 1, 1, 1, tight, info, texel.data());
+    }
+    // One layer (or 3D slice, or cube face) at a time bounds the staging size.
+    std::vector<uint8_t> fill(static_cast<size_t>(w) * h * bytes);
+    for (size_t i = 0; i < fill.size(); i += bytes) std::memcpy(&fill[i], texel.data(), bytes);
+    if (tex->target == GL_TEXTURE_1D_ARRAY) {
+        // A 1D array's layers are its rows (y and height).
+        int rx = x, ry = y, rz = 0, rw = w, rh = h, rd = 1;
+        metalRegion(*tex, rx, ry, rz, rw, rh, rd);
+        uploadTexels(ctx, *tex, 0, level, rx, ry, rz, rw, rh, rd, fill.data(), static_cast<size_t>(rw) * bytes,
+                     static_cast<size_t>(rw) * rh * bytes);
+    } else {
+        for (int layer = z; layer < z + d; ++layer)
+            uploadTexels(ctx, *tex, cube ? layer : 0, level, x, y, cube ? 0 : layer, w, h, 1, fill.data(),
+                         static_cast<size_t>(w) * bytes, static_cast<size_t>(w) * h * bytes);
+    }
+    imageChanged(ctx, *tex);
+}
+
+}  // namespace
+
+void ClearTexImage(Context& ctx, GLuint texture, GLint level, GLenum format, GLenum type, const void* data) {
+    clearTexture(ctx, "glClearTexImage", texture, level, 0, 0, 0, 0, 0, 0, true, format, type, data);
+}
+
+void ClearTexSubImage(Context& ctx, GLuint texture, GLint level, GLint xoffset, GLint yoffset, GLint zoffset, GLsizei width,
+                      GLsizei height, GLsizei depth, GLenum format, GLenum type, const void* data) {
+    clearTexture(ctx, "glClearTexSubImage", texture, level, xoffset, yoffset, zoffset, width, height, depth, false, format,
+                 type, data);
+}
+
 void GenerateMipmap(Context& ctx, GLenum target) {
     if (target != GL_TEXTURE_1D && target != GL_TEXTURE_2D && target != GL_TEXTURE_3D &&
         target != GL_TEXTURE_1D_ARRAY && target != GL_TEXTURE_2D_ARRAY && target != GL_TEXTURE_CUBE_MAP &&

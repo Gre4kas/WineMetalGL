@@ -61,7 +61,10 @@
     X(glClearBufferData) X(glClearBufferSubData) X(glFramebufferParameteri) X(glGetFramebufferParameteriv)          \
     X(glGetInternalformativ) X(glGetInternalformati64v) X(glBlendFunc) X(glGetSubroutineIndex)              \
     X(glUniformSubroutinesuiv) X(glGetSubroutineUniformLocation) X(glGetProgramResourceIndex)             \
-    X(glGetProgramResourceiv) X(glTexParameterIiv) X(glTexParameterIuiv)
+    X(glGetProgramResourceiv) X(glTexParameterIiv) X(glTexParameterIuiv) WMGL_GPU_FUNCS_GL44(X)
+
+// GL 4.4-4.6 entry points (gl44_tests.cpp and later).
+#define WMGL_GPU_FUNCS_GL44(X) X(glClearTexImage) X(glClearTexSubImage)
 
 #define WMGL_DECLARE_FUNC(name) extern PFN_##name name;
 WMGL_GPU_FUNCS(WMGL_DECLARE_FUNC)
