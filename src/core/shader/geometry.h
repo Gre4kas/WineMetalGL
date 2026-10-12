@@ -53,10 +53,10 @@ struct GeometryShaderInfo {
     int invocations = 1;      // GL 4.0 instancing: layout(invocations = N)
     std::vector<GeometryVar> inputs;   // user inputs (each an array of verticesIn elements)
     std::vector<GeometryVar> outputs;  // user outputs
-    bool readsPointSize = false, readsClipDistance = false;
-    int inputClipDistances = 0;
+    bool readsPointSize = false, readsClipDistance = false, readsCullDistance = false;
+    int inputClipDistances = 0, inputCullDistances = 0;
     bool writesPointSize = false, writesLayer = false, writesPrimitiveId = false, writesViewportIndex = false;
-    int outputClipDistances = 0;
+    int outputClipDistances = 0, outputCullDistances = 0;
     // GL 4.0 vertex streams: outputs of streams other than 0, or
     // EmitStreamVertex (only with points output). Emitted vertices then carry
     // their stream; only stream 0 is rasterized.

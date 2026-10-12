@@ -293,3 +293,115 @@ GPU_TEST_VERSION(gpu_gl45_direct_state_access, 45) {
     glDeleteTextures(1, &tex);
     glDeleteBuffers(1, &vbo);
 }
+
+// GL 4.5 cull distances (GL_ARB_cull_distance): a primitive is dropped only
+// when one distance is negative at every vertex; a negative vertex alone
+// leaves it whole (a clip distance would clip it). Triangles, lines and
+// points, then the triangles again through a passthrough geometry shader.
+GPU_TEST_VERSION(gpu_gl45_cull_distance, 45) {
+    const char* vs = R"(#version 450 core
+layout(location = 0) in vec2 pos;
+layout(location = 1) in vec2 cull;
+out float gl_CullDistance[2];
+void main() {
+    gl_CullDistance[0] = cull.x;
+    gl_CullDistance[1] = cull.y;
+    gl_Position = vec4(pos, 0.0, 1.0);
+})";
+    const char* gs = R"(#version 450 core
+layout(triangles) in;
+layout(triangle_strip, max_vertices = 3) out;
+out float gl_CullDistance[2];
+void main() {
+    for (int i = 0; i < 3; ++i) {
+        gl_Position = gl_in[i].gl_Position;
+        gl_CullDistance[0] = gl_in[i].gl_CullDistance[0];
+        gl_CullDistance[1] = gl_in[i].gl_CullDistance[1];
+        EmitVertex();
+    }
+})";
+    const char* fs = "#version 450 core\nout vec4 o;\nvoid main() { o = vec4(1.0); }\n";
+    GLuint p = gpu::program(vs, fs);
+    GLuint withGs = glCreateProgram();
+    {
+        const GLenum types[3] = {GL_VERTEX_SHADER, GL_GEOMETRY_SHADER, GL_FRAGMENT_SHADER};
+        const char* sources[3] = {vs, gs, fs};
+        for (int i = 0; i < 3; ++i) {
+            GLuint s = glCreateShader(types[i]);
+            glShaderSource(s, 1, &sources[i], nullptr);
+            glCompileShader(s);
+            glAttachShader(withGs, s);
+            glDeleteShader(s);
+        }
+        glLinkProgram(withGs);
+        GLint linked = 0;
+        glGetProgramiv(withGs, GL_LINK_STATUS, &linked);
+        CHECK(linked);
+    }
+    GLint limit = 0;
+    glGetIntegerv(GL_MAX_CULL_DISTANCES, &limit);
+    CHECK_EQ(limit, 8);
+    glGetIntegerv(GL_MAX_COMBINED_CLIP_AND_CULL_DISTANCES, &limit);
+    CHECK_EQ(limit, 8);
+    // x, y, cull0, cull1 per vertex. Pixel (px, py) has its centre at (px + 0.5) / 32 - 1.
+    const float tris[] = {
+        // A, bottom left: distance 0 negative at vertex 0 only -> drawn whole.
+        -1, -1, -1, 1, 0, -1, 1, 1, -1, 0, 1, 1,
+        // B, bottom right: distance 1 negative everywhere -> culled.
+        0, -1, 5, -1, 1, -1, 5, -2, 0, 0, 5, -0.5f,
+        // C, top left: each distance negative somewhere, neither everywhere -> drawn.
+        -1, 0, -1, 1, 0, 0, -1, -1, -1, 1, 1, -1,
+    };
+    const float lines[] = {
+        // Row 40: one end negative -> drawn. Row 44: distance 0 negative at both ends -> culled.
+        0.0f, 40.5f / 32 - 1, -1, 1, 1.0f, 40.5f / 32 - 1, 1, 1,
+        0.0f, 44.5f / 32 - 1, -1, 1, 1.0f, 44.5f / 32 - 1, -2, 1,
+    };
+    const float points[] = {
+        48.5f / 32 - 1, 56.5f / 32 - 1, 1, -1,  // culled
+        56.5f / 32 - 1, 56.5f / 32 - 1, 1, 1,   // drawn
+    };
+    GLuint vao = 0, vbo = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glEnableVertexAttribArray(0);
+    glEnableVertexAttribArray(1);
+    const auto draw = [&](GLuint program, GLenum mode, const float* data, size_t bytes) {
+        glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(bytes), data, GL_STATIC_DRAW);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 16, nullptr);
+        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 16, reinterpret_cast<const void*>(8));
+        glUseProgram(program);
+        glDrawArrays(mode, 0, static_cast<GLsizei>(bytes / 16));
+    };
+    const uint8_t white[4] = {255, 255, 255, 255}, black[4] = {0, 0, 0, 0};
+    for (GLuint program : {p, withGs}) {
+        glClearColor(0, 0, 0, 0);
+        glClear(GL_COLOR_BUFFER_BIT);
+        draw(program, GL_TRIANGLES, tris, sizeof(tris));
+        if (program == p) {
+            draw(p, GL_LINES, lines, sizeof(lines));
+            draw(p, GL_POINTS, points, sizeof(points));
+        }
+        CHECK_GL();
+        const std::vector<uint8_t> px = gpu::readRGBA8(0, 0, 64, 64);
+        const auto at = [&](int x, int y) { return &px[static_cast<size_t>(y * 64 + x) * 4]; };
+        CHECK(gpu::near(at(1, 1), white));   // A, next to its negative vertex
+        CHECK(gpu::near(at(20, 8), white));  // A
+        CHECK(gpu::near(at(34, 2), black));  // B
+        CHECK(gpu::near(at(2, 34), white));  // C
+        CHECK(gpu::near(at(20, 40), white));  // C
+        if (program == p) {
+            CHECK(gpu::near(at(33, 40), white));  // line, next to its negative end
+            CHECK(gpu::near(at(48, 40), white));
+            CHECK(gpu::near(at(48, 44), black));
+            CHECK(gpu::near(at(48, 56), black));
+            CHECK(gpu::near(at(56, 56), white));
+        }
+    }
+    glDeleteBuffers(1, &vbo);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
+    glDeleteProgram(withGs);
+}

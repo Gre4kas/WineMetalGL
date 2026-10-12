@@ -411,6 +411,12 @@ std::string fragmentAtSampleRate(const std::string& msl);
 // too, so this variant writes all ones (empty if the stage writes no mask).
 std::string fragmentIgnoringSampleMask(const std::string& msl);
 
+// GL 4.5 cull distances (Metal has none): the fragment function discards
+// the fragments of primitives with one of the vertex stage's `count`
+// distances negative at every vertex (the [[user(wmgl_cullN)]] varyings,
+// addCullDistances). Empty if the stage has no entry point.
+std::string fragmentWithCullDistances(const std::string& msl, int count);
+
 LinkResult link(const LinkInput& input);
 
 // Copies stage `from`'s uniform block, atomic counter buffer, image and

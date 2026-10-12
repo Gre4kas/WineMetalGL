@@ -112,8 +112,13 @@ spv::ExecutionModel executionModel(Stage stage) {
 
 const EShMessages kMessages = static_cast<EShMessages>(EShMsgSpvRules | EShMsgVulkanRules);
 
+// Macros of extensions glslang implements without knowing their names
+// (raiseComputeVersion), predefined like its own.
+constexpr const char* kPreamble = "#define GL_ARB_cull_distance 1\n";
+
 // Configures a shader for codegen: relaxed Vulkan rules, one default block.
 void configure(glslang::TShader& shader, EShLanguage lang) {
+    shader.setPreamble(kPreamble);
     shader.setEnvInput(glslang::EShSourceGlsl, lang, glslang::EShClientVulkan, 100);
     shader.setEnvClient(glslang::EShClientVulkan, glslang::EShTargetVulkan_1_1);
     shader.setEnvTarget(glslang::EShTargetSpv, glslang::EShTargetSpv_1_3);
@@ -154,6 +159,43 @@ void ensureVertexOutput(std::string& msl) {
         main.replace(at, 7, "return out;");
     const size_t close = main.rfind('}');
     main.insert(close, "    return out;\n");
+    msl = head + main;
+}
+
+// Cull distances (the gl_CullDistance output is masked, so SPIRV-Cross
+// declares it as a local array): each element becomes a [[user(cullN)]]
+// varying, the name SPIRV-Cross gives a fragment stage's gl_CullDistance
+// inputs, and the fragment stage culls (fragmentWithCullDistances).
+void addCullDistances(std::string& msl) {
+    const size_t fn = msl.find("vertex main0_out main0(");
+    const size_t structAt = msl.find("struct main0_out\n{\n");
+    if (fn == std::string::npos || structAt == std::string::npos || structAt > fn) return;
+    // "spvUnsafeArray<float, N> gl_CullDistance" or "float gl_CullDistance[N]".
+    int count = 0;
+    if (const size_t at = msl.find("> gl_CullDistance", fn); at != std::string::npos) {
+        const size_t comma = msl.rfind(", ", at);
+        if (comma != std::string::npos) count = std::atoi(msl.c_str() + comma + 2);
+    } else if (const size_t native = msl.find("float gl_CullDistance[", fn); native != std::string::npos) {
+        count = std::atoi(msl.c_str() + native + 22);
+    }
+    if (count <= 0) return;
+    // A second varying per distance is 0 at vertices where it is negative and
+    // 1e30 elsewhere. Interpolated, it is exactly 0 only where every vertex
+    // of the primitive has it negative (or at a fragment on an edge or
+    // vertex of such vertices).
+    std::string members, assign;
+    for (int i = 0; i < count; ++i) {
+        const std::string k = std::to_string(i);
+        members += "    float wmgl_cull" + k + " [[user(cull" + k + ")]];\n";
+        members += "    float wmgl_cull_keep" + k + " [[user(wmgl_cull" + k + ")]];\n";
+        assign += "out.wmgl_cull" + k + " = gl_CullDistance[" + k + "]; ";
+        assign += "out.wmgl_cull_keep" + k + " = gl_CullDistance[" + k + "] < 0.0 ? 0.0 : 1e30; ";
+    }
+    std::string main = msl.substr(fn);
+    for (size_t at = main.find("return out;"); at != std::string::npos; at = main.find("return out;", at + assign.size() + 11))
+        main.insert(at, assign);
+    std::string head = msl.substr(0, fn);
+    head.insert(structAt + std::string("struct main0_out\n{\n").size(), members);
     msl = head + main;
 }
 
@@ -385,6 +427,33 @@ std::string fragmentIgnoringSampleMask(const std::string& msl) {
     if (fn == std::string::npos) return std::string();
     for (size_t at = out.find("return out;", fn); at != std::string::npos; at = out.find("return out;", at + assign.size() + 11))
         out.insert(at, assign);
+    return out;
+}
+
+std::string fragmentWithCullDistances(const std::string& msl, int count) {
+    if (count <= 0 || count > 8) return msl;
+    std::string out = msl;
+    size_t fn = out.find("fragment main0_out main0(");
+    if (fn == std::string::npos) fn = out.find("fragment void main0(");
+    if (fn == std::string::npos) return std::string();
+    const std::string inStruct = "struct main0_in\n{\n";
+    size_t structAt = out.find(inStruct);
+    if (structAt == std::string::npos || structAt > fn) {
+        const size_t open = out.find('(', fn);
+        const bool noParameters = out[open + 1] == ')';
+        out.insert(open + 1, std::string("main0_in in [[stage_in]]") + (noParameters ? "" : ", "));
+        out.insert(fn, inStruct + "};\n\n");
+        structAt = fn;
+    }
+    std::string members, test = "\n    if (";
+    for (int k = 0; k < count; ++k) {
+        const std::string n = std::to_string(k);
+        members += "    float wmgl_cull_keep" + n + " [[user(wmgl_cull" + n + "), center_no_perspective]];\n";
+        test += std::string(k ? " || " : "") + "in.wmgl_cull_keep" + n + " == 0.0";
+    }
+    out.insert(out.find("};", structAt), members);
+    fn = out.find("fragment ", structAt);
+    out.insert(out.find('{', out.find(')', fn)) + 1, test + ")\n        discard_fragment();");
     return out;
 }
 
@@ -1186,15 +1255,39 @@ const char* glTypeName(GLenum type) {
 
 namespace {
 
-// GL_ARB_compute_shader makes compute shaders available to any GLSL version;
-// glslang only accepts them from 4.20, so such sources are compiled as 4.30.
+// Extensions glslang takes only in a later GLSL version. GL_ARB_compute_shader
+// makes compute shaders available to any GLSL version; glslang only accepts
+// them from 4.20, so such sources are compiled as 4.30.
 std::string raiseComputeVersion(Stage stage, const std::string& source) {
-    if (stage != Stage::Compute || parseGlslVersion(source).number >= 420) return source;
-    if (source.find("GL_ARB_compute_shader") == std::string::npos) return source;
-    const size_t at = source.find("#version");
-    if (at == std::string::npos) return "#version 430\n" + source;
-    const size_t end = source.find('\n', at);
     std::string raised = source;
+    // GL_ARB_cull_distance (GLSL 4.50 core): glslang has gl_CullDistance in
+    // GLSL 4.50 only and no such extension, so the #extension line goes
+    // (kPreamble defines the macro) and the shader becomes GLSL 4.50.
+    const GlslVersion version = parseGlslVersion(source);
+    bool cull = false;
+    for (size_t at = raised.find("#extension"); at != std::string::npos; at = raised.find("#extension", at + 1)) {
+        const size_t end = raised.find('\n', at);
+        const std::string line = raised.substr(at, end == std::string::npos ? std::string::npos : end - at);
+        std::istringstream words(line.substr(10));
+        std::string name;
+        words >> name;
+        if (name != "GL_ARB_cull_distance") continue;
+        raised.replace(at, line.size(), "");
+        cull = true;
+    }
+    if (cull && version.number < 450 && !version.es) {
+        const size_t at = raised.find("#version");
+        if (at != std::string::npos) {
+            const size_t end = raised.find('\n', at);
+            raised.replace(at, end == std::string::npos ? std::string::npos : end - at,
+                           version.compatibility ? "#version 450 compatibility" : "#version 450");
+        }
+    }
+    if (stage != Stage::Compute || version.number >= 420 || cull) return raised;
+    if (raised.find("GL_ARB_compute_shader") == std::string::npos) return raised;
+    const size_t at = raised.find("#version");
+    if (at == std::string::npos) return "#version 430\n" + raised;
+    const size_t end = raised.find('\n', at);
     raised.replace(at, end == std::string::npos ? std::string::npos : end - at, "#version 430");
     return raised;
 }
@@ -1247,6 +1340,7 @@ CompileResult compile(Stage stage, const std::string& original) {
     glslang::TShader shader(lang);
     const char* text = source.c_str();
     shader.setStrings(&text, 1);
+    shader.setPreamble(kPreamble);
     shader.setEnvInput(glslang::EShSourceGlsl, lang, glslang::EShClientNone, 0);
     shader.setEnvClient(glslang::EShClientNone, glslang::EShTargetClientVersion(0));
     shader.setEnvTarget(glslang::EShTargetNone, glslang::EShTargetLanguageVersion(0));
@@ -1257,6 +1351,7 @@ CompileResult compile(Stage stage, const std::string& original) {
         // desktop drivers evaluate it. Accept the shader if that is the only problem.
         glslang::TShader relaxed(lang);
         relaxed.setStrings(&text, 1);
+        relaxed.setPreamble(kPreamble);
         relaxed.setEnvInput(glslang::EShSourceGlsl, lang, glslang::EShClientNone, 0);
         relaxed.setEnvClient(glslang::EShClientNone, glslang::EShTargetClientVersion(0));
         relaxed.setEnvTarget(glslang::EShTargetNone, glslang::EShTargetLanguageVersion(0));
@@ -1322,7 +1417,7 @@ GLenum glTypeOfAst(const glslang::TType& t) {
 }
 
 // The outputs a stage can capture: its user outputs plus the built-in
-// gl_Position, gl_PointSize and gl_ClipDistance.
+// gl_Position, gl_PointSize, gl_ClipDistance and gl_CullDistance.
 std::vector<StageOutputVar> captureableOutputs(glslang::TIntermediate* intermediate) {
     std::vector<StageOutputVar> outputs;
     bool clipDistance = false;
@@ -1345,6 +1440,8 @@ std::vector<StageOutputVar> captureableOutputs(glslang::TIntermediate* intermedi
                             outputs.push_back({"gl_ClipDistance", GL_FLOAT, m.getOuterArraySize()});
                             clipDistance = true;
                         }
+                        if (field == "gl_CullDistance" && m.isSizedArray())
+                            outputs.push_back({"gl_CullDistance", GL_FLOAT, m.getOuterArraySize()});
                         if (blockName == "gl_PerVertex" || field.rfind("gl_", 0) == 0 || type.isArray()) continue;
                         // User blocks: members are named "Block.member" (GL 3.3 section 2.15);
                         // members of a block without an instance name also by their own name.
@@ -1465,6 +1562,7 @@ std::map<std::string, UniformInitializer> uniformInitializers(const std::vector<
         glslang::TShader parsed(lang);
         const char* text = source.c_str();
         parsed.setStrings(&text, 1);
+        parsed.setPreamble(kPreamble);
         parsed.setEnvInput(glslang::EShSourceGlsl, lang, glslang::EShClientNone, 0);
         parsed.setEnvClient(glslang::EShClientNone, glslang::EShTargetClientVersion(0));
         parsed.setEnvTarget(glslang::EShTargetNone, glslang::EShTargetLanguageVersion(0));
@@ -2539,6 +2637,9 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
             common.vertex.flip_vert_y = true;        // GL row 0 = Metal row 0 (see docs/design/core.md)
             common.vertex.fixup_clipspace = true;    // z: [-w, w] -> [0, w]
             msl.set_common_options(common);
+            // Metal has no cull distance output: the shader writes a local
+            // gl_CullDistance array, passed on as varyings (addCullDistances).
+            if (s == static_cast<int>(Stage::Vertex)) msl.mask_stage_output_by_builtin(spv::BuiltInCullDistance);
             const spv::ExecutionModel model = executionModel(static_cast<Stage>(s));
             const spirv_cross::ShaderResources resources = msl.get_shader_resources();
 
@@ -2790,6 +2891,7 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
             stage.msl = finishFp64Msl(msl.compile());
             if (s == static_cast<int>(Stage::Vertex)) {
                 ensureVertexOutput(stage.msl);
+                addCullDistances(stage.msl);
                 addPointSize(stage.msl);
                 instanceIdFromZero(stage.msl);
             }

@@ -196,6 +196,9 @@ std::string renameGlIn(const std::string& text, GeometryShaderInfo& info) {
         } else if (member == "gl_ClipDistance") {
             info.readsClipDistance = true;
             out += "wmgl_in_clipdistance[" + index + "]";
+        } else if (member == "gl_CullDistance") {
+            info.readsCullDistance = true;
+            out += "wmgl_in_culldistance[" + index + "]";
         } else {
             out += "wmgl_in_position[" + index + "]";
         }
@@ -294,7 +297,12 @@ bool parseGeometryGlsl(const std::string& glsl, GeometryShaderInfo& info, std::s
                 log += "error: geometry shader " + direction + "put '" + name + "' has an unsupported type\n";
                 return false;
             }
-            if (name.rfind("gl_", 0) == 0) continue;
+            if (name.rfind("gl_", 0) == 0) {
+                // Redeclared built-in arrays: "out float gl_ClipDistance[N];".
+                if (direction == "out" && name == "gl_ClipDistance") info.outputClipDistances = arraySize;
+                if (direction == "out" && name == "gl_CullDistance") info.outputCullDistances = arraySize;
+                continue;
+            }
             GeometryVar v{type, glType, name, "", "", direction == "out" ? arraySize : 0, flat};
             if (direction == "out") v.stream = layoutStream(flat);
             (direction == "in" ? info.inputs : info.outputs).push_back(v);
@@ -326,6 +334,7 @@ bool parseGeometryGlsl(const std::string& glsl, GeometryShaderInfo& info, std::s
                 int arraySize = 0;
                 parseVariable(trim(member), type, name, arraySize);
                 if (name == "gl_ClipDistance") (direction == "in" ? info.inputClipDistances : info.outputClipDistances) = arraySize;
+                if (name == "gl_CullDistance") (direction == "in" ? info.inputCullDistances : info.outputCullDistances) = arraySize;
             }
             continue;
         }
@@ -365,10 +374,13 @@ bool parseGeometryGlsl(const std::string& glsl, GeometryShaderInfo& info, std::s
                              replaceWord(functions, "gl_PrimitiveIDIn", "").find("gl_PrimitiveID") != std::string::npos;
     if (functions.find("gl_ClipDistance") != std::string::npos && !info.outputClipDistances) info.outputClipDistances = 8;
     if (info.readsClipDistance && !info.inputClipDistances) info.inputClipDistances = 8;
+    if (functions.find("gl_CullDistance") != std::string::npos && !info.outputCullDistances)
+        info.outputCullDistances = std::max(1, 8 - info.outputClipDistances);
+    if (info.readsCullDistance && !info.inputCullDistances) info.inputCullDistances = 8;
     const std::pair<const char*, const char*> renames[] = {
         {"gl_PrimitiveIDIn", "wmgl_primitive_id_in"}, {"gl_PrimitiveID", "wmgl_out_primitive_id"},
         {"gl_Position", "wmgl_out_position"}, {"gl_PointSize", "wmgl_out_pointsize"},
-        {"gl_ClipDistance", "wmgl_out_clipdistance"}, {"gl_Layer", "wmgl_out_layer"},
+        {"gl_ClipDistance", "wmgl_out_clipdistance"}, {"gl_CullDistance", "wmgl_out_culldistance"}, {"gl_Layer", "wmgl_out_layer"},
         {"gl_ViewportIndex", "wmgl_out_viewport"}, {"gl_InvocationID", "wmgl_invocation_id"},
         {"EmitVertex", "wmgl_EmitVertex"}, {"EndPrimitive", "wmgl_EndPrimitive"},
         {"EmitStreamVertex", "wmgl_EmitStreamVertex"}, {"EndStreamPrimitive", "wmgl_EndStreamPrimitive"},
@@ -391,6 +403,7 @@ std::vector<std::string> geometryCaptureVaryings(const GeometryShaderInfo& info)
     std::vector<std::string> varyings = {"gl_Position"};
     if (info.readsPointSize) varyings.push_back("gl_PointSize");
     if (info.readsClipDistance) varyings.push_back("gl_ClipDistance");
+    if (info.readsCullDistance) varyings.push_back("gl_CullDistance");
     for (const GeometryVar& v : info.inputs) varyings.push_back(captureName(v));
     return varyings;
 }
@@ -425,6 +438,7 @@ GeometrySources geometrySources(const GeometryShaderInfo& info, const LinkResult
     addVar("gl_Position", "wmgl_out_position", GL_FLOAT_VEC4, "vec4", 0);
     if (info.writesPointSize) addVar("gl_PointSize", "wmgl_out_pointsize", GL_FLOAT, "float", 0);
     if (info.outputClipDistances) addVar("gl_ClipDistance", "wmgl_out_clipdistance", GL_FLOAT, "float", info.outputClipDistances);
+    if (info.outputCullDistances) addVar("gl_CullDistance", "wmgl_out_culldistance", GL_FLOAT, "float", info.outputCullDistances);
     if (info.writesLayer) addVar("gl_Layer", "wmgl_out_layer", GL_INT, "int", 0);
     if (info.writesViewportIndex) addVar("gl_ViewportIndex", "wmgl_out_viewport", GL_INT, "int", 0);
     for (const GeometryVar& v : info.outputs)
@@ -474,9 +488,12 @@ GeometrySources geometrySources(const GeometryShaderInfo& info, const LinkResult
     if (info.readsPointSize) c += "float wmgl_in_pointsize[" + std::to_string(n) + "];\n";
     if (info.readsClipDistance)
         c += "float wmgl_in_clipdistance[" + std::to_string(n) + "][" + std::to_string(info.inputClipDistances) + "];\n";
+    if (info.readsCullDistance)
+        c += "float wmgl_in_culldistance[" + std::to_string(n) + "][" + std::to_string(info.inputCullDistances) + "];\n";
     c += "vec4 wmgl_out_position;\nfloat wmgl_out_pointsize;\nint wmgl_out_layer;\nint wmgl_out_viewport;\nint wmgl_out_primitive_id;\n"
          "int wmgl_primitive_id_in;\nint wmgl_invocation_id;\n";
     if (info.outputClipDistances) c += "float wmgl_out_clipdistance[" + std::to_string(info.outputClipDistances) + "];\n";
+    if (info.outputCullDistances) c += "float wmgl_out_culldistance[" + std::to_string(info.outputCullDistances) + "];\n";
     c += "buffer wmgl_GsInput { uint wmgl_gs_in[]; };\n"
          "buffer wmgl_GsOutput { uint wmgl_gs_out[]; };\n"
          "buffer wmgl_GsIndices { uint wmgl_gs_indices[]; };\n"
@@ -524,6 +541,10 @@ GeometrySources geometrySources(const GeometryShaderInfo& info, const LinkResult
         for (int k = 0; k < std::min(info.inputClipDistances, p->size); ++k)
             c += "        wmgl_in_clipdistance[wmgl_j][" + std::to_string(k) + "] = " +
                  loadValue("float", GL_FLOAT, "wmgl_gs_in", "wmgl_b + " + std::to_string(p->offset + k) + "u") + ";\n";
+    if (const TransformFeedbackVarying* p = info.readsCullDistance ? captured("gl_CullDistance") : nullptr)
+        for (int k = 0; k < std::min(info.inputCullDistances, p->size); ++k)
+            c += "        wmgl_in_culldistance[wmgl_j][" + std::to_string(k) + "] = " +
+                 loadValue("float", GL_FLOAT, "wmgl_gs_in", "wmgl_b + " + std::to_string(p->offset + k) + "u") + ";\n";
     for (const GeometryVar& v : info.inputs) {
         const TransformFeedbackVarying* p = captured(captureName(v));
         if (!p) continue;
@@ -567,6 +588,7 @@ GeometrySources geometrySources(const GeometryShaderInfo& info, const LinkResult
         p += withoutStream(v.declaration) + "\n";
     }
     if (info.outputClipDistances) p += "out float gl_ClipDistance[" + std::to_string(info.outputClipDistances) + "];\n";
+    if (info.outputCullDistances) p += "out float gl_CullDistance[" + std::to_string(info.outputCullDistances) + "];\n";
     p += "void main() {\n    uint wmgl_b = uint(gl_VertexID) * " + stride + "u;\n";
     for (const Field& f : fields) {
         std::string target = f.expr;
@@ -575,6 +597,7 @@ GeometrySources geometrySources(const GeometryShaderInfo& info, const LinkResult
         else if (target == "wmgl_out_layer") target = "gl_Layer";
         else if (target == "wmgl_out_viewport") target = "gl_ViewportIndex";
         else if (target.rfind("wmgl_out_clipdistance", 0) == 0) target = "gl_ClipDistance" + target.substr(21);
+        else if (target.rfind("wmgl_out_culldistance", 0) == 0) target = "gl_CullDistance" + target.substr(21);
         p += "    " + target + " = " + loadValue(f.glslType, f.type, "wmgl_gs_v", "wmgl_b + " + std::to_string(f.offset) + "u") + ";\n";
     }
     // Only stream 0 is rasterized: other streams' vertices land outside the clip volume.

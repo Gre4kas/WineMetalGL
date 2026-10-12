@@ -106,6 +106,9 @@ int LinkedProgram::outputFlags() const {
     const std::string& vertex = drawingVertexMsl();
     flags = (vertex.find("[[viewport_array_index]]") != std::string::npos ? kWritesViewport : 0) |
             (vertex.find("[[render_target_array_index]]") != std::string::npos ? kWritesLayer : 0);
+    int culls = 0;
+    while (culls < 8 && vertex.find("[[user(cull" + std::to_string(culls) + ")]]") != std::string::npos) ++culls;
+    flags |= culls << kCullShift;
     if (pipeline) {
         const auto& fs = stageExecutable[static_cast<int>(shader::Stage::Fragment)];
         if (fs && fs->writesSampleMask()) flags |= kWritesSampleMask;
@@ -120,19 +123,20 @@ int LinkedProgram::outputFlags() const {
 bool LinkedProgram::writesSampleMask() { return (outputFlags() & kWritesSampleMask) != 0; }
 
 id<MTLFunction> LinkedProgram::fragmentVariant(bool sampleMask, unsigned logicOp, const uint16_t colorFormats[8],
-                                               bool sampleRate, bool ignoreSampleMask) {
+                                               bool sampleRate, bool ignoreSampleMask, unsigned cull) {
     if (pipeline) {
         const auto& fs = stageExecutable[static_cast<int>(shader::Stage::Fragment)];
-        return fs ? fs->fragmentVariant(sampleMask, logicOp, colorFormats, sampleRate, ignoreSampleMask) : nil;
+        return fs ? fs->fragmentVariant(sampleMask, logicOp, colorFormats, sampleRate, ignoreSampleMask, cull) : nil;
     }
     std::string key = std::string(sampleMask ? "m" : "-") + (sampleRate ? "s" : "-") + (ignoreSampleMask ? "i" : "-") +
-                      std::to_string(logicOp);
+                      std::to_string(logicOp) + "c" + std::to_string(cull);
     if (logicOp)
         for (int i = 0; i < 8; ++i) key += "/" + std::to_string(colorFormats[i]);
     std::lock_guard<std::mutex> lock(mutex_);
     if (auto it = fragmentVariants_.find(key); it != fragmentVariants_.end()) return it->second;
     const shader::StageOutput& output = link.stages[static_cast<int>(shader::Stage::Fragment)];
     std::string msl = output.present ? output.msl : std::string();
+    if (!msl.empty() && cull) msl = shader::fragmentWithCullDistances(msl, static_cast<int>(cull));
     if (!msl.empty() && logicOp) {
         shader::LogicOpTarget targets[8];
         for (int i = 0; i < 8; ++i) targets[i] = logicOpTarget(static_cast<MTLPixelFormat>(colorFormats[i]));

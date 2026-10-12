@@ -18,6 +18,7 @@ docs/api-coverage.json
 docs/building.md
 docs/conformance.md
 docs/decisions/0001-gl-implementation-strategy.md
+docs/decisions/0002-gl4-architecture.md
 docs/games.md
 docs/performance.md
 docs/release.md

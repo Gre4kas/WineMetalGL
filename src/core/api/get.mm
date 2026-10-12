@@ -385,6 +385,10 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
     case GL_MAX_TRANSFORM_FEEDBACK_SEPARATE_ATTRIBS: out = ints({4}); return true;
     case GL_MAX_TRANSFORM_FEEDBACK_SEPARATE_COMPONENTS: out = ints({4}); return true;
     case GL_MAX_CLIP_DISTANCES: out = ints({8}); return true;
+    case GL_MAX_CULL_DISTANCES: case GL_MAX_COMBINED_CLIP_AND_CULL_DISTANCES:  // GL 4.5, GL_ARB_cull_distance
+        if (ctx.version() < 45 && !ctx.hasExtension("GL_ARB_cull_distance")) return false;
+        out = ints({8});
+        return true;
     case GL_MAX_SERVER_WAIT_TIMEOUT: out = int64v(INT64_MAX); return true;
     // GL 4.3 / GL_ARB_ES3_compatibility, which the KHR-GL32 API coverage test queries in
     // every core context. Element arrays take full 32-bit indices.
