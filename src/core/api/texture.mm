@@ -10,6 +10,7 @@
 
 #include "core/context.h"
 #include "core/draw.h"
+#include "core/format/block_encode.h"
 #include "core/format/pixel_transfer.h"
 #include "core/limits.h"
 #include "core/metal/device.h"
@@ -330,8 +331,13 @@ std::vector<uint8_t> gatherBlocks(const CompressedLayout& l, const uint8_t* src)
     return out;
 }
 
+}  // namespace
+
 bool compressedFormatSupported(Context& ctx, const FormatInfo* info) {
-    if (!info || !info->compressed || !Device::get().caps().bcTextures) return false;
+    if (!info || !info->compressed) return false;
+    if (info->storage >= Storage::ETC2_RGB8 && info->storage <= Storage::EAC_RG11Snorm)
+        return ctx.version() >= 43 || ctx.hasExtension("GL_ARB_ES3_compatibility");  // native on Apple GPUs
+    if (!Device::get().caps().bcTextures) return false;
     switch (info->storage) {
     case Storage::BC1_RGBA: case Storage::BC1_RGBA_sRGB: case Storage::BC2_RGBA: case Storage::BC2_RGBA_sRGB:
     case Storage::BC3_RGBA: case Storage::BC3_RGBA_sRGB:
@@ -342,6 +348,8 @@ bool compressedFormatSupported(Context& ctx, const FormatInfo* info) {
         return ctx.hasExtension("GL_ARB_texture_compression_bptc");
     }
 }
+
+namespace {
 
 void uploadCompressed(Context& ctx, Texture& tex, int face, int level, int x, int y, int z, int w, int h, int d,
                       const uint8_t* src) {
@@ -356,6 +364,11 @@ void uploadCompressed(Context& ctx, Texture& tex, int face, int level, int x, in
 
 // Converts client pixels to RGTC blocks and uploads them (TexImage/TexSubImage
 // with an RGTC internal format and uncompressed data).
+// Specific compressed formats that uncompressed uploads are encoded into.
+bool encodable(Storage storage) { return isRgtcStorage(storage) || blockEncodable(storage); }
+
+// Encodes client pixels into the image's compressed format (RGTC or
+// block_encode.h) and uploads the blocks.
 void uploadRgtcRegion(Context& ctx, Texture& tex, int face, int level, int x, int y, int z, int w, int h, int d,
                       GLenum format, GLenum type, const uint8_t* src) {
     if (!src || w <= 0 || h <= 0 || d <= 0) return;
@@ -364,7 +377,8 @@ void uploadRgtcRegion(Context& ctx, Texture& tex, int face, int level, int x, in
     std::vector<float> texels(static_cast<size_t>(w) * h * d * 4);
     unpackPixels(src, format, type, w, h, d, pixelStoreParams(ctx.state.unpack, threeDTarget(tex.target)), *rgba, texels.data());
     std::vector<uint8_t> blocks(compressedSize(*image.format, w, h, d));
-    encodeRgtc(image.format->storage, texels.data(), w, h, d, blocks.data());
+    if (isRgtcStorage(image.format->storage)) encodeRgtc(image.format->storage, texels.data(), w, h, d, blocks.data());
+    else encodeBlocks(image.format->storage, texels.data(), w, h, d, blocks.data());
     metalRegion(tex, x, y, z, w, h, d);
     uploadCompressed(ctx, tex, face, level, x, y, z, w, h, d, blocks.data());
 }
@@ -439,13 +453,9 @@ void texImage(Context& ctx, int dims, GLenum target, GLint level, GLint internal
     if (!unpackSource(ctx, pixels, width && height && depth ? layout.bytesNeeded : 0, typeSize(type), src)) return;
     defineImage(ctx, *t.tex, t.face, level, requested, info, width, height, depth);
     if (info->compressed) {
-        if (isRgtcStorage(info->storage)) {
-            if (imageHasStorage(ctx, *t.tex, t.face, level))
-                uploadRgtcRegion(ctx, *t.tex, t.face, level, 0, 0, 0, width, height, depth, format, type, src);
-        } else if (src) {
-            // S3TC/BPTC encoders are not implemented; the image keeps undefined contents.
-            logOnce(LogLevel::Warn, "compress-on-upload", "uncompressed upload to a compressed internal format ignored");
-        }
+        // Uncompressed data is compressed on the CPU (RGTC, S3TC, BPTC, ETC2/EAC).
+        if (encodable(info->storage) && imageHasStorage(ctx, *t.tex, t.face, level))
+            uploadRgtcRegion(ctx, *t.tex, t.face, level, 0, 0, 0, width, height, depth, format, type, src);
         return;
     }
     uploadRegion(ctx, *t.tex, t.face, level, 0, 0, 0, width, height, depth, format, type, src);
@@ -462,9 +472,9 @@ void texSubImage(Context& ctx, int dims, GLenum target, GLint level, GLint x, GL
     if (!image.defined()) return ctx.setError(GL_INVALID_OPERATION);
     if (x < 0 || y < 0 || z < 0 || w > image.width - x || h > image.height - y || d > image.depth - z)
         return ctx.setError(GL_INVALID_VALUE);
-    const bool rgtc = isRgtcStorage(image.format->storage);
+    const bool rgtc = image.format->compressed && encodable(image.format->storage);
     if (image.format->compressed && !rgtc) return ctx.setError(GL_INVALID_OPERATION);
-    // RGTC regions must be block aligned, except where they reach the image edge (GL 3.3 section 3.8.4).
+    // Compressed regions must be block aligned, except where they reach the image edge (GL 3.3 section 3.8.4).
     if (rgtc && ((x % 4) || (y % 4) || ((w % 4) && x + w != image.width) || ((h % 4) && y + h != image.height)))
         return ctx.setError(GL_INVALID_OPERATION);
     if (!textureTransferCompatible(format, type, *image.format)) return ctx.setError(GL_INVALID_OPERATION);
@@ -1039,7 +1049,16 @@ void getTexParameter(Context& ctx, GLenum target, GLenum pname, T* params, Param
         break;
     case GL_TEXTURE_IMMUTABLE_LEVELS:
         if (ctx.version() < 43) return ctx.setError(GL_INVALID_ENUM);
-        v.i[0] = tex->immutableLevels;
+        // A view reports its original texture's (GL 4.3 section 8.18).
+        v.i[0] = tex->viewOf ? tex->viewOf->immutableLevels : tex->immutableLevels;
+        break;
+    case GL_TEXTURE_VIEW_MIN_LEVEL: case GL_TEXTURE_VIEW_NUM_LEVELS: case GL_TEXTURE_VIEW_MIN_LAYER:
+    case GL_TEXTURE_VIEW_NUM_LAYERS:
+        if (ctx.version() < 43 && !ctx.hasExtension("GL_ARB_texture_view")) return ctx.setError(GL_INVALID_ENUM);
+        v.i[0] = static_cast<GLint>(pname == GL_TEXTURE_VIEW_MIN_LEVEL   ? tex->viewMinLevel
+                                    : pname == GL_TEXTURE_VIEW_NUM_LEVELS ? tex->viewNumLevels
+                                    : pname == GL_TEXTURE_VIEW_MIN_LAYER  ? tex->viewMinLayer
+                                                                          : tex->viewNumLayers);
         break;
     case GL_DEPTH_STENCIL_TEXTURE_MODE:
         if (ctx.version() < 43) return ctx.setError(GL_INVALID_ENUM);
@@ -1238,6 +1257,9 @@ void texStorage(Context& ctx, int dims, GLenum target, GLsizei levels, GLenum in
     if (proxy) return;
     tex->immutable = true;
     tex->immutableLevels = levels;
+    // GL 4.3 section 8.19: the levels and layers a view of it can select.
+    tex->viewNumLevels = static_cast<GLuint>(levels);
+    tex->viewNumLayers = static_cast<GLuint>(oneDArray ? height : arrays ? depth : base == GL_TEXTURE_CUBE_MAP ? 6 : 1);
     tex->storageDirty = true;
     ensureTextureStorage(ctx, *tex);
 }
@@ -1445,7 +1467,11 @@ void TexImage3DMultisample(Context& ctx, GLenum target, GLsizei samples, GLenum 
                         internalformat, width, height, depth, fixedsamplelocations);
 }
 
-void TexBuffer(Context& ctx, GLenum target, GLenum internalformat, GLuint buffer) {
+namespace {
+
+// glTexBuffer (`range` false: the whole buffer) and glTexBufferRange.
+void texBuffer(Context& ctx, GLenum target, GLenum internalformat, GLuint buffer, GLintptr offset, GLsizeiptr size,
+               bool range) {
     if (target != GL_TEXTURE_BUFFER) return ctx.setError(GL_INVALID_ENUM);
     switch (internalformat) {
     case GL_R8: case GL_R16: case GL_R16F: case GL_R32F: case GL_R8I: case GL_R16I: case GL_R32I: case GL_R8UI:
@@ -1453,6 +1479,7 @@ void TexBuffer(Context& ctx, GLenum target, GLenum internalformat, GLuint buffer
     case GL_RG32I: case GL_RG8UI: case GL_RG16UI: case GL_RG32UI: case GL_RGBA8: case GL_RGBA16: case GL_RGBA16F:
     case GL_RGBA32F: case GL_RGBA8I: case GL_RGBA16I: case GL_RGBA32I: case GL_RGBA8UI: case GL_RGBA16UI:
     case GL_RGBA32UI:
+    case GL_RGB32F: case GL_RGB32I: case GL_RGB32UI:  // GL 4.0, GL_ARB_texture_buffer_object_rgb32
         break;
     default: return ctx.setError(GL_INVALID_ENUM);
     }
@@ -1464,12 +1491,143 @@ void TexBuffer(Context& ctx, GLenum target, GLenum internalformat, GLuint buffer
         object = ctx.share().buffers.getRef(buffer);
         if (!object) return ctx.setError(GL_INVALID_OPERATION);
     }
+    if (object && range) {
+        // GL 4.3 section 8.9: a range inside the buffer, aligned.
+        if (offset < 0 || size <= 0 || offset + size > object->size) return ctx.setError(GL_INVALID_VALUE);
+        if (offset % limits::kTextureBufferOffsetAlignment) return ctx.setError(GL_INVALID_VALUE);
+    }
     tex->buffer = object;
     tex->bufferFormat = internalformat;
-    tex->bufferOffset = 0;
-    tex->bufferSize = -1;
+    tex->bufferOffset = object && range ? offset : 0;
+    tex->bufferSize = object && range ? size : -1;
     tex->views.clear();
+    tex->rgb32ShadowVersion = 0;
     imageChanged(ctx, *tex);
+}
+
+}  // namespace
+
+void TexBuffer(Context& ctx, GLenum target, GLenum internalformat, GLuint buffer) {
+    texBuffer(ctx, target, internalformat, buffer, 0, -1, false);
+}
+
+// ------------------------------------------------------------ texture views (GL 4.3)
+
+namespace {
+
+// The view class of an internal format (GL 4.3 table 8.22), or 0: formats
+// outside every class only view themselves.
+int viewClass(GLenum f) {
+    switch (f) {
+    case GL_RGBA32F: case GL_RGBA32UI: case GL_RGBA32I: return 128;
+    case GL_RGB32F: case GL_RGB32UI: case GL_RGB32I: return 96;
+    case GL_RGBA16F: case GL_RG32F: case GL_RGBA16UI: case GL_RG32UI: case GL_RGBA16I: case GL_RG32I: case GL_RGBA16:
+    case GL_RGBA16_SNORM: return 64;
+    case GL_RGB16: case GL_RGB16_SNORM: case GL_RGB16F: case GL_RGB16UI: case GL_RGB16I: return 48;
+    case GL_RG16F: case GL_R11F_G11F_B10F: case GL_R32F: case GL_RGB10_A2UI: case GL_RGBA8UI: case GL_RG16UI: case GL_R32UI:
+    case GL_RGBA8I: case GL_RG16I: case GL_R32I: case GL_RGB10_A2: case GL_RGBA8: case GL_RG16: case GL_RGBA8_SNORM:
+    case GL_RG16_SNORM: case GL_SRGB8_ALPHA8: case GL_RGB9_E5: return 32;
+    case GL_RGB8: case GL_RGB8_SNORM: case GL_SRGB8: case GL_RGB8UI: case GL_RGB8I: return 24;
+    case GL_R16F: case GL_RG8UI: case GL_R16UI: case GL_RG8I: case GL_R16I: case GL_RG8: case GL_R16: case GL_RG8_SNORM:
+    case GL_R16_SNORM: return 16;
+    case GL_R8UI: case GL_R8I: case GL_R8: case GL_R8_SNORM: return 8;
+    case GL_COMPRESSED_RED_RGTC1: case GL_COMPRESSED_SIGNED_RED_RGTC1: return 1001;
+    case GL_COMPRESSED_RG_RGTC2: case GL_COMPRESSED_SIGNED_RG_RGTC2: return 1002;
+    case GL_COMPRESSED_RGBA_BPTC_UNORM: case GL_COMPRESSED_SRGB_ALPHA_BPTC_UNORM: return 1003;
+    case GL_COMPRESSED_RGB_BPTC_SIGNED_FLOAT: case GL_COMPRESSED_RGB_BPTC_UNSIGNED_FLOAT: return 1004;
+    default: return 0;
+    }
+}
+
+// Targets a view of an `original` texture may have (GL 4.3 table 8.21).
+bool viewTargetAllowed(GLenum original, GLenum target) {
+    switch (original) {
+    case GL_TEXTURE_1D: case GL_TEXTURE_1D_ARRAY: return target == GL_TEXTURE_1D || target == GL_TEXTURE_1D_ARRAY;
+    case GL_TEXTURE_2D: return target == GL_TEXTURE_2D || target == GL_TEXTURE_2D_ARRAY;
+    case GL_TEXTURE_3D: return target == GL_TEXTURE_3D;
+    case GL_TEXTURE_RECTANGLE: return target == GL_TEXTURE_RECTANGLE;
+    case GL_TEXTURE_CUBE_MAP: case GL_TEXTURE_2D_ARRAY: case GL_TEXTURE_CUBE_MAP_ARRAY:
+        return target == GL_TEXTURE_CUBE_MAP || target == GL_TEXTURE_2D || target == GL_TEXTURE_2D_ARRAY ||
+               target == GL_TEXTURE_CUBE_MAP_ARRAY;
+    case GL_TEXTURE_2D_MULTISAMPLE: case GL_TEXTURE_2D_MULTISAMPLE_ARRAY:
+        return target == GL_TEXTURE_2D_MULTISAMPLE || target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY;
+    default: return false;
+    }
+}
+
+}  // namespace
+
+void TextureView(Context& ctx, GLuint texture, GLenum target, GLuint origtexture, GLenum internalformat, GLuint minlevel,
+                 GLuint numlevels, GLuint minlayer, GLuint numlayers) {
+    if (ctx.version() < 43 && !ctx.hasExtension("GL_ARB_texture_view")) return ctx.unimplemented("glTextureView");
+    RefPtr<Texture> orig;
+    {
+        ShareLock lock(ctx);
+        // <texture>: a name from glGenTextures that has never been bound.
+        if (!texture) return ctx.setError(GL_INVALID_VALUE);
+        if (!ctx.share().textures.isGenerated(texture) || ctx.share().textures.getRef(texture))
+            return ctx.setError(GL_INVALID_OPERATION);
+        orig = origtexture ? ctx.share().textures.getRef(origtexture) : RefPtr<Texture>();
+        if (!orig) return ctx.setError(GL_INVALID_VALUE);
+        if (!orig->immutable) return ctx.setError(GL_INVALID_OPERATION);
+    }
+    if (!targetSupported(ctx, target)) return ctx.setError(GL_INVALID_ENUM);
+    if (!viewTargetAllowed(orig->target, target)) return ctx.setError(GL_INVALID_OPERATION);
+    const TextureImage& origBase = orig->image(0, 0);
+    const FormatInfo* info = formatInfo(internalformat);
+    if (!info || info->internalFormat != internalformat) return ctx.setError(GL_INVALID_ENUM);
+    const GLenum origFormat = origBase.internalFormat;
+    const int cls = viewClass(internalformat);
+    if (internalformat != origFormat && (cls == 0 || cls != viewClass(origFormat))) return ctx.setError(GL_INVALID_OPERATION);
+    if (minlevel >= orig->viewNumLevels || minlayer >= orig->viewNumLayers) return ctx.setError(GL_INVALID_VALUE);
+    const GLuint levels = std::min(numlevels, orig->viewNumLevels - minlevel);
+    const GLuint layers = std::min(numlayers, orig->viewNumLayers - minlayer);
+    const bool single = target == GL_TEXTURE_1D || target == GL_TEXTURE_2D || target == GL_TEXTURE_3D ||
+                        target == GL_TEXTURE_RECTANGLE || target == GL_TEXTURE_2D_MULTISAMPLE;
+    // The requested layer count, before clamping, must suit the view's target.
+    if (single && numlayers != 1) return ctx.setError(GL_INVALID_VALUE);
+    if (target == GL_TEXTURE_CUBE_MAP && numlayers != 6) return ctx.setError(GL_INVALID_VALUE);
+    if (target == GL_TEXTURE_CUBE_MAP_ARRAY && (numlayers % 6 || layers % 6)) return ctx.setError(GL_INVALID_VALUE);
+    const TextureImage& first = orig->image(0, static_cast<int>(minlevel));
+    if ((target == GL_TEXTURE_CUBE_MAP || target == GL_TEXTURE_CUBE_MAP_ARRAY) && first.width != first.height)
+        return ctx.setError(GL_INVALID_OPERATION);
+    if (levels == 0 || layers == 0) return ctx.setError(GL_INVALID_VALUE);
+
+    auto view = makeRef<Texture>(texture, target);
+    if (target == GL_TEXTURE_RECTANGLE) {
+        view->sampler.minFilter = GL_LINEAR;
+        view->sampler.wrapS = view->sampler.wrapT = view->sampler.wrapR = GL_CLAMP_TO_EDGE;
+    }
+    view->viewOf = orig->viewOf ? orig->viewOf : orig;
+    view->viewMinLevel = orig->viewMinLevel + minlevel;
+    view->viewNumLevels = levels;
+    view->viewMinLayer = orig->viewMinLayer + minlayer;
+    view->viewNumLayers = layers;
+    view->immutable = true;
+    view->immutableLevels = static_cast<GLsizei>(levels);
+    for (GLuint level = 0; level < levels; ++level) {
+        const TextureImage& src = orig->image(0, static_cast<int>(minlevel + level));
+        const GLsizei layerCount = static_cast<GLsizei>(layers);
+        const GLsizei h = target == GL_TEXTURE_1D ? 1 : target == GL_TEXTURE_1D_ARRAY ? layerCount : src.height;
+        const GLsizei d = target == GL_TEXTURE_3D ? src.depth
+                          : target == GL_TEXTURE_2D_ARRAY || target == GL_TEXTURE_CUBE_MAP_ARRAY ||
+                                    target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY
+                              ? layerCount
+                              : 1;
+        for (int face = 0; face < view->faceCount(); ++face)
+            defineImage(ctx, *view, face, static_cast<int>(level), internalformat, info, src.width, h, d, src.samples,
+                        src.fixedSampleLocations);
+    }
+    view->storageDirty = true;
+    {
+        ShareLock lock(ctx);
+        ctx.share().textures.set(texture, view);
+    }
+}
+
+void TexBufferRange(Context& ctx, GLenum target, GLenum internalformat, GLuint buffer, GLintptr offset, GLsizeiptr size) {
+    if (ctx.version() < 43 && !ctx.hasExtension("GL_ARB_texture_buffer_range")) return ctx.unimplemented("glTexBufferRange");
+    texBuffer(ctx, target, internalformat, buffer, offset, size, true);
 }
 
 void GenerateMipmap(Context& ctx, GLenum target) {
@@ -1495,7 +1653,9 @@ void GenerateMipmap(Context& ctx, GLenum target) {
         }
     }
     const FormatInfo* info = baseImage.format;
-    if (info->compressed || info->isInteger() || info->isDepthOrStencil()) return ctx.setError(GL_INVALID_OPERATION);
+    // Desktop GL generates depth mipmaps too (stencil-only formats cannot).
+    if (info->compressed || info->isInteger() || (info->isDepthOrStencil() && !info->depthBits))
+        return ctx.setError(GL_INVALID_OPERATION);
     // Define every level from base + 1 to the end of the chain (or maxLevel).
     const bool oneD = target == GL_TEXTURE_1D || target == GL_TEXTURE_1D_ARRAY;
     GLsizei w = baseImage.width, h = baseImage.height, d = baseImage.depth;
@@ -1513,6 +1673,11 @@ void GenerateMipmap(Context& ctx, GLenum target) {
     }
     if (last == base || !ensureTextureStorage(ctx, *tex)) return;
     if (!imageHasStorage(ctx, *tex, 0, base) || !imageHasStorage(ctx, *tex, 0, last)) return;
+    if (info->depthBits) {
+        generateDepthMipmaps(ctx, *tex, base, last);
+        imageChanged(ctx, *tex);
+        return;
+    }
     // Metal generates every level of a texture from its first: use a view starting at the base level.
     const NSUInteger slices = tex->mtl.textureType == MTLTextureTypeCube        ? 6
                               : tex->mtl.textureType == MTLTextureTypeCubeArray ? tex->mtl.arrayLength * 6
@@ -1551,6 +1716,7 @@ void TexStorage2DMultisample(Context& ctx, GLenum target, GLsizei samples, GLenu
     if (Texture* tex = boundTexture(ctx, GL_TEXTURE_2D_MULTISAMPLE); tex && target == GL_TEXTURE_2D_MULTISAMPLE && tex->image(0, 0).defined()) {
         tex->immutable = true;
         tex->immutableLevels = 1;
+        tex->viewNumLevels = tex->viewNumLayers = 1;
     }
 }
 
@@ -1567,10 +1733,61 @@ void TexStorage3DMultisample(Context& ctx, GLenum target, GLsizei samples, GLenu
         tex && target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY && tex->image(0, 0).defined()) {
         tex->immutable = true;
         tex->immutableLevels = 1;
+        tex->viewNumLevels = 1;
+        tex->viewNumLayers = static_cast<GLuint>(depth);
     }
 }
 
 // ------------------------------------------------------------ read-back
+
+namespace {
+
+// The non-sRGB twin of a compressed sRGB format (glGetTexImage returns the
+// stored, encoded values).
+MTLPixelFormat linearCompressedFormat(Storage storage) {
+    switch (storage) {
+    case Storage::BC1_RGBA_sRGB: return MTLPixelFormatBC1_RGBA;
+    case Storage::BC2_RGBA_sRGB: return MTLPixelFormatBC2_RGBA;
+    case Storage::BC3_RGBA_sRGB: return MTLPixelFormatBC3_RGBA;
+    case Storage::BC7_RGBAUnorm_sRGB: return MTLPixelFormatBC7_RGBAUnorm;
+    case Storage::ETC2_RGB8_sRGB: return MTLPixelFormatETC2_RGB8;
+    case Storage::ETC2_RGB8A1_sRGB: return MTLPixelFormatETC2_RGB8A1;
+    case Storage::EAC_RGBA8_sRGB: return MTLPixelFormatEAC_RGBA8;
+    default: return mtlPixelFormat(storage);
+    }
+}
+
+// Decodes one 2D slice of a compressed image into float RGBA texels.
+void decodeCompressedSlice(Context& ctx, Texture& tex, Storage storage, NSUInteger level, NSUInteger slice, int width,
+                           int height, float* out) {
+    static id<MTLComputePipelineState> pipeline = [] {
+        NSError* error = nil;
+        id<MTLFunction> function = [Device::get().utilityLibrary() newFunctionWithName:@"wmgl_decode_texels"];
+        id<MTLComputePipelineState> state = function ? [Device::get().mtl() newComputePipelineStateWithFunction:function error:&error] : nil;
+        if (!state) WMGL_ERR("texel decode pipeline failed: %s", error.localizedDescription.UTF8String);
+        return state;
+    }();
+    if (!pipeline || width <= 0 || height <= 0) return;
+    id<MTLTexture> view = [tex.mtl newTextureViewWithPixelFormat:linearCompressedFormat(storage)
+                                                     textureType:MTLTextureType2D
+                                                          levels:NSMakeRange(level, 1)
+                                                          slices:NSMakeRange(slice, 1)];
+    const size_t bytes = static_cast<size_t>(width) * height * 16;
+    id<MTLBuffer> buffer = [Device::get().mtl() newBufferWithLength:bytes options:MTLResourceStorageModeShared];
+    if (!view || !buffer) return;
+    const uint32_t size[2] = {static_cast<uint32_t>(width), static_cast<uint32_t>(height)};
+    id<MTLComputeCommandEncoder> encoder = ctx.stream().compute();
+    [encoder setComputePipelineState:pipeline];
+    [encoder setTexture:view atIndex:0];
+    [encoder setBuffer:buffer offset:0 atIndex:0];
+    [encoder setBytes:size length:sizeof(size) atIndex:1];
+    [encoder dispatchThreads:MTLSizeMake(static_cast<NSUInteger>(width), static_cast<NSUInteger>(height), 1)
+       threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
+    ctx.stream().finish();
+    std::memcpy(out, buffer.contents, bytes);
+}
+
+}  // namespace
 
 void GetTexImage(Context& ctx, GLenum target, GLint level, GLenum format, GLenum type, void* pixels) {
     ImageTarget t;
@@ -1591,10 +1808,6 @@ void GetTexImage(Context& ctx, GLenum target, GLint level, GLenum format, GLenum
         (stencilRequest && !info.stencilBits) || (!depthRequest && !stencilRequest && !depthStencilRequest && info.isDepthOrStencil()))
         return ctx.setError(GL_INVALID_OPERATION);
     if (!info.isDepthOrStencil() && !transferCompatible(format, type, info)) return ctx.setError(GL_INVALID_OPERATION);
-    if (info.compressed && !isRgtcStorage(info.storage)) {
-        logOnce(LogLevel::Warn, "get-compressed-uncompressed", "GetTexImage of an S3TC/BPTC image is not supported");
-        return;
-    }
     const PixelStoreParams ps = pixelStoreParams(ctx.state.pack, dims == 3);
     const TransferLayout layout = transferLayout(format, type, image.width, image.height, image.depth, ps);
     uint8_t* dst = nullptr;
@@ -1621,6 +1834,16 @@ void GetTexImage(Context& ctx, GLenum target, GLint level, GLenum format, GLenum
         std::vector<float> rgba(static_cast<size_t>(image.width) * image.height * image.depth * 4);
         decodeRgtc(info.storage, static_cast<const uint8_t*>(staging.contents), image.width, image.height, image.depth,
                    rgba.data());
+        packPixels(rgba.data(), *formatInfo(GL_RGBA32F), image.width, image.height, image.depth, format, type, ps, false, dst);
+        return;
+    }
+    if (info.compressed) {
+        // S3TC, BPTC, ETC2 and EAC are decoded by the GPU.
+        std::vector<float> rgba(static_cast<size_t>(image.width) * image.height * image.depth * 4);
+        for (int layer = 0; layer < image.depth; ++layer)
+            decodeCompressedSlice(ctx, *t.tex, info.storage, static_cast<NSUInteger>(level),
+                                  static_cast<NSUInteger>(t.tex->target == GL_TEXTURE_CUBE_MAP ? t.face : layer), image.width,
+                                  image.height, rgba.data() + static_cast<size_t>(layer) * image.width * image.height * 4);
         packPixels(rgba.data(), *formatInfo(GL_RGBA32F), image.width, image.height, image.depth, format, type, ps, false, dst);
         return;
     }

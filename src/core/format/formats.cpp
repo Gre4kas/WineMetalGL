@@ -169,6 +169,17 @@ std::unordered_map<GLenum, FormatInfo> buildTable() {
     add(Builder(GL_COMPRESSED_SRGB_ALPHA_BPTC_UNORM, GL_RGBA, S::BC7_RGBAUnorm_sRGB, CT::UnsignedNormalized).rgba(8, 8, 8, 8).transfer(GL_RGBA, UB).srgb());
     add(Builder(GL_COMPRESSED_RGB_BPTC_SIGNED_FLOAT, GL_RGB, S::BC6H_RGBFloat, CT::Float).rgba(16, 16, 16, 0).swz(SwzR, SwzG, SwzB, SwzOne).transfer(GL_RGB, F));
     add(Builder(GL_COMPRESSED_RGB_BPTC_UNSIGNED_FLOAT, GL_RGB, S::BC6H_RGBUfloat, CT::Float).rgba(16, 16, 16, 0).swz(SwzR, SwzG, SwzB, SwzOne).transfer(GL_RGB, F));
+    // GL 4.3 (GL_ARB_ES3_compatibility): ETC2 and EAC, native on Apple GPUs.
+    add(Builder(GL_COMPRESSED_RGB8_ETC2, GL_RGB, S::ETC2_RGB8, CT::UnsignedNormalized).rgba(8, 8, 8, 0).swz(SwzR, SwzG, SwzB, SwzOne).transfer(GL_RGB, UB));
+    add(Builder(GL_COMPRESSED_SRGB8_ETC2, GL_RGB, S::ETC2_RGB8_sRGB, CT::UnsignedNormalized).rgba(8, 8, 8, 0).swz(SwzR, SwzG, SwzB, SwzOne).transfer(GL_RGB, UB).srgb());
+    add(Builder(GL_COMPRESSED_RGB8_PUNCHTHROUGH_ALPHA1_ETC2, GL_RGBA, S::ETC2_RGB8A1, CT::UnsignedNormalized).rgba(8, 8, 8, 1).transfer(GL_RGBA, UB));
+    add(Builder(GL_COMPRESSED_SRGB8_PUNCHTHROUGH_ALPHA1_ETC2, GL_RGBA, S::ETC2_RGB8A1_sRGB, CT::UnsignedNormalized).rgba(8, 8, 8, 1).transfer(GL_RGBA, UB).srgb());
+    add(Builder(GL_COMPRESSED_RGBA8_ETC2_EAC, GL_RGBA, S::EAC_RGBA8, CT::UnsignedNormalized).rgba(8, 8, 8, 8).transfer(GL_RGBA, UB));
+    add(Builder(GL_COMPRESSED_SRGB8_ALPHA8_ETC2_EAC, GL_RGBA, S::EAC_RGBA8_sRGB, CT::UnsignedNormalized).rgba(8, 8, 8, 8).transfer(GL_RGBA, UB).srgb());
+    add(Builder(GL_COMPRESSED_R11_EAC, GL_RED, S::EAC_R11Unorm, CT::UnsignedNormalized).rgba(11, 0, 0, 0).transfer(GL_RED, UB));
+    add(Builder(GL_COMPRESSED_SIGNED_R11_EAC, GL_RED, S::EAC_R11Snorm, CT::SignedNormalized).rgba(11, 0, 0, 0).transfer(GL_RED, B));
+    add(Builder(GL_COMPRESSED_RG11_EAC, GL_RG, S::EAC_RG11Unorm, CT::UnsignedNormalized).rgba(11, 11, 0, 0).transfer(GL_RG, UB));
+    add(Builder(GL_COMPRESSED_SIGNED_RG11_EAC, GL_RG, S::EAC_RG11Snorm, CT::SignedNormalized).rgba(11, 11, 0, 0).transfer(GL_RG, B));
 
     // Compatibility-profile luminance/alpha/intensity formats (sized).
     auto legacy = [&](GLenum internal, GLenum base, S storage, CT type, uint8_t lBits, uint8_t aBits, uint8_t iBits,
@@ -287,6 +298,9 @@ uint32_t storageBytes(Storage storage) {
     case S::RGBA16Uint: case S::RGBA16Sint: case S::RGBA16Float: case S::Depth32Float_Stencil8: return 8;
     case S::RGBA32Uint: case S::RGBA32Sint: case S::RGBA32Float: return 16;
     case S::BC1_RGBA: case S::BC1_RGBA_sRGB: case S::BC4_RUnorm: case S::BC4_RSnorm: return 8;
+    case S::ETC2_RGB8: case S::ETC2_RGB8_sRGB: case S::ETC2_RGB8A1: case S::ETC2_RGB8A1_sRGB: case S::EAC_R11Unorm:
+    case S::EAC_R11Snorm: return 8;
+    case S::EAC_RGBA8: case S::EAC_RGBA8_sRGB: case S::EAC_RG11Unorm: case S::EAC_RG11Snorm: return 16;
     case S::BC2_RGBA: case S::BC2_RGBA_sRGB: case S::BC3_RGBA: case S::BC3_RGBA_sRGB: case S::BC5_RGUnorm:
     case S::BC5_RGSnorm: case S::BC6H_RGBFloat: case S::BC6H_RGBUfloat: case S::BC7_RGBAUnorm:
     case S::BC7_RGBAUnorm_sRGB: return 16;
@@ -295,7 +309,7 @@ uint32_t storageBytes(Storage storage) {
 }
 
 bool storageIsCompressed(Storage storage) {
-    return storage >= S::BC1_RGBA && storage <= S::BC7_RGBAUnorm_sRGB;
+    return storage >= S::BC1_RGBA && storage <= S::EAC_RG11Snorm;
 }
 
 const char* storageName(Storage storage) {
@@ -307,7 +321,8 @@ const char* storageName(Storage storage) {
         "RGBA16Unorm", "RGBA16Snorm", "RGBA16Uint", "RGBA16Sint", "RGBA16Float", "RGBA32Uint", "RGBA32Sint",
         "RGBA32Float", "BC1_RGBA", "BC1_RGBA_sRGB", "BC2_RGBA", "BC2_RGBA_sRGB", "BC3_RGBA", "BC3_RGBA_sRGB",
         "BC4_RUnorm", "BC4_RSnorm", "BC5_RGUnorm", "BC5_RGSnorm", "BC6H_RGBFloat", "BC6H_RGBUfloat", "BC7_RGBAUnorm",
-        "BC7_RGBAUnorm_sRGB", "Depth16Unorm", "Depth32Float", "Stencil8", "Depth32Float_Stencil8"};
+        "BC7_RGBAUnorm_sRGB", "ETC2_RGB8", "ETC2_RGB8_sRGB", "ETC2_RGB8A1", "ETC2_RGB8A1_sRGB", "EAC_RGBA8",
+        "EAC_RGBA8_sRGB", "EAC_R11Unorm", "EAC_R11Snorm", "EAC_RG11Unorm", "EAC_RG11Snorm", "Depth16Unorm", "Depth32Float", "Stencil8", "Depth32Float_Stencil8"};
     static_assert(sizeof(names) / sizeof(names[0]) == static_cast<size_t>(S::Count), "storage names");
     return names[static_cast<size_t>(storage)];
 }

@@ -1,17 +1,25 @@
-// GL_ARB_compute_shader is not exposed on 3.3 contexts until storage buffers,
-// images and atomic counters exist (WineMetalGL 4.x roadmap, G08): engines
-// that detect it must keep their fallback paths.
+// GL_ARB_compute_shader comes with GL 4.3: a default (highest version)
+// context advertises it and creates compute shaders.
 #include "gpu.h"
 
-GPU_TEST(gpu_compute_not_exposed) {
+namespace {
+
+bool computeAdvertised() {
     GLint n = 0;
     glGetIntegerv(GL_NUM_EXTENSIONS, &n);
     bool advertised = false;
     for (GLint i = 0; i < n; ++i)
         advertised |= !std::strcmp(reinterpret_cast<const char*>(glGetStringi(GL_EXTENSIONS, static_cast<GLuint>(i))),
                                    "GL_ARB_compute_shader");
-    CHECK(!advertised);
-    CHECK_EQ(glCreateShader(GL_COMPUTE_SHADER), 0u);
-    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_INVALID_ENUM));
+    return advertised;
+}
+
+}  // namespace
+
+GPU_TEST(gpu_compute_exposed) {
+    CHECK(computeAdvertised());
+    GLuint shader = glCreateShader(GL_COMPUTE_SHADER);
+    CHECK(shader != 0u);
+    glDeleteShader(shader);
     CHECK_GL();
 }

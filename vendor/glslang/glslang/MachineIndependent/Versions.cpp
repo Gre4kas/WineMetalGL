@@ -188,6 +188,7 @@ void TParseVersions::initializeExtensionBehavior()
     extensionBehavior[E_GL_ARB_shading_language_420pack]     = EBhDisable;
     extensionBehavior[E_GL_ARB_texture_gather]               = EBhDisable;
     extensionBehavior[E_GL_ARB_shader_subroutine]            = EBhDisable;  // WineMetalGL
+    extensionBehavior[E_GL_ARB_arrays_of_arrays]             = EBhDisable;  // WineMetalGL
     extensionBehavior[E_GL_ARB_gpu_shader5]                  = EBhDisablePartial;
     extensionBehavior[E_GL_ARB_separate_shader_objects]      = EBhDisable;
     extensionBehavior[E_GL_ARB_compute_shader]               = EBhDisable;
@@ -224,6 +225,7 @@ void TParseVersions::initializeExtensionBehavior()
     extensionBehavior[E_GL_ARB_shader_storage_buffer_object] = EBhDisable;
     extensionBehavior[E_GL_ARB_shading_language_packing]     = EBhDisable;
     extensionBehavior[E_GL_ARB_texture_query_lod]            = EBhDisable;
+    extensionBehavior[E_GL_ARB_texture_query_levels]         = EBhDisable;
     extensionBehavior[E_GL_ARB_vertex_attrib_64bit]          = EBhDisable;
     extensionBehavior[E_GL_ARB_draw_instanced]               = EBhDisable;
     extensionBehavior[E_GL_ARB_bindless_texture]             = EBhDisable;
@@ -467,6 +469,7 @@ void TParseVersions::getPreamble(std::string& preamble)
             "#define GL_ARB_shading_language_420pack 1\n"
             "#define GL_ARB_texture_gather 1\n"
             "#define GL_ARB_shader_subroutine 1\n"  // WineMetalGL
+            "#define GL_ARB_arrays_of_arrays 1\n"  // WineMetalGL
             "#define GL_ARB_gpu_shader5 1\n"
             "#define GL_ARB_separate_shader_objects 1\n"
             "#define GL_ARB_compute_shader 1\n"
@@ -500,6 +503,7 @@ void TParseVersions::getPreamble(std::string& preamble)
             "#define GL_ARB_shader_bit_encoding 1\n"
             "#define GL_ARB_shader_storage_buffer_object 1\n"
             "#define GL_ARB_texture_query_lod 1\n"
+            "#define GL_ARB_texture_query_levels 1\n"
             "#define GL_ARB_vertex_attrib_64bit 1\n"
             "#define GL_ARB_draw_instanced 1\n"
             "#define GL_ARB_fragment_coord_conventions 1\n"

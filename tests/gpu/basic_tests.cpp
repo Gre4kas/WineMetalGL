@@ -17,10 +17,10 @@ void main() { fragColor = color; })";
 }  // namespace
 
 GPU_TEST(gpu_version_string) {
-    // A 3.3 core request gets the highest core version (4.2), which is
+    // A 3.3 core request gets the highest core version (4.3), which is
     // backward compatible with it (WGL_ARB_create_context).
     const char* version = reinterpret_cast<const char*>(glGetString(GL_VERSION));
-    CHECK(version && std::strncmp(version, "4.2", 3) == 0);
+    CHECK(version && std::strncmp(version, "4.3", 3) == 0);
     CHECK_GL();
 }
 

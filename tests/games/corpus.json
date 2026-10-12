@@ -106,6 +106,22 @@
    "notes": "The same frame from a 4.2 core context, tonemapped through image stores counted by an atomic counter (GL 4.2, beyond Apple's OpenGL) and displayed by a second pass."
   },
   {
+   "name": "scene4x-core43",
+   "tier": "B",
+   "kind": "demo",
+   "binary": "demos/scene4x.exe",
+   "args": [
+    "--frames",
+    "60",
+    "--profile",
+    "core43"
+   ],
+   "reference": "scene4x-core41",
+   "tolerance": 0.005,
+   "apple": false,
+   "notes": "The same frame from a 4.3 core context: the terrain from a multi-draw indirect command, tonemapped by a compute shader that stores the image and counts its pixels in a shader storage block (GL 4.3, beyond Apple's OpenGL), then displayed by a second pass."
+  },
+  {
    "name": "legacy-gl21",
    "tier": "C",
    "kind": "demo",

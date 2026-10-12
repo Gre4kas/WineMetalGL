@@ -7,7 +7,7 @@ update to the latest one.
 
 | Version | Supported |
 |---|---|
-| 2.3.x | Yes |
+| 2.4.x | Yes |
 | Earlier | No |
 
 ## Reporting a vulnerability

@@ -1,5 +1,5 @@
 {
- "commit": "5c4c7ef",
+ "commit": "3ecbeea",
  "date": "2026-10-11",
  "runs": 3,
  "frames": 600,
@@ -15,22 +15,22 @@
    "tier": "A",
    "status": "PASS",
    "new": {
-    "avg_ms": 0.287,
+    "avg_ms": 0.27,
     "runs": 3,
-    "p95_ms": 0.603,
-    "max_ms": 2.379,
-    "worst_max_ms": 2.578
+    "p95_ms": 0.598,
+    "max_ms": 2.184,
+    "worst_max_ms": 10.408
    },
    "apple": {
-    "avg_ms": 0.534,
+    "avg_ms": 0.537,
     "runs": 3,
-    "p95_ms": 1.666,
-    "max_ms": 4.409,
-    "worst_max_ms": 5.755
+    "p95_ms": 1.843,
+    "max_ms": 5.04,
+    "worst_max_ms": 5.859
    },
-   "ratio": 0.537,
+   "ratio": 0.503,
    "problems": [],
-   "commit": "5c4c7ef",
+   "commit": "3ecbeea",
    "apple_note": null
   },
   {
@@ -38,22 +38,22 @@
    "tier": "A",
    "status": "PASS",
    "new": {
-    "avg_ms": 0.293,
+    "avg_ms": 0.273,
     "runs": 3,
-    "p95_ms": 0.706,
-    "max_ms": 2.278,
-    "worst_max_ms": 2.489
+    "p95_ms": 0.568,
+    "max_ms": 2.173,
+    "worst_max_ms": 2.212
    },
    "apple": {
-    "avg_ms": 0.512,
+    "avg_ms": 0.541,
     "runs": 3,
-    "p95_ms": 1.519,
-    "max_ms": 4.386,
-    "worst_max_ms": 6.383
+    "p95_ms": 1.749,
+    "max_ms": 6.777,
+    "worst_max_ms": 6.854
    },
-   "ratio": 0.572,
+   "ratio": 0.505,
    "problems": [],
-   "commit": "5c4c7ef",
+   "commit": "3ecbeea",
    "apple_note": null
   },
   {
@@ -61,16 +61,16 @@
    "tier": "A",
    "status": "PASS",
    "new": {
-    "avg_ms": 0.29,
+    "avg_ms": 0.272,
     "runs": 3,
-    "p95_ms": 0.611,
-    "max_ms": 2.423,
-    "worst_max_ms": 2.471
+    "p95_ms": 0.579,
+    "max_ms": 2.052,
+    "worst_max_ms": 2.143
    },
    "apple": null,
    "ratio": null,
    "problems": [],
-   "commit": "5c4c7ef",
+   "commit": "3ecbeea",
    "apple_note": "not run on Apple's OpenGL (corpus.json)"
   },
   {
@@ -78,35 +78,33 @@
    "tier": "B",
    "status": "PASS",
    "new": {
-    "avg_ms": 0.298,
+    "avg_ms": 0.274,
     "runs": 3,
-    "p95_ms": 0.65,
-    "max_ms": 2.317,
-    "worst_max_ms": 2.43
+    "p95_ms": 1.003,
+    "max_ms": 2.196,
+    "worst_max_ms": 2.401
    },
    "apple": null,
    "ratio": null,
    "problems": [],
-   "commit": "5c4c7ef",
+   "commit": "3ecbeea",
    "apple_note": null
   },
   {
    "name": "scene33-trace",
    "tier": "A",
-   "status": "FAIL",
+   "status": "PASS",
    "new": {
-    "avg_ms": 5.089,
+    "avg_ms": 4.171,
     "runs": 3,
-    "p95_ms": 7.55,
-    "max_ms": 10.6,
-    "worst_max_ms": 11.52
+    "p95_ms": 7.16,
+    "max_ms": 11.18,
+    "worst_max_ms": 13.13
    },
    "apple": null,
    "ratio": null,
-   "problems": [
-    "32% slower than the baseline"
-   ],
-   "commit": "5c4c7ef",
+   "problems": [],
+   "commit": "3ecbeea",
    "apple_note": "not timed: traces have no frame statistics under Apple's OpenGL"
   },
   {
@@ -114,22 +112,22 @@
    "tier": "A",
    "status": "PASS",
    "new": {
-    "avg_ms": 1.864,
+    "avg_ms": 1.893,
     "runs": 3,
-    "p95_ms": 2.09,
-    "max_ms": 2.78,
-    "worst_max_ms": 3.042
+    "p95_ms": 2.456,
+    "max_ms": 3.676,
+    "worst_max_ms": 3.763
    },
    "apple": {
-    "avg_ms": 36.81,
+    "avg_ms": 33.414,
     "runs": 3,
-    "p95_ms": 45.156,
-    "max_ms": 64.46,
-    "worst_max_ms": 227.919
+    "p95_ms": 34.636,
+    "max_ms": 44.73,
+    "worst_max_ms": 49.412
    },
-   "ratio": 0.051,
+   "ratio": 0.057,
    "problems": [],
-   "commit": "5c4c7ef",
+   "commit": "3ecbeea",
    "apple_note": null
   },
   {
@@ -137,16 +135,33 @@
    "tier": "B",
    "status": "PASS",
    "new": {
-    "avg_ms": 2.08,
+    "avg_ms": 2.041,
     "runs": 3,
-    "p95_ms": 2.52,
-    "max_ms": 4.35,
-    "worst_max_ms": 6.373
+    "p95_ms": 2.432,
+    "max_ms": 3.589,
+    "worst_max_ms": 8.639
    },
    "apple": null,
    "ratio": null,
    "problems": [],
-   "commit": "5c4c7ef",
+   "commit": "3ecbeea",
+   "apple_note": null
+  },
+  {
+   "name": "scene4x-core43",
+   "tier": "B",
+   "status": "PASS",
+   "new": {
+    "avg_ms": 1.979,
+    "runs": 3,
+    "p95_ms": 2.42,
+    "max_ms": 3.514,
+    "worst_max_ms": 3.568
+   },
+   "apple": null,
+   "ratio": null,
+   "problems": [],
+   "commit": "3ecbeea",
    "apple_note": null
   },
   {
@@ -154,22 +169,22 @@
    "tier": "C",
    "status": "PASS",
    "new": {
-    "avg_ms": 0.308,
+    "avg_ms": 0.299,
     "runs": 3,
-    "p95_ms": 0.523,
-    "max_ms": 2.043,
-    "worst_max_ms": 2.285
+    "p95_ms": 0.906,
+    "max_ms": 1.877,
+    "worst_max_ms": 2.231
    },
    "apple": {
-    "avg_ms": 0.494,
+    "avg_ms": 0.467,
     "runs": 3,
-    "p95_ms": 1.669,
-    "max_ms": 3.13,
-    "worst_max_ms": 3.373
+    "p95_ms": 1.221,
+    "max_ms": 3.67,
+    "worst_max_ms": 4.727
    },
-   "ratio": 0.623,
+   "ratio": 0.64,
    "problems": [],
-   "commit": "5c4c7ef",
+   "commit": "3ecbeea",
    "apple_note": null
   },
   {
@@ -177,22 +192,22 @@
    "tier": "C",
    "status": "PASS",
    "new": {
-    "avg_ms": 0.392,
+    "avg_ms": 0.382,
     "runs": 3,
-    "p95_ms": 0.854,
-    "max_ms": 2.205,
-    "worst_max_ms": 2.414
+    "p95_ms": 0.979,
+    "max_ms": 2.176,
+    "worst_max_ms": 2.613
    },
    "apple": {
-    "avg_ms": 0.51,
+    "avg_ms": 0.506,
     "runs": 3,
-    "p95_ms": 1.713,
-    "max_ms": 3.439,
-    "worst_max_ms": 4.709
+    "p95_ms": 1.388,
+    "max_ms": 4.745,
+    "worst_max_ms": 6.96
    },
-   "ratio": 0.769,
+   "ratio": 0.755,
    "problems": [],
-   "commit": "5c4c7ef",
+   "commit": "3ecbeea",
    "apple_note": null
   },
   {
@@ -200,16 +215,16 @@
    "tier": "B",
    "status": "PASS",
    "new": {
-    "avg_ms": 0.322,
+    "avg_ms": 0.302,
     "runs": 3,
-    "p95_ms": 0.722,
-    "max_ms": 2.548,
-    "worst_max_ms": 3.738
+    "p95_ms": 0.894,
+    "max_ms": 2.054,
+    "worst_max_ms": 2.151
    },
    "apple": null,
    "ratio": null,
    "problems": [],
-   "commit": "5c4c7ef",
+   "commit": "3ecbeea",
    "apple_note": null
   }
  ]

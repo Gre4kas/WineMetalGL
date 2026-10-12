@@ -435,3 +435,118 @@ TEST(shader_rectangle_texture_outside_fragment_stages) {
     if (!r.ok) std::fprintf(stderr, "%s\n", r.log.c_str());
     CHECK(r.ok);
 }
+
+// ---- GL 4.3 reflection (program interface query)
+
+namespace {
+
+LinkResult link43(const char* vs, const char* fs, Stage first = Stage::Vertex) {
+    LinkInput in;
+    if (vs) in.shaders.push_back({first, vs});
+    if (fs) in.shaders.push_back({Stage::Fragment, fs});
+    LinkResult r = link(in);
+    if (!r.ok) std::fprintf(stderr, "%s\n", r.log.c_str());
+    return r;
+}
+
+const char* kPassFs = "#version 430 core\nout vec4 color;\nvoid main() { color = vec4(1.0); }\n";
+
+}  // namespace
+
+// Storage blocks: a non-last member sized by its largest constant index
+// moves the members after it (glslang relays the block at link).
+TEST(shader_ssbo_implicitly_sized_member_offsets) {
+    LinkResult r = link43("#version 430 core\nlayout(std430) buffer B { vec4 a[]; vec4 b[]; } g;\n"
+                          "void main() { gl_Position = g.a[1] + g.b[gl_VertexID]; }\n",
+                          kPassFs);
+    CHECK(r.ok);
+    CHECK_EQ(r.bufferVariables.size(), size_t(2));
+    if (r.bufferVariables.size() == 2) {
+        CHECK_EQ(r.bufferVariables[0].size, 2);
+        CHECK_EQ(r.bufferVariables[1].offset, 32);
+        CHECK_EQ(r.bufferVariables[1].size, 0);  // unsized
+    }
+}
+
+// Buffer variables of a top-level array of arrays: the first outer element
+// only, each innermost array once (GL 4.3 section 7.3.1.1).
+TEST(shader_ssbo_top_level_array_names) {
+    LinkResult r = link43(nullptr, "#version 430 core\nbuffer Block { vec4 a[5][4][3]; vec4 d[]; };\nout vec4 color;\n"
+                                   "void main() { color = a[0][0][0] + d[0]; }\n");
+    CHECK(r.ok);
+    CHECK_EQ(r.bufferVariables.size(), size_t(5));
+    if (r.bufferVariables.size() == 5) {
+        CHECK(r.bufferVariables[0].name == "a[0][0][0]");
+        CHECK(r.bufferVariables[3].name == "a[0][3][0]");
+        CHECK_EQ(r.bufferVariables[0].size, 3);
+        CHECK_EQ(r.bufferVariables[0].topLevelArraySize, 5);
+        CHECK(r.bufferVariables[0].topLevelArrayStride > 0);
+        CHECK(r.bufferVariables[4].name == "d[0]");
+        CHECK_EQ(r.bufferVariables[4].topLevelArraySize, 1);  // a plain array is not a top-level array
+    }
+}
+
+// Uniforms are referenced by the stages whose code reads them, although the
+// default block is shared; arrays of blocks per element.
+TEST(shader_uniform_referenced_by_stage) {
+    LinkResult r = link43("#version 430 core\nuniform vec4 a;\nvoid main() { gl_Position = a; }\n",
+                          "#version 430 core\nuniform vec4 b;\nuniform B { vec4 c; } e[2];\nout vec4 color;\n"
+                          "void main() { color = b + e[1].c; }\n");
+    CHECK(r.ok);
+    const UniformInfo* a = findUniform(r, "a");
+    const UniformInfo* b = findUniform(r, "b");
+    CHECK(a && a->stageMask == 1u << static_cast<int>(Stage::Vertex));
+    CHECK(b && b->stageMask == 1u << static_cast<int>(Stage::Fragment));
+    CHECK_EQ(r.blocks.size(), size_t(2));
+    if (r.blocks.size() == 2) {
+        CHECK_EQ(r.blocks[0].stageMask, 0u);
+        CHECK_EQ(r.blocks[1].stageMask, 1u << static_cast<int>(Stage::Fragment));
+    }
+}
+
+// Explicit uniform locations (GL 4.3): unused ones stay reserved, implicit
+// ones take the lowest free locations, overlaps fail to link.
+TEST(shader_explicit_uniform_locations) {
+    LinkResult r = link43("#version 430 core\nlayout(location = 0) uniform float unused;\nlayout(location = 2) uniform vec4 b;\n"
+                          "uniform vec4 c[2];\nuniform vec4 d;\nvoid main() { gl_Position = b + c[1] + d; }\n",
+                          kPassFs);
+    CHECK(r.ok);
+    const UniformInfo* b = findUniform(r, "b");
+    const UniformInfo* c = findUniform(r, "c[0]");
+    const UniformInfo* d = findUniform(r, "d");
+    CHECK(b && b->location == 2);
+    CHECK(c && c->location == 3);
+    CHECK(d && d->location == 1);
+    LinkResult bad = link43("#version 430 core\nlayout(location = 1) uniform vec4 x[2];\nlayout(location = 2) uniform vec4 y;\n"
+                            "void main() { gl_Position = x[0] + y; }\n",
+                            kPassFs);
+    CHECK(!bad.ok);
+}
+
+// Program inputs and outputs of a separable vertex-only program: block
+// members and built-ins under their GL names.
+TEST(shader_program_interface_inputs_outputs) {
+    LinkInput in;
+    in.separable = true;
+    in.shaders.push_back({Stage::Vertex, "#version 430 core\nlayout(location = 0) in vec4 v;\nout Color { float r; vec4 c; } o;\n"
+                                         "void main() { gl_Position = v + vec4(float(gl_VertexID)); o.r = 1.0; o.c = v; }\n"});
+    LinkResult r = link(in);
+    CHECK(r.ok);
+    auto has = [](const std::vector<InterfaceVariableInfo>& list, const char* name) {
+        return std::any_of(list.begin(), list.end(), [&](const InterfaceVariableInfo& x) { return x.name == name; });
+    };
+    CHECK(has(r.programInputs, "v"));
+    CHECK(has(r.programInputs, "gl_VertexID"));
+    CHECK(has(r.programOutputs, "gl_Position"));
+    CHECK(has(r.programOutputs, "Color.r"));
+    CHECK(has(r.programOutputs, "Color.c"));
+    CHECK(!has(r.programOutputs, "gl_PointSize"));
+}
+
+// A vertex input that is an array of matrices links (SPIRV-Cross flattens
+// it into one Metal attribute per column).
+TEST(shader_vertex_input_matrix_array) {
+    LinkResult r = link43("#version 430 core\nin mat2x3 m[2];\nvoid main() { gl_Position = vec4(m[1][1], 1.0); }\n", kPassFs);
+    CHECK(r.ok);
+    CHECK(r.stages[0].msl.find("m_3 [[attribute(") != std::string::npos);
+}

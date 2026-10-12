@@ -31,12 +31,24 @@ Local changes to vendored sources (each marked `WineMetalGL:` in the code):
 - glslang `glslang/MachineIndependent/Versions.{h,cpp}`: `GL_ARB_shader_subroutine`
   is a known extension (and predefined macro); WineMetalGL lowers subroutines
   before glslang parses a shader (`src/core/shader/subroutines.h`).
+- glslang `glslang/MachineIndependent/{Versions.h,Versions.cpp,ParseHelper.cpp}`:
+  `GL_ARB_arrays_of_arrays` is a known extension (and predefined macro) that
+  allows arrays of arrays below GLSL 4.30.
 - glslang `glslang/MachineIndependent/ParseHelper.cpp`, `redeclareBuiltinBlock`:
   `gl_PerVertex` may be redeclared from GLSL 1.50, as desktop drivers allow,
   instead of only from 4.10 or with `GL_ARB_separate_shader_objects`.
 - glslang `glslang/MachineIndependent/ParseHelper.cpp`, `setLayoutQualifier`:
-  `layout(binding)` is also accepted with `GL_ARB_shader_atomic_counters`,
-  which adds it for atomic counters.
+  `layout(binding)` is also accepted with `GL_ARB_shader_atomic_counters` or
+  `GL_ARB_shader_storage_buffer_object`, which add it for atomic counters and
+  storage blocks (Mesa accepts both).
+- glslang `glslang/MachineIndependent/ParseHelper.cpp`,
+  `vkRelaxedRemapUniformVariable`: an atomic counter without an offset takes
+  its binding's default offset (`layout(binding = b, offset = o) uniform
+  atomic_uint;`) under relaxed Vulkan rules too, as `fixOffset` gives it
+  otherwise.
+- glslang `glslang/MachineIndependent/ShaderLang.cpp`, `DeduceVersionProfile`:
+  GLSL ES 3.00 shaders compile to SPIR-V under relaxed Vulkan rules (GL 4.3
+  `GL_ARB_ES3_compatibility`), instead of requiring ES 3.10.
 - SPIRV-Cross `spirv_msl.{hpp,cpp}`: an MSL option, `native_texture_atomics`,
   emits image atomics as MSL 3.1 texture atomics instead of emulating them
   through a buffer that aliases the texture.
@@ -45,6 +57,9 @@ Local changes to vendored sources (each marked `WineMetalGL:` in the code):
 - SPIRV-Cross `spirv_msl.cpp`, `InterpolateAtOffset`: the GLSL offset is
   biased by 1/2 (upstream uses 7/16 for Intel GPUs), so on Apple GPUs an
   offset of `gl_SamplePosition - 0.5` interpolates exactly at the sample.
+- glslang `glslang/MachineIndependent/{Versions.h,Versions.cpp,Initialize.cpp}`:
+  `GL_ARB_texture_query_levels` (`textureQueryLevels` from GLSL 1.30 with the
+  extension, as before from 4.30 without).
 - glslang `glslang/MachineIndependent/ParseHelper.cpp`, `invariantCheck`:
   desktop GLSL 4.20 and later accept `invariant` on inputs outside the vertex
   stage, as desktop drivers do; only ESSL 3.00 and later restrict it to
@@ -52,6 +67,37 @@ Local changes to vendored sources (each marked `WineMetalGL:` in the code):
 - glslang `glslang/MachineIndependent/ParseHelper.cpp`, `layoutTypeCheck`:
   an image's `layout(binding)` is checked against `gl_MaxImageUnits` (the
   image units it names) instead of `gl_MaxCombinedTextureImageUnits`.
+- glslang `glslang/MachineIndependent/linkValidate.cpp`, `finalCheck`: a
+  std140/std430 block whose non-last member is an array sized only by its
+  largest constant index gets its member offsets recomputed once that size is
+  known (they were assigned when the block was declared).
+- glslang `glslang/MachineIndependent/ParseHelper.cpp` and
+  `localintermediate.h`, `vkRelaxedRemapUniformVariable`: every global
+  uniform declared with `layout(location)` is recorded with the number of
+  locations it spans (`getExplicitUniformLocations`), for the linker's GL 4.3
+  uniform location assignment; the Vulkan rules drop the qualifier.
+- glslang `glslang/MachineIndependent/ParseHelper.cpp`,
+  `vkRelaxedRemapUniformVariable`: an unsized uniform array takes its size
+  from its initializer before the Vulkan rules drop the initializer (the
+  values are applied from the default block, `applyUniformInitializers`).
+- SPIRV-Cross `spirv_glsl.cpp`, `bitcast_expression`, and `spirv_msl.cpp`,
+  `emit_atomic_func_op`: atomic operands are read unpacked, so an element of a
+  scalar array in a std140 block (padded to a vector) is passed as a scalar.
+- SPIRV-Cross `spirv_msl.cpp`, `get_argument_address_space`: `coherent`
+  storage no longer becomes `volatile` (only `volatile` does): Metal has no
+  element access on volatile matrices, and MSL's barriers and atomics give
+  GL's coherent visibility.
+- SPIRV-Cross `spirv_msl.cpp`, `add_composite_variable_to_interface_block`:
+  a one-dimensional array of matrices (`in mat2x3 d[2]`) is flattened into one
+  input or output per column instead of being rejected.
+- SPIRV-Cross `spirv_msl.cpp`, `emit_array_copy`: an array member of a struct
+  in threadgroup memory is an `spvUnsafeArray`, so copies to and from it pass
+  its `.elements`.
+- SPIRV-Cross `spirv_glsl.{hpp,cpp}`, `replace_illegal_names`: the prefix for
+  identifiers that clash with GLSL keywords and built-in functions is
+  configurable (`illegal_name_prefix`); WineMetalGL uses its own escape prefix
+  when it translates emulated stages back to GLSL, so a sampler named
+  `texture` keeps its name.
 - SPIRV-Cross `spirv_glsl.cpp`, `to_function_name` and `to_function_args`:
   GLSL has no `textureLod` for rectangle textures and their `texelFetch`
   takes no level, so a level-0 sample (glslang's `texture()` outside fragment

@@ -2625,12 +2625,20 @@ void CompilerMSL::add_composite_variable_to_interface_block(StorageClass storage
 	if (add_component_variable_to_interface_block(storage, ib_var_ref, var, var_type, meta))
 		return;
 
+	// WineMetalGL: a one-dimensional array of matrices is flattened into one
+	// member per column, element i being var[i / columns][i % columns].
+	uint32_t matrix_columns = 0;
 	if (is_matrix(var_type))
 	{
 		if (is_array(var_type))
-			SPIRV_CROSS_THROW("MSL cannot emit arrays-of-matrices in input and output variables.");
-
-		elem_cnt = var_type.columns;
+		{
+			if (var_type.array.size() != 1)
+				SPIRV_CROSS_THROW("MSL cannot emit arrays-of-arrays in input and output variables.");
+			matrix_columns = var_type.columns;
+			elem_cnt = to_array_size_literal(var_type) * var_type.columns;
+		}
+		else
+			elem_cnt = var_type.columns;
 	}
 	else if (is_array(var_type))
 	{
@@ -2689,6 +2697,7 @@ void CompilerMSL::add_composite_variable_to_interface_block(StorageClass storage
 	{
 		// Add a reference to the variable type to the interface struct.
 		uint32_t ib_mbr_idx = uint32_t(ib_type.member_types.size());
+		const string elem_ref = matrix_columns ? join("[", i / matrix_columns, "][", i % matrix_columns, "]") : join("[", i, "]");
 
 		uint32_t target_components = 0;
 		bool padded_output = false;
@@ -2792,11 +2801,11 @@ void CompilerMSL::add_composite_variable_to_interface_block(StorageClass storage
 							lerp_call = join(".interpolate_at_sample(", to_expression(builtin_sample_id_id), ")");
 						else
 							lerp_call = ".interpolate_at_center()";
-						statement(to_name(var.self), "[", i, "] = ", ib_var_ref, ".", mbr_name, lerp_call, ";");
+						statement(to_name(var.self), elem_ref, " = ", ib_var_ref, ".", mbr_name, lerp_call, ";");
 					}
 					else
 					{
-						statement(to_name(var.self), "[", i, "] = ", ib_var_ref, ".", mbr_name, ";");
+						statement(to_name(var.self), elem_ref, " = ", ib_var_ref, ".", mbr_name, ";");
 					}
 				});
 				break;
@@ -2808,14 +2817,14 @@ void CompilerMSL::add_composite_variable_to_interface_block(StorageClass storage
 						auto &padded_type = this->get<SPIRType>(type_id);
 						statement(
 						    ib_var_ref, ".", mbr_name, " = ",
-						    remap_swizzle(padded_type, usable_type->vecsize, join(to_name(var.self), "[", i, "]")),
+						    remap_swizzle(padded_type, usable_type->vecsize, join(to_name(var.self), elem_ref)),
 						    ";");
 					}
 					else if (flatten_from_ib_var)
 						statement(ib_var_ref, ".", mbr_name, " = ", ib_var_ref, ".", flatten_from_ib_mbr_name, "[", i,
 						          "];");
 					else
-						statement(ib_var_ref, ".", mbr_name, " = ", to_name(var.self), "[", i, "];");
+						statement(ib_var_ref, ".", mbr_name, " = ", to_name(var.self), elem_ref, ";");
 				});
 				break;
 
@@ -9565,6 +9574,21 @@ bool CompilerMSL::emit_array_copy(const char *expr, uint32_t lhs_id, uint32_t rh
 	         type_is_block_like(get<SPIRType>(rhs_var->basetype)))
 		rhs_is_array_template = false;
 
+	// WineMetalGL: an array member of a (non-block) struct in threadgroup
+	// memory is declared as spvUnsafeArray<>, so the copy needs .elements.
+	auto struct_member_in_workgroup = [&](SPIRVariable *var, uint32_t id, StorageClass storage) {
+		if (!var || storage != StorageClassWorkgroup || id == var->self)
+			return false;
+		const SPIRType *t = &get_variable_data_type(*var);
+		while (is_array(*t))
+			t = &get<SPIRType>(t->parent_type);
+		return t->basetype == SPIRType::Struct && !type_is_block_like(*t);
+	};
+	if (struct_member_in_workgroup(lhs_var, lhs_id, lhs_storage))
+		lhs_is_array_template = true;
+	if (struct_member_in_workgroup(rhs_var, rhs_id, rhs_storage))
+		rhs_is_array_template = true;
+
 	// If threadgroup storage qualifiers are *not* used:
 	// Avoid spvCopy* wrapper functions; Otherwise, spvUnsafeArray<> template cannot be used with that storage qualifier.
 	if (lhs_is_array_template && rhs_is_array_template && !using_builtin_array())
@@ -9809,7 +9833,7 @@ void CompilerMSL::emit_atomic_func_op(uint32_t result_type, uint32_t result_id, 
 		exp += ", &";
 		exp += to_name(result_id);
 		exp += ", ";
-		exp += to_expression(op2);
+		exp += to_unpacked_expression(op2);
 		exp += ", ";
 		exp += get_memory_order(mem_order_1);
 		exp += ", ";
@@ -9826,8 +9850,8 @@ void CompilerMSL::emit_atomic_func_op(uint32_t result_type, uint32_t result_id, 
 			emit_uninitialized_temporary_expression(result_type, result_id);
 		statement("do");
 		begin_scope();
-		statement(to_name(result_id), " = ", to_expression(op1), ";");
-		end_scope_decl(join("while (!", exp, " && ", to_name(result_id), " == ", to_enclosed_expression(op1), ")"));
+		statement(to_name(result_id), " = ", to_unpacked_expression(op1), ";");
+		end_scope_decl(join("while (!", exp, " && ", to_name(result_id), " == ", to_enclosed_unpacked_expression(op1), ")"));
 		if (check_discard)
 		{
 			end_scope();
@@ -9870,7 +9894,7 @@ void CompilerMSL::emit_atomic_func_op(uint32_t result_type, uint32_t result_id, 
 				exp += ", " + bitcast_expression(expected_type, op1);
 		}
 		if (op2)
-			exp += ", " + to_expression(op2);
+			exp += ", " + to_unpacked_expression(op2);
 
 		exp += string(", ") + get_memory_order(mem_order_1);
 		if (has_mem_order_2)
@@ -12580,7 +12604,10 @@ string CompilerMSL::get_type_address_space(const SPIRType &type, uint32_t id, bo
 		addr_space = type.pointer || (argument && type.basetype == SPIRType::ControlPointArray) ? "thread" : "";
 	}
 
-	return join(flags.get(DecorationVolatile) || flags.get(DecorationCoherent) ? "volatile " : "", addr_space);
+	// WineMetalGL: only Volatile becomes volatile. GL's coherent promises
+	// visibility after barriers (which MSL's barriers and atomics give), and
+	// Metal defines no operator[] for volatile matrices.
+	return join(flags.get(DecorationVolatile) ? "volatile " : "", addr_space);
 }
 
 const char *CompilerMSL::to_restrict(uint32_t id, bool space)

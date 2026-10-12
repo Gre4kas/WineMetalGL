@@ -4657,7 +4657,7 @@ void TParseContext::arrayOfArrayVersionCheck(const TSourceLoc& loc, const TArray
 
     requireProfile(loc, EEsProfile | ECoreProfile | ECompatibilityProfile, feature);
     profileRequires(loc, EEsProfile, 310, nullptr, feature);
-    profileRequires(loc, ECoreProfile | ECompatibilityProfile, 430, nullptr, feature);
+    profileRequires(loc, ECoreProfile | ECompatibilityProfile, 430, 1, &E_GL_ARB_arrays_of_arrays, feature);  // WineMetalGL
 }
 
 //
@@ -6079,9 +6079,11 @@ void TParseContext::setLayoutQualifier(const TSourceLoc& loc, TPublicType& publi
             error(loc, "needs a literal integer", "set", "");
         return;
     } else if (id == "binding") {
-        // WineMetalGL: GL_ARB_shader_atomic_counters adds layout(binding) for atomic counters.
-        const char* bindingExts[2] = { E_GL_ARB_shading_language_420pack, E_GL_ARB_shader_atomic_counters };
-        profileRequires(loc, ~EEsProfile, 420, 2, bindingExts, "binding");
+        // WineMetalGL: GL_ARB_shader_atomic_counters and GL_ARB_shader_storage_buffer_object
+        // add layout(binding) for atomic counters and storage blocks (as Mesa accepts).
+        const char* bindingExts[3] = { E_GL_ARB_shading_language_420pack, E_GL_ARB_shader_atomic_counters,
+                                       E_GL_ARB_shader_storage_buffer_object };
+        profileRequires(loc, ~EEsProfile, 420, 3, bindingExts, "binding");
         profileRequires(loc, EEsProfile, 310, nullptr, "binding");
         if ((unsigned int)value >= TQualifier::layoutBindingEnd)
             error(loc, "binding is too large", id.c_str(), "");
@@ -7475,9 +7477,30 @@ void TParseContext::coopMatTypeParametersCheck(const TSourceLoc& loc, const TPub
     }
 }
 
+// WineMetalGL: the uniform locations a GL uniform of `type` spans (one per
+// element of every basic-type member; GL 4.3 section 7.6.1).
+static int wmglUniformLocationCount(const TType& type)
+{
+    int count = type.isSizedArray() ? type.getCumulativeArraySize() : 1;
+    if (type.isStruct()) {
+        int members = 0;
+        for (const TTypeLoc& member : *type.getStruct())
+            members += wmglUniformLocationCount(*member.type);
+        count *= members;
+    }
+    return count;
+}
+
 bool TParseContext::vkRelaxedRemapUniformVariable(const TSourceLoc& loc, TString& identifier, const TPublicType& publicType,
     TArraySizes*, TIntermTyped* initializer, TType& type)
 {
+    // WineMetalGL: GL's explicit uniform locations (GL 4.3), kept for the
+    // linker, which assigns uniform locations itself.
+    if (!parsingBuiltins && !symbolTable.atBuiltInLevel() && symbolTable.atGlobalLevel() &&
+        type.getQualifier().storage == EvqUniform && type.getQualifier().hasLocation() && type.getBasicType() != EbtBlock)
+        intermediate.addExplicitUniformLocation(identifier.c_str(), static_cast<int>(type.getQualifier().layoutLocation),
+                                                wmglUniformLocationCount(type));
+
     vkRelaxedRemapUniformMembers(loc, publicType, type, identifier);
 
     if (parsingBuiltins || symbolTable.atBuiltInLevel() || !symbolTable.atGlobalLevel() ||
@@ -7492,6 +7515,10 @@ bool TParseContext::vkRelaxedRemapUniformVariable(const TSourceLoc& loc, TString
     }
 
     if (initializer) {
+        // WineMetalGL: an unsized array still takes its size from the
+        // initializer (GLSL 4.30 section 4.1.9) before the value is dropped.
+        if (type.isUnsizedArray() && initializer->getType().isSizedArray())
+            type.changeOuterArraySize(initializer->getType().getOuterArraySize());
         warn(loc, "Ignoring initializer for uniform", identifier.c_str(), "");
         initializer = nullptr;
     }
@@ -7521,6 +7548,15 @@ bool TParseContext::vkRelaxedRemapUniformVariable(const TSourceLoc& loc, TString
 
         // xxTODO: use logic from fixOffset() to apply explicit member offset
         bufferBinding = type.getQualifier().layoutBinding;
+        // WineMetalGL: a counter without an offset takes its binding's default
+        // offset (layout(binding = b, offset = o) uniform atomic_uint;), which
+        // then advances past it, as fixOffset() does outside relaxed rules.
+        if (bufferBinding >= 0 && bufferBinding < resources.maxAtomicCounterBindings) {
+            const int offset = type.getQualifier().hasOffset() ? type.getQualifier().layoutOffset : atomicUintOffsets[bufferBinding];
+            const int count = type.isSizedArray() ? type.getCumulativeArraySize() : 1;
+            type.getQualifier().layoutOffset = offset;
+            atomicUintOffsets[bufferBinding] = offset + 4 * count;
+        }
         type.getQualifier().layoutBinding = TQualifier::layoutBindingEnd;
         type.getQualifier().explicitOffset = false;
         growAtomicCounterBlock(bufferBinding, loc, type, identifier, nullptr);

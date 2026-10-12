@@ -21,6 +21,7 @@ Binaries, traces and reference images live outside git under
 """
 
 import argparse
+import atexit
 import json
 import math
 import os
@@ -142,6 +143,14 @@ def git_head():
     return (head or "unknown") + ("-dirty" if dirty else "")
 
 
+def cleanup_prefix(wine, prefix, workdir):
+    if os.path.isdir(prefix):
+        env = dict(os.environ, WINEPREFIX=prefix)
+        subprocess.run([os.path.join(wine, "bin", "wineserver"), "-k"], env=env,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    shutil.rmtree(workdir, ignore_errors=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--wine", required=True)
@@ -161,6 +170,8 @@ def main():
     entries = [e for e in manifest["entries"] if not args.only or e["name"] in args.only]
     workdir = tempfile.mkdtemp(prefix="wmgl-traces-")
     prefix = os.path.join(workdir, "prefix")
+    # Each prefix is ~2 GB: stop its wineserver and delete it however the run ends.
+    atexit.register(cleanup_prefix, args.wine, prefix, workdir)
     if args.template:
         subprocess.run(["cp", "-c", "-R", args.template, prefix], check=True)
     env = dict(os.environ)
@@ -227,7 +238,6 @@ def main():
         with open(args.json, "w") as handle:
             json.dump(record, handle, indent=1)
             handle.write("\n")
-    shutil.rmtree(workdir, ignore_errors=True)
     sys.exit(1 if failures else 0)
 
 

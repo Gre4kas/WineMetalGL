@@ -114,9 +114,9 @@ void Context::initStrings() {
     extensions_.push_back("GL_ARB_ES2_compatibility");
     extensions_.push_back("GL_ARB_texture_storage");
     extensions_.push_back("GL_EXT_texture_storage");  // the same entry points (EXT aliases)
-    // GL_ARB_compute_shader is not advertised: without storage buffers, images
-    // or atomic counters (GL 4.x roadmap, G08) a kernel has no way to write
-    // output, and engines that detect it would skip their working fallback.
+    // GL_ARB_compute_shader is advertised only with GL 4.3 (below): in older
+    // contexts a kernel has no storage buffers to write, and engines that
+    // detect it would skip their working fallback.
     extensions_.push_back("GL_ARB_compressed_texture_pixel_storage");
     extensions_.push_back("GL_ARB_texture_storage_multisample");
     extensions_.push_back("GL_EXT_texture_compression_s3tc");
@@ -153,7 +153,7 @@ void Context::initStrings() {
     for (const char* name : {"GL_KHR_robustness", "GL_ARB_robustness", "GL_ARB_internalformat_query",
                              "GL_ARB_invalidate_subdata", "GL_ARB_copy_image", "GL_NVX_gpu_memory_info", "GL_ATI_meminfo"})
         extensions_.push_back(name);
-    // The extensions GL 4.0, 4.1 and 4.2 made core, in contexts of the
+    // The extensions GL 4.0 to 4.3 made core, in contexts of the
     // version that includes them (their features are gated on the version).
     const int version = config_.major * 10 + config_.minor;
     if (version >= 40)
@@ -171,6 +171,17 @@ void Context::initStrings() {
              {"GL_ARB_conservative_depth", "GL_ARB_shader_atomic_counters", "GL_ARB_shader_image_load_store",
               "GL_ARB_shading_language_420pack", "GL_ARB_shading_language_packing", "GL_ARB_texture_compression_bptc",
               "GL_ARB_transform_feedback_instanced"})
+            extensions_.push_back(name);
+    if (version >= 43)
+        for (const char* name :
+             {"GL_ARB_compute_shader", "GL_ARB_explicit_uniform_location", "GL_ARB_program_interface_query",
+              "GL_ARB_shader_storage_buffer_object", "GL_ARB_texture_buffer_range", "GL_ARB_texture_view",
+              "GL_ARB_texture_query_levels", "GL_ARB_vertex_attrib_binding", "GL_ARB_arrays_of_arrays",
+              "GL_ARB_clear_buffer_object", "GL_ARB_ES3_compatibility", "GL_ARB_fragment_layer_viewport",
+              "GL_ARB_framebuffer_no_attachments", "GL_ARB_internalformat_query2", "GL_ARB_multi_draw_indirect",
+              "GL_ARB_shader_image_size", "GL_ARB_stencil_texturing",
+              // GL 4.5, implemented: the Khronos CTS calls glTextureBarrier in GL 4.3 view tests
+              "GL_ARB_texture_barrier"})
             extensions_.push_back(name);
     // Later extensions the core implements, in 4.x contexts: wined3d reads
     // EXT_shader_integer_mix and polygon_offset_clamp for its feature level.
@@ -287,7 +298,7 @@ RefPtr<Buffer>* Context::bufferBinding(GLenum target) {
     if (version() >= 40 || hasExtension("GL_ARB_draw_indirect"))
         if (target == GL_DRAW_INDIRECT_BUFFER) return &state.drawIndirectBuffer;
     if (computeShaders() && target == GL_DISPATCH_INDIRECT_BUFFER) return &state.dispatchIndirectBuffer;
-    if (version() >= 43 && target == GL_SHADER_STORAGE_BUFFER) return &state.shaderStorageBuffer;
+    if (storageBuffers() && target == GL_SHADER_STORAGE_BUFFER) return &state.shaderStorageBuffer;
     if (atomicCounters() && target == GL_ATOMIC_COUNTER_BUFFER) return &state.atomicCounterBuffer;
     if (version() >= 44 && target == GL_QUERY_BUFFER) return &state.queryBuffer;
     return nullptr;

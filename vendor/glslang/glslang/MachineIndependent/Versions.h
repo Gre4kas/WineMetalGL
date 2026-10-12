@@ -126,6 +126,8 @@ const char* const E_GL_ARB_shading_language_420pack     = "GL_ARB_shading_langua
 const char* const E_GL_ARB_texture_gather               = "GL_ARB_texture_gather";
 // WineMetalGL: GL_ARB_shader_subroutine is accepted (WineMetalGL lowers subroutines before glslang parses).
 const char* const E_GL_ARB_shader_subroutine            = "GL_ARB_shader_subroutine";
+// WineMetalGL: GL_ARB_arrays_of_arrays (GL 4.3) below GLSL 4.30.
+const char* const E_GL_ARB_arrays_of_arrays             = "GL_ARB_arrays_of_arrays";
 const char* const E_GL_ARB_gpu_shader5                  = "GL_ARB_gpu_shader5";
 const char* const E_GL_ARB_separate_shader_objects      = "GL_ARB_separate_shader_objects";
 const char* const E_GL_ARB_compute_shader               = "GL_ARB_compute_shader";
@@ -162,6 +164,7 @@ const char* const E_GL_ARB_shader_image_size            = "GL_ARB_shader_image_s
 const char* const E_GL_ARB_shader_storage_buffer_object = "GL_ARB_shader_storage_buffer_object";
 const char* const E_GL_ARB_shading_language_packing     = "GL_ARB_shading_language_packing";
 const char* const E_GL_ARB_texture_query_lod            = "GL_ARB_texture_query_lod";
+const char* const E_GL_ARB_texture_query_levels         = "GL_ARB_texture_query_levels";  // WineMetalGL
 const char* const E_GL_ARB_vertex_attrib_64bit          = "GL_ARB_vertex_attrib_64bit";
 const char* const E_GL_ARB_draw_instanced               = "GL_ARB_draw_instanced";
 const char* const E_GL_ARB_fragment_coord_conventions   = "GL_ARB_fragment_coord_conventions";

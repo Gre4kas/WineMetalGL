@@ -960,6 +960,16 @@ public:
         uniformLocationOverrides[name] = location;
     }
 
+    // WineMetalGL: every global uniform declared with layout(location), with
+    // the number of locations it spans (GL 4.3 explicit uniform locations),
+    // whether or not the shader uses it.
+    struct ExplicitUniformLocation { std::string name; int location; int count; };
+    void addExplicitUniformLocation(const char* name, int location, int count)
+    {
+        explicitUniformLocations.push_back({name, location, count});
+    }
+    const std::vector<ExplicitUniformLocation>& getExplicitUniformLocations() const { return explicitUniformLocations; }
+
     int getUniformLocationOverride(const char* nameStr) const
     {
         std::string name = nameStr;
@@ -1258,6 +1268,7 @@ protected:
     std::map<TString, AstRefType> bindlessTextureModeCaller;
     std::map<TString, AstRefType> bindlessImageModeCaller;
     std::unordered_map<std::string, int> uniformLocationOverrides;
+    std::vector<ExplicitUniformLocation> explicitUniformLocations;
     int uniformLocationBase;
     bool quadDerivMode;
     bool reqFullQuadsMode;

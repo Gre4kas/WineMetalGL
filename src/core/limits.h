@@ -11,6 +11,9 @@ constexpr GLint kMaxDrawBuffers = 8, kMaxVertexAttribs = 16, kMaxTextureUnitsPer
 constexpr GLint kMaxUniformBlocksPerStage = 14, kMaxCombinedUniformBlocks = 70, kMaxUniformBufferBindings = 72;
 constexpr GLint kMaxUniformBlockSize = 65536, kMaxDefaultUniformComponents = 4096;
 constexpr GLint kMaxTextureBufferSize = 1 << 27;
+// GL 4.3 glTexBufferRange: the largest alignment GL allows, which every Metal
+// texel buffer alignment divides.
+constexpr GLint kTextureBufferOffsetAlignment = 256;
 // Metal clamps a sampler's LOD bias just below 16, so 15 is the largest
 // whole value it represents exactly (GL requires at least 2).
 // GL_ARB_compute_shader (the values glslang's default resources declare).
@@ -24,10 +27,17 @@ constexpr GLint kMaxPatchVertices = 32, kMaxTessGenLevel = 64;
 // slots have room for 8 counter buffers; vertex functions have none left
 // (shader/compiler.h).
 constexpr GLint kMaxImageUnits = 8, kMaxImageUniformsPerStage = 8, kMaxCombinedImageUniforms = 48;
-constexpr GLint kMaxCombinedImageUnitsAndFragmentOutputs = 16;
 constexpr GLint kMaxAtomicCounterBufferBindings = 8, kMaxStageAtomicCounterBuffers = 8, kMaxStageAtomicCounters = 8;
 constexpr GLint kMaxVertexAtomicCounterBuffers = 1;
 constexpr GLint kMaxAtomicCounterBufferSize = 16384;
+// GL 4.3 shader storage blocks: an argument buffer per stage function,
+// emulated geometry and tessellation stages included (shader/compiler.h).
+constexpr GLint kMaxShaderStorageBufferBindings = 16, kMaxStageStorageBlocks = 16, kMaxCombinedStorageBlocks = 48;
+constexpr GLint kMaxShaderStorageBlockSize = 1 << 27, kShaderStorageBufferOffsetAlignment = 16;
+constexpr GLint kMaxCombinedShaderOutputResources = kMaxCombinedStorageBlocks + kMaxImageUnits + kMaxDrawBuffers;
+constexpr GLint kMaxUniformLocations = 1024;  // GL 4.3 explicit uniform locations
+// GL 4.3 vertex attribute bindings (GL_MAX_VERTEX_ATTRIB_RELATIVE_OFFSET), GL 4.4 stride limit.
+constexpr GLint kMaxVertexAttribRelativeOffset = 2047, kMaxVertexAttribStride = 2048;
 constexpr GLint kMaxViewports = 16, kMaxGeometryShaderInvocations = 32;
 constexpr GLfloat kMaxTextureLodBias = 15.0f, kMaxAnisotropy = 16.0f;
 

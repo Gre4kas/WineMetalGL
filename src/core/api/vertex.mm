@@ -5,12 +5,28 @@
 
 #include "core/compat/immediate.h"
 #include "core/context.h"
+#include "core/limits.h"
 #include "gl_api.gen.h"
 
 namespace wmgl {
 
 GLsizei VertexAttrib::effectiveStride() const {
+    if (zeroStride) return 0;
     return stride ? stride : static_cast<GLsizei>(elementBytes());
+}
+
+void VertexArray::resolveBinding(GLuint index) {
+    const VertexBinding& b = bindings[index];
+    for (int i = 0; i < kMaxAttribs; ++i) {
+        VertexAttrib& a = attribs[static_cast<size_t>(i)];
+        if (a.binding != index) continue;
+        a.buffer = b.buffer;
+        a.offset = b.offset + static_cast<GLintptr>(a.relativeOffset);
+        a.stride = b.stride;
+        a.zeroStride = b.stride == 0;
+        a.divisor = b.divisor;
+    }
+    ++version;
 }
 
 uint32_t VertexAttrib::elementBytes() const {
@@ -37,27 +53,27 @@ bool checkIndex(Context& ctx, GLuint index) {
     return true;
 }
 
-void setPointer(Context& ctx, GLuint index, GLint size, GLenum type, bool normalized, bool integer, bool isDouble,
-                GLsizei stride, const void* pointer) {
-    if (!checkIndex(ctx, index)) return;
-    if (stride < 0) return ctx.setError(GL_INVALID_VALUE);
+// Validates a vertex format (glVertexAttrib*Pointer, glVertexAttrib*Format);
+// false with the error set.
+bool validFormat(Context& ctx, GLint size, GLenum type, bool normalized, bool integer, bool isDouble) {
     const bool packed = type == GL_INT_2_10_10_10_REV || type == GL_UNSIGNED_INT_2_10_10_10_REV ||
                         type == GL_UNSIGNED_INT_10F_11F_11F_REV;
+    auto fail = [&](GLenum error) { ctx.setError(error); return false; };
     if (size == GL_BGRA) {
-        if (integer || isDouble) return ctx.setError(GL_INVALID_VALUE);
+        if (integer || isDouble) return fail(GL_INVALID_VALUE);
         if (type != GL_UNSIGNED_BYTE && type != GL_INT_2_10_10_10_REV && type != GL_UNSIGNED_INT_2_10_10_10_REV)
-            return ctx.setError(GL_INVALID_OPERATION);
-        if (!normalized) return ctx.setError(GL_INVALID_OPERATION);
+            return fail(GL_INVALID_OPERATION);
+        if (!normalized) return fail(GL_INVALID_OPERATION);
     } else if (size < 1 || size > 4) {
-        return ctx.setError(GL_INVALID_VALUE);
+        return fail(GL_INVALID_VALUE);
     }
     if (integer) {
         switch (type) {
         case GL_BYTE: case GL_UNSIGNED_BYTE: case GL_SHORT: case GL_UNSIGNED_SHORT: case GL_INT: case GL_UNSIGNED_INT: break;
-        default: return ctx.setError(GL_INVALID_ENUM);
+        default: return fail(GL_INVALID_ENUM);
         }
     } else if (isDouble) {
-        if (type != GL_DOUBLE) return ctx.setError(GL_INVALID_ENUM);
+        if (type != GL_DOUBLE) return fail(GL_INVALID_ENUM);
     } else {
         switch (type) {
         case GL_BYTE: case GL_UNSIGNED_BYTE: case GL_SHORT: case GL_UNSIGNED_SHORT: case GL_INT: case GL_UNSIGNED_INT:
@@ -65,25 +81,40 @@ void setPointer(Context& ctx, GLuint index, GLint size, GLenum type, bool normal
         case GL_UNSIGNED_INT_2_10_10_10_REV: break;
         case GL_UNSIGNED_INT_10F_11F_11F_REV:
             if (ctx.version() >= 44) break;
-            return ctx.setError(GL_INVALID_ENUM);
-        default: return ctx.setError(GL_INVALID_ENUM);
+            return fail(GL_INVALID_ENUM);
+        default: return fail(GL_INVALID_ENUM);
         }
-        if (packed && size != 4 && size != GL_BGRA && type != GL_UNSIGNED_INT_10F_11F_11F_REV)
-            return ctx.setError(GL_INVALID_OPERATION);
+        if (packed && size != 4 && size != GL_BGRA && type != GL_UNSIGNED_INT_10F_11F_11F_REV) return fail(GL_INVALID_OPERATION);
     }
+    return true;
+}
+
+void setPointer(Context& ctx, GLuint index, GLint size, GLenum type, bool normalized, bool integer, bool isDouble,
+                GLsizei stride, const void* pointer) {
+    if (!checkIndex(ctx, index)) return;
+    if (stride < 0) return ctx.setError(GL_INVALID_VALUE);
+    if (!validFormat(ctx, size, type, normalized, integer, isDouble)) return;
     // Core profile: arrays must come from a buffer object (except offset 0 with no VAO is still an error).
     if (ctx.isCore() && !ctx.state.arrayBuffer && pointer) return ctx.setError(GL_INVALID_OPERATION);
     if (ctx.isCore() && currentVao(ctx) == ctx.defaultVertexArray.get()) return ctx.setError(GL_INVALID_OPERATION);
-    VertexAttrib& a = currentVao(ctx)->attribs[index];
+    // GL 4.3: the format, binding `index`, and that binding's buffer,
+    // offset (the pointer) and stride (tightly packed for 0).
+    VertexArray& vao = *currentVao(ctx);
+    VertexAttrib& a = vao.attribs[index];
     a.size = size;
     a.type = type;
     a.normalized = normalized;
     a.integer = integer;
     a.isDouble = isDouble;
-    a.stride = stride;
-    a.offset = reinterpret_cast<GLintptr>(pointer);
-    a.buffer = ctx.state.arrayBuffer;
-    ++currentVao(ctx)->version;
+    a.pointerStride = stride;
+    a.pointer = reinterpret_cast<GLintptr>(pointer);
+    a.binding = index;
+    a.relativeOffset = 0;
+    VertexBinding& b = vao.bindings[index];
+    b.buffer = ctx.state.arrayBuffer;
+    b.offset = reinterpret_cast<GLintptr>(pointer);
+    b.stride = stride ? stride : static_cast<GLsizei>(a.elementBytes());
+    vao.resolveBinding(index);
     ctx.markDirty(kDirtyVertexInput);
 }
 
@@ -163,8 +194,108 @@ void DisableVertexAttribArray(Context& ctx, GLuint index) {
 void VertexAttribDivisor(Context& ctx, GLuint index, GLuint divisor) {
     if (!checkIndex(ctx, index)) return;
     if (!vaoStateWritable(ctx)) return ctx.setError(GL_INVALID_OPERATION);
-    currentVao(ctx)->attribs[index].divisor = divisor;
-    ++currentVao(ctx)->version;
+    // GL 4.3: VertexAttribBinding(index, index) and VertexBindingDivisor(index, divisor).
+    VertexArray& vao = *currentVao(ctx);
+    if (vao.attribs[index].binding != index) {
+        vao.attribs[index].binding = index;
+        vao.resolveBinding(index);
+    }
+    vao.bindings[index].divisor = divisor;
+    vao.resolveBinding(index);
+    ctx.markDirty(kDirtyVertexInput);
+}
+
+// --- GL 4.3 vertex attribute bindings (GL_ARB_vertex_attrib_binding)
+
+namespace {
+
+bool attribBindings(Context& ctx, const char* command) {
+    if (ctx.version() >= 43 || ctx.hasExtension("GL_ARB_vertex_attrib_binding")) return true;
+    ctx.unimplemented(command);
+    return false;
+}
+
+// These commands change VAO state: an error on the default VAO of a core context.
+bool bindingStateWritable(Context& ctx) {
+    if (ctx.isCore() && currentVao(ctx) == ctx.defaultVertexArray.get()) {
+        ctx.setError(GL_INVALID_OPERATION);
+        return false;
+    }
+    return true;
+}
+
+void setFormat(Context& ctx, GLuint index, GLint size, GLenum type, bool normalized, bool integer, bool isDouble,
+               GLuint relativeOffset, const char* command) {
+    if (!attribBindings(ctx, command) || !bindingStateWritable(ctx)) return;
+    if (!checkIndex(ctx, index)) return;
+    if (relativeOffset > static_cast<GLuint>(limits::kMaxVertexAttribRelativeOffset)) return ctx.setError(GL_INVALID_VALUE);
+    if (!validFormat(ctx, size, type, normalized, integer, isDouble)) return;
+    VertexArray& vao = *currentVao(ctx);
+    VertexAttrib& a = vao.attribs[index];
+    a.size = size;
+    a.type = type;
+    a.normalized = normalized;
+    a.integer = integer;
+    a.isDouble = isDouble;
+    a.relativeOffset = relativeOffset;
+    vao.resolveBinding(a.binding);
+    ctx.markDirty(kDirtyVertexInput);
+}
+
+}  // namespace
+
+void BindVertexBuffer(Context& ctx, GLuint bindingindex, GLuint buffer, GLintptr offset, GLsizei stride) {
+    if (!attribBindings(ctx, "glBindVertexBuffer") || !bindingStateWritable(ctx)) return;
+    if (bindingindex >= static_cast<GLuint>(VertexArray::kMaxBindings) || offset < 0 || stride < 0)
+        return ctx.setError(GL_INVALID_VALUE);
+    if (ctx.version() >= 44 && stride > limits::kMaxVertexAttribStride) return ctx.setError(GL_INVALID_VALUE);
+    RefPtr<Buffer> object;
+    if (buffer) {
+        ShareLock lock(ctx);
+        if (!ctx.share().buffers.isGenerated(buffer)) return ctx.setError(GL_INVALID_OPERATION);
+        object = ctx.share().buffers.getRef(buffer);
+        if (!object) {
+            object = makeRef<Buffer>(buffer);
+            ctx.share().buffers.set(buffer, object);
+        }
+    }
+    VertexArray& vao = *currentVao(ctx);
+    VertexBinding& b = vao.bindings[bindingindex];
+    b.buffer = object;
+    b.offset = offset;
+    b.stride = stride;
+    vao.resolveBinding(bindingindex);
+    ctx.markDirty(kDirtyVertexInput);
+}
+
+void VertexAttribFormat(Context& ctx, GLuint attribindex, GLint size, GLenum type, GLboolean normalized, GLuint relativeoffset) {
+    setFormat(ctx, attribindex, size, type, normalized != GL_FALSE, false, false, relativeoffset, "glVertexAttribFormat");
+}
+
+void VertexAttribIFormat(Context& ctx, GLuint attribindex, GLint size, GLenum type, GLuint relativeoffset) {
+    setFormat(ctx, attribindex, size, type, false, true, false, relativeoffset, "glVertexAttribIFormat");
+}
+
+void VertexAttribLFormat(Context& ctx, GLuint attribindex, GLint size, GLenum type, GLuint relativeoffset) {
+    setFormat(ctx, attribindex, size, type, false, false, true, relativeoffset, "glVertexAttribLFormat");
+}
+
+void VertexAttribBinding(Context& ctx, GLuint attribindex, GLuint bindingindex) {
+    if (!attribBindings(ctx, "glVertexAttribBinding") || !bindingStateWritable(ctx)) return;
+    if (!checkIndex(ctx, attribindex)) return;
+    if (bindingindex >= static_cast<GLuint>(VertexArray::kMaxBindings)) return ctx.setError(GL_INVALID_VALUE);
+    VertexArray& vao = *currentVao(ctx);
+    vao.attribs[attribindex].binding = bindingindex;
+    vao.resolveBinding(bindingindex);
+    ctx.markDirty(kDirtyVertexInput);
+}
+
+void VertexBindingDivisor(Context& ctx, GLuint bindingindex, GLuint divisor) {
+    if (!attribBindings(ctx, "glVertexBindingDivisor") || !bindingStateWritable(ctx)) return;
+    if (bindingindex >= static_cast<GLuint>(VertexArray::kMaxBindings)) return ctx.setError(GL_INVALID_VALUE);
+    VertexArray& vao = *currentVao(ctx);
+    vao.bindings[bindingindex].divisor = divisor;
+    vao.resolveBinding(bindingindex);
     ctx.markDirty(kDirtyVertexInput);
 }
 
@@ -323,7 +454,7 @@ void getVertexAttrib(Context& ctx, GLuint index, GLenum pname, T* params) {
     case GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING: *params = static_cast<T>(a.buffer ? a.buffer->name : 0); return;
     case GL_VERTEX_ATTRIB_ARRAY_ENABLED: *params = static_cast<T>(a.enabled); return;
     case GL_VERTEX_ATTRIB_ARRAY_SIZE: *params = static_cast<T>(a.size); return;
-    case GL_VERTEX_ATTRIB_ARRAY_STRIDE: *params = static_cast<T>(a.stride); return;
+    case GL_VERTEX_ATTRIB_ARRAY_STRIDE: *params = static_cast<T>(a.pointerStride); return;
     case GL_VERTEX_ATTRIB_ARRAY_TYPE: *params = static_cast<T>(a.type); return;
     case GL_VERTEX_ATTRIB_ARRAY_NORMALIZED: *params = static_cast<T>(a.normalized); return;
     case GL_VERTEX_ATTRIB_ARRAY_INTEGER: *params = static_cast<T>(a.integer); return;
@@ -331,6 +462,10 @@ void getVertexAttrib(Context& ctx, GLuint index, GLenum pname, T* params) {
     default: break;
     }
     if (ctx.version() >= 41 && pname == GL_VERTEX_ATTRIB_ARRAY_LONG) { *params = static_cast<T>(a.isDouble); return; }
+    if (ctx.version() >= 43 || ctx.hasExtension("GL_ARB_vertex_attrib_binding")) {
+        if (pname == GL_VERTEX_ATTRIB_BINDING) { *params = static_cast<T>(a.binding); return; }
+        if (pname == GL_VERTEX_ATTRIB_RELATIVE_OFFSET) { *params = static_cast<T>(a.relativeOffset); return; }
+    }
     ctx.setError(GL_INVALID_ENUM);
 }
 
@@ -360,7 +495,7 @@ void GetVertexAttribIuiv(Context& ctx, GLuint index, GLenum pname, GLuint* param
 void GetVertexAttribPointerv(Context& ctx, GLuint index, GLenum pname, void** pointer) {
     if (pname != GL_VERTEX_ATTRIB_ARRAY_POINTER) return ctx.setError(GL_INVALID_ENUM);
     if (!checkIndex(ctx, index) || !pointer) return;
-    *pointer = reinterpret_cast<void*>(currentVao(ctx)->attribs[index].offset);
+    *pointer = reinterpret_cast<void*>(currentVao(ctx)->attribs[index].pointer);
 }
 
 // --- packed generic attributes (GL_ARB_vertex_type_2_10_10_10_rev)

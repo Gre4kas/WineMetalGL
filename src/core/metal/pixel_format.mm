@@ -60,6 +60,16 @@ MTLPixelFormat mtlPixelFormat(Storage storage) {
     case Storage::BC6H_RGBUfloat: return MTLPixelFormatBC6H_RGBUfloat;
     case Storage::BC7_RGBAUnorm: return MTLPixelFormatBC7_RGBAUnorm;
     case Storage::BC7_RGBAUnorm_sRGB: return MTLPixelFormatBC7_RGBAUnorm_sRGB;
+    case Storage::ETC2_RGB8: return MTLPixelFormatETC2_RGB8;
+    case Storage::ETC2_RGB8_sRGB: return MTLPixelFormatETC2_RGB8_sRGB;
+    case Storage::ETC2_RGB8A1: return MTLPixelFormatETC2_RGB8A1;
+    case Storage::ETC2_RGB8A1_sRGB: return MTLPixelFormatETC2_RGB8A1_sRGB;
+    case Storage::EAC_RGBA8: return MTLPixelFormatEAC_RGBA8;
+    case Storage::EAC_RGBA8_sRGB: return MTLPixelFormatEAC_RGBA8_sRGB;
+    case Storage::EAC_R11Unorm: return MTLPixelFormatEAC_R11Unorm;
+    case Storage::EAC_R11Snorm: return MTLPixelFormatEAC_R11Snorm;
+    case Storage::EAC_RG11Unorm: return MTLPixelFormatEAC_RG11Unorm;
+    case Storage::EAC_RG11Snorm: return MTLPixelFormatEAC_RG11Snorm;
     case Storage::Depth16Unorm: return MTLPixelFormatDepth16Unorm;
     case Storage::Depth32Float: return MTLPixelFormatDepth32Float;
     case Storage::Stencil8: return MTLPixelFormatStencil8;

@@ -4,13 +4,14 @@
     scripts/docs/generate.py [--check] [--check-provenance]
 
 Inputs (all tracked):
-  tests/cts/baseline/glMN-cfgN-*.txt   KHR-GL30 to KHR-GL42 results (scripts/cts/run.py)
+  tests/cts/baseline/glMN-cfgN-*.txt   KHR-GL30 to KHR-GL43 results (scripts/cts/run.py)
+  tests/cts/recheck/glMN-cfgN-*.txt    later runs of a baseline's non-Pass cases, which replace its results
   tests/cts/notsupported.json          reason for every NotSupported case
   tests/cts/known-failures.json        reasons for failing cases the core does not fix
   tests/games/corpus.json              game corpus manifest
   tests/games/results.json             last corpus run (scripts/traces/replay.py --json)
   tests/games/perf.json                frame times (scripts/traces/benchmark.py)
-  third_party/khronos/gl.xml           the GL 4.2 core command list
+  third_party/khronos/gl.xml           the GL 4.3 core command list
   src/core                             advertised extensions, implemented commands
 
 Outputs:
@@ -41,9 +42,9 @@ END = "<!-- END GENERATED: %s -->"
 STATUSES = ["Pass", "Fail", "NotSupported", "InternalError", "Crash", "Timeout", "Missing"]
 # Mustpass lists with committed baselines (tests/cts/baseline/<list>-cfgN-<runner>.txt).
 SUITES = [("gl30", "KHR-GL30"), ("gl31", "KHR-GL31"), ("gl32", "KHR-GL32"), ("gl33", "KHR-GL33"),
-          ("gl40", "KHR-GL40"), ("gl41", "KHR-GL41"), ("gl42", "KHR-GL42")]
+          ("gl40", "KHR-GL40"), ("gl41", "KHR-GL41"), ("gl42", "KHR-GL42"), ("gl43", "KHR-GL43")]
 # The highest version contexts get (src/core/driver.mm).
-MAX_VERSION = "4.2"
+MAX_VERSION = "4.3"
 # mustpass.xml configurations that are run. Configurations 5 and 6 repeat the command
 # lines of 1 and 2: their only difference, useForFirstEGLConfig, applies to EGL.
 CONFIGS = (1, 2, 3, 4)
@@ -59,7 +60,7 @@ VERSIONS = [
     ("4.0", "Tessellation, GLSL 4.00, double precision, indirect draws, per-sample shading", "gl40"),
     ("4.1", "Separate shader objects, program binaries, viewport arrays, 64-bit attributes", "gl41"),
     ("4.2", "Image load/store, atomic counters, immutable texture storage", "gl42"),
-    ("4.3", "Compute shaders, shader storage buffers, debug output, texture views", None),
+    ("4.3", "Compute shaders, shader storage buffers, debug output, texture views", "gl43"),
     ("4.4", "Buffer storage, multi-bind, texture clears, enhanced layouts", None),
     ("4.5", "Direct state access, clip control, robustness, cull distances", None),
     ("4.6", "SPIR-V shaders, anisotropic filtering, indirect draw counts", None),
@@ -123,6 +124,24 @@ def load_baselines(suite):
                     meta["seconds"] = int(seconds.group(1))
             elif line.startswith("# cts"):
                 meta["cts"] = line.replace("# cts", "").strip()
+        # A recheck (same list, configuration and runner) reruns the cases that were not Pass at a
+        # later commit; its results replace the baseline's for those cases.
+        recheck = rel("tests", "cts", "recheck", os.path.basename(path))
+        if os.path.exists(recheck):
+            recheck_header, rechecked = cts.load(recheck)
+            unknown = [c for c in rechecked if c not in results]
+            if unknown:
+                raise SystemExit("%s: cases not in %s:\n  %s" % (os.path.relpath(recheck, ROOT), meta["file"],
+                                                                  "\n  ".join(unknown[:10])))
+            not_rechecked = [c for c, status in results.items() if status != "Pass" and c not in rechecked]
+            if not_rechecked:
+                raise SystemExit("%s: non-Pass cases of %s not rechecked:\n  %s" % (
+                    os.path.relpath(recheck, ROOT), meta["file"], "\n  ".join(not_rechecked[:10])))
+            results.update(rechecked)
+            meta["recheck"] = {"file": os.path.relpath(recheck, ROOT), "cases": len(rechecked)}
+            for line in recheck_header:
+                if line.startswith("# commit"):
+                    meta["recheck"]["commit"] = line.split(",")[0].replace("# commit", "").strip()
         out[(meta["config"], meta["runner"])] = (meta, results)
     return out
 
@@ -509,6 +528,8 @@ def render(suites):
     lines = ["## Conformance totals", "",
              "| OpenGL | Conformance % | Features | Unsupported % |", "|---|---:|---|---:|"]
     commits = sorted({meta.get("commit", "?") for b in suites.values() for meta, _ in b.values()})
+    rechecks = sorted({(suite, meta["recheck"].get("commit", "?")) for suite, b in suites.items()
+                       for meta, _ in b.values() if "recheck" in meta})
     for version, adds, suite in VERSIONS:
         if version < "3.0":
             continue
@@ -527,11 +548,17 @@ def render(suites):
         lines.append("| %s | %s | %s | %s |" % (version, conformance_cell, adds, unsupported_cell))
     lines += ["",
               "**Conformance %%**: passing cases over applicable cases (cases that are not NotSupported) of the "
-              "version's Khronos CTS mustpass list (`KHR-GL30` to `KHR-GL42`), in the worst of its %d runs "
+              "version's Khronos CTS mustpass list (`KHR-GL30` to `KHR-GL43`), in the worst of its %d runs "
               "(configurations %s of `mustpass.xml`, each under Wine and natively) at commit %s." % (
                   2 * len(CONFIGS), "%d to %d" % (CONFIGS[0], CONFIGS[-1]), ", ".join(commits)),
-              "",
-              "What Unsupported % counts, and why each failing case fails: "
+              ""]
+    if rechecks:
+        packages = [package for suite, package in SUITES if any(s == suite for s, _ in rechecks)]
+        recheck_commits = sorted({c for _, c in rechecks})
+        lines += ["The cases that were not Pass in %s were run again at commit %s, in the same configurations "
+                  "under Wine and natively (`tests/cts/recheck/`); those results replace the baselines' for "
+                  "those cases." % (", ".join("`%s`" % p for p in packages), ", ".join(recheck_commits)), ""]
+    lines += ["What Unsupported % counts, and why each failing case fails: "
               "[Unsupported](docs/unsupported.md#conformance-notes)."]
     lines += ["",
               "OpenGL 1.0 to 2.1 are implemented by WineMetalGL itself, as its compatibility profile: the "
@@ -568,6 +595,8 @@ def main():
     if args.check_provenance:
         # Evidence recorded from a tree with uncommitted changes does not describe a commit.
         recorded = [(meta["file"], meta.get("commit", "")) for b in suites.values() for meta, _ in b.values()]
+        recorded += [(meta["recheck"]["file"], meta["recheck"].get("commit", "")) for b in suites.values()
+                     for meta, _ in b.values() if "recheck" in meta]
         for name in ("results.json", "perf.json"):
             path = rel("tests", "games", name)
             if os.path.exists(path):

@@ -15,7 +15,8 @@ OUTPUT/
                    win32u.so, opengl32.so
     guest/i386/    opengl32.dll
     guest/x86_64/  opengl32.dll
-  evidence/        CTS baselines, corpus results and frame times of the commit
+  evidence/        CTS baselines and their rechecks (cts/recheck), corpus results
+                   and frame times of the commit
   docs/            conformance.md, unsupported.md, testing.md, building.md,
                    performance.md, games.md, api-coverage.json, release.md
   LICENSE, LICENSES/  LGPL-3.0-or-later, the GPL-3.0 it builds on, third-party licenses
@@ -46,7 +47,7 @@ released with two archives:
 - `winemetalgl-<version>-arm64-core.tar.gz`: `scripts/stage-arm64-core.sh
   OUTPUT`, the arm64 core with the driver ABI header and `patches/wine`, for a
   native arm64 Wine built with the patches. Its evidence is the native
-  KHR-GL30 to KHR-GL42 runs (the core built for the build machine); it has not
+  KHR-GL30 to KHR-GL43 runs (the core built for the build machine); it has not
   yet run inside an arm64 Wine.
 
 The two cores are not interchangeable: `winemac.so` loads the core of its own

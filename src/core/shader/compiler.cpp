@@ -46,7 +46,7 @@ const TBuiltInResource* resources() {
         x.maxVaryingComponents = 64;
         x.maxVaryingVectors = 16;
         x.maxImageUnits = L::kMaxImageUnits;
-        x.maxCombinedImageUnitsAndFragmentOutputs = x.maxCombinedShaderOutputResources = L::kMaxCombinedImageUnitsAndFragmentOutputs;
+        x.maxCombinedImageUnitsAndFragmentOutputs = x.maxCombinedShaderOutputResources = L::kMaxCombinedShaderOutputResources;
         x.maxImageSamples = 0;
         x.maxVertexImageUniforms = x.maxTessControlImageUniforms = x.maxTessEvaluationImageUniforms = L::kMaxImageUniformsPerStage;
         x.maxGeometryImageUniforms = x.maxFragmentImageUniforms = x.maxComputeImageUniforms = L::kMaxImageUniformsPerStage;
@@ -66,6 +66,15 @@ const TBuiltInResource* resources() {
         x.maxPatchVertices = L::kMaxPatchVertices;
         x.maxTessGenLevel = L::kMaxTessGenLevel;
         x.maxSamples = 4;
+        // Default-block uniform components of every stage (GL_MAX_*_UNIFORM_COMPONENTS).
+        x.maxVertexUniformComponents = x.maxFragmentUniformComponents = x.maxGeometryUniformComponents =
+            x.maxTessControlUniformComponents = x.maxTessEvaluationUniformComponents = x.maxComputeUniformComponents =
+                L::kMaxDefaultUniformComponents;
+        x.maxComputeTextureImageUnits = L::kMaxTextureUnitsPerStage;
+        x.maxComputeWorkGroupCountX = x.maxComputeWorkGroupCountY = x.maxComputeWorkGroupCountZ = L::kMaxComputeWorkGroupCount;
+        x.maxComputeWorkGroupSizeX = L::kMaxComputeWorkGroupSize[0];
+        x.maxComputeWorkGroupSizeY = L::kMaxComputeWorkGroupSize[1];
+        x.maxComputeWorkGroupSizeZ = L::kMaxComputeWorkGroupSize[2];
         return x;
     }();
     return &r;
@@ -896,7 +905,48 @@ std::string topLevelName(const std::string& name) {
     return end == std::string::npos ? name : name.substr(0, end);
 }
 
-// Expands a block member (recursively) into GL uniform entries.
+// The dimensions of an array member, outermost first (0: runtime-sized),
+// and the byte stride of each level (SPIR-V decorates only the outermost
+// one; nested arrays are tightly packed in std140 and std430).
+struct ArrayLevels {
+    std::vector<uint32_t> sizes, strides;
+};
+ArrayLevels arrayLevels(const spirv_cross::Compiler& compiler, const spirv_cross::SPIRType& parent, uint32_t index,
+                        const spirv_cross::SPIRType& type) {
+    ArrayLevels levels;
+    for (size_t d = type.array.size(); d-- > 0;)
+        levels.sizes.push_back(type.array_size_literal[d] ? type.array[d] : 0);
+    if (levels.sizes.empty()) return levels;
+    uint32_t stride = compiler.type_struct_member_array_stride(parent, index);
+    if (stride == 0) {
+        // Some arrays come without an ArrayStride value; blocks use std140 rules,
+        // where every array element starts on a 16-byte boundary (a matrix
+        // element spans one 16-byte vector per column, or per row if row-major).
+        const bool rowMajor = compiler.has_member_decoration(parent.self, index, spv::DecorationRowMajor);
+        stride = 16u * (type.columns > 1 ? (rowMajor ? type.vecsize : type.columns) : 1u);
+        for (size_t d = 1; d < levels.sizes.size(); ++d) stride *= std::max(1u, levels.sizes[d]);
+    }
+    for (size_t d = 0; d < levels.sizes.size(); ++d) {
+        levels.strides.push_back(stride);
+        if (d + 1 < levels.sizes.size()) stride /= std::max(1u, levels.sizes[d + 1]);
+    }
+    return levels;
+}
+
+// Calls fn(suffix, offset) for every element of dimensions [0, count) of
+// `levels` ("[i][j]"); `firstOnly` keeps only element 0 of the outermost.
+template <class F>
+void forEachElement(const ArrayLevels& levels, size_t count, bool firstOnly, F&& fn, size_t level = 0,
+                    const std::string& suffix = "", uint32_t offset = 0) {
+    if (level == count) return fn(suffix, offset);
+    const uint32_t n = level == 0 && firstOnly ? 1u : std::max(1u, levels.sizes[level]);
+    for (uint32_t e = 0; e < n; ++e)
+        forEachElement(levels, count, firstOnly, fn, level + 1, suffix + "[" + std::to_string(e) + "]",
+                       offset + e * levels.strides[level]);
+}
+
+// Expands a block member (recursively) into GL uniform entries. Arrays of
+// aggregates list every element; arrays of arrays list each innermost array.
 void expandMember(const spirv_cross::Compiler& compiler, const spirv_cross::SPIRType& parent, uint32_t index,
                   const std::string& prefix, uint32_t baseOffset, int blockIndex, std::vector<UniformInfo>& out) {
     const uint32_t typeId = parent.member_types[index];
@@ -906,40 +956,121 @@ void expandMember(const spirv_cross::Compiler& compiler, const spirv_cross::SPIR
     // glslang (it is reported as a sampler uniform); its place holder, named
     // "/*member*/", is not a GL uniform.
     if (memberName.compare(0, 2, "/*") == 0) return;
-    std::string name = prefix + unescapeName(memberName);
+    const std::string name = prefix + unescapeName(memberName);
     const uint32_t offset = baseOffset + compiler.type_struct_member_offset(parent, index);
-    const bool isArray = !type.array.empty();
-    const uint32_t arraySize = isArray ? type.array.back() : 1;
-    uint32_t arrayStride = isArray ? compiler.type_struct_member_array_stride(parent, index) : 0;
+    const ArrayLevels levels = arrayLevels(compiler, parent, index, type);
     if (type.basetype == spirv_cross::SPIRType::Struct) {
-        // GL lists each element of an array of structs separately.
         const spirv_cross::SPIRType& structType = compiler.get_type(type.self);
-        for (uint32_t element = 0; element < (isArray ? std::max(1u, arraySize) : 1u); ++element) {
-            std::string elementName = isArray ? name + "[" + std::to_string(element) + "]" : name;
+        forEachElement(levels, levels.sizes.size(), false, [&](const std::string& suffix, uint32_t at) {
             for (uint32_t m = 0; m < structType.member_types.size(); ++m)
-                expandMember(compiler, structType, m, elementName + ".", offset + element * arrayStride, blockIndex, out);
-        }
+                expandMember(compiler, structType, m, name + suffix + ".", offset + at, blockIndex, out);
+        });
         return;
     }
-    if (isArray && arrayStride == 0) {
-        // Some arrays come without an ArrayStride value; blocks use std140 rules,
-        // where every array element starts on a 16-byte boundary (a matrix
-        // element spans one 16-byte vector per column, or per row if row-major).
-        const bool rowMajor = compiler.has_member_decoration(parent.self, index, spv::DecorationRowMajor);
-        arrayStride = 16u * (type.columns > 1 ? (rowMajor ? type.vecsize : type.columns) : 1u);
+    const size_t outer = levels.sizes.empty() ? 0 : levels.sizes.size() - 1;
+    forEachElement(levels, outer, false, [&](const std::string& suffix, uint32_t at) {
+        UniformInfo info;
+        info.name = levels.sizes.empty() ? name : name + suffix + "[0]";
+        info.type = glTypeOf(type);
+        info.size = static_cast<GLint>(levels.sizes.empty() ? 1u : std::max(1u, levels.sizes.back()));
+        info.blockIndex = blockIndex;
+        info.offset = static_cast<GLint>(offset + at);
+        info.arrayStride = static_cast<GLint>(levels.strides.empty() ? 0u : levels.strides.back());
+        if (type.columns > 1) {
+            info.matrixStride = static_cast<GLint>(compiler.type_struct_member_matrix_stride(parent, index));
+            info.rowMajor = compiler.has_member_decoration(parent.self, index, spv::DecorationRowMajor);
+        }
+        out.push_back(info);
+    });
+}
+
+// Expands a storage block member into GL buffer variables (GL 4.3 section
+// 7.3.1.1). Unlike uniforms, a top-level array member is enumerated for its
+// first element only; its size and stride are the variables'
+// TOP_LEVEL_ARRAY_SIZE/STRIDE (0 size: unsized).
+void expandBufferMember(const spirv_cross::Compiler& compiler, const spirv_cross::SPIRType& parent, uint32_t index,
+                        const std::string& prefix, uint32_t baseOffset, int blockIndex, bool topLevel, GLint topSize,
+                        GLint topStride, std::vector<BufferVariableInfo>& out) {
+    const spirv_cross::SPIRType& type = compiler.get_type(parent.member_types[index]);
+    const std::string name = prefix + unescapeName(compiler.get_member_name(parent.self, index));
+    const uint32_t offset = baseOffset + compiler.type_struct_member_offset(parent, index);
+    const ArrayLevels levels = arrayLevels(compiler, parent, index, type);
+    // A top-level array is one of aggregates (structs or arrays); a member
+    // that is a plain array of a basic type reports size 1, stride 0.
+    const bool aggregateArray = !levels.sizes.empty() && (levels.sizes.size() > 1 || type.basetype == spirv_cross::SPIRType::Struct);
+    if (topLevel) {
+        topSize = aggregateArray ? static_cast<GLint>(levels.sizes[0]) : 1;
+        topStride = aggregateArray ? static_cast<GLint>(levels.strides[0]) : 0;
     }
-    UniformInfo info;
-    info.name = isArray ? name + "[0]" : name;
-    info.type = glTypeOf(type);
-    info.size = static_cast<GLint>(std::max(1u, arraySize));
-    info.blockIndex = blockIndex;
-    info.offset = static_cast<GLint>(offset);
-    info.arrayStride = static_cast<GLint>(arrayStride);
-    if (type.columns > 1) {
-        info.matrixStride = static_cast<GLint>(compiler.type_struct_member_matrix_stride(parent, index));
-        info.rowMajor = compiler.has_member_decoration(parent.self, index, spv::DecorationRowMajor);
+    if (type.basetype == spirv_cross::SPIRType::Struct) {
+        const spirv_cross::SPIRType& structType = compiler.get_type(type.self);
+        forEachElement(levels, levels.sizes.size(), topLevel, [&](const std::string& suffix, uint32_t at) {
+            for (uint32_t m = 0; m < structType.member_types.size(); ++m)
+                expandBufferMember(compiler, structType, m, name + suffix + ".", offset + at, blockIndex, false, topSize,
+                                   topStride, out);
+        });
+        return;
     }
-    out.push_back(info);
+    const size_t outer = levels.sizes.empty() ? 0 : levels.sizes.size() - 1;
+    forEachElement(levels, outer, topLevel, [&](const std::string& suffix, uint32_t at) {
+        BufferVariableInfo v;
+        v.name = levels.sizes.empty() ? name : name + suffix + "[0]";
+        v.type = glTypeOf(type);
+        v.size = levels.sizes.empty() ? 1 : static_cast<GLint>(levels.sizes.back());
+        v.offset = static_cast<GLint>(offset + at);
+        v.arrayStride = levels.strides.empty() ? 0 : static_cast<GLint>(levels.strides.back());
+        if (type.columns > 1) {
+            v.matrixStride = static_cast<GLint>(compiler.type_struct_member_matrix_stride(parent, index));
+            v.rowMajor = compiler.has_member_decoration(parent.self, index, spv::DecorationRowMajor);
+        }
+        v.blockIndex = blockIndex;
+        v.topLevelArraySize = topSize;
+        v.topLevelArrayStride = topStride;
+        out.push_back(v);
+    });
+}
+
+// The members of block variable `id` the stage's code accesses (`all`
+// when SPIRV-Cross cannot tell, e.g. a member without an Offset).
+std::set<uint32_t> accessedMembers(const spirv_cross::Compiler& compiler, uint32_t id, bool& all) {
+    std::set<uint32_t> out;
+    all = false;
+    try {
+        for (const spirv_cross::BufferRange& range : compiler.get_active_buffer_ranges(id)) out.insert(range.index);
+    } catch (const spirv_cross::CompilerError&) {
+        all = true;
+    }
+    return out;
+}
+
+// The elements of block array variable `var` that the module's code
+// reaches: access chains with a constant first index name one element; a
+// dynamic index or a load of the whole array reaches them all.
+std::vector<bool> accessedElements(const std::vector<uint32_t>& spirv, uint32_t var, uint32_t count) {
+    std::vector<bool> out(count, false);
+    std::map<uint32_t, uint32_t> constants;
+    for (size_t i = 5; i < spirv.size();) {
+        const uint32_t op = spirv[i] & 0xffff, length = spirv[i] >> 16;
+        if (!length || i + length > spirv.size()) break;
+        if (op == spv::OpConstant && length >= 4) constants[spirv[i + 2]] = spirv[i + 3];
+        const bool chain = op == spv::OpAccessChain || op == spv::OpInBoundsAccessChain || op == spv::OpPtrAccessChain;
+        if (chain && length >= 4 && spirv[i + 3] == var) {
+            if (length == 4) {
+                out.assign(count, true);
+            } else if (auto c = constants.find(spirv[i + 4]); c != constants.end()) {
+                if (c->second < count) out[c->second] = true;
+            } else {
+                out.assign(count, true);
+            }
+        }
+        if (op == spv::OpLoad && length >= 4 && spirv[i + 3] == var) out.assign(count, true);
+        i += length;
+    }
+    return out;
+}
+
+bool isUserStorageBlock(const std::string& blockName) {
+    return atomicCounterBlockBinding(blockName) < 0 && blockName.rfind("wmgl_", 0) != 0;
 }
 
 }  // namespace
@@ -1081,11 +1212,15 @@ std::string checkBlockBindings(glslang::TShader& shader) {
             if (!symbol) continue;
             const glslang::TType& type = symbol->getType();
             const glslang::TQualifier& q = type.getQualifier();
-            if (type.getBasicType() != glslang::EbtBlock || q.storage != glslang::EvqUniform || !q.hasBinding()) continue;
+            if (type.getBasicType() != glslang::EbtBlock || !q.hasBinding()) continue;
             const int count = type.isSizedArray() ? type.getCumulativeArraySize() : 1;
-            if (static_cast<int64_t>(q.layoutBinding) + count > wmgl::limits::kMaxUniformBufferBindings)
+            if (q.storage == glslang::EvqUniform && static_cast<int64_t>(q.layoutBinding) + count > wmgl::limits::kMaxUniformBufferBindings)
                 return "ERROR: uniform block '" + unescapeName(type.getTypeName().c_str()) +
                        "': binding is not less than GL_MAX_UNIFORM_BUFFER_BINDINGS\n";
+            if (q.storage == glslang::EvqBuffer &&
+                static_cast<int64_t>(q.layoutBinding) + count > wmgl::limits::kMaxShaderStorageBufferBindings)
+                return "ERROR: shader storage block '" + unescapeName(type.getTypeName().c_str()) +
+                       "': binding is not less than GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS\n";
         }
     }
     return {};
@@ -1374,7 +1509,8 @@ static void hideFixedFunctionBlock(LinkResult& r) {
         for (int& u : b.activeUniforms) u = uniformMap[static_cast<size_t>(u)];
     for (AtomicCounterBufferInfo& b : r.atomicBuffers)
         for (int& u : b.activeUniforms) u = uniformMap[static_cast<size_t>(u)];
-    for (auto& location : r.locations) location.first = uniformMap[static_cast<size_t>(location.first)];
+    for (auto& location : r.locations)
+        if (location.first >= 0) location.first = uniformMap[static_cast<size_t>(location.first)];
     r.blocks = std::move(blocks);
     r.uniforms = std::move(uniforms);
     r.fixedFunctionBlock = static_cast<int>(r.blocks.size() - 1);
@@ -1505,11 +1641,15 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
     }
     // Reflect before mapIO: afterwards every input/output has a location and
     // explicit layout(location) can no longer be told apart from assigned ones.
-    program.buildReflection(EShReflectionDefault | EShReflectionSeparateBuffers);
+    program.buildReflection(EShReflectionDefault | EShReflectionSeparateBuffers | EShReflectionUnwrapIOBlocks |
+                            EShReflectionIntermediateIO);  // the program's own first and last stages
 
     // Live top-level names and blocks, from glslang's liveness-aware reflection.
     std::set<std::string> liveDefault;
     std::set<std::string> liveBlocks;
+    std::set<std::string> liveBuffers;  // storage blocks (GL 4.3)
+    for (int i = 0; i < program.getNumBufferBlocks(); ++i)
+        liveBuffers.insert(unescapeName(topLevelName(program.getBufferBlock(i).name)));
     int defaultBlockReflectionIndex = -1;
     for (int i = 0; i < program.getNumUniformBlocks(); ++i) {
         const auto& block = program.getUniformBlock(i);
@@ -1559,6 +1699,12 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
                 if (varying && q.hasLocation())
                     explicitVaryings.insert(unescapeName(type.getBasicType() == glslang::EbtBlock ? type.getTypeName().c_str()
                                                                                                     : symbol->getName().c_str()));
+                if (q.storage == glslang::EvqBuffer && type.getBasicType() == glslang::EbtBlock) {
+                    const std::string blockName = unescapeName(type.getTypeName().c_str());
+                    if (q.hasBinding()) explicitBindings["buffer:" + blockName] = static_cast<int>(q.layoutBinding);
+                    if (q.layoutPacking == glslang::ElpShared || q.layoutPacking == glslang::ElpStd140) liveBuffers.insert(blockName);
+                    collectBoolMembers(type, glslang::IsAnonymous(symbol->getName()) ? "" : blockName + ".", boolTypes);
+                }
                 if (q.storage == glslang::EvqUniform && q.hasBinding()) {
                     // layout(binding = N) (GL 4.2): the initial binding of blocks, samplers and images.
                     if (type.getBasicType() == glslang::EbtBlock)
@@ -1609,19 +1755,23 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
 
     // Collect attributes/outputs from this pre-mapIO reflection (see below),
     // then assign locations for codegen.
-    struct PipeVar { std::string name; GLenum type; int size; unsigned location; uint32_t stages; int index; bool array = false; };
+    struct PipeVar {
+        std::string name; GLenum type; int size; unsigned location; uint32_t stages; int index; bool array = false;
+        bool patch = false;
+    };
     std::vector<PipeVar> pipeInputs, pipeOutputs;
     for (int i = 0; i < program.getNumPipeInputs(); ++i) {
         const auto& v = program.getPipeInput(i);
         pipeInputs.push_back({unescapeName(v.name), static_cast<GLenum>(v.glDefineType), v.size, v.layoutLocation(),
-                              static_cast<uint32_t>(v.stages), 0, v.getType() && v.getType()->isArray()});
+                              static_cast<uint32_t>(v.stages), 0, v.getType() && v.getType()->isArray(),
+                              v.getType() && v.getType()->getQualifier().patch});
     }
     for (int i = 0; i < program.getNumPipeOutputs(); ++i) {
         const auto& v = program.getPipeOutput(i);
         const glslang::TType* type = v.getType();
         const int index = type && type->getQualifier().hasIndex() ? static_cast<int>(type->getQualifier().layoutIndex) : 0;
         pipeOutputs.push_back({unescapeName(v.name), static_cast<GLenum>(v.glDefineType), v.size, v.layoutLocation(),
-                               static_cast<uint32_t>(v.stages), index});
+                               static_cast<uint32_t>(v.stages), index, type && type->isArray(), type && type->getQualifier().patch});
     }
     for (const PipeVar& v : pipeInputs)
         if (v.location != kNoLocation && !(v.stages & EShLangVertexMask)) explicitVaryings.insert(v.name);
@@ -1656,6 +1806,8 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
     auto stageGlsl = [&](Stage stage, std::string& glsl) {
         try {
             spirv_cross::CompilerGLSL glslOut(result.stages[static_cast<int>(stage)].spirv);
+            // Renamed keywords (a sampler named `texture`) keep the program's names (unescapeName).
+            glslOut.illegal_name_prefix = kEscapePrefix;
             spirv_cross::CompilerGLSL::Options options = glslOut.get_common_options();
             options.version = 450;
             options.es = false;
@@ -1699,6 +1851,8 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
         std::string glsl;
         try {
             spirv_cross::CompilerGLSL glslOut(result.stages[static_cast<int>(Stage::Geometry)].spirv);
+            // Renamed keywords (a sampler named `texture`) keep the program's names (unescapeName).
+            glslOut.illegal_name_prefix = kEscapePrefix;
             spirv_cross::CompilerGLSL::Options options = glslOut.get_common_options();
             options.version = 450;
             options.es = false;
@@ -1754,19 +1908,25 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
             if (binding == kDefaultBlockBinding || blockName == kDefaultBlockName) {
                 result.defaultBlockSize = std::max<uint32_t>(result.defaultBlockSize,
                                                              static_cast<uint32_t>(compiler.get_declared_struct_size(type)));
-                std::vector<UniformInfo> members;
-                for (uint32_t m = 0; m < type.member_types.size(); ++m)
+                // The default block is shared by every stage: a uniform is
+                // referenced by the stages whose code reads its member.
+                bool all;
+                const std::set<uint32_t> accessed = accessedMembers(compiler, ubo.id, all);
+                for (uint32_t m = 0; m < type.member_types.size(); ++m) {
+                    std::vector<UniformInfo> members;
                     expandMember(compiler, type, m, "", 0, -1, members);
-                for (UniformInfo& u : members) {
-                    if (!liveDefault.count(topLevelName(u.name))) continue;
-                    if (auto b = boolTypes.find(arrayBaseName(u.name)); b != boolTypes.end()) u.type = b->second;
-                    auto it = std::find_if(result.uniforms.begin(), result.uniforms.end(),
-                                           [&](const UniformInfo& e) { return e.name == u.name && e.blockIndex < 0; });
-                    if (it == result.uniforms.end()) {
-                        u.stageMask = 1u << s;
-                        result.uniforms.push_back(u);
-                    } else {
-                        it->stageMask |= 1u << s;
+                    const uint32_t stageBit = all || accessed.count(m) ? 1u << s : 0u;
+                    for (UniformInfo& u : members) {
+                        if (!liveDefault.count(topLevelName(u.name))) continue;
+                        if (auto b = boolTypes.find(arrayBaseName(u.name)); b != boolTypes.end()) u.type = b->second;
+                        auto it = std::find_if(result.uniforms.begin(), result.uniforms.end(),
+                                               [&](const UniformInfo& e) { return e.name == u.name && e.blockIndex < 0; });
+                        if (it == result.uniforms.end()) {
+                            u.stageMask = stageBit;
+                            result.uniforms.push_back(u);
+                        } else {
+                            it->stageMask |= stageBit;
+                        }
                     }
                 }
                 continue;
@@ -1803,6 +1963,11 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
                 } else {
                     index = it->second;
                 }
+                // Referenced by this stage only if its code reads the block
+                // (for an array of blocks, this element).
+                bool all;
+                if (accessedMembers(compiler, ubo.id, all).empty() && !all) continue;
+                if (!varType.array.empty() && !accessedElements(result.stages[s].spirv, ubo.id, count)[element]) continue;
                 result.blocks[index].stageMask |= 1u << s;
                 for (int u : result.blocks[index].activeUniforms) result.uniforms[u].stageMask |= 1u << s;
             }
@@ -1867,6 +2032,7 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
             result.uniforms.push_back(u);
         }
         // Atomic counters (GL 4.2): the storage blocks glslang made of them.
+        uint32_t stageCounters = 0;
         for (const auto& ssbo : resources.storage_buffers) {
             const int binding = atomicCounterBlockBinding(compiler.get_name(ssbo.base_type_id));
             if (binding < 0) continue;
@@ -1886,6 +2052,7 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
                 const std::string name = unescapeName(compiler.get_member_name(type.self, m));
                 const uint32_t offset = compiler.type_struct_member_offset(type, m);
                 const uint32_t count = memberType.array.empty() ? 1 : std::max(1u, memberType.array.back());
+                stageCounters += count;
                 buffer->dataSize = std::max<GLint>(buffer->dataSize, static_cast<GLint>(offset + 4 * count));
                 const std::string glName = memberType.array.empty() ? name : name + "[0]";
                 auto it = std::find_if(result.uniforms.begin(), result.uniforms.end(),
@@ -1906,6 +2073,63 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
                 result.uniforms.push_back(u);
             }
         }
+        // GL_MAX_<stage>_ATOMIC_COUNTERS (KHR-GL44.geometry_shader.linking.more_ACs_in_GS_than_supported).
+        if (stageCounters > static_cast<uint32_t>(wmgl::limits::kMaxStageAtomicCounters)) {
+            result.log += "error: too many atomic counters in one stage\n";
+            return result;
+        }
+        // Shader storage blocks (GL 4.3).
+        for (const auto& ssbo : resources.storage_buffers) {
+            const std::string blockName = unescapeName(compiler.get_name(ssbo.base_type_id));
+            if (!isUserStorageBlock(blockName) || !liveBuffers.count(blockName)) continue;
+            const spirv_cross::SPIRType& varType = compiler.get_type(ssbo.type_id);
+            const spirv_cross::SPIRType& structType = compiler.get_type(ssbo.base_type_id);
+            const uint32_t count = varType.array.empty() ? 1 : std::max(1u, varType.array.back());
+            // Referenced by this stage only if its code accesses the block.
+            bool all;
+            const uint32_t stageBit = !accessedMembers(compiler, ssbo.id, all).empty() || all ? 1u << s : 0u;
+            const std::vector<bool> elements = accessedElements(result.stages[s].spirv, ssbo.id, count);
+            int first = -1;
+            for (uint32_t element = 0; element < count; ++element) {
+                const std::string name = varType.array.empty() ? blockName : blockName + "[" + std::to_string(element) + "]";
+                const uint32_t elementBit = varType.array.empty() || elements[element] ? stageBit : 0u;
+                auto it = std::find_if(result.storageBlocks.begin(), result.storageBlocks.end(),
+                                       [&](const StorageBlockInfo& b) { return b.name == name; });
+                if (it != result.storageBlocks.end()) {
+                    it->stageMask |= elementBit;
+                    if (element == 0) first = static_cast<int>(it - result.storageBlocks.begin());
+                    continue;
+                }
+                StorageBlockInfo block;
+                block.name = name;
+                block.dataSize = static_cast<GLint>(compiler.get_declared_struct_size_runtime_array(structType, 1));
+                if (auto b = explicitBindings.find("buffer:" + blockName); b != explicitBindings.end())
+                    block.explicitBinding = b->second + static_cast<GLint>(element);
+                block.stageMask = elementBit;
+                if (element == 0) first = static_cast<int>(result.storageBlocks.size());
+                result.storageBlocks.push_back(block);
+            }
+            // The block's variables, listed once (for its first element).
+            if (std::none_of(result.bufferVariables.begin(), result.bufferVariables.end(),
+                             [&](const BufferVariableInfo& v) { return v.blockIndex == first; })) {
+                const std::string prefix = compiler.get_name(ssbo.id).empty() ? "" : blockName + ".";
+                std::vector<BufferVariableInfo> vars;
+                for (uint32_t m = 0; m < structType.member_types.size(); ++m)
+                    expandBufferMember(compiler, structType, m, prefix, 0, first, true, 1, 0, vars);
+                for (BufferVariableInfo& v : vars) {
+                    if (auto b = boolTypes.find(arrayBaseName(v.name)); b != boolTypes.end()) v.type = b->second;
+                    result.bufferVariables.push_back(v);
+                }
+            }
+            for (BufferVariableInfo& v : result.bufferVariables)
+                if (v.blockIndex == first) v.stageMask |= stageBit;
+        }
+    }
+    for (size_t v = 0; v < result.bufferVariables.size(); ++v) {
+        const std::string& owner = result.storageBlocks[static_cast<size_t>(result.bufferVariables[v].blockIndex)].name;
+        const std::string base = owner.substr(0, owner.find('['));
+        for (StorageBlockInfo& block : result.storageBlocks)
+            if (block.name.substr(0, block.name.find('[')) == base) block.activeVariables.push_back(static_cast<int>(v));
     }
 
     // Shader subroutines (shader/subroutines.h): each stage's functions and
@@ -1941,7 +2165,10 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
                 for (int st = 0; st < kStageCount; ++st)
                     for (auto& su : result.subroutines[st].uniforms)
                         if (arrayBaseName(u.name) == subroutineSelectionUniform(static_cast<Stage>(st), su.name)) {
-                            su.selectionOffset = u.offset;
+                            // An array of arrays reflects one uniform per outer
+                            // element: the selections start at the first.
+                            if (su.selectionOffset < 0 || static_cast<int>(u.offset) < su.selectionOffset)
+                                su.selectionOffset = static_cast<int>(u.offset);
                             su.selectionStride = u.arrayStride ? u.arrayStride : 16;
                         }
                 continue;
@@ -1982,14 +2209,77 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
         info.locationCount = usedLocations.empty() ? 0 : *usedLocations.rbegin() + 1;
     }
 
-    // Assign default-block and sampler uniform locations (consecutive per element).
-    GLint nextLocation = 0;
-    for (size_t i = 0; i < result.uniforms.size(); ++i) {
-        UniformInfo& u = result.uniforms[i];
-        if (u.blockIndex >= 0 || u.atomicBufferIndex >= 0) continue;  // atomic counters have no location
-        u.location = nextLocation;
-        for (GLint e = 0; e < u.size; ++e) result.locations.emplace_back(static_cast<int>(i), e);
-        nextLocation += u.size;
+    // Assign default-block and sampler uniform locations (consecutive per
+    // element): layout(location) ones first (GL 4.3; the members of an
+    // aggregate follow its location), then the lowest free ones. Explicit
+    // locations of uniforms the program does not use stay reserved.
+    {
+        std::map<std::string, std::pair<int, int>> explicitLocations;  // name -> (location, count)
+        for (int s = 0; s < kStageCount; ++s) {
+            const glslang::TIntermediate* intermediate =
+                stagePresent[s] ? program.getIntermediate(language(static_cast<Stage>(s))) : nullptr;
+            if (!intermediate) continue;
+            for (const auto& e : intermediate->getExplicitUniformLocations()) {
+                const std::string name = unescapeName(e.name);
+                if (e.location < 0 || e.location + e.count > limits::kMaxUniformLocations) {
+                    result.log += "error: uniform '" + name + "' has a location beyond GL_MAX_UNIFORM_LOCATIONS\n";
+                    return result;
+                }
+                auto [it, inserted] = explicitLocations.emplace(name, std::make_pair(e.location, e.count));
+                if (!inserted && it->second.first != e.location) {
+                    result.log += "error: uniform '" + name + "' is declared with different locations\n";
+                    return result;
+                }
+            }
+        }
+        std::vector<std::string> owner;  // per location: the explicit uniform reserving it
+        for (const auto& [name, range] : explicitLocations) {
+            if (owner.size() < static_cast<size_t>(range.first + range.second)) owner.resize(static_cast<size_t>(range.first + range.second));
+            for (int l = range.first; l < range.first + range.second; ++l) {
+                if (!owner[static_cast<size_t>(l)].empty()) {
+                    result.log += "error: uniforms '" + owner[static_cast<size_t>(l)] + "' and '" + name + "' share location " +
+                                  std::to_string(l) + "\n";
+                    return result;
+                }
+                owner[static_cast<size_t>(l)] = name;
+            }
+        }
+        std::vector<std::pair<int, int>>& table = result.locations;
+        auto taken = [&](GLint location) {
+            return (static_cast<size_t>(location) < table.size() && table[static_cast<size_t>(location)].first >= 0) ||
+                   (static_cast<size_t>(location) < owner.size() && !owner[static_cast<size_t>(location)].empty());
+        };
+        auto place = [&](size_t i, GLint location) {
+            UniformInfo& u = result.uniforms[i];
+            u.location = location;
+            if (table.size() < static_cast<size_t>(location + u.size)) table.resize(static_cast<size_t>(location + u.size), {-1, 0});
+            for (GLint e = 0; e < u.size; ++e) table[static_cast<size_t>(location + e)] = {static_cast<int>(i), e};
+        };
+        std::map<std::string, GLint> nextOfAggregate;
+        for (size_t i = 0; i < result.uniforms.size(); ++i) {
+            UniformInfo& u = result.uniforms[i];
+            if (u.blockIndex >= 0 || u.atomicBufferIndex >= 0) continue;  // atomic counters have no location
+            auto it = explicitLocations.find(topLevelName(u.name));
+            if (it == explicitLocations.end()) continue;
+            GLint& next = nextOfAggregate.emplace(it->first, it->second.first).first->second;
+            place(i, next);
+            next += u.size;
+        }
+        for (size_t i = 0; i < result.uniforms.size(); ++i) {
+            UniformInfo& u = result.uniforms[i];
+            if (u.blockIndex >= 0 || u.atomicBufferIndex >= 0 || explicitLocations.count(topLevelName(u.name))) continue;
+            GLint location = 0;
+            for (;; ++location) {
+                bool free = true;
+                for (GLint e = 0; e < u.size && free; ++e) free = !taken(location + e);
+                if (free) break;
+            }
+            if (location + u.size > limits::kMaxUniformLocations) {
+                result.log += "error: too many uniform locations (GL_MAX_UNIFORM_LOCATIONS)\n";
+                return result;
+            }
+            place(i, location);
+        }
     }
 
     // Vertex attributes (from reflection: active inputs only).
@@ -2090,6 +2380,55 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
         }
     }
 
+    // The program interface (GL 4.3 GL_PROGRAM_INPUT / GL_PROGRAM_OUTPUT):
+    // the first stage's inputs and the last stage's outputs, with the
+    // locations assigned above for vertex inputs and fragment outputs.
+    auto interfaceVariable = [](const PipeVar& v) {
+        InterfaceVariableInfo info;
+        info.name = v.array && v.name.find('.') == std::string::npos ? v.name + "[0]" : v.name;
+        // The Vulkan rules rename these built-ins; GL reports its own names.
+        if (info.name == "gl_VertexIndex") info.name = "gl_VertexID";
+        if (info.name == "gl_InstanceIndex") info.name = "gl_InstanceID";
+        info.type = v.type;
+        info.size = std::max(1, v.size);
+        info.location = v.location != kNoLocation && v.name.rfind("gl_", 0) != 0 ? static_cast<GLint>(v.location) : -1;
+        info.perPatch = v.patch;
+        info.stageMask = v.stages;
+        return info;
+    };
+    // Members of the built-in block that the program never declared or
+    // wrote come back without a type; they are not active. Nor are built-ins
+    // that only WineMetalGL's own lowering writes (gl_PointSize).
+    auto userBuiltin = [&](const PipeVar& v) {
+        if (v.name.rfind("gl_", 0) != 0) return true;
+        std::string name = v.name.substr(v.name.rfind('.') == std::string::npos ? 0 : v.name.rfind('.') + 1);  // gl_PerVertex.gl_Position
+        name = name.substr(0, name.find('['));
+        if (name == "gl_VertexIndex") name = "gl_VertexID";
+        if (name == "gl_InstanceIndex") name = "gl_InstanceID";
+        return std::any_of(input.shaders.begin(), input.shaders.end(),
+                           [&](const ShaderSource& sh) { return sh.source.find(name) != std::string::npos; });
+    };
+    for (const PipeVar& v : pipeInputs) {
+        if (!v.type || !userBuiltin(v)) continue;
+        InterfaceVariableInfo info = interfaceVariable(v);
+        for (const AttribInfo& a : result.attribs)
+            if (a.name == v.name) {
+                info.location = a.conventional ? -1 : a.location;
+                if (a.conventional) info.name = "gl_" + a.name.substr(5);  // wmgl_Vertex -> gl_Vertex
+            }
+        result.programInputs.push_back(info);
+    }
+    for (const PipeVar& v : pipeOutputs) {
+        if (!v.type || !userBuiltin(v)) continue;
+        InterfaceVariableInfo info = interfaceVariable(v);
+        for (const FragOutputInfo& f : result.fragOutputs)
+            if (f.name == v.name) {
+                info.location = f.location;
+                info.locationIndex = f.index;
+            }
+        result.programOutputs.push_back(info);
+    }
+
     // Metal translation per stage. The vertex stage is translated twice: the
     // second variant returns void, as Metal requires when rasterization is
     // disabled (GL_RASTERIZER_DISCARD, transform feedback capture passes).
@@ -2171,8 +2510,39 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
                 {"wmgl_TesPatches", kSlotTessPatches}, {"wmgl_TesControl", kSlotTessControl},
             };
             uint32_t nextAtomicSlot = kSlotFirstAtomicCounterBuffer;
+            stage.storageArgs.clear();
             for (const auto& ssbo : resources.storage_buffers) {
                 const std::string blockName = msl.get_name(ssbo.base_type_id);
+                if (isUserStorageBlock(unescapeName(blockName))) {
+                    // Shader storage block: the stage's argument buffer (kSlotStorageBlocks).
+                    const std::string name = unescapeName(blockName);
+                    const spirv_cross::SPIRType& varType = msl.get_type(ssbo.type_id);
+                    const uint32_t count = varType.array.empty() ? 1 : std::max(1u, varType.array.back());
+                    const bool writes = !msl.get_buffer_block_flags(ssbo.id).get(spv::DecorationNonWritable);
+                    const uint32_t id = static_cast<uint32_t>(stage.storageArgs.size());
+                    for (uint32_t e = 0; e < count; ++e) {
+                        const std::string element = varType.array.empty() ? name : name + "[" + std::to_string(e) + "]";
+                        auto it = std::find_if(result.storageBlocks.begin(), result.storageBlocks.end(),
+                                               [&](const StorageBlockInfo& b) { return b.name == element; });
+                        stage.storageArgs.push_back(
+                            {it == result.storageBlocks.end() ? -1 : static_cast<int>(it - result.storageBlocks.begin()), writes});
+                    }
+                    if (stage.storageArgs.size() > kMaxStageStorageBlocks) {
+                        result.log += "error: too many shader storage blocks in one stage\n";
+                        return result;
+                    }
+                    msl.set_decoration(ssbo.id, spv::DecorationDescriptorSet, 1);
+                    msl.set_decoration(ssbo.id, spv::DecorationBinding, uniqueBinding++);
+                    spirv_cross::MSLResourceBinding b;
+                    b.stage = model;
+                    b.desc_set = 1;
+                    b.binding = msl.get_decoration(ssbo.id, spv::DecorationBinding);
+                    b.count = count;
+                    b.msl_buffer = id;   // [[id(n)]]
+                    b.msl_texture = id;  // its size's index in spvBufferSizeConstants
+                    msl.add_msl_resource_binding(b);
+                    continue;
+                }
                 spirv_cross::MSLResourceBinding b;
                 b.stage = model;
                 msl.set_decoration(ssbo.id, spv::DecorationBinding, uniqueBinding++);
@@ -2197,11 +2567,27 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
                     b.msl_buffer = nextAtomicSlot++;
                     for (AtomicCounterBufferInfo& buffer : result.atomicBuffers)
                         if (buffer.binding == static_cast<GLuint>(counterBinding)) buffer.stageSlot[s] = static_cast<int>(b.msl_buffer);
-                } else {
-                    result.log += "error: shader storage blocks are not supported\n";
-                    return result;
                 }
                 msl.add_msl_resource_binding(b);
+            }
+            if (!stage.storageArgs.empty()) {
+                // Descriptor set 1 becomes the argument buffer; set 0 keeps its discrete slots.
+                mslOptions.argument_buffers = true;
+                mslOptions.argument_buffers_tier = spirv_cross::CompilerMSL::Options::ArgumentBuffersTier::Tier2;
+                msl.set_msl_options(mslOptions);
+                msl.add_discrete_descriptor_set(0);
+                spirv_cross::MSLResourceBinding ab;
+                ab.stage = model;
+                ab.desc_set = 1;
+                ab.binding = spirv_cross::kArgumentBufferBinding;
+                ab.msl_buffer = kSlotStorageBlocks;
+                msl.add_msl_resource_binding(ab);
+                spirv_cross::MSLResourceBinding sizes;
+                sizes.stage = model;
+                sizes.desc_set = 1;
+                sizes.binding = spirv_cross::kBufferSizeBufferBinding;
+                sizes.msl_buffer = static_cast<uint32_t>(stage.storageArgs.size());
+                msl.add_msl_resource_binding(sizes);
             }
             // Samplers.
             uint32_t nextTexture = 0;
@@ -2353,6 +2739,15 @@ static LinkResult linkImpl(const LinkInput& input, const CaptureCode* capture, G
     return result;
 }
 
+void remapStorageArgs(StageOutput& stage, const LinkResult& from, const LinkResult& to) {
+    for (StageOutput::StorageArg& arg : stage.storageArgs) {
+        if (arg.block < 0 || static_cast<size_t>(arg.block) >= from.storageBlocks.size()) continue;
+        const std::string& name = from.storageBlocks[static_cast<size_t>(arg.block)].name;
+        auto it = std::find_if(to.storageBlocks.begin(), to.storageBlocks.end(), [&](const StorageBlockInfo& b) { return b.name == name; });
+        arg.block = it == to.storageBlocks.end() ? -1 : static_cast<int>(it - to.storageBlocks.begin());
+    }
+}
+
 void copyStageSlots(const LinkResult& source, int from, LinkResult& result, int to) {
     for (UniformBlockInfo& block : result.blocks)
         for (const UniformBlockInfo& other : source.blocks)
@@ -2445,6 +2840,7 @@ bool buildGeometryEmulation(const LinkInput& input, const GeometryShaderInfo& in
     }
     const int cs = static_cast<int>(Stage::Compute);
     g.kernel = kernel.stages[cs];
+    remapStorageArgs(g.kernel, kernel, result);
     copyStageSlots(kernel, cs, result, cs);
     LinkInput passthroughInput;
     passthroughInput.separable = true;
@@ -2493,6 +2889,7 @@ bool buildTessellationEmulation(const LinkInput& input, const TessellationLink& 
         }
         const int cs = static_cast<int>(Stage::Compute);
         e.control = kernel.stages[cs];
+        remapStorageArgs(e.control, kernel, result);
         copyStageSlots(kernel, cs, result, static_cast<int>(Stage::TessControl));
     }
     std::string log;
@@ -2606,6 +3003,8 @@ namespace {
 bool linkedStageGlsl(const LinkResult& link, Stage stage, std::string& glsl, std::string& log) {
     try {
         spirv_cross::CompilerGLSL glslOut(link.stages[static_cast<int>(stage)].spirv);
+        // Renamed keywords (a sampler named `texture`) keep the program's names (unescapeName).
+        glslOut.illegal_name_prefix = kEscapePrefix;
         spirv_cross::CompilerGLSL::Options options = glslOut.get_common_options();
         options.version = 450;
         options.es = false;

@@ -103,7 +103,9 @@ uint32_t attachmentLayers(const Attachment& a) {
     const Texture* tex = a.texture.get();
     if (a.type != GL_TEXTURE || !a.layered || !tex) return 0;
     if (tex->target == GL_TEXTURE_CUBE_MAP) return 6;
-    return static_cast<uint32_t>(std::max(1, tex->image(0, a.level).depth));
+    // A 1D array's layers are its image height.
+    const TextureImage& image = tex->image(0, a.level);
+    return static_cast<uint32_t>(std::max(1, tex->target == GL_TEXTURE_1D_ARRAY ? image.height : image.depth));
 }
 
 }  // namespace
@@ -174,6 +176,17 @@ bool DrawState::drawTarget(RenderTargetDesc& target, TargetFormats& formats, boo
         height = std::min(height, h);
         samples = s;
         any = true;
+    }
+    if (!any && !fb->hasAttachments() && ctx_.version() >= 43 && fb->defaultWidth > 0 && fb->defaultHeight > 0) {
+        // GL 4.3: no attachments; rasterization at the framebuffer's default size.
+        target.width = static_cast<uint32_t>(fb->defaultWidth);
+        target.height = static_cast<uint32_t>(fb->defaultHeight);
+        uint32_t samples = 1;
+        for (uint32_t s : {2u, 4u, 8u})
+            if (static_cast<uint32_t>(fb->defaultSamples) > samples && Device::get().caps().sampleCountSupported[s]) samples = s;
+        target.samples = samples;
+        if (fb->defaultLayers > 0) target.layers = static_cast<uint32_t>(fb->defaultLayers);
+        return true;
     }
     if (!any) {
         if (reportErrors) ctx_.setError(GL_INVALID_FRAMEBUFFER_OPERATION);
@@ -425,6 +438,9 @@ VertexFetch vertexFetch(const shader::StageOutput::VertexInput& input, const Ver
 size_t DrawState::vertexBufferSlots(LinkedProgram& program) {
     // A vertex function's atomic counter buffer takes the last vertex buffer slot.
     const size_t vertex = static_cast<size_t>(Stage::Vertex);
+    // Its storage block argument buffer takes slot 28 (and leaves 29 for a counter buffer).
+    if (!program.link.stages[vertex].storageArgs.empty())
+        return shader::kSlotStorageBlocks - shader::kSlotFirstVertexBuffer;
     for (const shader::AtomicCounterBufferInfo& b : program.link.atomicBuffers)
         if (b.stageSlot[vertex] >= 0) return shader::kMaxVertexBufferSlots - shader::kMaxVertexAtomicCounterBuffers;
     return shader::kMaxVertexBufferSlots;
@@ -914,6 +930,7 @@ void DrawState::bindUniforms(id<MTLRenderCommandEncoder> encoder, LinkedProgram&
             if (vertex) [encoder setVertexBuffer:buffer offset:offset atIndex:static_cast<NSUInteger>(slot)];
             else [encoder setFragmentBuffer:buffer offset:offset atIndex:static_cast<NSUInteger>(slot)];
         }
+        bindStorageBlocks(encoder, program, s);
     }
 }
 
@@ -962,6 +979,71 @@ void DrawState::atomicCounterBuffer(LinkedProgram& program, size_t index, __stro
     ib.buffer->lastUseSerial = ib.buffer->lastWriteSerial = ctx_.stream().serial();
     ctx_.stream().noteShaderWrites();
     ++ib.buffer->version;
+}
+
+bool DrawState::storageArguments(const shader::StageOutput& stage, const Program* owner, StorageArguments& out) {
+    if (stage.storageArgs.empty()) return false;
+    // Unbound elements point at scratch memory (GL leaves their accesses undefined).
+    static id<MTLBuffer> scratch = [Device::get().mtl() newBufferWithLength:65536 options:MTLResourceStorageModePrivate];
+    const size_t n = stage.storageArgs.size();
+    const uint64_t serial = ctx_.stream().serial();
+    // Layout (shader/compiler.h): n device pointers, the pointer to the
+    // sizes, then the n sizes in bytes.
+    TransientAllocation alloc = transient_.allocate((n + 1) * 8 + n * 4, serial, 16);
+    uint64_t* pointers = static_cast<uint64_t*>(alloc.data);
+    uint32_t* sizes = reinterpret_cast<uint32_t*>(pointers + n + 1);
+    out.resources.clear();
+    for (size_t i = 0; i < n; ++i) {
+        const shader::StageOutput::StorageArg& arg = stage.storageArgs[i];
+        id<MTLBuffer> buffer = scratch;
+        NSUInteger offset = 0;
+        uint32_t size = 0;
+        const GLuint binding = owner && arg.block >= 0 && static_cast<size_t>(arg.block) < owner->storageBlockBindings.size()
+                                   ? owner->storageBlockBindings[static_cast<size_t>(arg.block)]
+                                   : 0;
+        if (binding < static_cast<GLuint>(ContextState::kMaxShaderStorageBufferBindings)) {
+            const IndexedBufferBinding& ib = ctx_.state.shaderStorageBufferBindings[binding];
+            if (ib.buffer && ib.buffer->mtl && ib.offset >= 0 && ib.offset < ib.buffer->size) {
+                buffer = ib.buffer->mtl;
+                offset = static_cast<NSUInteger>(ib.offset);
+                const GLsizeiptr available = ib.buffer->size - ib.offset;
+                size = static_cast<uint32_t>(std::min<GLsizeiptr>(ib.size ? std::min(ib.size, available) : available, UINT32_MAX));
+                ib.buffer->lastUseSerial = serial;
+                if (arg.writes) {
+                    // Stores change the buffer: CPU reads and later uploads wait for this work.
+                    ib.buffer->lastWriteSerial = serial;
+                    ++ib.buffer->version;
+                    ctx_.stream().noteShaderWrites();
+                }
+            }
+        }
+        pointers[i] = buffer.gpuAddress + offset;
+        sizes[i] = size;
+        out.resources.emplace_back(buffer, arg.writes);
+    }
+    pointers[n] = alloc.buffer.gpuAddress + alloc.offset + (n + 1) * 8;
+    out.buffer = alloc.buffer;
+    out.offset = alloc.offset;
+    return true;
+}
+
+void DrawState::bindStorageBlocks(id<MTLRenderCommandEncoder> encoder, LinkedProgram& program, int s) {
+    StorageArguments args;
+    if (!storageArguments(program.link.stages[s], stageProgram(program, s), args)) return;
+    const bool vertex = s == static_cast<int>(Stage::Vertex);
+    const MTLRenderStages stages = vertex ? MTLRenderStageVertex : MTLRenderStageFragment;
+    for (const auto& [buffer, writes] : args.resources)
+        [encoder useResource:buffer usage:writes ? MTLResourceUsageRead | MTLResourceUsageWrite : MTLResourceUsageRead stages:stages];
+    if (vertex) [encoder setVertexBuffer:args.buffer offset:args.offset atIndex:shader::kSlotStorageBlocks];
+    else [encoder setFragmentBuffer:args.buffer offset:args.offset atIndex:shader::kSlotStorageBlocks];
+}
+
+void DrawState::bindStorageBlocks(id<MTLComputeCommandEncoder> encoder, const shader::StageOutput& stage, const Program* owner) {
+    StorageArguments args;
+    if (!storageArguments(stage, owner, args)) return;
+    for (const auto& [buffer, writes] : args.resources)
+        [encoder useResource:buffer usage:writes ? MTLResourceUsageRead | MTLResourceUsageWrite : MTLResourceUsageRead];
+    [encoder setBuffer:args.buffer offset:args.offset atIndex:shader::kSlotStorageBlocks];
 }
 
 void DrawState::samplerBinding(LinkedProgram& program, size_t index, __strong id<MTLTexture>& view,
@@ -1703,7 +1785,7 @@ GLenum geometryInputFor(GLenum mode) {
 }  // namespace
 
 void DrawState::bindKernelResources(id<MTLComputeCommandEncoder> encoder, LinkedProgram& program,
-                                    bool usesDefaultUniforms, int stage) {
+                                    bool usesDefaultUniforms, int stage, const shader::StageOutput* kernel) {
     const int cs = stage;
     // The compute program, or (geometry and tessellation kernels) the vertex program.
     Program* owner = stageProgram(program, cs);
@@ -1749,6 +1831,9 @@ void DrawState::bindKernelResources(id<MTLComputeCommandEncoder> encoder, Linked
         atomicCounterBuffer(program, b, buffer, offset);
         [encoder setBuffer:buffer offset:offset atIndex:static_cast<NSUInteger>(slot)];
     }
+    // The kernel's storage blocks: a compute program's own, or the geometry
+    // or tessellation control emulation kernel's (they index the program's).
+    if (kernel) bindStorageBlocks(encoder, *kernel, owner);
     for (size_t i = 0; i < program.link.images.size(); ++i) {
         const int index = program.link.images[i].stageTexture[cs];
         if (index >= 0) [encoder setTexture:imageBinding(program, i) atIndex:static_cast<NSUInteger>(index)];
@@ -1756,6 +1841,8 @@ void DrawState::bindKernelResources(id<MTLComputeCommandEncoder> encoder, Linked
 }
 
 void DrawState::dispatch(GLuint x, GLuint y, GLuint z, Buffer* indirect, GLintptr offset) {
+    // Conditional rendering applies to dispatches too (KHR-GL43.compute_shader.conditional-dispatching).
+    if (!conditionalRenderAllows(ctx_)) return;
     ImageShadowScope shadows(*this);
     LinkedProgram* current = executable();
     if (!current) return;
@@ -1766,7 +1853,8 @@ void DrawState::dispatch(GLuint x, GLuint y, GLuint z, Buffer* indirect, GLintpt
     prepareSamplerStorage(lp);
     id<MTLComputeCommandEncoder> encoder = ctx_.stream().compute();
     [encoder setComputePipelineState:pipeline];
-    bindKernelResources(encoder, lp, lp.stage(Stage::Compute).usesDefaultUniforms);
+    bindKernelResources(encoder, lp, lp.stage(Stage::Compute).usesDefaultUniforms, static_cast<int>(Stage::Compute),
+                        &lp.stage(Stage::Compute));
     const uint32_t* local = lp.link.computeLocalSize;
     const MTLSize threads = MTLSizeMake(local[0], local[1], local[2]);
     if (indirect) {
@@ -1873,7 +1961,7 @@ void DrawState::drawGeometry(GLenum mode, const std::vector<uint32_t>& vertices,
     TransientAllocation indices = transient_.allocate(indexCount * 4, serial, 16);
     id<MTLComputeCommandEncoder> compute = ctx_.stream().compute();
     [compute setComputePipelineState:kernel];
-    bindKernelResources(compute, lp, g.kernel.usesDefaultUniforms);
+    bindKernelResources(compute, lp, g.kernel.usesDefaultUniforms, static_cast<int>(Stage::Compute), &g.kernel);
     const uint32_t control[4] = {static_cast<uint32_t>(total), primitives, primitiveBase, 0};
     [compute setBuffer:input.buffer offset:input.offset atIndex:shader::kSlotFirstXfbBuffer];
     [compute setBuffer:output.buffer offset:output.offset atIndex:shader::kSlotFirstXfbBuffer + 1];
@@ -2060,7 +2148,7 @@ void DrawState::drawPatches(const std::vector<uint32_t>& vertices, GLsizei insta
         TransientAllocation output = transient_.allocate(total * recordWords * 4, serial, 16);
         id<MTLComputeCommandEncoder> compute = ctx_.stream().compute();
         [compute setComputePipelineState:lp.tessControlKernel()];
-        bindKernelResources(compute, lp, t.control.usesDefaultUniforms, static_cast<int>(Stage::TessControl));
+        bindKernelResources(compute, lp, t.control.usesDefaultUniforms, static_cast<int>(Stage::TessControl), &t.control);
         const uint32_t control[4] = {patchVertices, static_cast<uint32_t>(total), static_cast<uint32_t>(patches), 0};
         [compute setBuffer:captured.buffer offset:captured.offset atIndex:shader::kSlotFirstXfbBuffer];
         [compute setBuffer:output.buffer offset:output.offset atIndex:shader::kSlotFirstXfbBuffer + 1];

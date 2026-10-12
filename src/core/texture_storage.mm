@@ -108,7 +108,52 @@ void initAlphaOne(Context& ctx, id<MTLTexture> texture) {
 
 }  // namespace
 
+namespace {
+
+// A texture view's storage (GL 4.3): a Metal view of its root texture's
+// levels and layers in the view's format, remade when the root's storage
+// changes. Writes through an image unit need write usage on the root.
+bool ensureViewStorage(Context& ctx, Texture& tex) {
+    Texture& root = *tex.viewOf;
+    if (tex.shaderWrite && !root.shaderWrite) {
+        root.shaderWrite = true;
+        root.storageDirty = true;
+    }
+    if (!ensureTextureStorage(ctx, root)) return false;
+    if (tex.mtl && tex.viewSource == root.mtl) {
+        tex.storageDirty = false;
+        return true;
+    }
+    const TextureImage& base = tex.image(0, 0);
+    if (!base.format) return false;
+    const MTLPixelFormat pixelFormat = mtlPixelFormat(base.format->storage);
+    if (pixelFormat == MTLPixelFormatInvalid) return false;
+    const bool threeD = tex.target == GL_TEXTURE_3D;
+    id<MTLTexture> view = [root.mtl newTextureViewWithPixelFormat:pixelFormat
+                                                      textureType:mtlTextureType(tex.target, base.samples)
+                                                           levels:NSMakeRange(tex.viewMinLevel, tex.viewNumLevels)
+                                                           slices:NSMakeRange(threeD ? 0 : tex.viewMinLayer, threeD ? 1 : tex.viewNumLayers)];
+    if (!view) {
+        WMGL_ERR("texture view creation failed (%s)", storageName(base.format->storage));
+        return false;
+    }
+    tex.mtl = view;
+    tex.viewSource = root.mtl;
+    tex.storage = base.format->storage;
+    tex.mtlLevels = static_cast<GLsizei>(tex.viewNumLevels);
+    tex.mtlWidth = base.width;
+    tex.mtlHeight = base.height;
+    tex.mtlDepth = base.depth;
+    tex.mtlSamples = base.samples;
+    tex.storageDirty = false;
+    tex.views.clear();
+    return true;
+}
+
+}  // namespace
+
 bool ensureTextureStorage(Context& ctx, Texture& tex) {
+    if (tex.viewOf) return ensureViewStorage(ctx, tex);
     if (tex.mtl && !tex.storageDirty) return true;
     GLsizei w0 = 0, h0 = 0, d0 = 0, samples = 0;
     const FormatInfo* format = nullptr;
@@ -215,10 +260,70 @@ bool imageHasStorage(Context& ctx, Texture& tex, int face, int level) {
 
 namespace {
 
+// GL_RGB32F/I/UI buffer textures: an RGBA32 copy of the texels (alpha 1),
+// expanded on the GPU before a draw when the buffer changed. While a render
+// or compute encoder is open the previous copy is used.
+id<MTLTexture> rgb32BufferView(Context& ctx, Texture& tex, Buffer* buffer) {
+    static id<MTLComputePipelineState> pipeline = [] {
+        NSError* error = nil;
+        id<MTLFunction> function = [Device::get().utilityLibrary() newFunctionWithName:@"wmgl_expand_rgb32"];
+        id<MTLComputePipelineState> state = function ? [Device::get().mtl() newComputePipelineStateWithFunction:function error:&error] : nil;
+        if (!state) WMGL_ERR("rgb32 expansion pipeline failed: %s", error.localizedDescription.UTF8String);
+        return state;
+    }();
+    if (!pipeline) return nil;
+    const size_t offset = static_cast<size_t>(tex.bufferOffset);
+    const size_t available = buffer->mtl.length > offset ? buffer->mtl.length - offset : 0;
+    const size_t requested = tex.bufferSize < 0 ? static_cast<size_t>(buffer->size) - offset : static_cast<size_t>(tex.bufferSize);
+    const NSUInteger count = static_cast<NSUInteger>(std::min<size_t>(std::min(requested, available) / 12, 1u << 27));
+    if (count == 0) return nil;
+    const MTLPixelFormat pixelFormat = tex.bufferFormat == GL_RGB32F ? MTLPixelFormatRGBA32Float
+                                       : tex.bufferFormat == GL_RGB32I ? MTLPixelFormatRGBA32Sint
+                                                                       : MTLPixelFormatRGBA32Uint;
+    const NSUInteger rowBytes = count * 16;  // RGBA32: 16-byte texels meet the linear texture alignment
+    const bool current = tex.rgb32Shadow && tex.rgb32Shadow.length >= rowBytes && tex.rgb32ShadowSource == buffer->mtl &&
+                         tex.rgb32ShadowOffset == tex.bufferOffset && tex.rgb32ShadowVersion == buffer->version + 1;
+    const uint64_t key = reinterpret_cast<uint64_t>((__bridge void*)buffer->mtl);
+    id<MTLTexture> view = nil;
+    for (const Texture::View& v : tex.views)
+        if (v.key == key) view = v.view;
+    if (current && view && view.width == count) return view;
+    if (ctx.stream().encoding()) return view;  // inside a draw or dispatch: the last copy
+    if (!tex.rgb32Shadow || tex.rgb32Shadow.length < rowBytes) {
+        tex.rgb32Shadow = [Device::get().mtl() newBufferWithLength:rowBytes options:MTLResourceStorageModePrivate];
+        view = nil;
+    }
+    if (!tex.rgb32Shadow) return nil;
+    const uint32_t params[2] = {static_cast<uint32_t>(count), tex.bufferFormat == GL_RGB32F ? 0x3f800000u : 1u};
+    id<MTLComputeCommandEncoder> encoder = ctx.stream().compute();
+    [encoder setComputePipelineState:pipeline];
+    [encoder setBuffer:buffer->mtl offset:offset atIndex:0];
+    [encoder setBuffer:tex.rgb32Shadow offset:0 atIndex:1];
+    [encoder setBytes:params length:sizeof(params) atIndex:2];
+    [encoder dispatchThreads:MTLSizeMake(count, 1, 1) threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
+    ctx.stream().endEncoder();
+    buffer->lastUseSerial = ctx.stream().serial();
+    tex.rgb32ShadowSource = buffer->mtl;
+    tex.rgb32ShadowOffset = tex.bufferOffset;
+    tex.rgb32ShadowVersion = buffer->version + 1;
+    if (view && view.width == count) return view;
+    tex.views.clear();
+    MTLTextureDescriptor* desc = [MTLTextureDescriptor textureBufferDescriptorWithPixelFormat:pixelFormat
+                                                                                       width:count
+                                                                             resourceOptions:MTLResourceStorageModePrivate
+                                                                                       usage:MTLTextureUsageShaderRead];
+    view = [tex.rgb32Shadow newTextureWithDescriptor:desc offset:0 bytesPerRow:rowBytes];
+    if (view) tex.views.push_back({key, view});
+    return view;
+}
+
 // A texture view of a buffer texture's data store, rebuilt when the buffer's
 // Metal storage changes (BufferData reallocates it).
-id<MTLTexture> bufferTextureView(Texture& tex) {
+id<MTLTexture> bufferTextureView(Context& ctx, Texture& tex) {
     Buffer* buffer = tex.buffer.get();
+    if (buffer && buffer->mtl &&
+        (tex.bufferFormat == GL_RGB32F || tex.bufferFormat == GL_RGB32I || tex.bufferFormat == GL_RGB32UI))
+        return rgb32BufferView(ctx, tex, buffer);
     const FormatInfo* format = formatInfo(tex.bufferFormat);
     if (!buffer || !buffer->mtl || !format) return nil;
     const uint64_t key = reinterpret_cast<uint64_t>((__bridge void*)buffer->mtl);
@@ -248,7 +353,7 @@ id<MTLTexture> bufferTextureView(Texture& tex) {
 }  // namespace
 
 bool textureComplete(Context& ctx, Texture& tex, const SamplerParams* params) {
-    if (tex.target == GL_TEXTURE_BUFFER) return bufferTextureView(tex) != nil;
+    if (tex.target == GL_TEXTURE_BUFFER) return bufferTextureView(ctx, tex) != nil;
     const SamplerParams& p = params ? *params : tex.sampler;
     // Immutable textures clamp the base and max levels to [0, levels - 1] (GL 4.2 section 3.9.14).
     const int levels = tex.immutable ? std::max<int>(1, tex.immutableLevels) : Texture::kMaxLevels;
@@ -298,8 +403,7 @@ bool textureComplete(Context& ctx, Texture& tex, const SamplerParams* params) {
 }
 
 id<MTLTexture> samplingView(Context& ctx, Texture& tex) {
-    (void)ctx;
-    if (tex.target == GL_TEXTURE_BUFFER) return bufferTextureView(tex);
+    if (tex.target == GL_TEXTURE_BUFFER) return bufferTextureView(ctx, tex);
     const TextureImage& baseImage = tex.baseImage();
     const FormatInfo* format = baseImage.format;
     if (!format || !tex.mtl) return tex.mtl;
@@ -368,7 +472,9 @@ id<MTLSamplerState> samplerState(Context& ctx, const SamplerParams& p, bool shad
                                                                                            : MTLCompareFunctionAlways)
                                               : MTLCompareFunctionNever);
     // Metal border colours are limited to these three; others are approximated (W12).
-    const float* c = p.borderColor.f;
+    // An integer border colour (glTexParameterI*) is read as integers.
+    float c[4];
+    for (int i = 0; i < 4; ++i) c[i] = p.borderIsInteger ? static_cast<float>(p.borderColor.i[i]) : p.borderColor.f[i];
     key.border = static_cast<uint8_t>(c[3] == 0.0f ? MTLSamplerBorderColorTransparentBlack
                                       : (c[0] + c[1] + c[2]) > 1.5f ? MTLSamplerBorderColorOpaqueWhite
                                                                     : MTLSamplerBorderColorOpaqueBlack);

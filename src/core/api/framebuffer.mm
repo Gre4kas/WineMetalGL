@@ -102,7 +102,9 @@ GLenum completeness(Context& ctx, Framebuffer* fb) {
         if (GLenum status = check(a, 0); status != GL_FRAMEBUFFER_COMPLETE) return status;
     if (GLenum status = check(fb->depth, 1); status != GL_FRAMEBUFFER_COMPLETE) return status;
     if (GLenum status = check(fb->stencil, 2); status != GL_FRAMEBUFFER_COMPLETE) return status;
-    if (!any) return GL_FRAMEBUFFER_INCOMPLETE_MISSING_ATTACHMENT;
+    // GL 4.3: without attachments, the default width and height must be set.
+    if (!any && !(ctx.version() >= 43 && fb->defaultWidth > 0 && fb->defaultHeight > 0))
+        return GL_FRAMEBUFFER_INCOMPLETE_MISSING_ATTACHMENT;
     // GL_ARB_ES2_compatibility (advertised in every context, core in 4.1)
     // removes the INCOMPLETE_DRAW_BUFFER / INCOMPLETE_READ_BUFFER rules:
     // draw and read buffers naming empty attachments are simply ignored.
@@ -125,13 +127,15 @@ void framebufferChanged(Context& ctx, Framebuffer& fb) {
     ctx.markDirty(kDirtyFramebuffer);
 }
 
-RefPtr<Texture> textureForAttach(Context& ctx, GLuint name, bool& ok) {
+// `missing`: the error for a name that is not a texture (glFramebufferTexture
+// raises INVALID_VALUE, KHR-GL44.geometry_shader.layered_fbo.fb_texture_invalid_value).
+RefPtr<Texture> textureForAttach(Context& ctx, GLuint name, bool& ok, GLenum missing = GL_INVALID_OPERATION) {
     ok = true;
     if (!name) return nullptr;
     ShareLock lock(ctx);
     RefPtr<Texture> tex = ctx.share().textures.getRef(name);
     if (!tex) {
-        ctx.setError(GL_INVALID_OPERATION);
+        ctx.setError(missing);
         ok = false;
     }
     return tex;
@@ -149,11 +153,15 @@ void attachTexture(Context& ctx, GLenum target, GLenum attachment, GLenum textar
                                         ? GL_INVALID_OPERATION
                                         : GL_INVALID_ENUM);
     bool ok;
-    RefPtr<Texture> tex = textureForAttach(ctx, texture, ok);
+    const bool framebufferTexture = !textarget && !layerCall;
+    RefPtr<Texture> tex = textureForAttach(ctx, texture, ok, framebufferTexture ? GL_INVALID_VALUE : GL_INVALID_OPERATION);
     if (!ok) return;
     Attachment a;
     if (tex) {
+        if (tex->target == GL_TEXTURE_BUFFER) return ctx.setError(GL_INVALID_OPERATION);
         if (level < 0 || level >= Texture::kMaxLevels) return ctx.setError(GL_INVALID_VALUE);
+        // An immutable texture has only its levels.
+        if (tex->immutable && tex->immutableLevels > 0 && level >= tex->immutableLevels) return ctx.setError(GL_INVALID_VALUE);
         if (textarget) {
             const bool cubeFace = textarget >= GL_TEXTURE_CUBE_MAP_POSITIVE_X && textarget <= GL_TEXTURE_CUBE_MAP_NEGATIVE_Z;
             const GLenum expect = cubeFace ? GL_TEXTURE_CUBE_MAP : textarget;
@@ -327,6 +335,51 @@ void FramebufferRenderbuffer(Context& ctx, GLenum target, GLenum attachment, GLe
         *point = a;
     }
     framebufferChanged(ctx, *fb);
+}
+
+// GL 4.3 / GL_ARB_framebuffer_no_attachments.
+void FramebufferParameteri(Context& ctx, GLenum target, GLenum pname, GLint param) {
+    if (ctx.version() < 43 && !ctx.hasExtension("GL_ARB_framebuffer_no_attachments"))
+        return ctx.unimplemented("glFramebufferParameteri");
+    RefPtr<Framebuffer>* binding = framebufferBinding(ctx, target);
+    if (!binding) return ctx.setError(GL_INVALID_ENUM);
+    Framebuffer* fb = binding->get();
+    if (!fb) return ctx.setError(GL_INVALID_OPERATION);
+    switch (pname) {
+    case GL_FRAMEBUFFER_DEFAULT_WIDTH: case GL_FRAMEBUFFER_DEFAULT_HEIGHT:
+        if (param < 0 || param > limits::kMaxTextureSize) return ctx.setError(GL_INVALID_VALUE);
+        (pname == GL_FRAMEBUFFER_DEFAULT_WIDTH ? fb->defaultWidth : fb->defaultHeight) = param;
+        break;
+    case GL_FRAMEBUFFER_DEFAULT_LAYERS:
+        if (param < 0 || param > limits::kMaxArrayLayers) return ctx.setError(GL_INVALID_VALUE);
+        fb->defaultLayers = param;
+        break;
+    case GL_FRAMEBUFFER_DEFAULT_SAMPLES:
+        if (param < 0 || param > static_cast<GLint>(Device::get().caps().maxSamples)) return ctx.setError(GL_INVALID_VALUE);
+        fb->defaultSamples = param;
+        break;
+    case GL_FRAMEBUFFER_DEFAULT_FIXED_SAMPLE_LOCATIONS: fb->defaultFixedSampleLocations = param != 0; break;
+    default: return ctx.setError(GL_INVALID_ENUM);
+    }
+    framebufferChanged(ctx, *fb);
+}
+
+void GetFramebufferParameteriv(Context& ctx, GLenum target, GLenum pname, GLint* params) {
+    if (ctx.version() < 43 && !ctx.hasExtension("GL_ARB_framebuffer_no_attachments"))
+        return ctx.unimplemented("glGetFramebufferParameteriv");
+    RefPtr<Framebuffer>* binding = framebufferBinding(ctx, target);
+    if (!binding) return ctx.setError(GL_INVALID_ENUM);
+    Framebuffer* fb = binding->get();
+    if (!fb) return ctx.setError(GL_INVALID_OPERATION);
+    if (!params) return;
+    switch (pname) {
+    case GL_FRAMEBUFFER_DEFAULT_WIDTH: *params = fb->defaultWidth; return;
+    case GL_FRAMEBUFFER_DEFAULT_HEIGHT: *params = fb->defaultHeight; return;
+    case GL_FRAMEBUFFER_DEFAULT_LAYERS: *params = fb->defaultLayers; return;
+    case GL_FRAMEBUFFER_DEFAULT_SAMPLES: *params = fb->defaultSamples; return;
+    case GL_FRAMEBUFFER_DEFAULT_FIXED_SAMPLE_LOCATIONS: *params = fb->defaultFixedSampleLocations ? GL_TRUE : GL_FALSE; return;
+    default: return ctx.setError(GL_INVALID_ENUM);
+    }
 }
 
 void GetFramebufferAttachmentParameteriv(Context& ctx, GLenum target, GLenum attachment, GLenum pname, GLint* params) {

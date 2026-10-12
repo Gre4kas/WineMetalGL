@@ -1,11 +1,12 @@
 /* Entry points of later GL versions on a 3.2 core context. HashLink's GL
  * loader (Dead Cells) refuses to start without glBindImageTexture,
  * glMemoryBarrier, glDispatchCompute and glMultiDrawElementsIndirect, which
- * Windows drivers return whatever the context's version. Wine returns them
- * only for applications with HKCU\Software\Wine\AppDefaults\<app.exe>\OpenGL
- * LaterEntryPoints = "Y" (patch 0001), so this checks both: NULL without the
- * setting, entry points with it. The context does not advertise them, so
- * calling one may only raise GL_INVALID_OPERATION.
+ * Windows drivers return whatever the context's version; the 4.3 context a
+ * 3.2 request gets offers them. Entry points of versions above the context's
+ * (glCreateTextures, GL 4.5) Wine returns only for applications with
+ * HKCU\Software\Wine\AppDefaults\<app.exe>\OpenGL LaterEntryPoints = "Y"
+ * (patch 0001), so this checks both: NULL without the setting, the entry
+ * point with it.
  * Prints WINEMETALGL_LATER_ENTRY_POINTS_OK. */
 #include <windows.h>
 #include <GL/gl.h>
@@ -44,11 +45,12 @@ int main(void) {
     for (const char *p = module; *p; p++) if (*p == '\\' || *p == '/') app = p + 1;
     snprintf(key, sizeof(key), "Software\\Wine\\AppDefaults\\%s\\OpenGL", app);
     RegDeleteKeyValueA(HKEY_CURRENT_USER, key, "LaterEntryPoints");
-    if (wglGetProcAddress("glDispatchCompute")) { printf("glDispatchCompute without LaterEntryPoints\n"); return 17; }
-    if (RegSetKeyValueA(HKEY_CURRENT_USER, key, "LaterEntryPoints", REG_SZ, "Y", 2)) return 18;
     for (int i = 0; i < 4; i++) {
         if (!wglGetProcAddress(names[i])) { printf("missing %s\n", names[i]); return 15; }
     }
+    if (wglGetProcAddress("glCreateTextures")) { printf("glCreateTextures without LaterEntryPoints\n"); return 17; }
+    if (RegSetKeyValueA(HKEY_CURRENT_USER, key, "LaterEntryPoints", REG_SZ, "Y", 2)) return 18;
+    if (!wglGetProcAddress("glCreateTextures")) { printf("missing glCreateTextures\n"); return 15; }
     PFNGLMEMORYBARRIERPROC barrier = (PFNGLMEMORYBARRIERPROC)wglGetProcAddress("glMemoryBarrier");
     while (glGetError() != GL_NO_ERROR) {}
     barrier(GL_ALL_BARRIER_BITS);

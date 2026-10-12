@@ -101,6 +101,7 @@ public:
     // Image load/store: GL 4.2 or GL_ARB_shader_image_load_store.
     bool imageLoadStore() const { return version() >= 42 || hasExtension("GL_ARB_shader_image_load_store"); }
     // Atomic counters: GL 4.2 or GL_ARB_shader_atomic_counters.
+    bool storageBuffers() const { return version() >= 43 || hasExtension("GL_ARB_shader_storage_buffer_object"); }
     bool atomicCounters() const { return version() >= 42 || hasExtension("GL_ARB_shader_atomic_counters"); }
     // Sample shading: GL 4.0 or GL_ARB_sample_shading.
     bool sampleShading() const { return version() >= 40 || hasExtension("GL_ARB_sample_shading"); }

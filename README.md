@@ -2,11 +2,12 @@
 
 WineMetalGL is an OpenGL implementation on Metal for Wine on macOS 15 or newer.
 Wine's macOS driver (`winemac.drv`) loads it instead of Apple's OpenGL, so
-Windows programs get OpenGL 4.2 contexts, core or compatibility profile:
+Windows programs get OpenGL 4.3 contexts, core or compatibility profile:
 geometry and tessellation shaders, double precision, transform feedback with
-vertex streams, separate shader objects, viewport arrays, image load/store
-and atomic counters. Contexts created without a core-profile request (which
-Apple's OpenGL caps at 2.1) get the full 4.2 compatibility profile:
+vertex streams, separate shader objects, viewport arrays, image load/store,
+atomic counters, compute shaders, shader storage buffers and texture views.
+Contexts created without a core-profile request (which Apple's OpenGL caps at
+2.1) get the full 4.3 compatibility profile:
 fixed-function vertex and fragment processing, immediate mode, display lists,
 client arrays, legacy GLSL built-ins and the legacy pixel paths, together with
 every 3.x and 4.x feature. It runs x86_64 and i386
@@ -31,16 +32,18 @@ Dead Cells (Requires OpenGL 3.2+) running under MetalSharp Wine-11.17 Using Wine
 | 3.0 | 99.88% | GLSL 1.30, framebuffer objects, vertex array objects, transform feedback, integer textures | 2.28% |
 | 3.1 | 100% | Instancing, texture buffers, uniform buffers, primitive restart | 2.38% |
 | 3.2 | 100% | Profiles, geometry shaders, sync objects, multisample textures, base vertex | 0.69% |
-| 3.3 | 99.97% | GLSL 3.30, sampler objects, timer queries, instanced arrays, dual-source blending | 3.59% |
-| 4.0 | 99.96% | Tessellation, GLSL 4.00, double precision, indirect draws, per-sample shading | 12.22% |
-| 4.1 | 99.96% | Separate shader objects, program binaries, viewport arrays, 64-bit attributes | 12.19% |
-| 4.2 | 99.95% | Image load/store, atomic counters, immutable texture storage | 11.83% |
-| 4.3 | - | Compute shaders, shader storage buffers, debug output, texture views | 100% |
+| 3.3 | 99.98% | GLSL 3.30, sampler objects, timer queries, instanced arrays, dual-source blending | 3.59% |
+| 4.0 | 99.98% | Tessellation, GLSL 4.00, double precision, indirect draws, per-sample shading | 12.18% |
+| 4.1 | 99.98% | Separate shader objects, program binaries, viewport arrays, 64-bit attributes | 12.15% |
+| 4.2 | 99.96% | Image load/store, atomic counters, immutable texture storage | 11.73% |
+| 4.3 | 99.96% | Compute shaders, shader storage buffers, debug output, texture views | 17.65% |
 | 4.4 | - | Buffer storage, multi-bind, texture clears, enhanced layouts | 100% |
 | 4.5 | - | Direct state access, clip control, robustness, cull distances | 100% |
 | 4.6 | - | SPIR-V shaders, anisotropic filtering, indirect draw counts | 100% |
 
-**Conformance %**: passing cases over applicable cases (cases that are not NotSupported) of the version's Khronos CTS mustpass list (`KHR-GL30` to `KHR-GL42`), in the worst of its 8 runs (configurations 1 to 4 of `mustpass.xml`, each under Wine and natively) at commit 14eaa75, 851476e.
+**Conformance %**: passing cases over applicable cases (cases that are not NotSupported) of the version's Khronos CTS mustpass list (`KHR-GL30` to `KHR-GL43`), in the worst of its 8 runs (configurations 1 to 4 of `mustpass.xml`, each under Wine and natively) at commit 14eaa75, 851476e, f4ecccd.
+
+The cases that were not Pass in `KHR-GL33`, `KHR-GL40`, `KHR-GL41`, `KHR-GL42` were run again at commit 0a20fbe, in the same configurations under Wine and natively (`tests/cts/recheck/`); those results replace the baselines' for those cases.
 
 What Unsupported % counts, and why each failing case fails: [Unsupported](docs/unsupported.md#conformance-notes).
 

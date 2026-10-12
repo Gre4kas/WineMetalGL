@@ -93,7 +93,10 @@ bool packed(const uint8_t* p, GLenum type, bool normalized, float out[4]) {
 void decodeVertexFloat(const uint8_t* element, GLenum type, GLint size, bool normalized, float out[4]) {
     out[0] = out[1] = out[2] = 0.0f;
     out[3] = 1.0f;
-    if (packed(element, type, normalized, out)) return;
+    if (packed(element, type, normalized, out)) {
+        if (size == GL_BGRA) std::swap(out[0], out[2]);  // packed BGRA: z, y, x, w
+        return;
+    }
     const int count = size == GL_BGRA ? 4 : std::min<int>(size, 4);
     for (int c = 0; c < count; ++c) out[c] = component(element, type, normalized, c);
     if (size == GL_BGRA) std::swap(out[0], out[2]);

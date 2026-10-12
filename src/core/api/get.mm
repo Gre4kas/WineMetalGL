@@ -139,7 +139,7 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
     case GL_NUM_SHADING_LANGUAGE_VERSIONS:
         // The glGetStringi(GL_SHADING_LANGUAGE_VERSION) list (api/state.mm).
         if (ctx.version() < 43) return false;
-        out = ints({ctx.version() - 43 + 11});
+        out = ints({ctx.version() - 43 + 12});
         return true;
     case GL_RESET_NOTIFICATION_STRATEGY: out = ints({ctx.config().resetNotification}); return true;
     case 0x90F3:  // GL_CONTEXT_ROBUST_ACCESS (GL_KHR_robustness)
@@ -153,6 +153,10 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
     case GL_MAX_3D_TEXTURE_SIZE: out = ints({kMax3DTextureSize}); return true;
     case GL_MAX_ARRAY_TEXTURE_LAYERS: out = ints({kMaxArrayLayers}); return true;
     case GL_MAX_TEXTURE_BUFFER_SIZE: out = ints({kMaxTextureBufferSize}); return true;
+    case GL_TEXTURE_BUFFER_OFFSET_ALIGNMENT:
+        if (ctx.version() < 43 && !ctx.hasExtension("GL_ARB_texture_buffer_range")) return false;
+        out = ints({kTextureBufferOffsetAlignment});
+        return true;
     case GL_MAX_TEXTURE_LOD_BIAS: out = floats({kMaxTextureLodBias}); return true;
     case GL_MAX_COMPUTE_WORK_GROUP_INVOCATIONS: case GL_MAX_COMPUTE_UNIFORM_BLOCKS: case GL_MAX_COMPUTE_TEXTURE_IMAGE_UNITS:
     case GL_MAX_COMPUTE_UNIFORM_COMPONENTS: case GL_MAX_COMBINED_COMPUTE_UNIFORM_COMPONENTS:
@@ -169,7 +173,49 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
             break;
         case GL_MAX_COMPUTE_SHARED_MEMORY_SIZE: out = ints({kMaxComputeSharedMemorySize}); break;
         case GL_DISPATCH_INDIRECT_BUFFER_BINDING: out = ints({nameOf(s.dispatchIndirectBuffer)}); break;
-        default: out = ints({0}); break;  // atomic counters and images are separate extensions
+        case GL_MAX_COMPUTE_ATOMIC_COUNTER_BUFFERS:
+            out = ints({ctx.atomicCounters() ? kMaxStageAtomicCounterBuffers : 0});
+            break;
+        case GL_MAX_COMPUTE_ATOMIC_COUNTERS: out = ints({ctx.atomicCounters() ? kMaxStageAtomicCounters : 0}); break;
+        default: out = ints({ctx.imageLoadStore() ? kMaxImageUniformsPerStage : 0}); break;  // GL_MAX_COMPUTE_IMAGE_UNIFORMS
+        }
+        return true;
+    case GL_MAX_VERTEX_ATTRIB_RELATIVE_OFFSET: case GL_MAX_VERTEX_ATTRIB_BINDINGS:
+        if (ctx.version() < 43 && !ctx.hasExtension("GL_ARB_vertex_attrib_binding")) return false;
+        out = ints({pname == GL_MAX_VERTEX_ATTRIB_BINDINGS ? VertexArray::kMaxBindings : kMaxVertexAttribRelativeOffset});
+        return true;
+    case GL_MAX_VERTEX_ATTRIB_STRIDE:
+        // GL 4.4; answered with the GL 4.3 binding queries too, as the limit
+        // holds there (KHR-GL43.vertex_attrib_binding.basic-state3 reads it).
+        if (ctx.version() < 43 && !ctx.hasExtension("GL_ARB_vertex_attrib_binding")) return false;
+        out = ints({kMaxVertexAttribStride});
+        return true;
+    case GL_MAX_FRAMEBUFFER_WIDTH: case GL_MAX_FRAMEBUFFER_HEIGHT: case GL_MAX_FRAMEBUFFER_LAYERS:
+    case GL_MAX_FRAMEBUFFER_SAMPLES:
+        // GL 4.3 framebuffers without attachments.
+        if (ctx.version() < 43 && !ctx.hasExtension("GL_ARB_framebuffer_no_attachments")) return false;
+        out = ints({pname == GL_MAX_FRAMEBUFFER_LAYERS    ? kMaxArrayLayers
+                    : pname == GL_MAX_FRAMEBUFFER_SAMPLES ? static_cast<int64_t>(caps.maxSamples)
+                                                          : kMaxTextureSize});
+        return true;
+    case GL_MAX_UNIFORM_LOCATIONS:
+        if (ctx.version() < 43 && !ctx.hasExtension("GL_ARB_explicit_uniform_location")) return false;
+        out = ints({kMaxUniformLocations});
+        return true;
+    // GL 4.3 shader storage blocks (limits.h): vertex, fragment and compute stages.
+    case GL_SHADER_STORAGE_BUFFER_BINDING: case GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS: case GL_MAX_SHADER_STORAGE_BLOCK_SIZE:
+    case GL_SHADER_STORAGE_BUFFER_OFFSET_ALIGNMENT: case GL_MAX_VERTEX_SHADER_STORAGE_BLOCKS:
+    case GL_MAX_TESS_CONTROL_SHADER_STORAGE_BLOCKS: case GL_MAX_TESS_EVALUATION_SHADER_STORAGE_BLOCKS:
+    case GL_MAX_GEOMETRY_SHADER_STORAGE_BLOCKS: case GL_MAX_FRAGMENT_SHADER_STORAGE_BLOCKS:
+    case GL_MAX_COMPUTE_SHADER_STORAGE_BLOCKS: case GL_MAX_COMBINED_SHADER_STORAGE_BLOCKS:
+        if (!ctx.storageBuffers()) return false;
+        switch (pname) {
+        case GL_SHADER_STORAGE_BUFFER_BINDING: out = ints({nameOf(s.shaderStorageBuffer)}); break;
+        case GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS: out = ints({kMaxShaderStorageBufferBindings}); break;
+        case GL_MAX_SHADER_STORAGE_BLOCK_SIZE: out = ints({kMaxShaderStorageBlockSize}); break;
+        case GL_SHADER_STORAGE_BUFFER_OFFSET_ALIGNMENT: out = ints({kShaderStorageBufferOffsetAlignment}); break;
+        case GL_MAX_COMBINED_SHADER_STORAGE_BLOCKS: out = ints({kMaxCombinedStorageBlocks}); break;
+        default: out = ints({kMaxStageStorageBlocks}); break;
         }
         return true;
     case GL_MAX_VIEWPORT_DIMS: out = ints({kMaxTextureSize, kMaxTextureSize}); return true;
@@ -248,7 +294,8 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
     case GL_MAX_GEOMETRY_IMAGE_UNIFORMS: case GL_MAX_FRAGMENT_IMAGE_UNIFORMS: case GL_MAX_COMBINED_IMAGE_UNIFORMS:
         if (!ctx.imageLoadStore()) return false;
         out = ints({pname == GL_MAX_IMAGE_UNITS ? kMaxImageUnits
-                    : pname == GL_MAX_COMBINED_IMAGE_UNITS_AND_FRAGMENT_OUTPUTS ? kMaxCombinedImageUnitsAndFragmentOutputs
+                    // = GL_MAX_COMBINED_SHADER_OUTPUT_RESOURCES (GL 4.3), which counts storage blocks too
+                    : pname == GL_MAX_COMBINED_IMAGE_UNITS_AND_FRAGMENT_OUTPUTS ? kMaxCombinedShaderOutputResources  // = gl_MaxCombinedShaderOutputResources
                     : pname == GL_MAX_IMAGE_SAMPLES ? 0  // multisample images: Metal cannot write them
                     : pname == GL_MAX_COMBINED_IMAGE_UNIFORMS ? kMaxCombinedImageUniforms
                                                                : kMaxImageUniformsPerStage});
@@ -355,13 +402,26 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
     case GL_SMOOTH_LINE_WIDTH_GRANULARITY: out = floats({0.125}); return true;
     case GL_POINT_SIZE_RANGE: out = floats({1.0, 511.0}); return true;
     case GL_POINT_SIZE_GRANULARITY: out = floats({0.125}); return true;
-    case GL_NUM_COMPRESSED_TEXTURE_FORMATS: out = ints({caps.bcTextures ? 4 : 0}); return true;
-    case GL_COMPRESSED_TEXTURE_FORMATS:
-        // Generic/RGTC formats are not listed (GL 3.3 excludes formats with restrictions).
-        out = caps.bcTextures ? ints({GL_COMPRESSED_RGB_S3TC_DXT1_EXT, GL_COMPRESSED_RGBA_S3TC_DXT1_EXT,
-                                      GL_COMPRESSED_RGBA_S3TC_DXT3_EXT, GL_COMPRESSED_RGBA_S3TC_DXT5_EXT})
-                              : ints({});
+    case GL_NUM_COMPRESSED_TEXTURE_FORMATS: case GL_COMPRESSED_TEXTURE_FORMATS: {
+        // Generic/RGTC formats are not listed (GL 3.3 excludes formats with restrictions); ETC2/EAC from GL 4.3.
+        std::vector<int64_t> formats;
+        if (caps.bcTextures)
+            formats = {GL_COMPRESSED_RGB_S3TC_DXT1_EXT, GL_COMPRESSED_RGBA_S3TC_DXT1_EXT, GL_COMPRESSED_RGBA_S3TC_DXT3_EXT,
+                       GL_COMPRESSED_RGBA_S3TC_DXT5_EXT};
+        if (ctx.version() >= 43)
+            for (int64_t f : {GL_COMPRESSED_RGB8_ETC2, GL_COMPRESSED_SRGB8_ETC2, GL_COMPRESSED_RGB8_PUNCHTHROUGH_ALPHA1_ETC2,
+                              GL_COMPRESSED_SRGB8_PUNCHTHROUGH_ALPHA1_ETC2, GL_COMPRESSED_RGBA8_ETC2_EAC,
+                              GL_COMPRESSED_SRGB8_ALPHA8_ETC2_EAC, GL_COMPRESSED_R11_EAC, GL_COMPRESSED_SIGNED_R11_EAC,
+                              GL_COMPRESSED_RG11_EAC, GL_COMPRESSED_SIGNED_RG11_EAC})
+                formats.push_back(f);
+        if (pname == GL_NUM_COMPRESSED_TEXTURE_FORMATS) out = ints({static_cast<int64_t>(formats.size())});
+        else {
+            out.kind = Value::Int;
+            out.count = static_cast<int>(formats.size());
+            for (size_t i = 0; i < formats.size(); ++i) out.v[i] = static_cast<double>(formats[i]);
+        }
         return true;
+    }
     case GL_TIMESTAMP: {
         uint64_t cpu = 0, gpu = 0;
         [Device::get().mtl() sampleTimestamps:&cpu gpuTimestamp:&gpu];
@@ -660,6 +720,25 @@ bool getIndexed(Context& ctx, GLenum pname, GLuint index, Value& out, bool& badI
         const IndexedBufferBinding& b = s.atomicCounterBufferBindings[index];
         out = pname == GL_ATOMIC_COUNTER_BUFFER_BINDING ? ints({nameOf(b.buffer)})
               : pname == GL_ATOMIC_COUNTER_BUFFER_START ? int64v(b.offset)
+                                                        : int64v(b.size);
+        return true;
+    }
+    case GL_VERTEX_BINDING_BUFFER: case GL_VERTEX_BINDING_OFFSET: case GL_VERTEX_BINDING_STRIDE: case GL_VERTEX_BINDING_DIVISOR: {
+        if (ctx.version() < 43 && !ctx.hasExtension("GL_ARB_vertex_attrib_binding")) return false;
+        if (index >= static_cast<GLuint>(VertexArray::kMaxBindings)) { badIndex = true; return true; }
+        const VertexBinding& b = s.vertexArray->bindings[index];
+        out = pname == GL_VERTEX_BINDING_BUFFER   ? ints({nameOf(b.buffer)})
+              : pname == GL_VERTEX_BINDING_OFFSET ? int64v(b.offset)
+              : pname == GL_VERTEX_BINDING_STRIDE ? ints({b.stride})
+                                                  : ints({static_cast<int64_t>(b.divisor)});
+        return true;
+    }
+    case GL_SHADER_STORAGE_BUFFER_BINDING: case GL_SHADER_STORAGE_BUFFER_START: case GL_SHADER_STORAGE_BUFFER_SIZE: {
+        if (!ctx.storageBuffers()) return false;
+        if (index >= static_cast<GLuint>(ContextState::kMaxShaderStorageBufferBindings)) { badIndex = true; return true; }
+        const IndexedBufferBinding& b = s.shaderStorageBufferBindings[index];
+        out = pname == GL_SHADER_STORAGE_BUFFER_BINDING ? ints({nameOf(b.buffer)})
+              : pname == GL_SHADER_STORAGE_BUFFER_START ? int64v(b.offset)
                                                         : int64v(b.size);
         return true;
     }

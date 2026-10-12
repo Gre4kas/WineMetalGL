@@ -141,7 +141,8 @@ int main(void) {
     const char *version = (const char *)glGetString(GL_VERSION);
     const char *glsl = (const char *)glGetString(SHADING_LANGUAGE_VERSION);
     printf("GL_VERSION=%s GLSL=%s\n", version ? version : "(null)", glsl ? glsl : "(null)");
-    if (!version || strncmp(version, "4.2", 3) != 0 || !glsl || strncmp(glsl, "4.20", 4) != 0) return 16;
+    /* The highest compatible version: 4.3, GLSL 4.30 (WGL_ARB_create_context). */
+    if (!version || strncmp(version, "4.3", 3) != 0 || !glsl || strncmp(glsl, "4.30", 4) != 0) return 16;
     printf("WINEMETALGL_GL42_CONTEXT_OK\n");
 
     createShader = (CreateShader)proc("glCreateShader");

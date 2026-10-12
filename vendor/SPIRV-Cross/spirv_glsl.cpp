@@ -2899,7 +2899,7 @@ void CompilerGLSL::replace_illegal_names(const unordered_set<string> &keywords)
 
 		auto &m = meta->decoration;
 		if (keywords.find(m.alias) != end(keywords))
-			m.alias = join("_", m.alias);
+			m.alias = join(illegal_name_prefix, m.alias);
 	});
 
 	ir.for_each_typed_id<SPIRFunction>([&](uint32_t, const SPIRFunction &func) {
@@ -2909,7 +2909,7 @@ void CompilerGLSL::replace_illegal_names(const unordered_set<string> &keywords)
 
 		auto &m = meta->decoration;
 		if (keywords.find(m.alias) != end(keywords))
-			m.alias = join("_", m.alias);
+			m.alias = join(illegal_name_prefix, m.alias);
 	});
 
 	ir.for_each_typed_id<SPIRType>([&](uint32_t, const SPIRType &type) {
@@ -2919,11 +2919,11 @@ void CompilerGLSL::replace_illegal_names(const unordered_set<string> &keywords)
 
 		auto &m = meta->decoration;
 		if (keywords.find(m.alias) != end(keywords))
-			m.alias = join("_", m.alias);
+			m.alias = join(illegal_name_prefix, m.alias);
 
 		for (auto &memb : meta->members)
 			if (keywords.find(memb.alias) != end(keywords))
-				memb.alias = join("_", memb.alias);
+				memb.alias = join(illegal_name_prefix, memb.alias);
 	});
 }
 
@@ -9471,7 +9471,7 @@ string CompilerGLSL::bitcast_glsl(const SPIRType &result_type, uint32_t argument
 
 std::string CompilerGLSL::bitcast_expression(SPIRType::BaseType target_type, uint32_t arg)
 {
-	auto expr = to_expression(arg);
+	auto expr = to_unpacked_expression(arg);
 	auto &src_type = expression_type(arg);
 	if (src_type.basetype != target_type)
 	{
