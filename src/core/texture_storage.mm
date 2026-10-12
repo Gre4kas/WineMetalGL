@@ -192,7 +192,10 @@ bool ensureTextureStorage(Context& ctx, Texture& tex) {
     desc.sampleCount = static_cast<NSUInteger>(std::max(1, samples));
     desc.storageMode = MTLStorageModePrivate;
     desc.usage = MTLTextureUsageShaderRead | MTLTextureUsagePixelFormatView | writeUsage;
-    if ((format->colorRenderable || format->isDepthOrStencil() || format->storedAlphaIsOne) && !format->compressed)
+    // Immutable storage can have views of another format, which may be
+    // renderable when this one is not (GL_RGB9_E5 as GL_R32UI).
+    if ((format->colorRenderable || format->isDepthOrStencil() || format->storedAlphaIsOne || tex.immutable) &&
+        !format->compressed)
         desc.usage |= MTLTextureUsageRenderTarget;
     (void)cube;
     id<MTLTexture> texture = [Device::get().mtl() newTextureWithDescriptor:desc];
@@ -378,7 +381,10 @@ bool textureComplete(Context& ctx, Texture& tex, const SamplerParams* params) {
     if (multisample) return ensureTextureStorage(ctx, tex);
     // Integer formats cannot be filtered; depth formats only with compare mode
     // or nearest filtering in some cases (GL 3.3: depth textures filter linearly).
-    if (baseImage.format && baseImage.format->isInteger() &&
+    // Stencil indices sample like integers (GL 4.6 section 8.17).
+    const bool stencilSampled = baseImage.format && baseImage.format->isStencil() &&
+                                (!baseImage.format->isDepth() || tex.depthStencilMode == GL_STENCIL_INDEX);
+    if (baseImage.format && (baseImage.format->isInteger() || stencilSampled) &&
         (p.magFilter != GL_NEAREST || (p.minFilter != GL_NEAREST && p.minFilter != GL_NEAREST_MIPMAP_NEAREST)))
         return false;
     if (mipmapped) {

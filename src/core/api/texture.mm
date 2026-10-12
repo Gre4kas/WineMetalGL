@@ -1685,7 +1685,14 @@ void clearMultisample(Context& ctx, Texture& tex, const FormatInfo& info, const 
                                            slices:NSMakeRange(0, mtl.arrayLength)];
         if (!view) return;
     } else {
-        if (info.depthBits) std::memcpy(&depth, texel, 4);
+        // The texel as stored: 16-bit unorm or 32-bit float depth.
+        if (info.storage == Storage::Depth16Unorm) {
+            uint16_t unorm = 0;
+            std::memcpy(&unorm, texel, 2);
+            depth = unorm / 65535.0f;
+        } else if (info.depthBits) {
+            std::memcpy(&depth, texel, 4);
+        }
         if (info.stencilBits) stencil = texel[info.depthBits ? 4 : 0];
     }
     static std::mutex mutex;
@@ -1797,18 +1804,19 @@ void clearTexture(Context& ctx, const char* command, GLuint texture, GLint level
         d = layers;
     } else {
         if (w < 0 || h < 0 || d < 0) return ctx.setError(GL_INVALID_VALUE);
-        if (x < 0 || y < 0 || z < 0 || x + w > image.width || y + h > image.height || z + d > layers)
+        if (x < 0 || y < 0 || z < 0 || w > image.width - x || h > image.height - y || d > layers - z)
             return ctx.setError(GL_INVALID_OPERATION);
     }
     if (!w || !h || !d) return;
     if (!ensureTextureStorage(ctx, *tex) || !imageHasStorage(ctx, *tex, 0, level)) return;
     const size_t bytes = storageBytes(info.storage);
     std::vector<uint8_t> texel(std::max<size_t>(bytes, 8), 0);
-    if (data) {
-        PixelStoreParams tight;
-        tight.alignment = 1;
-        unpackPixels(data, format, type, 1, 1, 1, tight, info, texel.data());
-    }
+    // Without data, zeros: converted like data, so what the format stores
+    // but does not have (the alpha of RGB formats) is still 1.
+    static const uint8_t zeros[16] = {};
+    PixelStoreParams tight;
+    tight.alignment = 1;
+    unpackPixels(data ? data : zeros, format, type, 1, 1, 1, tight, info, texel.data());
     if (image.samples > 1) {
         clearMultisample(ctx, *tex, info, texel.data(), x, y, z, w, h, d);
         imageChanged(ctx, *tex);
@@ -1970,7 +1978,8 @@ MTLPixelFormat linearCompressedFormat(Storage storage) {
     }
 }
 
-// Decodes one 2D slice of a compressed image into float RGBA texels.
+// Decodes one 2D slice of a compressed image into float RGBA texels: a
+// layer, or for a 3D texture (BPTC) the image at depth `slice`.
 void decodeCompressedSlice(Context& ctx, Texture& tex, Storage storage, NSUInteger level, NSUInteger slice, int width,
                            int height, float* out) {
     static id<MTLComputePipelineState> pipeline = [] {
@@ -1981,10 +1990,28 @@ void decodeCompressedSlice(Context& ctx, Texture& tex, Storage storage, NSUInteg
         return state;
     }();
     if (!pipeline || width <= 0 || height <= 0) return;
-    id<MTLTexture> view = [tex.mtl newTextureViewWithPixelFormat:linearCompressedFormat(storage)
-                                                     textureType:MTLTextureType2D
-                                                          levels:NSMakeRange(level, 1)
-                                                          slices:NSMakeRange(slice, 1)];
+    id<MTLTexture> view = nil;
+    if (tex.mtl.textureType == MTLTextureType3D) {
+        // Metal makes only 3D views of a 3D texture: the image is copied
+        // into a 2D texture of its own first.
+        MTLTextureDescriptor* desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:tex.mtl.pixelFormat
+                                                                                        width:static_cast<NSUInteger>(width)
+                                                                                       height:static_cast<NSUInteger>(height)
+                                                                                    mipmapped:NO];
+        desc.usage = MTLTextureUsageShaderRead | MTLTextureUsagePixelFormatView;
+        desc.storageMode = MTLStorageModePrivate;
+        id<MTLTexture> image = [Device::get().mtl() newTextureWithDescriptor:desc];
+        if (!image) return;
+        [ctx.stream().blit() copyFromTexture:tex.mtl sourceSlice:0 sourceLevel:level sourceOrigin:MTLOriginMake(0, 0, slice)
+                                  sourceSize:MTLSizeMake(static_cast<NSUInteger>(width), static_cast<NSUInteger>(height), 1)
+                                   toTexture:image destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0, 0, 0)];
+        view = [image newTextureViewWithPixelFormat:linearCompressedFormat(storage)];
+    } else {
+        view = [tex.mtl newTextureViewWithPixelFormat:linearCompressedFormat(storage)
+                                          textureType:MTLTextureType2D
+                                               levels:NSMakeRange(level, 1)
+                                               slices:NSMakeRange(slice, 1)];
+    }
     const size_t bytes = static_cast<size_t>(width) * height * 16;
     id<MTLBuffer> buffer = [Device::get().mtl() newBufferWithLength:bytes options:MTLResourceStorageModeShared];
     if (!view || !buffer) return;
@@ -2086,10 +2113,12 @@ void GetCompressedTexImage(Context& ctx, GLenum target, GLint level, void* img) 
                                                              options:MTLResourceStorageModeShared];
     id<MTLBlitCommandEncoder> blit = ctx.stream().blit();
     const int layers = image.depth;
+    const bool volume = t.tex->target == GL_TEXTURE_3D;  // z is a depth, not a slice
     for (int layer = 0; layer < layers; ++layer) {
-        const NSUInteger slice = static_cast<NSUInteger>(t.tex->target == GL_TEXTURE_CUBE_MAP ? t.face : layer);
+        const NSUInteger slice = static_cast<NSUInteger>(t.tex->target == GL_TEXTURE_CUBE_MAP ? t.face : volume ? 0 : layer);
         [blit copyFromTexture:t.tex->mtl sourceSlice:slice sourceLevel:static_cast<NSUInteger>(level)
-                 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(image.width, image.height, 1)
+                 sourceOrigin:MTLOriginMake(0, 0, volume ? static_cast<NSUInteger>(layer) : 0)
+                   sourceSize:MTLSizeMake(image.width, image.height, 1)
                      toBuffer:staging destinationOffset:imageBytes * static_cast<size_t>(layer)
        destinationBytesPerRow:rowBytes destinationBytesPerImage:imageBytes];
     }
@@ -2210,8 +2239,9 @@ void GetTextureSubImage(Context& ctx, GLuint texture, GLint level, GLint xoffset
         // Decode whole slices, keep the region.
         std::vector<float> rgba(static_cast<size_t>(width) * height * depth * 4);
         for (int k = 0; k < depth; ++k) {
-            const std::vector<float> slice =
-                decodedSlice(ctx, tex, info, level, subImageSlice(tex, zoffset + k), image.width, image.height);
+            // A 3D texture's image is chosen by its depth (decodeCompressedSlice).
+            const uint32_t z = tex.target == GL_TEXTURE_3D ? static_cast<uint32_t>(zoffset + k) : subImageSlice(tex, zoffset + k);
+            const std::vector<float> slice = decodedSlice(ctx, tex, info, level, z, image.width, image.height);
             for (int row = 0; row < height; ++row)
                 std::memcpy(&rgba[((static_cast<size_t>(k) * height + row) * width) * 4],
                             &slice[((static_cast<size_t>(yoffset) + row) * image.width + xoffset) * 4],

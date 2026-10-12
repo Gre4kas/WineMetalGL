@@ -178,6 +178,23 @@ template<typename T> inline float wmgl_linear_compare(T t, float4 c, int3 o, uin
     }
     return sum;
 }
+// Nearest filtering at one level from a texel read (outside a border axis:
+// `border`).
+template<typename T, typename V> inline V wmgl_nearest(T t, float4 c, int3 o, uint layer, uint l, constant wmgl_bp& p,
+                                                     V border) {
+    const bool rect = (p.filter & 16u) != 0u;
+    const float3 size = wmgl_size(t, l);
+    const uint dims = uint(c.w);
+    int3 i = int3(floor((rect ? c.xyz : c.xyz * size) + float3(o)));
+    for (uint axis = 0u; axis < dims; ++axis) {
+        const int wrapped = wmgl_wrap(i[axis], int(size[axis]), (p.wrap >> (4u * axis)) & 15u);
+        if (wrapped < 0) return border;
+        i[axis] = wrapped;
+    }
+    if (dims < 2u) i.y = 0;
+    if (dims < 3u) i.z = 0;
+    return V(wmgl_read(t, i, layer, l));
+}
 // Levels and filter (GL 4.6 section 8.14).
 struct wmgl_lod_choice { uint l0, l1; float f; bool linear; };
 template<typename T> inline wmgl_lod_choice wmgl_choose(T t, sampler s, float4 c, int lk, float la, float3 gx, float3 gy,
@@ -219,6 +236,9 @@ inline vec<B, 4> wmgl_border_sample(vec<B, 4> r, T t, sampler s, C cc, int3 o, i
     if (!q.linear && q.f == 0.0) return border;
     if (wmgl_integer(B(0))) return w > 0.5 ? r : border;  // integer textures are never filtered
     const uint layer = wmgl_layer_of(t, cc);
+    if (!q.linear)  // NEAREST_MIPMAP_LINEAR: the nearest texels of two levels, blended
+        return vec<B, 4>(mix(wmgl_nearest(t, c, o, layer, q.l0, p, float4(border)),
+                             wmgl_nearest(t, c, o, layer, q.l1, p, float4(border)), q.f));
     float4 v = float4(wmgl_linear(t, c, o, layer, q.l0, p, float4(border), 0.0));
     if (q.f > 0.0) v = mix(v, float4(wmgl_linear(t, c, o, layer, q.l1, p, float4(border), 0.0)), q.f);
     return vec<B, 4>(v);
@@ -235,6 +255,9 @@ inline float wmgl_border_sample(float r, T t, sampler s, C cc, int3 o, int lk, f
     if (w >= 1.0) return r;
     if (!q.linear && q.f == 0.0) return wmgl_compare(p.cmp, ref, border.x);
     const uint layer = wmgl_layer_of(t, cc);
+    if (!q.linear)
+        return mix(wmgl_compare(p.cmp, ref, wmgl_nearest(t, c, o, layer, q.l0, p, border.x)),
+                   wmgl_compare(p.cmp, ref, wmgl_nearest(t, c, o, layer, q.l1, p, border.x)), q.f);
     float v = wmgl_linear_compare(t, c, o, layer, q.l0, p, border.x, ref);
     if (q.f > 0.0) v = mix(v, wmgl_linear_compare(t, c, o, layer, q.l1, p, border.x, ref), q.f);
     return v;
@@ -314,17 +337,19 @@ std::string BorderMsl::to_texture_op(const spirv_cross::Instruction& i, bool spa
     static const char* const kPrefix[] = {"", ".x", ".xy", ".xyz", ".xyzw"};
     const uint32_t size = expression_type(coord).vecsize;
     const uint32_t n = (dim == spv::Dim1D ? 1 : dim == spv::Dim3D ? 3 : 2) + (type.image.arrayed ? 1 : 0);
-    std::string c = to_enclosed_expression(coord);
+    std::string c = to_enclosed_expression(coord), q;
     if (proj) {
         if (size <= n || type.image.arrayed) return expr;
-        c = "(" + c + kPrefix[n] + " / " + c + "." + kComponents[size - 1] + ")";
+        q = c + "." + kComponents[size - 1];
+        c = "(" + c + kPrefix[n] + " / " + q + ")";
     } else if (size > n) {
         c += kPrefix[n];
     }
     const std::string slotText = std::to_string(slot->second);
     const std::string tex = to_expression(img), sampler = to_sampler_expression(img);
     const std::string off = offset ? to_expression(offset) : "0";
-    const std::string ref = drefId ? to_expression(drefId) : "0.0";
+    // A projective comparison divides the reference by q too.
+    const std::string ref = !drefId ? "0.0" : proj ? "(" + to_enclosed_expression(drefId) + " / " + q + ")" : to_expression(drefId);
     if (gather)
         return "wmgl_bcg_" + slotText + "(" + expr + ", " + tex + ", " + sampler + ", " + c + ", " + off + ", " +
                (componentId ? to_expression(componentId) : "0") + ", " + ref + ")";
