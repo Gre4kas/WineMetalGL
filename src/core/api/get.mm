@@ -203,6 +203,10 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
         out = ints({kMaxUniformLocations});
         return true;
     // GL 4.3 shader storage blocks (limits.h): vertex, fragment and compute stages.
+    case GL_QUERY_BUFFER_BINDING:  // GL 4.4, GL_ARB_query_buffer_object
+        if (ctx.version() < 44) return false;
+        out = ints({nameOf(s.queryBuffer)});
+        return true;
     case GL_SHADER_STORAGE_BUFFER_BINDING: case GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS: case GL_MAX_SHADER_STORAGE_BLOCK_SIZE:
     case GL_SHADER_STORAGE_BUFFER_OFFSET_ALIGNMENT: case GL_MAX_VERTEX_SHADER_STORAGE_BLOCKS:
     case GL_MAX_TESS_CONTROL_SHADER_STORAGE_BLOCKS: case GL_MAX_TESS_EVALUATION_SHADER_STORAGE_BLOCKS:

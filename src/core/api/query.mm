@@ -12,6 +12,7 @@
 #include <mutex>
 
 #include "core/context.h"
+#include "core/draw.h"
 #include "core/query.h"
 #include "core/util/log.h"
 #include "gl_api.gen.h"
@@ -379,6 +380,14 @@ template <class T>
 void getQueryObject(Context& ctx, GLuint name, GLenum pname, T* params) {
     Query* q = ctx.queries.get(name);
     if (!q || !q->everActive || q->active) return ctx.setError(GL_INVALID_OPERATION);
+    // GL 4.4 (GL_ARB_query_buffer_object): with a buffer bound to
+    // GL_QUERY_BUFFER, `params` is an offset into it.
+    Buffer* queryBuffer = ctx.version() >= 44 ? ctx.state.queryBuffer.get() : nullptr;
+    if (queryBuffer) {
+        const intptr_t offset = reinterpret_cast<intptr_t>(params);
+        if (offset < 0 || offset % static_cast<intptr_t>(sizeof(T)) || offset + static_cast<intptr_t>(sizeof(T)) > queryBuffer->size)
+            return ctx.setError(GL_INVALID_OPERATION);
+    }
     uint64_t value = 0;
     switch (pname) {
     case GL_QUERY_RESULT:
@@ -402,7 +411,20 @@ void getQueryObject(Context& ctx, GLuint name, GLenum pname, T* params) {
     }
     // Results that do not fit the requested type saturate.
     if (value > static_cast<uint64_t>(std::numeric_limits<T>::max())) value = static_cast<uint64_t>(std::numeric_limits<T>::max());
-    *params = static_cast<T>(value);
+    const T result = static_cast<T>(value);
+    if (!queryBuffer) {
+        *params = result;
+        return;
+    }
+    // The result goes into the query buffer through an ordered GPU copy, so
+    // draws before and after see the buffer in command order.
+    if (!queryBuffer->mtl) return;
+    TransientAllocation staging = ctx.draw().transient().allocate(sizeof(T), ctx.stream().serial(), 16);
+    std::memcpy(staging.data, &result, sizeof(T));
+    [ctx.stream().blit() copyFromBuffer:staging.buffer sourceOffset:staging.offset toBuffer:queryBuffer->mtl
+                        destinationOffset:static_cast<NSUInteger>(reinterpret_cast<intptr_t>(params)) size:sizeof(T)];
+    queryBuffer->lastUseSerial = queryBuffer->lastWriteSerial = ctx.stream().serial();
+    ++queryBuffer->version;
 }
 
 }  // namespace

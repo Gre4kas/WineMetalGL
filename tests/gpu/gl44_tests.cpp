@@ -105,3 +105,42 @@ GPU_TEST_VERSION(gpu_gl44_multi_bind, 44) {
     glDeleteSamplers(2, samplers);
     glDeleteTextures(2, tex);
 }
+
+// GL_ARB_query_buffer_object: query results written into a buffer at an
+// offset, as 32-bit and 64-bit values, and the availability flag.
+GPU_TEST_VERSION(gpu_gl44_query_buffer, 44) {
+    GLuint p = gpu::program("#version 440 core\nin vec2 position;\nvoid main() { gl_Position = vec4(position, 0.0, 1.0); }\n",
+                            "#version 440 core\nout vec4 o;\nvoid main() { o = vec4(1.0); }\n");
+    glUseProgram(p);
+    GLuint vao = gpu::quad(), query = 0, buffer = 0;
+    glGenQueries(1, &query);
+    glBeginQuery(GL_SAMPLES_PASSED, query);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glEndQuery(GL_SAMPLES_PASSED);
+    glGenBuffers(1, &buffer);
+    glBindBuffer(GL_QUERY_BUFFER, buffer);
+    const uint32_t fill[6] = {0xdeadbeef, 0xdeadbeef, 0xdeadbeef, 0xdeadbeef, 0xdeadbeef, 0xdeadbeef};
+    glBufferData(GL_QUERY_BUFFER, sizeof(fill), fill, GL_DYNAMIC_READ);
+    glGetQueryObjectuiv(query, GL_QUERY_RESULT, reinterpret_cast<GLuint*>(4));
+    glGetQueryObjectui64v(query, GL_QUERY_RESULT, reinterpret_cast<GLuint64*>(8));
+    glGetQueryObjectuiv(query, GL_QUERY_RESULT_AVAILABLE, reinterpret_cast<GLuint*>(16));
+    CHECK_GL();
+    GLint bound = 0;
+    glGetIntegerv(GL_QUERY_BUFFER_BINDING, &bound);
+    CHECK_EQ(bound, static_cast<GLint>(buffer));
+    uint32_t back[6] = {};
+    glGetBufferSubData(GL_QUERY_BUFFER, 0, sizeof(back), back);
+    CHECK_EQ(back[0], 0xdeadbeefu);
+    CHECK_EQ(back[1], 64u * 64u);
+    CHECK_EQ(back[2], 64u * 64u);
+    CHECK_EQ(back[3], 0u);
+    CHECK_EQ(back[4], 1u);
+    // An offset past the buffer is INVALID_OPERATION.
+    glGetQueryObjectuiv(query, GL_QUERY_RESULT, reinterpret_cast<GLuint*>(24));
+    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_INVALID_OPERATION));
+    glBindBuffer(GL_QUERY_BUFFER, 0);
+    glDeleteBuffers(1, &buffer);
+    glDeleteQueries(1, &query);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
+}
