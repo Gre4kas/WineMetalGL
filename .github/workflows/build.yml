@@ -82,3 +82,50 @@ jobs:
 
       - name: Check the architecture
         run: test "$(/usr/bin/lipo -archs build/host/libwinemetalgl.dylib)" = arm64
+
+  wine-module:
+    name: Wine module (x86_64 + i386 PE, x86_64 unix)
+    runs-on: macos-15
+    env:
+      LLVM_MINGW: llvm-mingw-20260922-ucrt-macos-universal
+      LLVM_MINGW_SHA256: 52e5f5a7b131021d0c39a37a38fa380a1da7885cd04bd61afd0cd4ecfb8bc1f3
+      WINE_SHA256: c07a6857933c1fc60dff5448d79f39c92481c1e9db5aa628db9d0358446e0701
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Fetch llvm-mingw and the Wine 11.0 headers
+        run: |
+          mkdir -p "$RUNNER_TEMP/deps"
+          cd "$RUNNER_TEMP/deps"
+          curl -fsSL -o llvm-mingw.tar.xz "https://github.com/mstorsjo/llvm-mingw/releases/download/20260922/$LLVM_MINGW.tar.xz"
+          echo "$LLVM_MINGW_SHA256  llvm-mingw.tar.xz" | shasum -a 256 -c -
+          tar -xJf llvm-mingw.tar.xz
+          curl -fsSL -o wine.tar.xz https://dl.winehq.org/wine/source/11.0/wine-11.0.tar.xz
+          echo "$WINE_SHA256  wine.tar.xz" | shasum -a 256 -c -
+          tar -xJf wine.tar.xz wine-11.0/include
+          echo "$RUNNER_TEMP/deps/$LLVM_MINGW/bin" >> "$GITHUB_PATH"
+
+      - name: Build the module
+        run: sh scripts/build-wine-module.sh "$RUNNER_TEMP/deps/wine-11.0"
+
+      - name: Check the module
+        run: |
+          m=build/wine-module
+          test "$(/usr/bin/lipo -archs $m/x86_64-unix/winemetalgl.so)" = x86_64
+          nm -gU $m/x86_64-unix/winemetalgl.so | grep -q ' ___wine_unix_call_funcs$'
+          nm -gU $m/x86_64-unix/winemetalgl.so | grep -q ' ___wine_unix_call_wow64_funcs$'
+          for arch in x86_64 i386; do
+            dd if=$m/$arch-windows/winemetalgl.dll bs=1 skip=64 count=16 2>/dev/null | grep -q 'Wine builtin DLL'
+            test -s $m/$arch-windows/opengl32.dll
+          done
+
+      - name: Upload the module
+        uses: actions/upload-artifact@v4
+        with:
+          name: winemetalgl-wine-module
+          path: |
+            build/wine-module/x86_64-windows/*.dll
+            build/wine-module/i386-windows/*.dll
+            build/wine-module/x86_64-unix/winemetalgl.so
+          if-no-files-found: error

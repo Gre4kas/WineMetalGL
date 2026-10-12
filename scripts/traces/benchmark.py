@@ -46,7 +46,10 @@ def impl_env(base, impl):
     env = dict(base)
     env.pop("WINEMETALGL", None)
     if impl == "apple":
-        env["WINEMETALGL"] = "0"  # Apple's OpenGL (winemac's fallback path)
+        # Wine's own opengl32, Apple's OpenGL (WINEMETALGL=0 for a Wine with
+        # the 2.x patches) instead of the Wine module.
+        env["WINEDLLOVERRIDES"] = "opengl32=b"
+        env["WINEMETALGL"] = "0"
     return env
 
 

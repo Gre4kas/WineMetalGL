@@ -17,7 +17,7 @@ PY
 python3 -m json.tool docs/api-coverage.json >/dev/null
 python3 -I scripts/docs/generate.py --check --check-provenance
 shasum -a 256 -c SHA256SUMS >/dev/null
-if grep -i -n 'VKMT' scripts/build.sh scripts/stage-host-libs.sh scripts/stage-release.sh scripts/stage-wine.sh README.md CMakeLists.txt || grep -R -i -n 'VKMT' tests; then
+if grep -i -n 'VKMT' scripts/build.sh scripts/stage-host-libs.sh scripts/stage-release.sh scripts/build-wine-module.sh scripts/install-wine-module.sh README.md CMakeLists.txt || grep -R -i -n 'VKMT' tests; then
     printf '%s\n' 'standalone source contains VKMT-specific naming' >&2
     exit 1
 fi
@@ -34,23 +34,6 @@ if test -f build/release/libwinemetalgl.dylib; then
     if otool -L build/release/libwinemetalgl.dylib | grep -q OpenGL.framework; then
         printf '%s\n' 'libwinemetalgl.dylib links OpenGL.framework' >&2
         exit 1
-    fi
-fi
-
-wine_source=${WINEMETALGL_WINE_SOURCE:-}
-if test -n "$wine_source"; then
-    patch_file=${WINEMETALGL_WINE_PATCH:-}
-    patch_dir=$project_root/patches/wine/wine-11.17
-    check_dir=$(mktemp -d "${TMPDIR:-/tmp}/winemetalgl-patch-check.XXXXXX")
-    cleanup() { git -C "$wine_source" worktree remove --force "$check_dir" >/dev/null 2>&1 || true; }
-    trap cleanup EXIT INT TERM
-    git -C "$wine_source" worktree add --detach "$check_dir" HEAD >/dev/null 2>&1
-    if test -n "$patch_file"; then
-        git -C "$check_dir" apply --check "$patch_file"
-    else
-        for patch in "$patch_dir"/*.patch; do
-            git -C "$check_dir" apply "$patch"
-        done
     fi
 fi
 

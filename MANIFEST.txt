@@ -33,9 +33,6 @@ LICENSES/SPIRV-Cross-Khronos-Free-Use.txt
 LICENSES/tessellator-MIT.txt
 LICENSES/Wine-LGPL-2.1.txt
 MANIFEST.txt
-patches/wine/README.md
-patches/wine/wine-11.17/0001-opengl-wgl-fixes.patch
-patches/wine/wine-11.17/0002-winemac-winemetalgl-core.patch
 README.md
 scripts/build-wine-module.sh
 scripts/build.sh
@@ -49,7 +46,6 @@ scripts/install-wine-module.sh
 scripts/stage-arm64-core.sh
 scripts/stage-host-libs.sh
 scripts/stage-release.sh
-scripts/stage-wine.sh
 scripts/traces/benchmark.py
 scripts/traces/replay.py
 scripts/update-checksums.sh

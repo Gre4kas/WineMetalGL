@@ -4,8 +4,9 @@
 #
 #   WINEMETALGL_WINE_RUNTIME=/path/to/wine-install tests/wine/probe-opengl-wow64.sh [--all] [fixture...]
 #
-# The Wine installation must carry the patches in patches/wine and
-# libwinemetalgl.dylib next to winemac.so (scripts/stage-wine.sh). --all also
+# The Wine installation must have the Wine module and the core installed
+# (scripts/install-wine-module.sh WINE); the prefix gets the forwarding
+# opengl32.dll from WINEMETALGL_MODULE_DIR (default build/wine-module). --all also
 # runs fixtures outside the gate scope (none since GL 4.6). Exit status is
 # non-zero if any fixture misses a marker; a summary lists every fixture.
 set -uo pipefail
@@ -58,12 +59,9 @@ for arg in "$@"; do
 done
 
 core_dir="$WINE_RUNTIME/lib/wine/x86_64-unix"
-# WINEMETALGL_MODULE=1: the Wine module (scripts/install-wine-module.sh)
-# instead of the winemac integration (patches/wine).
-module=${WINEMETALGL_MODULE:-0}
-if test "$module" = 1; then inputs=("$core_dir/winemetalgl.so" "$core_dir/libwinemetalgl.dylib")
-else inputs=("$core_dir/winemac.so" "$core_dir/libwinemetalgl.dylib"); fi
-for required in "$WINE" "$WINESERVER" "${inputs[@]}"; do
+MODULE=${WINEMETALGL_MODULE_DIR:-$PROJECT_ROOT/build/wine-module}
+for required in "$WINE" "$WINESERVER" "$core_dir/winemetalgl.so" "$core_dir/libwinemetalgl.dylib" \
+                "$MODULE/x86_64-windows/opengl32.dll" "$MODULE/i386-windows/opengl32.dll"; do
     test -e "$required" || { echo "Missing WineMetalGL input: $required" >&2; exit 1; }
 done
 
@@ -73,13 +71,9 @@ unset WINEMETALGL
 # on that dialog: the fixtures need neither.
 WINEDLLOVERRIDES="mscoree,mshtml=${WINEDLLOVERRIDES:+;$WINEDLLOVERRIDES}" \
     ${TIMEOUT[@]+"${TIMEOUT[@]}"} "$WINE" wineboot -u >"$RUN_ROOT/wineboot.log" 2>&1
-if test "$module" = 1; then
-    MODULE=${WINEMETALGL_MODULE_DIR:-$PROJECT_ROOT/build/wine-module}
-    test -e "$MODULE/x86_64-windows/opengl32.dll" || { echo "Missing $MODULE/x86_64-windows/opengl32.dll" >&2; exit 1; }
-    cp "$MODULE/x86_64-windows/opengl32.dll" "$PREFIX/drive_c/windows/system32/opengl32.dll"
-    cp "$MODULE/i386-windows/opengl32.dll" "$PREFIX/drive_c/windows/syswow64/opengl32.dll"
-    "$WINE" reg add 'HKCU\Software\Wine\DllOverrides' /v opengl32 /d native /f >>"$RUN_ROOT/wineboot.log" 2>&1
-fi
+cp "$MODULE/x86_64-windows/opengl32.dll" "$PREFIX/drive_c/windows/system32/opengl32.dll"
+cp "$MODULE/i386-windows/opengl32.dll" "$PREFIX/drive_c/windows/syswow64/opengl32.dll"
+"$WINE" reg add 'HKCU\Software\Wine\DllOverrides' /v opengl32 /d native /f >>"$RUN_ROOT/wineboot.log" 2>&1
 
 failed=0
 summary=()

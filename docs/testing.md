@@ -30,12 +30,18 @@ build/host/wmgl_gpu_tests            # or one test: build/host/wmgl_gpu_tests gp
 ## Wine fixtures
 
 Small Windows programs (`tests/wine/fixtures.txt`), each run as an x86_64 and
-an i386 guest in one fresh WoW64 prefix. Each prints markers that the script
-checks.
+an i386 guest in one fresh WoW64 prefix, through the Wine module. Each prints
+markers that the script checks.
 
 ```sh
+./scripts/build.sh && ./scripts/build-wine-module.sh /path/to/wine
+./scripts/install-wine-module.sh /path/to/wine
 WINEMETALGL_WINE_RUNTIME=/path/to/wine tests/wine/probe-opengl-wow64.sh
 ```
+
+The script puts the module's `opengl32.dll` into its prefix
+(`WINEMETALGL_MODULE_DIR`, default `build/wine-module`). The gate runs on
+stock Wine 11.0 and on MetalSharp's Wine 11.17.
 
 All 69 fixtures are in the gate (the 10 that need GL 4.4 to 4.6 features
 joined it with GL 4.6), each run as an x86_64 and an i386 guest.
@@ -116,7 +122,6 @@ Results: [Game corpus](games.md) and [Performance](performance.md).
 (`scripts/update-checksums.sh` refreshes both), that the generated docs match
 the committed evidence, that no evidence was recorded from a tree with
 uncommitted changes, that nothing uses Apple's OpenGL, and, once built, that
-the core targets macOS 15 and does not link OpenGL.framework. When
-`WINEMETALGL_WINE_SOURCE` names a Wine 11.17 tree, it also checks that the
-Wine patches apply. `check-forbidden-identifiers.sh` keeps code that
+the core targets macOS 15 and does not link OpenGL.framework.
+`check-forbidden-identifiers.sh` keeps code that
 recognises Khronos CTS shaders out of the source. CI runs both.

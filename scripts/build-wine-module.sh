@@ -5,8 +5,9 @@
 #
 #   scripts/build-wine-module.sh WINE_INSTALL [OUTDIR]
 #
-# WINE_INSTALL is any Wine 11.x installation (its include/wine headers);
-# Wine itself is not rebuilt or changed. The PE side needs llvm-mingw
+# WINE_INSTALL is any Wine 11.x installation (its include/wine headers) or a
+# Wine 11.x source tree (its include directory); Wine itself is not rebuilt
+# or changed. The PE side needs llvm-mingw
 # (x86_64-w64-mingw32-clang, i686-w64-mingw32-clang) on PATH. The core
 # (libwinemetalgl.dylib) is built by the CMake release preset.
 set -eu
@@ -54,7 +55,10 @@ done
 
 # -------------------------------------------------------------- unix side
 CFLAGS="-arch x86_64 -mmacosx-version-min=15.0 -O2 -fPIC -Wall -DWINE_UNIX_LIB -D__WINESRC__ -D_WIN64"
-INCS="-I$ROOT/src/wine/include -I$ROOT/src/wine/unix -I$GEN -I$WINE/include/wine/windows -I$WINE/include"
+if test -d "$WINE/include/wine/windows"; then WINEINC="-I$WINE/include/wine/windows -I$WINE/include"
+elif test -f "$WINE/include/windef.h"; then WINEINC="-I$WINE/include"
+else echo "no Wine headers in $WINE" >&2; exit 1; fi
+INCS="-I$ROOT/src/wine/include -I$ROOT/src/wine/unix -I$GEN $WINEINC"
 uobjs=
 for src in "$ROOT"/src/wine/unix/*.c "$GEN/wine_gl_unix.gen.c"; do
     obj="$OBJ/unix/$(basename "${src%.c}").o"

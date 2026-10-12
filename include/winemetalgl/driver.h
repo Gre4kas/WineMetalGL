@@ -1,6 +1,6 @@
-/* WineMetalGL driver ABI: the C interface winemac.drv uses to drive the
- * WineMetalGL core (winemetalgl.dylib). winemac loads the library with
- * dlopen and resolves these symbols with dlsym; GL entry points are obtained
+/* WineMetalGL driver ABI: the C interface the Wine module (src/wine/unix)
+ * uses to drive the WineMetalGL core (libwinemetalgl.dylib). The module loads
+ * the library with dlopen and resolves these symbols with dlsym; GL entry points are obtained
  * through wmgl_get_proc_address, never as exported symbols.
  *
  * Every function is called on the Unix side of Wine. Pointers are host

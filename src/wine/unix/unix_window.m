@@ -1,14 +1,15 @@
 /* Window layers of winemetalgl.so (wmgl_window.h): where a window DC's
  * frames are shown, without changes to winemac.
  *
- * Two ways in, as DXMT's winemetal takes them:
- * - a winemac that exports macdrv_functions (CrossOver, MetalSharp's Wine)
- *   makes a metal view in the window's client Cocoa view, which follows the
- *   window as winemac moves and resizes it;
- * - otherwise (WineHQ's winemac exports nothing) a view of ours, with the
- *   layer, goes into the content view of the top-level Cocoa window whose
- *   hwnd matches, placed from the window's client area (wmgl_placement),
- *   on the main thread. */
+ * Two ways in:
+ * - a winemac that exports macdrv_functions (CrossOver, MetalSharp's Wine),
+ *   for a window that already has a client view (Wine 11 makes one with a
+ *   client surface, for Vulkan or Wine's GL): a metal view in it, which
+ *   follows the window as winemac moves and resizes it;
+ * - otherwise (WineHQ's winemac exports nothing; a window without a client
+ *   view) a view of ours, with the layer, goes into the content view of the
+ *   top-level Cocoa window whose hwnd matches, placed from the window's
+ *   client area (wmgl_placement), on the main thread. */
 
 #import <AppKit/AppKit.h>
 #import <Metal/Metal.h>
@@ -26,13 +27,13 @@ typedef struct macdrv_opaque_view *macdrv_view;
 typedef struct macdrv_opaque_window *macdrv_window;
 typedef struct opaque_HWND *HWND;
 
-/* The start of winemac's struct macdrv_win_data, up to client_cocoa_view. */
+/* The start of winemac's struct macdrv_win_data (Wine 11.x), up to the
+ * client area's view. */
 struct macdrv_win_data
 {
     HWND hwnd;
     macdrv_window cocoa_window;
-    macdrv_view cocoa_view;
-    macdrv_view client_cocoa_view;
+    macdrv_view client_view;
 };
 
 /* winemac's exported function table (CrossOver, MetalSharp's Wine). */
@@ -80,6 +81,13 @@ static struct macdrv_functions_t *winemac_functions(void)
     static dispatch_once_t once;
     dispatch_once( &once, ^{ functions = dlsym( RTLD_DEFAULT, "macdrv_functions" ); } );
     return functions;
+}
+
+static void trace( const char *what, const struct wmgl_placement *placement )
+{
+    static int enabled = -1;
+    if (enabled < 0) enabled = getenv( "WINEMETALGL_WINE_DEBUG" ) != NULL;
+    if (enabled) fprintf( stderr, "winemetalgl: window %#llx: %s\n", (unsigned long long)placement->hwnd, what );
 }
 
 void *wmgl_window_default_device( void )
@@ -137,8 +145,8 @@ void *wmgl_window_create( const struct wmgl_placement *placement, void *device, 
         struct macdrv_win_data *data = functions->get_win_data( (HWND)(uintptr_t)placement->hwnd );
         if (data)
         {
-            if (data->client_cocoa_view)
-                host->winemac_view = functions->macdrv_view_create_metal_view( data->client_cocoa_view,
+            if (data->client_view)
+                host->winemac_view = functions->macdrv_view_create_metal_view( data->client_view,
                                                                                (macdrv_metal_device)device );
             functions->release_win_data( data );
         }
@@ -146,10 +154,12 @@ void *wmgl_window_create( const struct wmgl_placement *placement, void *device, 
         {
             host->layer = (__bridge CAMetalLayer *)(void *)functions->macdrv_view_get_metal_layer( host->winemac_view );
             *layer = (__bridge void *)host->layer;
+            trace( "winemac metal view", placement );
             return (__bridge_retained void *)host;
         }
     }
     if (!objc_getClass( "WineWindow" )) return NULL;
+    trace( "own view in the Cocoa window", placement );
     /* A layer made outside a committed transaction never shows, and this
      * thread has no run loop to commit one. The main thread places the view
      * later: this thread must not wait for it, which may be waiting on us. */

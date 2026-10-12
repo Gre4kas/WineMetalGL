@@ -8,15 +8,17 @@ if test "$#" -ne 1; then
 fi
 
 stage=$1
-core="$stage/artifacts/wine-driver/libwinemetalgl.dylib"
+core="$stage/module/x86_64-unix/libwinemetalgl.dylib"
+unix="$stage/module/x86_64-unix/winemetalgl.so"
 
 for path in \
     "$core" \
-    "$stage/artifacts/guest/i386/opengl32.dll" \
-    "$stage/artifacts/guest/x86_64/opengl32.dll" \
-    "$stage/artifacts/wine-driver/winemac.so" \
-    "$stage/artifacts/wine-driver/win32u.so" \
-    "$stage/artifacts/wine-driver/opengl32.so" \
+    "$unix" \
+    "$stage/module/x86_64-windows/winemetalgl.dll" \
+    "$stage/module/x86_64-windows/opengl32.dll" \
+    "$stage/module/i386-windows/winemetalgl.dll" \
+    "$stage/module/i386-windows/opengl32.dll" \
+    "$stage/install-wine-module.sh" \
     "$stage/LICENSE" \
     "$stage/LICENSES/GPL-3.0.txt" \
     "$stage/docs/api-coverage.json" \
@@ -27,18 +29,14 @@ for path in \
     "$stage/docs/testing.md" \
     "$stage/docs/building.md" \
     "$stage/docs/performance.md" \
-    "$stage/evidence/cts/gl33-cfg1-native.txt" \
-    "$stage/evidence/cts/gl33-cfg1-wine.txt" \
+    "$stage/evidence/cts/gl46-cfg1-native.txt" \
+    "$stage/evidence/cts/gl46-cfg1-wine.txt" \
     "$stage/evidence/games/results.json" \
     "$stage/SHA256SUMS"; do
     test -f "$path" || { printf 'missing staged artifact: %s\n' "$path" >&2; exit 1; }
 done
 
-for path in \
-    "$core" \
-    "$stage/artifacts/wine-driver/winemac.so" \
-    "$stage/artifacts/wine-driver/win32u.so" \
-    "$stage/artifacts/wine-driver/opengl32.so"; do
+for path in "$core" "$unix"; do
     arch=$(lipo -archs "$path")
     test "$arch" = x86_64 || { printf 'unexpected Mach-O architecture %s: %s\n' "$arch" "$path" >&2; exit 1; }
     codesign --verify "$path" 2>/dev/null || { printf 'not validly signed: %s\n' "$path" >&2; exit 1; }
@@ -55,8 +53,17 @@ nm -gU "$core" | awk '{print $3}' | grep -v '^_wmgl_' | grep -q . && {
     exit 1
 }
 
-file "$stage/artifacts/guest/i386/opengl32.dll" | grep -q 'Intel 80386'
-file "$stage/artifacts/guest/x86_64/opengl32.dll" | grep -q 'x86-64'
+for dll in winemetalgl opengl32; do
+    file "$stage/module/i386-windows/$dll.dll" | grep -q 'Intel 80386'
+    file "$stage/module/x86_64-windows/$dll.dll" | grep -q 'x86-64'
+done
+# Wine loads winemetalgl.so only for a builtin winemetalgl.dll.
+for arch in x86_64 i386; do
+    dd if="$stage/module/$arch-windows/winemetalgl.dll" bs=1 skip=64 count=16 2>/dev/null | grep -q 'Wine builtin DLL' ||
+        { printf 'not marked as a Wine builtin: %s\n' "$arch-windows/winemetalgl.dll" >&2; exit 1; }
+done
+nm -gU "$unix" | grep -q ' ___wine_unix_call_wow64_funcs$' ||
+    { printf '%s\n' 'winemetalgl.so has no WoW64 call table' >&2; exit 1; }
 
 python3 -m json.tool "$stage/docs/api-coverage.json" >/dev/null
 python3 -m json.tool "$stage/evidence/games/results.json" >/dev/null

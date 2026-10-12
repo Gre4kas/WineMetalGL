@@ -2,12 +2,8 @@
  * loader (Dead Cells) refuses to start without glBindImageTexture,
  * glMemoryBarrier, glDispatchCompute and glMultiDrawElementsIndirect, which
  * Windows drivers return whatever the context's version; the 4.6 context a
- * 3.2 request gets offers them. Entry points of versions above the context's
- * Wine returns only for applications with
- * HKCU\Software\Wine\AppDefaults\<app.exe>\OpenGL LaterEntryPoints = "Y"
- * (patch 0001). Every context is 4.6, the newest version, so none is above
- * it: glSpecializeShader (GL 4.6) comes with and without the setting.
- * Prints WINEMETALGL_LATER_ENTRY_POINTS_OK. */
+ * 3.2 request gets offers them, and every entry point up to GL 4.6
+ * (glSpecializeShader). Prints WINEMETALGL_LATER_ENTRY_POINTS_OK. */
 #include <windows.h>
 #include <GL/gl.h>
 #include <GL/glext.h>
@@ -38,25 +34,15 @@ int main(void) {
     HGLRC core = create(dc, NULL, attribs);
     if (!core || !wglMakeCurrent(dc, core)) { printf("3.2 core context failed %lu\n", GetLastError()); return 14; }
     printf("GL_VERSION %s\n", (const char *)glGetString(GL_VERSION));
-    /* The setting belongs to this executable's name. */
-    char module[MAX_PATH], key[MAX_PATH + 64];
-    const char *app = module;
-    GetModuleFileNameA(NULL, module, sizeof(module));
-    for (const char *p = module; *p; p++) if (*p == '\\' || *p == '/') app = p + 1;
-    snprintf(key, sizeof(key), "Software\\Wine\\AppDefaults\\%s\\OpenGL", app);
-    RegDeleteKeyValueA(HKEY_CURRENT_USER, key, "LaterEntryPoints");
     for (int i = 0; i < 4; i++) {
         if (!wglGetProcAddress(names[i])) { printf("missing %s\n", names[i]); return 15; }
     }
-    if (!wglGetProcAddress("glSpecializeShader")) { printf("missing glSpecializeShader without LaterEntryPoints\n"); return 17; }
-    if (RegSetKeyValueA(HKEY_CURRENT_USER, key, "LaterEntryPoints", REG_SZ, "Y", 2)) return 18;
-    if (!wglGetProcAddress("glSpecializeShader")) { printf("missing glSpecializeShader\n"); return 15; }
+    if (!wglGetProcAddress("glSpecializeShader")) { printf("missing glSpecializeShader\n"); return 17; }
     PFNGLMEMORYBARRIERPROC barrier = (PFNGLMEMORYBARRIERPROC)wglGetProcAddress("glMemoryBarrier");
     while (glGetError() != GL_NO_ERROR) {}
     barrier(GL_ALL_BARRIER_BITS);
     GLenum error = glGetError();
-    if (error != GL_NO_ERROR && error != GL_INVALID_OPERATION) { printf("glMemoryBarrier error 0x%x\n", error); return 16; }
-    RegDeleteKeyValueA(HKEY_CURRENT_USER, key, "LaterEntryPoints");
+    if (error != GL_NO_ERROR) { printf("glMemoryBarrier error 0x%x\n", error); return 16; }
     printf("WINEMETALGL_LATER_ENTRY_POINTS_OK\n");
     wglMakeCurrent(NULL, NULL);
     wglDeleteContext(core);

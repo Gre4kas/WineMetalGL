@@ -1,4 +1,4 @@
-// winemac.drv-facing ABI (include/winemetalgl/driver.h).
+// The driver ABI the Wine module uses (include/winemetalgl/driver.h).
 
 #include "winemetalgl/driver.h"
 
@@ -70,7 +70,7 @@ Surface* asSurface(wmgl_surface* s) { return reinterpret_cast<Surface*>(s); }
 
 WMGL_EXPORT int wmgl_initialize(unsigned int abi_version) {
     if (abi_version != WMGL_DRIVER_ABI_VERSION) {
-        WMGL_ERR("driver ABI mismatch: winemac %u, core %u", abi_version, WMGL_DRIVER_ABI_VERSION);
+        WMGL_ERR("driver ABI mismatch: caller %u, core %u", abi_version, WMGL_DRIVER_ABI_VERSION);
         return -1;
     }
     if (!Device::get().mtl()) return -1;

@@ -268,7 +268,7 @@ def main():
     parser.add_argument("--template", help="existing WoW64 template prefix to clone")
     parser.add_argument("--env", action="append", default=[], help="extra KEY=VALUE for Wine")
     parser.add_argument("--reference", action="store_true",
-                        help="run the Apple OpenGL reference path (WINEMETALGL=0)")
+                        help="run the Apple OpenGL reference path (Wine's own opengl32)")
     parser.add_argument("--keep-qpa", action="store_true")
     parser.add_argument("--keep-prefix", action="store_true")
     parser.add_argument("--log-images", action="store_true")
@@ -299,10 +299,12 @@ def main():
     env.update({"WINEARCH": "wow64", "WINEDEBUG": env.get("WINEDEBUG", "-all")})
     if not args.native:
         env.setdefault("DYLD_LIBRARY_PATH", os.path.join(args.wine, "lib"))
+    env.pop("WINEMETALGL", None)
     if args.reference:
+        # Wine's own opengl32 instead of the Wine module (WINEMETALGL=0 for a
+        # Wine with the 2.x patches).
+        env["WINEDLLOVERRIDES"] = "opengl32=b"
         env["WINEMETALGL"] = "0"
-    else:
-        env.pop("WINEMETALGL", None)  # the core is Wine's default OpenGL
     for item in args.env:
         key, _, value = item.partition("=")
         env[key] = value

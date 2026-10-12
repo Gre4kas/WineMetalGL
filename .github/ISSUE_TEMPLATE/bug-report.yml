@@ -23,7 +23,7 @@ body:
       options:
         - MetalSharp
         - Release package in MetalSharp's Wine
-        - My own Wine build with patches/wine
+        - Wine module installed into my own Wine (install-wine-module.sh)
     validations:
       required: true
   - type: input

@@ -52,8 +52,8 @@ find_library(QUARTZCORE_FRAMEWORK QuartzCore REQUIRED)
 
 # ---------------------------------------------------------------------------
 # WineMetalGL core: the OpenGL implementation on Metal. Built as
-# libwinemetalgl.dylib, which winemac.drv loads from its own directory
-# (patches/wine).
+# libwinemetalgl.dylib, which the Wine module's winemetalgl.so loads from its
+# own directory (src/wine, scripts/build-wine-module.sh).
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 set(WMGL_GEN_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")

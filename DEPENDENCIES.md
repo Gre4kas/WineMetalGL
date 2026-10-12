@@ -113,8 +113,8 @@ The built dylib dynamically links only Apple system frameworks and libraries
 libobjc); it never links OpenGL.framework (`scripts/verify-source.sh` and CI
 check this).
 
-Wine integration requires the Wine patch series in `patches/wine/`, applied to
-a Wine 11.17 source tree (`patches/wine/README.md`).
+The Wine module (`src/wine`) builds against the headers of an unmodified
+Wine 11.x (`scripts/build-wine-module.sh`); its PE side needs llvm-mingw.
 
 Test tooling that is not vendored: the Khronos VK-GL-CTS (commit `1942832`,
 built with `tests/cts/windows/build.sh` and `tests/cts/native/build.sh`),

@@ -12,15 +12,22 @@
 # override opengl32=native. Removing the override (or the file) gives the
 # prefix Wine's own OpenGL back.
 #
-# MODULE (default build/wine-module) and CORE (default
-# build/release/libwinemetalgl.dylib) choose what is installed.
+# From a checkout, MODULE (default build/wine-module) and CORE (default
+# build/release/libwinemetalgl.dylib) choose what is installed; from a release
+# package (this script at its top), its module directory.
 set -eu
 
-ROOT=$(cd "$(dirname "$0")/.." && pwd)
+HERE=$(cd "$(dirname "$0")" && pwd)
 WINE=${1:?usage: install-wine-module.sh WINE_INSTALL [WINEPREFIX]}
 PREFIX=${2:-}
-MODULE=${MODULE:-$ROOT/build/wine-module}
-CORE=${CORE:-$ROOT/build/release/libwinemetalgl.dylib}
+if test -d "$HERE/module"; then
+    MODULE=${MODULE:-$HERE/module}
+    CORE=${CORE:-$HERE/module/x86_64-unix/libwinemetalgl.dylib}
+else
+    ROOT=$(cd "$HERE/.." && pwd)
+    MODULE=${MODULE:-$ROOT/build/wine-module}
+    CORE=${CORE:-$ROOT/build/release/libwinemetalgl.dylib}
+fi
 LIB="$WINE/lib/wine"
 
 for f in "$MODULE/x86_64-windows/winemetalgl.dll" "$MODULE/i386-windows/winemetalgl.dll" \
@@ -31,7 +38,7 @@ done
 cp "$MODULE/x86_64-windows/winemetalgl.dll" "$LIB/x86_64-windows/winemetalgl.dll"
 cp "$MODULE/i386-windows/winemetalgl.dll" "$LIB/i386-windows/winemetalgl.dll"
 cp "$MODULE/x86_64-unix/winemetalgl.so" "$LIB/x86_64-unix/winemetalgl.so"
-cp "$CORE" "$LIB/x86_64-unix/libwinemetalgl.dylib"
+if test "$CORE" != "$LIB/x86_64-unix/libwinemetalgl.dylib"; then cp "$CORE" "$LIB/x86_64-unix/libwinemetalgl.dylib"; fi
 codesign -f -s - "$LIB/x86_64-unix/winemetalgl.so" "$LIB/x86_64-unix/libwinemetalgl.dylib" 2>/dev/null
 echo "Installed winemetalgl into $LIB"
 

@@ -1,38 +1,29 @@
 #!/bin/sh
-# Stages a release: the core next to the patched Wine modules that load it,
-# the generated documentation and the evidence behind it (docs/release.md).
+# Stages a release: the Wine module with the core, the generated documentation
+# and the evidence behind it (docs/release.md).
 #
-# artifacts/
-#   wine-driver/   libwinemetalgl.dylib, winemac.so, win32u.so, opengl32.so
-#                  (install into lib/wine/x86_64-unix; winemac.so loads the
-#                  core from its own directory)
-#   guest/i386/    opengl32.dll   (lib/wine/i386-windows)
-#   guest/x86_64/  opengl32.dll   (lib/wine/x86_64-windows)
+#   scripts/stage-release.sh WINE_HEADERS OUTPUT
+#
+# WINE_HEADERS is a Wine 11.x installation or source tree, for the module's
+# build (scripts/build-wine-module.sh).
+#
+# install-wine-module.sh
+# module/
+#   x86_64-unix/     winemetalgl.so, libwinemetalgl.dylib (lib/wine/x86_64-unix)
+#   x86_64-windows/  winemetalgl.dll (lib/wine/x86_64-windows), opengl32.dll (prefix system32)
+#   i386-windows/    winemetalgl.dll (lib/wine/i386-windows), opengl32.dll (prefix syswow64)
 set -eu
 
 if test "$#" -ne 2; then
-    printf '%s\n' "usage: $0 /absolute/path/to/wine-build /absolute/path/to/output" >&2
+    printf '%s\n' "usage: $0 /absolute/path/to/wine-headers /absolute/path/to/output" >&2
     exit 2
 fi
 
 project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-wine_build=$1
+wine_headers=$1
 output=$2
 core="$project_root/build/release/libwinemetalgl.dylib"
-
-# Build the core from this checkout, so the staged library is the commit
-# recorded below.
-"$project_root/scripts/build.sh" >/dev/null
-
-for path in \
-    "$core" \
-    "$wine_build/dlls/opengl32/i386-windows/opengl32.dll" \
-    "$wine_build/dlls/opengl32/x86_64-windows/opengl32.dll" \
-    "$wine_build/dlls/opengl32/opengl32.so" \
-    "$wine_build/dlls/winemac.drv/winemac.so" \
-    "$wine_build/dlls/win32u/win32u.so"; do
-    test -f "$path" || { printf 'missing build artifact: %s\n' "$path" >&2; exit 1; }
-done
+module="$project_root/build/wine-module"
 
 if test "$output" = /; then
     printf '%s\n' 'refusing to stage over /' >&2
@@ -42,20 +33,25 @@ if test -e "$output"; then
     printf 'output already exists; refusing to replace it: %s\n' "$output" >&2
     exit 1
 fi
-mkdir -p "$output/artifacts/guest/i386" "$output/artifacts/guest/x86_64" "$output/artifacts/wine-driver" "$output/docs" \
-    "$output/evidence/cts" "$output/evidence/games"
 
-cp "$core" "$output/artifacts/wine-driver/libwinemetalgl.dylib"
-cp "$wine_build/dlls/winemac.drv/winemac.so" "$output/artifacts/wine-driver/winemac.so"
-cp "$wine_build/dlls/win32u/win32u.so" "$output/artifacts/wine-driver/win32u.so"
-cp "$wine_build/dlls/opengl32/opengl32.so" "$output/artifacts/wine-driver/opengl32.so"
-cp "$wine_build/dlls/opengl32/i386-windows/opengl32.dll" "$output/artifacts/guest/i386/opengl32.dll"
-cp "$wine_build/dlls/opengl32/x86_64-windows/opengl32.dll" "$output/artifacts/guest/x86_64/opengl32.dll"
+# Build the core and the module from this checkout, so the staged libraries
+# are the commit recorded below.
+"$project_root/scripts/build.sh" >/dev/null
+"$project_root/scripts/build-wine-module.sh" "$wine_headers" "$module" >/dev/null
+
+mkdir -p "$output/module/x86_64-unix" "$output/module/x86_64-windows" "$output/module/i386-windows" "$output/docs" \
+    "$output/evidence/cts" "$output/evidence/games"
+cp "$core" "$output/module/x86_64-unix/libwinemetalgl.dylib"
+cp "$module/x86_64-unix/winemetalgl.so" "$output/module/x86_64-unix/winemetalgl.so"
+for arch in x86_64 i386; do
+    cp "$module/$arch-windows/winemetalgl.dll" "$module/$arch-windows/opengl32.dll" "$output/module/$arch-windows/"
+done
 # Ad-hoc signatures: a runtime that requires signed code refuses unsigned
-# libraries, and winemac.so would quietly fall back to Apple's OpenGL.
-for library in "$output"/artifacts/wine-driver/*; do
+# libraries.
+for library in "$output"/module/x86_64-unix/*; do
     codesign --force --sign - "$library"
 done
+cp "$project_root/scripts/install-wine-module.sh" "$output/install-wine-module.sh"
 cp "$project_root/README.md" "$output/README.md"
 # LGPL-3.0-or-later: LICENSE, the GPL-3.0 it builds on and the third-party licenses.
 cp "$project_root/LICENSE" "$output/LICENSE"
@@ -81,8 +77,8 @@ if test -f "$project_root/tests/games/perf.json"; then cp "$project_root/tests/g
 
 commit=$(git -C "$project_root" rev-parse HEAD)
 if ! git -C "$project_root" diff --quiet HEAD; then commit="$commit (uncommitted changes)"; fi
-printf 'WineMetalGL staged from %s\nWine build: %s\nCommit: %s\n' \
-    "$project_root" "$wine_build" "$commit" > "$output/STAGED-FROM.txt"
+printf 'WineMetalGL staged from %s\nWine headers: %s\nCommit: %s\n' \
+    "$project_root" "$wine_headers" "$commit" > "$output/STAGED-FROM.txt"
 
 (
     cd "$output"
