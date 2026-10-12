@@ -1,6 +1,7 @@
 #include "core/shader/spirv_passes.h"
 
 #include <map>
+#include <set>
 
 namespace wmgl::shader {
 namespace {
@@ -166,6 +167,160 @@ std::vector<uint32_t> cubeStorageImagesAs2DArrays(std::vector<uint32_t> spirv) {
         }
         i += count;
     }
+    out[3] = bound;
+    return out;
+}
+
+}  // namespace wmgl::shader
+
+namespace wmgl::shader {
+namespace {
+
+constexpr uint32_t kOpTypeIntOp = 21, kOpTypeArray = 28, kOpTypePointer = 32, kOpConstantOp = 43,
+                   kOpVariable = 59, kOpDecorate = 71, kOpAccessChain = 65, kOpInBoundsAccessChain = 66, kOpIAdd = 128,
+                   kOpIMul = 132, kOpFunctionOp = 54;
+constexpr uint32_t kUniformConstant = 0, kInput = 1, kOutput = 3, kDecorationBuiltIn = 11;
+
+}  // namespace
+
+std::vector<uint32_t> flattenArraysOfArrays(std::vector<uint32_t> spirv) {
+    if (spirv.size() < 5) return spirv;
+    struct ArrayType { uint32_t element, length; };
+    std::map<uint32_t, ArrayType> arrays;
+    std::map<uint32_t, std::pair<uint32_t, uint32_t>> pointers;  // id -> (storage, pointee)
+    std::map<uint32_t, std::pair<uint32_t, uint32_t>> constants;  // id -> (type, value)
+    std::map<uint32_t, bool> intTypes;                             // 32-bit int type -> signed
+    std::map<uint32_t, size_t> variables;                          // id -> instruction index
+    std::set<uint32_t> builtIns;
+    size_t firstFunction = 0;
+    for (size_t i = 5; i < spirv.size();) {
+        const uint32_t count = spirv[i] >> 16, op = spirv[i] & 0xffff;
+        if (!count || i + count > spirv.size()) return spirv;
+        if (op == kOpTypeArray && count == 4) arrays[spirv[i + 1]] = {spirv[i + 2], spirv[i + 3]};
+        if (op == kOpTypePointer && count == 4) pointers[spirv[i + 1]] = {spirv[i + 2], spirv[i + 3]};
+        if (op == kOpConstantOp && count == 4) constants[spirv[i + 2]] = {spirv[i + 1], spirv[i + 3]};
+        if (op == kOpTypeIntOp && count == 4 && spirv[i + 2] == 32) intTypes[spirv[i + 1]] = spirv[i + 3] != 0;
+        if (op == kOpVariable && count >= 4 && !firstFunction) variables[spirv[i + 2]] = i;
+        if (op == kOpDecorate && count >= 4 && spirv[i + 2] == kDecorationBuiltIn) builtIns.insert(spirv[i + 1]);
+        if (op == kOpFunctionOp && !firstFunction) firstFunction = i;
+        i += count;
+    }
+    if (!firstFunction) return spirv;
+    // Candidates: arrays of arrays of opaque types (UniformConstant) or of
+    // stage inputs and outputs, which MSL cannot declare.
+    struct Candidate { std::vector<uint32_t> dims; uint32_t element; };
+    std::map<uint32_t, Candidate> candidates;
+    for (const auto& [id, at] : variables) {
+        const uint32_t storage = spirv[at + 3];
+        if ((storage != kUniformConstant && storage != kInput && storage != kOutput) || builtIns.count(id)) continue;
+        auto pointer = pointers.find(spirv[at + 1]);
+        if (pointer == pointers.end()) continue;
+        Candidate c;
+        uint32_t type = pointer->second.second;
+        while (arrays.count(type)) {
+            auto length = constants.find(arrays[type].length);
+            if (length == constants.end()) break;
+            c.dims.push_back(length->second.second);
+            type = arrays[type].element;
+        }
+        if (c.dims.size() < 2 || arrays.count(type)) continue;
+        c.element = type;
+        candidates[id] = c;
+    }
+    if (candidates.empty()) return spirv;
+    // Every use in code must be an access chain through all the dimensions.
+    for (size_t i = firstFunction; i < spirv.size();) {
+        const uint32_t count = spirv[i] >> 16, op = spirv[i] & 0xffff;
+        const bool chain = op == kOpAccessChain || op == kOpInBoundsAccessChain;
+        for (uint32_t w = 1; w < count; ++w) {
+            auto c = candidates.find(spirv[i + w]);
+            if (c == candidates.end()) continue;
+            if (!(chain && w == 3 && count - 4 >= c->second.dims.size())) candidates.erase(c);
+        }
+        i += count;
+    }
+    if (candidates.empty()) return spirv;
+    uint32_t bound = spirv[3];
+    std::map<std::pair<uint32_t, uint32_t>, uint32_t> constantIds;  // (type, value) -> id
+    for (const auto& [id, c] : constants) constantIds[{c.first, c.second}] = id;
+    uint32_t uintType = 0;
+    for (const auto& [id, isSigned] : intTypes)
+        if (!isSigned) uintType = id;
+    std::vector<uint32_t> declarations;  // new types and constants, before the first variable
+    auto constant = [&](uint32_t type, uint32_t value) {
+        auto it = constantIds.find({type, value});
+        if (it != constantIds.end()) return it->second;
+        const uint32_t id = bound++;
+        declarations.insert(declarations.end(), {(4u << 16) | kOpConstantOp, type, id, value});
+        constantIds[{type, value}] = id;
+        return id;
+    };
+    if (!uintType) {
+        uintType = bound++;
+        declarations.insert(declarations.end(), {(4u << 16) | kOpTypeIntOp, uintType, 32u, 0u});
+    }
+    std::map<uint32_t, uint32_t> newPointer;  // variable -> flattened pointer type
+    for (const auto& [id, c] : candidates) {
+        uint32_t total = 1;
+        for (uint32_t d : c.dims) total *= d;
+        const uint32_t array = bound++, pointer = bound++;
+        const uint32_t length = constant(uintType, total);
+        declarations.insert(declarations.end(), {(4u << 16) | kOpTypeArray, array, c.element, length});
+        declarations.insert(declarations.end(), {(4u << 16) | kOpTypePointer, pointer, spirv[variables[id] + 3], array});
+        newPointer[id] = pointer;
+    }
+    // Result types of code values (for the index arithmetic).
+    std::map<uint32_t, uint32_t> valueType;
+    for (const auto& [id, c] : constants) valueType[id] = c.first;
+    for (size_t i = firstFunction; i < spirv.size();) {
+        const uint32_t count = spirv[i] >> 16;
+        if (count >= 3) valueType[spirv[i + 2]] = spirv[i + 1];
+        i += count;
+    }
+    std::vector<uint32_t> code;
+    for (size_t i = firstFunction; i < spirv.size();) {
+        const uint32_t count = spirv[i] >> 16, op = spirv[i] & 0xffff;
+        auto c = (op == kOpAccessChain || op == kOpInBoundsAccessChain) ? candidates.find(spirv[i + 3]) : candidates.end();
+        if (c == candidates.end()) {
+            code.insert(code.end(), spirv.begin() + static_cast<long>(i), spirv.begin() + static_cast<long>(i + count));
+            i += count;
+            continue;
+        }
+        // ((i0 * d1 + i1) * d2 + i2) ... in the first index's integer type.
+        const std::vector<uint32_t>& dims = c->second.dims;
+        uint32_t linear = spirv[i + 4];
+        uint32_t type = valueType.count(linear) ? valueType[linear] : uintType;
+        if (!intTypes.count(type)) type = uintType;
+        for (size_t d = 1; d < dims.size(); ++d) {
+            const uint32_t scaled = bound++, sum = bound++;
+            code.insert(code.end(), {(5u << 16) | kOpIMul, type, scaled, linear, constant(type, dims[d])});
+            code.insert(code.end(), {(5u << 16) | kOpIAdd, type, sum, scaled, spirv[i + 4 + d]});
+            linear = sum;
+        }
+        std::vector<uint32_t> words = {spirv[i + 1], spirv[i + 2], spirv[i + 3], linear};
+        words.insert(words.end(), spirv.begin() + static_cast<long>(i + 4 + dims.size()), spirv.begin() + static_cast<long>(i + count));
+        code.push_back((static_cast<uint32_t>(words.size() + 1) << 16) | op);
+        code.insert(code.end(), words.begin(), words.end());
+        i += count;
+    }
+    // The global section, then the new declarations, then the flattened
+    // variables (moved after them, with their new pointer types).
+    std::vector<uint32_t> out(spirv.begin(), spirv.begin() + 5), moved;
+    for (size_t i = 5; i < firstFunction;) {
+        const uint32_t count = spirv[i] >> 16, op = spirv[i] & 0xffff;
+        auto p = op == kOpVariable ? newPointer.find(spirv[i + 2]) : newPointer.end();
+        if (p != newPointer.end()) {
+            const size_t start = moved.size();
+            moved.insert(moved.end(), spirv.begin() + static_cast<long>(i), spirv.begin() + static_cast<long>(i + count));
+            moved[start + 1] = p->second;
+        } else {
+            out.insert(out.end(), spirv.begin() + static_cast<long>(i), spirv.begin() + static_cast<long>(i + count));
+        }
+        i += count;
+    }
+    out.insert(out.end(), declarations.begin(), declarations.end());
+    out.insert(out.end(), moved.begin(), moved.end());
+    out.insert(out.end(), code.begin(), code.end());
     out[3] = bound;
     return out;
 }

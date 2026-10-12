@@ -2234,6 +2234,7 @@ static LinkResult linkImplCore(const LinkInput& input, const CaptureCode* captur
     // Default uniform block members.
     std::map<std::string, int> blockIndexByName;
     std::map<std::string, int> samplerUniformByName, imageUniformByName;
+    std::map<std::string, int> samplerUniformCount;  // uniforms per sampler variable (arrays of arrays: several)
     for (int s = 0; s < kStageCount; ++s) {
         if (!result.stages[s].present) continue;
         spirv_cross::Compiler compiler(result.stages[s].spirv);
@@ -2316,27 +2317,45 @@ static LinkResult linkImplCore(const LinkInput& input, const CaptureCode* captur
             if (!liveSamplers.count(topLevelName(name))) continue;
             const spirv_cross::SPIRType& sampled = compiler.get_type(base.image.type);
             const GLenum glType = samplerTypeWithComponent(glTypeOf(base), sampled.basetype);
-            const uint32_t count = type.array.empty() ? 1 : std::max(1u, type.array.back());
+            // An array of arrays is a uniform per innermost array ("s[i][0]",
+            // GL 4.6 section 7.3.1.1), its elements in consecutive slots.
+            std::vector<uint32_t> dims(type.array.begin(), type.array.end());
+            std::reverse(dims.begin(), dims.end());  // outermost first
+            for (uint32_t& d : dims) d = std::max(1u, d);
+            const uint32_t inner = dims.empty() ? 1 : dims.back();
+            uint32_t outer = 1;
+            for (size_t d = 0; d + 1 < dims.size(); ++d) outer *= dims[d];
             auto it = samplerUniformByName.find(name);
             if (it == samplerUniformByName.end()) {
-                UniformInfo u;
-                u.name = type.array.empty() ? name : name + "[0]";
-                u.type = glType;
-                u.size = static_cast<GLint>(count);
-                u.samplerSlot = static_cast<int>(result.samplers.size());
-                u.stageMask = 1u << s;
-                for (uint32_t e = 0; e < count; ++e) {
-                    SamplerSlotInfo slot;
-                    slot.type = glType;
-                    slot.textureTarget = textureTargetForSampler(glType);
-                    slot.shadow = isShadowSampler(glType);
-                    result.samplers.push_back(slot);
-                }
-                if (auto b = explicitBindings.find(name); b != explicitBindings.end()) u.explicitBinding = b->second;
                 samplerUniformByName[name] = static_cast<int>(result.uniforms.size());
-                result.uniforms.push_back(u);
+                samplerUniformCount[name] = static_cast<int>(outer);
+                for (uint32_t k = 0; k < outer; ++k) {
+                    UniformInfo u;
+                    u.name = name;
+                    for (size_t d = 0, rest = k; d + 1 < dims.size(); ++d) {
+                        uint32_t span = 1;
+                        for (size_t e = d + 1; e + 1 < dims.size(); ++e) span *= dims[e];
+                        u.name += "[" + std::to_string(rest / span) + "]";
+                        rest %= span;
+                    }
+                    if (!type.array.empty()) u.name += "[0]";
+                    u.type = glType;
+                    u.size = static_cast<GLint>(inner);
+                    u.samplerSlot = static_cast<int>(result.samplers.size());
+                    u.stageMask = 1u << s;
+                    for (uint32_t e = 0; e < inner; ++e) {
+                        SamplerSlotInfo slot;
+                        slot.type = glType;
+                        slot.textureTarget = textureTargetForSampler(glType);
+                        slot.shadow = isShadowSampler(glType);
+                        result.samplers.push_back(slot);
+                    }
+                    if (auto b = explicitBindings.find(name); b != explicitBindings.end())
+                        u.explicitBinding = b->second + static_cast<int>(k * inner);
+                    result.uniforms.push_back(u);
+                }
             } else {
-                result.uniforms[it->second].stageMask |= 1u << s;
+                for (int k = 0; k < samplerUniformCount[name]; ++k) result.uniforms[it->second + k].stageMask |= 1u << s;
             }
         }
         // Images (GL 4.2 image load/store): uniforms whose values are image units.
@@ -2389,8 +2408,11 @@ static LinkResult linkImplCore(const LinkInput& input, const CaptureCode* captur
                 const std::string name = unescapeName(compiler.get_member_name(type.self, m));
                 const uint32_t offset = compiler.type_struct_member_offset(type, m);
                 const uint32_t count = memberType.array.empty() ? 1 : std::max(1u, memberType.array.back());
-                stageCounters += count;
-                buffer->dataSize = std::max<GLint>(buffer->dataSize, static_cast<GLint>(offset + 4 * count));
+                // Every element of an array of arrays is a counter.
+                uint32_t elements = 1;
+                for (uint32_t d : memberType.array) elements *= std::max(1u, d);
+                stageCounters += elements;
+                buffer->dataSize = std::max<GLint>(buffer->dataSize, static_cast<GLint>(offset + 4 * elements));
                 const std::string glName = memberType.array.empty() ? name : name + "[0]";
                 auto it = std::find_if(result.uniforms.begin(), result.uniforms.end(),
                                        [&](const UniformInfo& u) { return u.name == glName && u.atomicBufferIndex >= 0; });
@@ -2789,7 +2811,8 @@ static LinkResult linkImplCore(const LinkInput& input, const CaptureCode* captur
         const bool noRaster = variant == 1;
         try {
             // Doubles become soft-float code (fp64.h); no-op without them.
-            std::vector<uint32_t> spirv = cubeStorageImagesAs2DArrays(lowerGatherOffsets(rectImagesAs2D(stage.spirv)));
+            std::vector<uint32_t> spirv =
+                flattenArraysOfArrays(cubeStorageImagesAs2DArrays(lowerGatherOffsets(rectImagesAs2D(stage.spirv))));
             if (!lowerFp64(spirv, result.log)) return result;
             BorderMsl msl(std::move(spirv));
             spirv_cross::CompilerMSL::Options mslOptions;

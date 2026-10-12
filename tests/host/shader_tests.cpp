@@ -550,3 +550,16 @@ TEST(shader_vertex_input_matrix_array) {
     CHECK(r.ok);
     CHECK(r.stages[0].msl.find("m_3 [[attribute(") != std::string::npos);
 }
+
+// GLSL 4.30: an array of arrays with an initializer may leave any dimension
+// unsized; the initializer sizes them.
+TEST(shader_unsized_arrays_of_arrays_with_initializer) {
+    const char* src =
+        "#version 430 core\n"
+        "uniform int x[2][][2][] = int[2][2][2][2](int[2][2][2](int[2][2](int[2](1, 2), int[2](3, 4)), int[2][2](int[2](5, 6), "
+        "int[2](7, 8))), int[2][2][2](int[2][2](int[2](11, 12), int[2](13, 14)), int[2][2](int[2](15, 16), int[2](17, 18))));\n"
+        "void main() { gl_Position = vec4(float(x[1][1][1][1])); }\n";
+    const CompileResult r = compile(Stage::Vertex, src);
+    if (!r.ok) std::fprintf(stderr, "%s\n", r.log.c_str());
+    CHECK(r.ok);
+}

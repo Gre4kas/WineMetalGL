@@ -80,9 +80,10 @@ Local changes to vendored sources (each marked `WineMetalGL:` in the code):
   locations it spans (`getExplicitUniformLocations`), for the linker's GL 4.3
   uniform location assignment; the Vulkan rules drop the qualifier.
 - glslang `glslang/MachineIndependent/ParseHelper.cpp`,
-  `vkRelaxedRemapUniformVariable`: an unsized uniform array takes its size
-  from its initializer before the Vulkan rules drop the initializer (the
-  values are applied from the default block, `applyUniformInitializers`).
+  `vkRelaxedRemapUniformVariable`: an unsized uniform array (any dimension
+  of an array of arrays) takes its sizes from its initializer before the
+  Vulkan rules drop the initializer (the values are applied from the default
+  block, `applyUniformInitializers`).
 - SPIRV-Cross `spirv_glsl.cpp`, `bitcast_expression`, and `spirv_msl.cpp`,
   `emit_atomic_func_op`: atomic operands are read unpacked, so an element of a
   scalar array in a std140 block (padded to a vector) is passed as a scalar.
