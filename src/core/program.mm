@@ -117,7 +117,17 @@ id<MTLFunction> compileFunction(const std::string& msl, const std::string& entry
 id<MTLFunction> compileFunctionUncached(const std::string& msl, const std::string& entryPoint, int stage) {
     MTLCompileOptions* options = [MTLCompileOptions new];
     options.languageVersion = MTLLanguageVersion3_1;  // texture atomics
-    options.mathMode = MTLMathModeSafe;  // GL requires IEEE behaviour for inf/nan propagation
+    // Relaxed: the optimizations GL allows (contraction, reassociation) with
+    // IEEE infinities and NaNs kept, which GL requires to propagate.
+    // WINEMETALGL_SAFE_MATH=1 compiles without them.
+    static const bool safeMath = [] {
+        const char* v = std::getenv("WINEMETALGL_SAFE_MATH");
+        return v && v[0] == '1';
+    }();
+    options.mathMode = safeMath ? MTLMathModeSafe : MTLMathModeRelaxed;
+    // `invariant` outputs (gl_Position of depth pre-passes) compute the same
+    // values in every shader that declares them.
+    options.preserveInvariance = msl.find("invariant]]") != std::string::npos;
     NSError* error = nil;
     id<MTLLibrary> library = [Device::get().mtl() newLibraryWithSource:[NSString stringWithUTF8String:msl.c_str()]
                                                                options:options
