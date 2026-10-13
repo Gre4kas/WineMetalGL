@@ -105,6 +105,48 @@ GPU_TEST_VERSION(gpu_gl46_indirect_count, 46) {
     glDeleteProgram(p);
 }
 
+// A multi-draw whose commands take the CPU path (the program reads
+// gl_BaseVertex): every command that draws something draws with its own
+// parameters and gl_DrawID, and the empty ones (no vertices or no instances,
+// as GPU culling leaves most commands) draw nothing. With an incomplete
+// framebuffer, a multi-draw of empty commands still reports the error.
+GPU_TEST_VERSION(gpu_gl46_multi_draw_indirect_on_the_cpu, 46) {
+    GLuint p = gpu::program(kDrawParametersVs, kColorFs);
+    glUseProgram(p);
+    glUniform1i(glGetUniformLocation(p, "row"), 0);
+    GLuint vao = 0, buffers[2];
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(2, buffers);
+    const uint32_t indices[2] = {0, 0};
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, buffers[0]);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
+    // count, instance count, first index, base vertex, base instance
+    const uint32_t commands[4][5] = {{0, 1, 0, 1, 0}, {1, 1, 0, 2, 0}, {1, 0, 0, 3, 0}, {1, 1, 1, 4, 5}};
+    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, buffers[1]);
+    glBufferData(GL_DRAW_INDIRECT_BUFFER, sizeof(commands), commands, GL_STATIC_DRAW);
+    glClearColor(0, 0, 0, 0);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glMultiDrawElementsIndirect(GL_POINTS, GL_UNSIGNED_INT, nullptr, 4, 0);
+    CHECK_GL();
+    CHECK(pixelIs(8, 8, 0, 0, 0, 0));
+    CHECK(pixelIs(24, 8, 1, 2, 0));
+    CHECK(pixelIs(40, 8, 0, 0, 0, 0));
+    CHECK(pixelIs(56, 8, 3, 4, 5));
+    const uint32_t empty[3][5] = {{0, 1, 0, 0, 0}, {1, 0, 0, 0, 0}, {0, 0, 0, 0, 0}};
+    glBufferData(GL_DRAW_INDIRECT_BUFFER, sizeof(empty), empty, GL_STATIC_DRAW);
+    GLuint fbo = 0;
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);  // no attachments: incomplete
+    glMultiDrawElementsIndirect(GL_POINTS, GL_UNSIGNED_INT, nullptr, 3, 0);
+    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_INVALID_FRAMEBUFFER_OPERATION));
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteBuffers(2, buffers);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
+}
+
 // GL_ARB_transform_feedback_overflow_query: overflow only when a primitive
 // does not fit.
 GPU_TEST_VERSION(gpu_gl46_transform_feedback_overflow, 46) {

@@ -144,10 +144,19 @@ void describeOnce(const std::string& key, const char* format, ...) {
     std::fprintf(stderr, "winemetalgl:stats: %s\n", message);
 }
 
+namespace {
+thread_local IndirectCpu t_lastIndirectCpu = kIndirectCpuReasons;
+}  // namespace
+
 void indirectCpu(IndirectCpu reason, const std::string& key, const char* detail) {
     if (!g_enabled) return;
+    t_lastIndirectCpu = reason;
     ++frame().indirectCpuReasons[reason];
     describeOnce("indirect:" + std::to_string(reason) + ':' + key, "indirect commands read on the CPU: %s", detail);
+}
+
+void repeatIndirectCpu() {
+    if (g_enabled && t_lastIndirectCpu < kIndirectCpuReasons) ++frame().indirectCpuReasons[t_lastIndirectCpu];
 }
 
 void endFrame() {

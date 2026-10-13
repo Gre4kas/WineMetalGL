@@ -180,17 +180,43 @@ bool validIndirectMode(Context& ctx, GLenum mode) {
 
 }  // namespace
 
+namespace {
+
+// The CPU path of the command at `indirect`: read, then drawn like the
+// direct command. With `skipEmpty`, a command that draws nothing (no
+// vertices or no instances) is skipped without validating the draw: an
+// earlier command of the same multi-draw, with the same state, reported
+// its errors.
+void drawArraysCommand(Context& ctx, GLenum mode, const void* indirect, bool skipEmpty) {
+    uint32_t command[4];  // count, instance count, first, base instance
+    if (!readIndirectCommand(ctx, indirect, command, 4)) return;
+    if (skipEmpty && (!command[0] || !command[1])) return;
+    if (command[0] > INT32_MAX || command[1] > INT32_MAX || command[2] > INT32_MAX) return;
+    DrawState::BaseInstanceScope scope(ctx.draw(), command[3]);
+    ctx.draw().drawArrays(mode, static_cast<GLint>(command[2]), static_cast<GLsizei>(command[0]), static_cast<GLsizei>(command[1]));
+}
+
+void drawElementsCommand(Context& ctx, GLenum mode, GLenum type, const void* indirect, bool skipEmpty) {
+    uint32_t command[5];  // count, instance count, first index, base vertex, base instance
+    if (!readIndirectCommand(ctx, indirect, command, 5)) return;
+    if (skipEmpty && (!command[0] || !command[1])) return;
+    if (command[0] > INT32_MAX || command[1] > INT32_MAX) return;
+    const size_t size = type == GL_UNSIGNED_BYTE ? 1 : type == GL_UNSIGNED_SHORT ? 2 : 4;
+    const uintptr_t offset = static_cast<uintptr_t>(command[2]) * size;
+    DrawState::BaseInstanceScope scope(ctx.draw(), command[4]);
+    ctx.draw().drawElements(mode, static_cast<GLsizei>(command[0]), type, reinterpret_cast<const void*>(offset),
+                            static_cast<GLsizei>(command[1]), static_cast<GLint>(command[3]));
+}
+
+}  // namespace
+
 void DrawArraysIndirect(Context& ctx, GLenum mode, const void* indirect) {
     if (!drawIndirect(ctx)) return ctx.unimplemented("glDrawArraysIndirect");
     if (!validIndirectMode(ctx, mode)) return;
     // Core profile: a vertex array object must be bound.
     if (ctx.isCore() && ctx.state.vertexArray == ctx.defaultVertexArray) return ctx.setError(GL_INVALID_OPERATION);
     if (drawIndirectOnGpu(ctx, mode, GL_NONE, indirect, 4)) return;
-    uint32_t command[4];  // count, instance count, first, base instance
-    if (!readIndirectCommand(ctx, indirect, command, 4)) return;
-    if (command[0] > INT32_MAX || command[1] > INT32_MAX || command[2] > INT32_MAX) return;
-    DrawState::BaseInstanceScope scope(ctx.draw(), command[3]);
-    ctx.draw().drawArrays(mode, static_cast<GLint>(command[2]), static_cast<GLsizei>(command[0]), static_cast<GLsizei>(command[1]));
+    drawArraysCommand(ctx, mode, indirect, false);
 }
 
 void DrawElementsIndirect(Context& ctx, GLenum mode, GLenum type, const void* indirect) {
@@ -200,19 +226,15 @@ void DrawElementsIndirect(Context& ctx, GLenum mode, GLenum type, const void* in
     if (ctx.isCore() && ctx.state.vertexArray == ctx.defaultVertexArray) return ctx.setError(GL_INVALID_OPERATION);
     if (!ctx.state.vertexArray->elementBuffer) return ctx.setError(GL_INVALID_OPERATION);
     if (drawIndirectOnGpu(ctx, mode, type, indirect, 5)) return;
-    uint32_t command[5];  // count, instance count, first index, base vertex, base instance
-    if (!readIndirectCommand(ctx, indirect, command, 5)) return;
-    if (command[0] > INT32_MAX || command[1] > INT32_MAX) return;
-    const size_t size = type == GL_UNSIGNED_BYTE ? 1 : type == GL_UNSIGNED_SHORT ? 2 : 4;
-    const uintptr_t offset = static_cast<uintptr_t>(command[2]) * size;
-    DrawState::BaseInstanceScope scope(ctx.draw(), command[4]);
-    ctx.draw().drawElements(mode, static_cast<GLsizei>(command[0]), type, reinterpret_cast<const void*>(offset),
-                            static_cast<GLsizei>(command[1]), static_cast<GLint>(command[3]));
+    drawElementsCommand(ctx, mode, type, indirect, false);
 }
 
 // GL 4.3 / GL_ARB_multi_draw_indirect: each command as its own indirect
 // draw (read by the GPU or the CPU, as for the single-draw forms), with
-// gl_DrawID its index.
+// gl_DrawID its index. The commands share the draw state (validMultiDraw
+// checked the rest): once one takes the CPU path, so do the others, without
+// trying the GPU's, and those that draw nothing (GPU culling leaves most
+// commands empty) cost a read.
 namespace {
 
 // INVALID_OPERATION, before anything draws, when `drawcount` commands of
@@ -229,17 +251,26 @@ bool indirectCommandsFit(Context& ctx, const void* indirect, GLsizei drawcount, 
 }
 
 void multiDrawArraysIndirect(Context& ctx, GLenum mode, const void* indirect, GLsizei drawcount, uintptr_t step) {
+    bool cpu = false;
     for (GLsizei i = 0; i < drawcount; ++i) {
         DrawState::DrawIdScope id(ctx.draw(), i);
-        DrawArraysIndirect(ctx, mode, reinterpret_cast<const void*>(reinterpret_cast<uintptr_t>(indirect) + step * static_cast<uintptr_t>(i)));
+        const void* at = reinterpret_cast<const void*>(reinterpret_cast<uintptr_t>(indirect) + step * static_cast<uintptr_t>(i));
+        if (cpu) stats::repeatIndirectCpu();
+        else if (drawIndirectOnGpu(ctx, mode, GL_NONE, at, 4)) continue;
+        drawArraysCommand(ctx, mode, at, cpu);
+        cpu = true;
     }
 }
 
 void multiDrawElementsIndirect(Context& ctx, GLenum mode, GLenum type, const void* indirect, GLsizei drawcount, uintptr_t step) {
+    bool cpu = false;
     for (GLsizei i = 0; i < drawcount; ++i) {
         DrawState::DrawIdScope id(ctx.draw(), i);
-        DrawElementsIndirect(ctx, mode, type,
-                             reinterpret_cast<const void*>(reinterpret_cast<uintptr_t>(indirect) + step * static_cast<uintptr_t>(i)));
+        const void* at = reinterpret_cast<const void*>(reinterpret_cast<uintptr_t>(indirect) + step * static_cast<uintptr_t>(i));
+        if (cpu) stats::repeatIndirectCpu();
+        else if (drawIndirectOnGpu(ctx, mode, type, at, 5)) continue;
+        drawElementsCommand(ctx, mode, type, at, cpu);
+        cpu = true;
     }
 }
 

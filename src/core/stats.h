@@ -89,6 +89,8 @@ void describeOnce(const std::string& key, const char* format, ...) __attribute__
 // An indirect command read on the CPU for `reason`; `detail` is logged the
 // first time the reason is seen with `key` (a program and cause).
 void indirectCpu(IndirectCpu reason, const std::string& key, const char* detail);
+// Another command of the same multi-draw read on the CPU for the same reason.
+void repeatIndirectCpu();
 
 // Adds the scope's duration to `field` (when enabled).
 class Timer {
