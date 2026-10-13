@@ -130,3 +130,28 @@ TEST(bench_draw_overhead) {
                  wall / frames);
     CHECK_GL();
 }
+
+TEST(bench_call_overhead) {
+    // The core's own cost per GL call (no Wine): compare with
+    // tests/wine/opengl_call_overhead.c, which adds the Wine module's.
+    if (!std::getenv("WMGL_BENCH")) return;
+    gpu::Fixture fixture(64, 64, false, 46);
+    CHECK(fixture.ok);
+    if (!fixture.ok) return;
+    using IsEnabled = GLboolean (*)(GLenum);
+    const auto isEnabledCall = reinterpret_cast<IsEnabled>(wmgl_get_proc_address("glIsEnabled"));
+    CHECK(isEnabledCall != nullptr);
+    if (!isEnabledCall) return;
+    constexpr int kCalls = 2000000;
+    volatile GLboolean sink = 0;
+    for (int i = 0; i < 10000; ++i) sink = sink ^ isEnabledCall(GL_BLEND);
+    using Clock = std::chrono::steady_clock;
+    auto start = Clock::now();
+    for (int i = 0; i < kCalls; ++i) sink = sink ^ isEnabledCall(GL_BLEND);
+    const double isEnabled = std::chrono::duration<double, std::nano>(Clock::now() - start).count() / kCalls;
+    start = Clock::now();
+    for (int i = 0; i < kCalls; ++i) glColorMask(i & 1, GL_TRUE, GL_TRUE, GL_TRUE);
+    const double colorMask = std::chrono::duration<double, std::nano>(Clock::now() - start).count() / kCalls;
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    std::fprintf(stderr, "  bench: glIsEnabled %.1f ns/call, glColorMask %.1f ns/call (core only)\n", isEnabled, colorMask);
+}

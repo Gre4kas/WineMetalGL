@@ -77,7 +77,10 @@ public:
 
     id<MTLBlitCommandEncoder> blit();
     id<MTLComputeCommandEncoder> compute();
-    void endEncoder();
+    // Why an open render pass ends (stats: each end stores and reloads the
+    // attachments on tile-based GPUs).
+    enum class PassEnd : uint8_t { Other, Target, Blit, Compute, Visibility, Commit, Barrier, Clear, Count };
+    void endEncoder(PassEnd cause = PassEnd::Other);
     // glMemoryBarrier: orders shader writes to buffers and textures before
     // later shader accesses: ends an open render pass, or a barrier in the
     // open compute encoder.

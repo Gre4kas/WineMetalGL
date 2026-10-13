@@ -30,6 +30,12 @@ struct Frame {
     uint64_t convertedFormatType = 0;  // GL type of the last unfetchable one (| 0x10000: normalized)
     uint64_t cpuIndexDraws = 0;        // draws whose indices were rewritten on the CPU
     uint64_t uniformBytes = 0;         // default uniforms copied to transient memory
+    // Command buffers committed, those committed for timer queries, and
+    // render passes ended by cause (CommandStream::PassEnd order).
+    uint64_t commits = 0, queryCommits = 0;
+    uint64_t passEnds[8] = {};
+    // glReadPixels copied by the GPU into a pack buffer, and reads that wait for the GPU.
+    uint64_t readsAsync = 0, readsWaiting = 0;
 };
 
 Frame& frame();

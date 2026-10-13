@@ -1593,3 +1593,35 @@ GPU_TEST_VERSION(gpu_gl46_read_pixels_pack_buffer, 46) {
     glDeleteFramebuffers(1, &fbo);
     glDeleteTextures(1, &tex);
 }
+
+GPU_TEST_VERSION(gpu_gl46_read_pixels_pack_buffer_swap_bytes, 46) {
+    // GL_PACK_SWAP_BYTES reverses each component's bytes, into a pack
+    // buffer too (the GPU copy cannot; such reads take the converting path).
+    GLuint tex = 0, fbo = 0, pbo = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexStorage2D(GL_TEXTURE_2D, 1, GL_R32UI, 4, 4);
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+    const GLuint value[4] = {0x11223344u, 0, 0, 0};
+    glClearBufferuiv(GL_COLOR, 0, value);
+    glGenBuffers(1, &pbo);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, pbo);
+    glBufferData(GL_PIXEL_PACK_BUFFER, 64, nullptr, GL_STREAM_READ);
+    glReadPixels(0, 0, 4, 4, GL_RED_INTEGER, GL_UNSIGNED_INT, nullptr);  // the GPU copy
+    glPixelStorei(GL_PACK_SWAP_BYTES, GL_TRUE);
+    glReadPixels(0, 0, 1, 1, GL_RED_INTEGER, GL_UNSIGNED_INT, reinterpret_cast<void*>(4));
+    glPixelStorei(GL_PACK_SWAP_BYTES, GL_FALSE);
+    CHECK_GL();
+    GLuint out[2] = {};
+    glGetBufferSubData(GL_PIXEL_PACK_BUFFER, 0, sizeof(out), out);
+    CHECK(out[0] == 0x11223344u);
+    CHECK(out[1] == 0x44332211u);
+    if (out[1] != 0x44332211u) std::fprintf(stderr, "  swapped read 0x%08x\n", out[1]);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteBuffers(1, &pbo);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &tex);
+}

@@ -2,10 +2,14 @@
 // (GL 3.3 sections 4.2-4.4).
 
 #include <algorithm>
+#include <cstdio>
+#include <mutex>
+#include <set>
 #include <cstring>
 #include <vector>
 
 #include "core/context.h"
+#include "core/stats.h"
 #include "core/draw.h"
 #include "core/format/pixel_transfer.h"
 #include "core/limits.h"
@@ -799,7 +803,7 @@ void ReadPixels(Context& ctx, GLint x, GLint y, GLsizei width, GLsizei height, G
     // by the GPU in command order, without waiting for it (asynchronous
     // readback, as engines use pack buffers for): a colour region inside the
     // source, in the alignment Metal's copies need.
-    if (pbo && pbo->mtl && !pbo->mappedNonPersistent() && !depth && !stencil && !depthStencil && width > 0 && height > 0 &&
+    if (pbo && pbo->mtl && !pbo->mappedNonPersistent() && !ps.swapBytes && !depth && !stencil && !depthStencil && width > 0 && height > 0 &&
         x >= 0 && y >= 0 && x + width <= levelWidth && y + height <= levelHeight && storedLayout(format, type, *info) &&
         (ctx.state.clampReadColorMode == GL_FALSE || info->type == ComponentType::UnsignedNormalized ||
          (ctx.state.clampReadColorMode == GL_FIXED_ONLY && info->type != ComponentType::SignedNormalized))) {
@@ -815,8 +819,22 @@ void ReadPixels(Context& ctx, GLint x, GLint y, GLsizei width, GLsizei height, G
                           destinationBytesPerRow:layout.rowStride destinationBytesPerImage:layout.rowStride * height];
             pbo->lastUseSerial = pbo->lastWriteSerial = ctx.stream().serial();
             ++pbo->version;
+            stats::count(&stats::Frame::readsAsync);
             return;
         }
+    }
+    // The paths below wait for the GPU.
+    stats::count(&stats::Frame::readsWaiting);
+    if (stats::g_enabled) {
+        // Once per format, type and destination: what keeps a read from the asynchronous path.
+        static std::mutex mutex;
+        static std::set<uint64_t> seen;
+        const uint64_t key = uint64_t{format} << 33 | uint64_t{type} << 1 | (pbo ? 1u : 0u);
+        std::lock_guard<std::mutex> lock(mutex);
+        if (seen.insert(key).second)
+            std::fprintf(stderr, "winemetalgl:stats: glReadPixels waits for the GPU: format 0x%x type 0x%x into %s, "
+                                 "source storage %d\n",
+                         format, type, pbo ? "a pack buffer" : "client memory", static_cast<int>(info->storage));
     }
     if (pbo) {
         const TransferLayout layout = transferLayout(format, type, width, height, 1, ps);
