@@ -51,6 +51,7 @@ affected Khronos CTS lists, in `mustpass.xml` configurations 1 to 4.
   `tests/cts/notsupported.json`.
 - **Checksums.** After adding, removing or changing tracked files, run
   `scripts/update-checksums.sh` so `MANIFEST.txt` and `SHA256SUMS` match.
+  `README.md` is not checksummed, so it can be edited on GitHub.
 - **No Apple OpenGL.** The core must not link OpenGL.framework, and it exports
   only the driver ABI in `include/winemetalgl/driver.h`.
 - **No Wine changes.** The Wine module (`src/wine`) builds against the headers
