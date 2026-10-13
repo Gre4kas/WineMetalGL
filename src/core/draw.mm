@@ -431,6 +431,10 @@ bool DrawState::validateDraw(GLenum mode) {
     RenderTargetDesc target;
     TargetFormats formats;
     if (!drawTarget(target, formats)) return false;
+    // The draw's first prepare() takes it instead of building it again.
+    validatedTarget_ = std::move(target);
+    validatedFormats_ = formats;
+    validatedFor_ = drawCount_;
     return true;
 }
 
@@ -581,8 +585,13 @@ void DrawState::waitForCpuVertexReads(LinkedProgram& program, bool gather) {
     // Waiting flushes the command buffer, so it must happen before a draw opens its encoder.
     Queue& queue = ctx_.stream().queue();
     const VertexArray& vao = *ctx_.state.vertexArray;
-    VertexInputPlan plan;
+    VertexInputPlan& plan = plannedInputs_;
     planVertexInputs(program, gather, plan);
+    // The same draw's bindVertexInputs takes this plan (nothing between them
+    // changes vertex state), unless line emulation substitutes inputs.
+    plannedFor_ = !lineSides_ && !linePartners_ ? drawCount_ : 0;
+    plannedProgram_ = &program;
+    plannedGather_ = gather;
     for (const shader::StageOutput::VertexInput& input : program.stage(Stage::Vertex).vertexInputs) {
         if (input.location < 0 || input.location >= VertexArray::kAttribSlots) continue;
         if (plan.how[static_cast<size_t>(input.location)] != VertexInputPlan::Converted) continue;
@@ -598,8 +607,12 @@ bool DrawState::bindVertexInputs(id<MTLRenderCommandEncoder> encoder, PipelineKe
     using Plan = VertexInputPlan;
     VertexArray& vao = *ctx_.state.vertexArray;
     const uint64_t serial = ctx_.stream().serial();
-    Plan plan;
-    planVertexInputs(program, gather != nullptr, plan);
+    Plan reused;
+    const bool planned = plannedFor_ && plannedFor_ == drawCount_ && plannedProgram_ == &program &&
+                         plannedGather_ == (gather != nullptr) && !lineSides_ && !linePartners_;
+    if (!planned) planVertexInputs(program, gather != nullptr, reused);
+    const Plan& plan = planned ? plannedInputs_ : reused;
+    plannedFor_ = 0;
     struct Layout {
         id<MTLBuffer> buffer;
         NSUInteger offset;
@@ -978,6 +991,7 @@ LinkedProgram* DrawState::executable() {
 }
 
 void DrawState::beginDraw(GLenum mode) {
+    ++drawCount_;
     drawMode_ = mode;
     glBaseVertex_ = 0;
     ffChosen_ = false;
@@ -986,7 +1000,15 @@ void DrawState::beginDraw(GLenum mode) {
     ffWideLines_ = false;
 }
 
-void DrawState::bindUniforms(id<MTLRenderCommandEncoder> encoder, LinkedProgram& program) {
+void DrawState::bindUniforms(id<MTLRenderCommandEncoder> encoder, LinkedProgram& program, bool known) {
+    // `known`: encoderState_ holds what the encoder has bound (encoderStateValid_);
+    // driver and default uniforms it already has are not sent again.
+    EncoderState& e = encoderState_;
+    if (!known) {
+        e.driverSet = false;
+        e.fragmentDriverSet = false;
+        for (auto& u : e.uniforms) u = {};
+    }
     if (tessInputs_.active) {
         // The tessellation evaluation vertex function's domain points, patch records and control block.
         static const NSUInteger kSlots[3] = {shader::kSlotTessVertices, shader::kSlotTessPatches, shader::kSlotTessControl};
@@ -1002,7 +1024,12 @@ void DrawState::bindUniforms(id<MTLRenderCommandEncoder> encoder, LinkedProgram&
     } driver = {std::clamp(ctx_.state.pointSize, 1.0f, 511.0f), ctx_.state.programPointSize || ffPointSize_ ? 1u : 0u,
                 (ctx_.state.clipDepthMode == GL_ZERO_TO_ONE ? 1u : 0u) | (ctx_.state.clipOrigin == GL_UPPER_LEFT ? 2u : 0u),
                 ctx_.state.clipDistanceEnables};
-    [encoder setVertexBytes:&driver length:sizeof(driver) atIndex:shader::kSlotDriverUniforms];
+    static_assert(sizeof(driver) == sizeof(e.driver));
+    if (!e.driverSet || std::memcmp(e.driver, &driver, sizeof(driver)) != 0) {
+        [encoder setVertexBytes:&driver length:sizeof(driver) atIndex:shader::kSlotDriverUniforms];
+        std::memcpy(e.driver, &driver, sizeof(driver));
+        e.driverSet = true;
+    }
     const uint64_t serial = ctx_.stream().serial();
     // Subroutine selections and built-in uniforms live in the stage programs' default uniforms.
     for (int s : {static_cast<int>(Stage::Vertex), static_cast<int>(Stage::Fragment)})
@@ -1021,14 +1048,25 @@ void DrawState::bindUniforms(id<MTLRenderCommandEncoder> encoder, LinkedProgram&
         if (!vertex && (stage.usesPointCoord || sampleMask_ != ~0u)) {
             // Fragment driver uniforms: the gl_PointCoord flip and the sample mask (compiler.cpp).
             const uint32_t fragmentDriver[2] = {ctx_.state.pointSpriteCoordOrigin == GL_UPPER_LEFT ? 1u : 0u, sampleMask_};
-            [encoder setFragmentBytes:fragmentDriver length:sizeof(fragmentDriver) atIndex:shader::kSlotDriverUniforms];
+            if (!e.fragmentDriverSet || std::memcmp(e.fragmentDriver, fragmentDriver, sizeof(fragmentDriver)) != 0) {
+                [encoder setFragmentBytes:fragmentDriver length:sizeof(fragmentDriver) atIndex:shader::kSlotDriverUniforms];
+                std::memcpy(e.fragmentDriver, fragmentDriver, sizeof(fragmentDriver));
+                e.fragmentDriverSet = true;
+            }
         }
         // Default uniforms of the program that owns the stage.
         Program* owner = stageProgram(program, s);
         const uint32_t size = owner && owner->linked ? (owner->linked->link.defaultBlockSize + 15) & ~15u : 0;
-        if (stage.usesDefaultUniforms && size) {
+        EncoderState::Uniforms& bound = e.uniforms[vertex ? 0 : 1];
+        const EncoderState::Uniforms wanted = {owner, owner && owner->linked ? owner->linked->uid : 0,
+                                               owner ? owner->uniformVersion : 0, size};
+        if (stage.usesDefaultUniforms && size && bound.owner == wanted.owner && bound.uid == wanted.uid &&
+            bound.version == wanted.version && bound.size == wanted.size) {
+            // The encoder has these uniforms already.
+        } else if (stage.usesDefaultUniforms && size) {
             Program& p = *owner;
             if (p.uniformData.size() < size) p.uniformData.resize(size, 0);
+            bound = wanted;
             if (size <= 4096) {
                 if (vertex) [encoder setVertexBytes:p.uniformData.data() length:size atIndex:shader::kSlotDefaultUniforms];
                 else [encoder setFragmentBytes:p.uniformData.data() length:size atIndex:shader::kSlotDefaultUniforms];
@@ -1403,7 +1441,13 @@ id<MTLRenderCommandEncoder> DrawState::prepare(GLenum mode, MTLPrimitiveType& pr
     queriesPrepareVisibility(ctx_);
     RenderTargetDesc target;
     TargetFormats formats;
-    if (!drawTarget(target, formats)) return nil;
+    if (validatedFor_ && validatedFor_ == drawCount_) {
+        target = std::move(validatedTarget_);
+        formats = validatedFormats_;
+        validatedFor_ = 0;
+    } else if (!drawTarget(target, formats)) {
+        return nil;
+    }
     const ContextState& st = ctx_.state;
     if (st.cullFace && st.cullFaceMode == GL_FRONT_AND_BACK && topologyClass(mode) == MTLPrimitiveTopologyClassTriangle)
         return nil;
@@ -1821,7 +1865,15 @@ void DrawState::bindDrawState(id<MTLRenderCommandEncoder> encoder, LinkedProgram
     encoderStateValid_ = encoderState_.pass == pass && (calls == encoderState_.calls || calls == encoderState_.calls + 1);
     encoderState_.pass = pass;
     encoderState_.calls = calls;
-    id<MTLDepthStencilState> depthStencil = ctx_.share().pipelines().depthStencil(ds);
+    // Draws mostly repeat the last depth/stencil state: compared before the cache's lock and hash.
+    id<MTLDepthStencilState> depthStencil = nil;
+    if (lastDepthStencil_ && std::memcmp(&ds, &lastDepthStencilKey_, sizeof(ds)) == 0) {
+        depthStencil = lastDepthStencil_;
+    } else {
+        depthStencil = ctx_.share().pipelines().depthStencil(ds);
+        lastDepthStencilKey_ = ds;
+        lastDepthStencil_ = depthStencil;
+    }
     if (!encoderStateValid_ || encoderState_.depthStencil != depthStencil) {
         [encoder setDepthStencilState:depthStencil];
         encoderState_.depthStencil = depthStencil;
@@ -1831,7 +1883,7 @@ void DrawState::bindDrawState(id<MTLRenderCommandEncoder> encoder, LinkedProgram
         [encoder setScissorRects:lastScissors_ count:ContextState::kMaxViewports];
         std::memcpy(encoderState_.scissors, lastScissors_, sizeof(lastScissors_));
     }
-    bindUniforms(encoder, program);
+    bindUniforms(encoder, program, encoderStateValid_);
     bindTextures(encoder, program, encoderStateValid_);
     id<MTLBuffer> counter = nil;
     NSUInteger counterOffset = 0;
@@ -2035,7 +2087,7 @@ bool DrawState::runVertexCapture(LinkedProgram& lp, const std::vector<uint32_t>&
     if (drawMode != GL_NONE) {
         bindDrawState(encoder, lp);
     } else {
-        bindUniforms(encoder, lp);
+        bindUniforms(encoder, lp, false);
         bindTextures(encoder, lp, false);
     }
     const uint64_t serial = ctx_.stream().serial();

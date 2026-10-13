@@ -121,9 +121,22 @@ id<MTLDepthStencilState> PipelineCache::depthStencil(const DepthStencilKey& key)
 }
 
 id<MTLSamplerState> PipelineCache::sampler(const SamplerKey& key) {
+    // Draws look sampler states up for every sampler: recent ones per thread,
+    // before the lock. A state depends on its key only, so one made for
+    // another share group serves as well.
+    struct Recent {
+        SamplerKey key;
+        id<MTLSamplerState> state;
+    };
+    thread_local Recent recent[16];
+    Recent& slot = recent[Hash<SamplerKey>()(key) & 15];
+    if (slot.state && std::memcmp(&slot.key, &key, sizeof(key)) == 0) return slot.state;
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = samplers_.find(key);
-    if (it != samplers_.end()) return it->second;
+    if (it != samplers_.end()) {
+        slot = {key, it->second};
+        return it->second;
+    }
     MTLSamplerDescriptor* desc = [MTLSamplerDescriptor new];
     desc.minFilter = static_cast<MTLSamplerMinMagFilter>(key.minFilter);
     desc.magFilter = static_cast<MTLSamplerMinMagFilter>(key.magFilter);
@@ -145,6 +158,7 @@ id<MTLSamplerState> PipelineCache::sampler(const SamplerKey& key) {
     desc.supportArgumentBuffers = NO;
     id<MTLSamplerState> state = [Device::get().mtl() newSamplerStateWithDescriptor:desc];
     samplers_.emplace(key, state);
+    if (state) slot = {key, state};
     return state;
 }
 

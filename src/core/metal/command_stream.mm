@@ -33,7 +33,7 @@ id<MTLCommandBuffer> CommandStream::commandBuffer() {
     return buffer_;
 }
 
-uint64_t CommandStream::serial() {
+uint64_t CommandStream::serialSlow() {
     commandBuffer();
     return serial_;
 }

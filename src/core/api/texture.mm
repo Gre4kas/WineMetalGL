@@ -207,7 +207,7 @@ bool unpackSource(Context& ctx, const void* pixels, size_t bytesNeeded, size_t a
         out = nullptr;
         return true;
     }
-    ctx.stream().waitFor(pbo->lastUseSerial);
+    ctx.stream().waitFor(pbo->lastWriteSerial);  // the upload reads it on the CPU: GPU writes only
     out = pbo->contents() + offset;
     return true;
 }

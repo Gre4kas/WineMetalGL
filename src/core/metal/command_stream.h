@@ -52,7 +52,8 @@ public:
 
     id<MTLCommandBuffer> commandBuffer();
     // Serial of the command buffer currently being recorded (creates one).
-    uint64_t serial();
+    // Inline: the draw path asks for it many times per draw.
+    uint64_t serial() { return buffer_ ? serial_ : serialSlow(); }
 
     // Returns an encoder for the target, starting a pass if needed. Any
     // pending clear for this target is applied as load actions.
@@ -122,6 +123,7 @@ public:
     void noteDraw() { drawsInPass_ = true; }
 
 private:
+    uint64_t serialSlow();
     void startRender(const RenderTargetDesc& target);
 
     Queue& queue_;

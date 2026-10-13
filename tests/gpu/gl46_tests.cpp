@@ -1625,3 +1625,115 @@ GPU_TEST_VERSION(gpu_gl46_read_pixels_pack_buffer_swap_bytes, 46) {
     glDeleteFramebuffers(1, &fbo);
     glDeleteTextures(1, &tex);
 }
+
+GPU_TEST_VERSION(gpu_gl46_cpu_reads_see_gpu_writes, 46) {
+    // CPU reads wait for GPU writes (not for GPU reads): data a GPU copy
+    // wrote is what glGetBufferSubData, a read-only map and an unpack from a
+    // pixel buffer see.
+    GLuint buffers[2] = {}, tex = 0, fbo = 0;
+    glGenBuffers(2, buffers);
+    uint8_t source[256];
+    for (int i = 0; i < 256; ++i) source[i] = static_cast<uint8_t>(i * 7 + 3);
+    glBindBuffer(GL_COPY_READ_BUFFER, buffers[0]);
+    glBufferData(GL_COPY_READ_BUFFER, sizeof(source), source, GL_STATIC_DRAW);
+    glBindBuffer(GL_COPY_WRITE_BUFFER, buffers[1]);
+    glBufferData(GL_COPY_WRITE_BUFFER, sizeof(source), nullptr, GL_STREAM_COPY);
+    glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0, sizeof(source));
+    uint8_t read[256] = {};
+    glGetBufferSubData(GL_COPY_WRITE_BUFFER, 0, sizeof(read), read);
+    CHECK(std::memcmp(read, source, sizeof(source)) == 0);
+    // Written again by the GPU, then mapped for reading.
+    for (int i = 0; i < 256; ++i) source[i] = static_cast<uint8_t>(255 - i);
+    glBufferSubData(GL_COPY_READ_BUFFER, 0, sizeof(source), source);
+    glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0, sizeof(source));
+    const void* mapped = glMapBufferRange(GL_COPY_WRITE_BUFFER, 0, sizeof(source), GL_MAP_READ_BIT);
+    CHECK(mapped != nullptr);
+    if (mapped) CHECK(std::memcmp(mapped, source, sizeof(source)) == 0);
+    glUnmapBuffer(GL_COPY_WRITE_BUFFER);
+    // A pixel unpack buffer the GPU wrote, uploaded into a texture.
+    for (int i = 0; i < 256; ++i) source[i] = static_cast<uint8_t>(i ^ 0x5a);
+    glBufferSubData(GL_COPY_READ_BUFFER, 0, sizeof(source), source);
+    glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0, sizeof(source));
+    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, buffers[1]);
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, 8, 8);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 8, 8, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+    uint8_t texels[256] = {};
+    glReadPixels(0, 0, 8, 8, GL_RGBA, GL_UNSIGNED_BYTE, texels);
+    CHECK(std::memcmp(texels, source, sizeof(source)) == 0);
+    CHECK_GL();
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &tex);
+    glDeleteBuffers(2, buffers);
+}
+
+GPU_TEST_VERSION(gpu_gl46_uniforms_between_draws_in_one_pass, 46) {
+    // Draws in one render pass skip sending default uniforms the encoder
+    // already has: each draw still sees the values set before it, through
+    // value changes, program switches and a block over Metal's 4 KB of bytes.
+    const char* vs = "#version 460 core\nlayout(location = 0) in vec2 p;\nuniform vec2 offset;\n"
+                     "void main() { gl_Position = vec4(p * 0.25 + offset, 0.0, 1.0); }\n";
+    GLuint small = gpu::program(vs, "#version 460 core\nuniform vec4 color;\nout vec4 o;\nvoid main() { o = color; }\n");
+    GLuint large = gpu::program(vs, "#version 460 core\nuniform vec4 big[320];\nuniform int pick;\nout vec4 o;\n"
+                                    "void main() { o = big[pick]; }\n");
+    GLuint vao = 0, vbo = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    const float quad[] = {-1, -1, 1, -1, -1, 1, 1, 1};
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(quad), quad, GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
+    glEnableVertexAttribArray(0);
+    glClearColor(0, 0, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+    // Quadrant centres of the 64x64 target, as clip-space offsets.
+    const float offsets[4][2] = {{-0.5f, -0.5f}, {0.5f, -0.5f}, {-0.5f, 0.5f}, {0.5f, 0.5f}};
+    const GLint sOffset = glGetUniformLocation(small, "offset"), sColor = glGetUniformLocation(small, "color");
+    const GLint lOffset = glGetUniformLocation(large, "offset"), lBig = glGetUniformLocation(large, "big"),
+                lPick = glGetUniformLocation(large, "pick");
+    std::vector<float> big(320 * 4, 0.0f);
+    big[300 * 4 + 2] = 1.0f, big[300 * 4 + 3] = 1.0f;  // big[300]: blue
+    glUseProgram(small);
+    glUniform2fv(sOffset, 1, offsets[0]);
+    glUniform4f(sColor, 1, 0, 0, 1);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);  // red
+    glUniform2fv(sOffset, 1, offsets[1]);
+    glUniform4f(sColor, 0, 1, 0, 1);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);  // green: changed between draws
+    glUseProgram(large);
+    glUniform4fv(lBig, 320, big.data());
+    glUniform1i(lPick, 300);
+    glUniform2fv(lOffset, 1, offsets[2]);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);  // blue, from a block over 4 KB
+    glUseProgram(small);  // back: its values as last set
+    glUniform2fv(sOffset, 1, offsets[3]);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);  // green again
+    const uint8_t red[4] = {255, 0, 0, 255}, green[4] = {0, 255, 0, 255}, blue[4] = {0, 0, 255, 255};
+    CHECK(gpu::near(gpu::readRGBA8(16, 16, 1, 1).data(), red));
+    CHECK(gpu::near(gpu::readRGBA8(48, 16, 1, 1).data(), green));
+    CHECK(gpu::near(gpu::readRGBA8(16, 48, 1, 1).data(), blue));
+    CHECK(gpu::near(gpu::readRGBA8(48, 48, 1, 1).data(), green));
+    // The large block changed in place between two draws of one program.
+    glClear(GL_COLOR_BUFFER_BIT);
+    glUseProgram(large);
+    glUniform2fv(lOffset, 1, offsets[0]);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);  // blue
+    big[300 * 4 + 2] = 0.0f, big[300 * 4 + 0] = 1.0f;
+    glUniform4fv(lBig, 320, big.data());
+    glUniform2fv(lOffset, 1, offsets[1]);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);  // red
+    CHECK(gpu::near(gpu::readRGBA8(16, 16, 1, 1).data(), blue));
+    CHECK(gpu::near(gpu::readRGBA8(48, 16, 1, 1).data(), red));
+    CHECK_GL();
+    glDeleteBuffers(1, &vbo);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(small);
+    glDeleteProgram(large);
+}

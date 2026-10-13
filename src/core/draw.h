@@ -195,6 +195,12 @@ private:
         std::vector<DirectGroup> groups;
     };
     void planVertexInputs(LinkedProgram& program, bool gather, VertexInputPlan& plan) const;
+    // The plan waitForCpuVertexReads made, for the same draw's bindVertexInputs
+    // (plannedFor_: drawCount_ of that draw, 0: none).
+    VertexInputPlan plannedInputs_;
+    uint64_t plannedFor_ = 0;
+    const LinkedProgram* plannedProgram_ = nullptr;
+    bool plannedGather_ = false;
     // Image bindings with a shadow texture (core::ImageShadow) for the draw
     // in progress: copied in by prepareSamplerStorage, back when the draw ends.
     struct PendingShadow {
@@ -214,7 +220,7 @@ private:
     static size_t vertexBufferSlots(LinkedProgram& program);
     void waitForCpuVertexReads(LinkedProgram& program, bool gather);
     const VertexAttrib& attribFor(const VertexArray& vao, int location) const;
-    void bindUniforms(id<MTLRenderCommandEncoder> encoder, LinkedProgram& program);
+    void bindUniforms(id<MTLRenderCommandEncoder> encoder, LinkedProgram& program, bool known);
     // `known`: encoderState_ holds what the encoder has bound (encoderStateValid_).
     void bindTextures(id<MTLRenderCommandEncoder> encoder, LinkedProgram& program, bool known);
     // Builds pending storage of every sampled texture before a draw opens its encoder.
@@ -269,6 +275,13 @@ private:
     PipelineKey lastKey_{};
     // The pipeline of the last draw through issue() and its key (programs carry
     // their link's uid in the key, so a relinked program misses).
+    // The draw target validateDraw built, for the same draw's first prepare()
+    // (validatedFor_: drawCount_ of that draw, 0: none).
+    uint64_t drawCount_ = 0, validatedFor_ = 0;
+    RenderTargetDesc validatedTarget_;
+    TargetFormats validatedFormats_{};
+    DepthStencilKey lastDepthStencilKey_{};
+    id<MTLDepthStencilState> lastDepthStencil_ = nil;
     PipelineKey lastPipelineKey_{};
     id<MTLRenderPipelineState> lastPipeline_ = nil;
     // The dynamic state applyDynamicState last set (and the scissors), on the
@@ -287,6 +300,16 @@ private:
         uint32_t stencil[2];
         float blend[4];
         id<MTLDepthStencilState> depthStencil = nil;
+        // Driver uniforms and each stage's (vertex, fragment) default uniforms
+        // set by bindUniforms: the owner program, its link, uniformVersion and size.
+        uint8_t driver[16];
+        uint32_t fragmentDriver[2];
+        bool driverSet = false, fragmentDriverSet = false;
+        struct Uniforms {
+            const Program* owner = nullptr;
+            uint64_t uid = 0, version = 0;
+            uint32_t size = 0;
+        } uniforms[2];
         // Textures and samplers set per stage (vertex, fragment) by bindTextures.
         id<MTLTexture> textures[2][kTrackedTextures];
         id<MTLSamplerState> samplers[2][kTrackedTextures];
