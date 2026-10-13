@@ -85,7 +85,7 @@ public:
     // glMemoryBarrier: orders shader writes to buffers and textures before
     // later shader accesses: ends an open render pass, or a barrier in the
     // open compute encoder.
-    void memoryBarrier();
+    void memoryBarrier(bool attachments = false);
     // The open render or compute encoder writes through images or atomic
     // counters. Metal's hazard tracking does not order those writes (texture
     // atomics in particular) before later encoders, so the encoder updates a
@@ -140,6 +140,7 @@ private:
     uint64_t passGeneration_ = 0;
     uint64_t renderCalls_ = 0;
     bool visibilityWanted_ = false, passVisibility_ = false;
+    bool visibilityUsedBefore_ = false;  // occlusion queries were used: passes keep a visibility buffer
     // noteShaderWrites: set while the open encoder writes through images;
     // fenced once such an encoder ended (later encoders wait for writesFence_).
     bool shaderWrites_ = false, fenced_ = false;

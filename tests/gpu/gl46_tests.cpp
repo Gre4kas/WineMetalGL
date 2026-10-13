@@ -1815,3 +1815,102 @@ GPU_TEST_VERSION(gpu_gl46_rewritten_indices_follow_buffer_changes, 46) {
     glDeleteVertexArrays(1, &vao);
     glDeleteProgram(p);
 }
+
+GPU_TEST_VERSION(gpu_gl46_barrier_orders_fragment_writes_in_a_pass, 46) {
+    // glMemoryBarrier keeps a render pass open only when its draws wrote
+    // nothing: here the first draw's fragments add to a storage buffer and
+    // the second draw, after the barrier, reads the total. The target is
+    // large, so a tile-based GPU spreads the draws over many tiles; without
+    // the pass ending, early tiles read before late tiles have written.
+    constexpr int kSize = 1024;
+    GLuint writer = gpu::program("#version 460 core\nlayout(location = 0) in vec2 p;\n"
+                                 "void main() { gl_Position = vec4(p, 0.0, 1.0); }\n",
+                                 "#version 460 core\nlayout(std430, binding = 0) buffer Count { uint n; };\nout vec4 o;\n"
+                                 "void main() { atomicAdd(n, 1u); o = vec4(0.0, 0.0, 1.0, 1.0); }\n");
+    const std::string readerFs = "#version 460 core\nlayout(std430, binding = 0) buffer Count { uint n; };\nout vec4 o;\n"
+                                 "void main() { o = n >= " + std::to_string(kSize * kSize) +
+                                 "u ? vec4(0.0, 1.0, 0.0, 1.0) : vec4(1.0, 0.0, 0.0, 1.0); }\n";
+    GLuint reader = gpu::program("#version 460 core\nlayout(location = 0) in vec2 p;\n"
+                                 "void main() { gl_Position = vec4(p, 0.0, 1.0); }\n",
+                                 readerFs.c_str());
+    GLuint vao = 0, buffers[2] = {}, tex = 0, fbo = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, kSize, kSize);
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+    glViewport(0, 0, kSize, kSize);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(2, buffers);
+    const float tri[] = {-1, -1, 3, -1, -1, 3};
+    glBindBuffer(GL_ARRAY_BUFFER, buffers[0]);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(tri), tri, GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
+    glEnableVertexAttribArray(0);
+    const GLuint zero = 0;
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, buffers[1]);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(zero), &zero, GL_DYNAMIC_DRAW);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glMemoryBarrier(GL_ALL_BARRIER_BITS);  // nothing written yet: the pass stays open
+    glUseProgram(writer);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+    glUseProgram(reader);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    std::vector<uint8_t> pixels(static_cast<size_t>(kSize) * kSize * 4);
+    glReadPixels(0, 0, kSize, kSize, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+    size_t notGreen = 0;
+    for (size_t i = 0; i < pixels.size(); i += 4) notGreen += !(pixels[i] == 0 && pixels[i + 1] == 255);
+    CHECK(notGreen == 0);
+    if (notGreen) std::fprintf(stderr, "  %zu pixels read an incomplete count\n", notGreen);
+    CHECK_GL();
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glViewport(0, 0, 64, 64);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &tex);
+    glDeleteBuffers(2, buffers);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(writer);
+    glDeleteProgram(reader);
+}
+
+GPU_TEST_VERSION(gpu_gl46_occlusion_queries_begun_mid_pass, 46) {
+    // Once occlusion queries are used, passes carry a visibility buffer:
+    // queries begun between draws of one pass count their own samples.
+    GLuint p = gpu::program("#version 460 core\nlayout(location = 0) in vec2 pos;\nuniform vec2 scale;\n"
+                            "void main() { gl_Position = vec4(pos * scale, 0.0, 1.0); }\n",
+                            "#version 460 core\nout vec4 o;\nvoid main() { o = vec4(1.0); }\n");
+    GLuint vao = 0, vbo = 0, queries[3] = {};
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    const float quad[] = {-1, -1, 1, -1, -1, 1, 1, 1};
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(quad), quad, GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
+    glEnableVertexAttribArray(0);
+    glUseProgram(p);
+    const GLint scale = glGetUniformLocation(p, "scale");
+    glGenQueries(3, queries);
+    glClear(GL_COLOR_BUFFER_BIT);
+    const float scales[3] = {1.0f, 0.5f, 0.25f};  // 4096, 1024 and 256 samples of 64x64
+    for (int i = 0; i < 3; ++i) {
+        glUniform2f(scale, scales[i], scales[i]);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);  // drawn outside a query, in the same pass
+        glBeginQuery(GL_SAMPLES_PASSED, queries[i]);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        glEndQuery(GL_SAMPLES_PASSED);
+    }
+    GLuint samples[3] = {};
+    for (int i = 0; i < 3; ++i) glGetQueryObjectuiv(queries[i], GL_QUERY_RESULT, &samples[i]);
+    CHECK(samples[0] == 4096 && samples[1] == 1024 && samples[2] == 256);
+    if (samples[0] != 4096 || samples[1] != 1024 || samples[2] != 256)
+        std::fprintf(stderr, "  samples %u %u %u\n", samples[0], samples[1], samples[2]);
+    CHECK_GL();
+    glDeleteQueries(3, queries);
+    glDeleteBuffers(1, &vbo);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
+}

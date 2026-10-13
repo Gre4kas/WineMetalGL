@@ -663,7 +663,7 @@ void GetBufferPointerv(Context& ctx, GLenum target, GLenum pname, void** params)
 // cannot order fragment-stage writes inside one; see CommandStream).
 void TextureBarrier(Context& ctx) {
     if (ctx.version() < 45 && !ctx.hasExtension("GL_ARB_texture_barrier")) return ctx.unimplemented("glTextureBarrier");
-    ctx.stream().memoryBarrier();
+    ctx.stream().memoryBarrier(true);
 }
 
 void MemoryBarrier(Context& ctx, GLbitfield barriers) {

@@ -121,7 +121,9 @@ void CommandStream::startRender(const RenderTargetDesc& target) {
     }
     if (target.layers) pass.renderTargetArrayLength = target.layers;
     passVisibility_ = false;
-    if (visibilityWanted_) {
+    // Once a context uses occlusion queries, every pass carries the buffer:
+    // a query begun mid-pass then needs no new pass.
+    if (visibilityWanted_ || visibilityUsedBefore_) {
         if (!visibility_) {
             visibility_ = [Device::get().mtl() newBufferWithLength:kVisibilitySlots * 8 options:MTLResourceStorageModeShared];
             std::memset(visibility_.contents, 0, kVisibilitySlots * 8);
@@ -202,6 +204,7 @@ id<MTLComputeCommandEncoder> CommandStream::compute() {
 
 void CommandStream::setVisibilityWanted(bool wanted) {
     visibilityWanted_ = wanted;
+    if (wanted) visibilityUsedBefore_ = true;
     if (wanted && render_ && !passVisibility_) endEncoder(PassEnd::Visibility);
 }
 
@@ -249,8 +252,11 @@ void CommandStream::waitFor(uint64_t serial) {
     queue_.wait(serial);
 }
 
-void CommandStream::memoryBarrier() {
-    if (render_) {
+void CommandStream::memoryBarrier(bool attachments) {
+    // A render pass whose draws wrote nothing through shaders has nothing to
+    // order (earlier encoders' writes are fenced): it stays open, unless
+    // attachment writes are ordered (glTextureBarrier).
+    if (render_ && (attachments || shaderWrites_)) {
         // Apple GPUs cannot order fragment-stage writes inside a render
         // pass (render-encoder barriers may not wait on the fragment
         // stage): end the pass; Metal orders work across encoders.
