@@ -606,7 +606,10 @@ void RenderbufferStorageMultisample(Context& ctx, GLenum target, GLsizei samples
                                                                                         height:static_cast<NSUInteger>(height)
                                                                                      mipmapped:NO];
         desc.storageMode = MTLStorageModePrivate;
-        desc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead | MTLTextureUsagePixelFormatView;
+        // Format views (a multisample glCopyImageSubData source) only for multisample
+        // storage: they turn off lossless compression (Texture::formatViews).
+        desc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead |
+                     (actual > 1 ? MTLTextureUsagePixelFormatView : 0);
         if (actual > 1) {
             desc.textureType = MTLTextureType2DMultisample;
             desc.sampleCount = static_cast<NSUInteger>(actual);

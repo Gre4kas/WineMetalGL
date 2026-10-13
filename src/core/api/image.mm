@@ -47,8 +47,9 @@ void BindImageTexture(Context& ctx, GLuint unit, GLuint texture, GLint level, GL
     u.access = access;
     u.format = format;
     // Storage gains shader write usage before the next draw that reads it.
-    if (tex && !tex->shaderWrite) {
-        tex->shaderWrite = true;
+    // Images may also read the texture in another format (format views).
+    if (tex && (!tex->shaderWrite || !tex->formatViews)) {
+        tex->shaderWrite = tex->formatViews = true;
         tex->storageDirty = true;
     }
     ctx.markDirty(kDirtyTextures);
@@ -89,8 +90,8 @@ void BindImageTextures(Context& ctx, GLuint first, GLsizei count, const GLuint* 
         u.layer = 0;
         u.access = GL_READ_WRITE;
         u.format = format;
-        if (!tex->shaderWrite) {
-            tex->shaderWrite = true;
+        if (!tex->shaderWrite || !tex->formatViews) {
+            tex->shaderWrite = tex->formatViews = true;
             tex->storageDirty = true;
         }
     }

@@ -162,6 +162,12 @@ public:
     // Bound to an image unit (GL 4.2): storage is (re)allocated with
     // shader write (and, for 32-bit integer formats, atomic) usage.
     bool shaderWrite = false;
+    // Views in another format (GL texture views, stencil sampling, image
+    // units) need MTLTextureUsagePixelFormatView, which turns off Apple
+    // GPUs' lossless compression (render passes into a texture take several
+    // times the bandwidth): storage gains it when such a view is first
+    // needed. sRGB and swizzle views do not need it.
+    bool formatViews = false;
     GLint baseLevel = 0, maxLevel = 1000;
     GLenum swizzle[4] = {GL_RED, GL_GREEN, GL_BLUE, GL_ALPHA};
     GLenum depthStencilMode = GL_DEPTH_COMPONENT;

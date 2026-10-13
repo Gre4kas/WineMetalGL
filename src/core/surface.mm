@@ -116,12 +116,14 @@ void Surface::allocate() {
                                     height:height_
                                  mipmapped:NO];
     desc.storageMode = MTLStorageModePrivate;
-    desc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead | MTLTextureUsagePixelFormatView;
+    // Only sRGB views of these (linearColor): no format views, which would
+    // turn off lossless compression of the back buffer.
+    desc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
     if (samples_ > 1) {
         MTLTextureDescriptor* ms = [desc copy];
         ms.textureType = MTLTextureType2DMultisample;
         ms.sampleCount = samples_;
-        ms.usage = MTLTextureUsageRenderTarget | MTLTextureUsagePixelFormatView;
+        ms.usage = MTLTextureUsageRenderTarget;
         color_ = [device newTextureWithDescriptor:ms];
         resolve_ = [device newTextureWithDescriptor:desc];
     } else {
