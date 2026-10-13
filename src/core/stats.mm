@@ -140,7 +140,7 @@ void endFrame() {
                  "winemetalgl:stats: frame %llu %.2f ms | gl %.2f ms in %llu calls | present %.2f ms (drawable %.2f ms) | "
                  "draws %llu passes %llu | pipelines %llu (%.2f ms) links %llu (%.2f ms) | transient %llu KiB | "
                  "waits %llu (%.2f ms) | lock %.2f ms | converted %llu vertices, %llu reused (client %llu format %llu "
-                 "[0x%llx] other %llu) | cpu indices %llu | uniforms %llu KiB | commits %llu (query %llu) | "
+                 "[0x%llx] other %llu) | cpu indices %llu | indirect gpu %llu cpu %llu | uniforms %llu KiB | commits %llu (query %llu) | "
                  "pass ends: target %llu blit %llu compute %llu visibility %llu commit %llu barrier %llu clear %llu "
                  "other %llu | reads async %llu waiting %llu | gpu %.2f ms | draw cpu: samplers %.2f vertex %.2f "
                  "prepare %.2f pipeline %.2f bind %.2f encode %.2f index %.2f ms\n",
@@ -154,6 +154,7 @@ void endFrame() {
                  static_cast<unsigned long long>(f.convertedReused), static_cast<unsigned long long>(f.convertedClient),
                  static_cast<unsigned long long>(f.convertedFormat), static_cast<unsigned long long>(f.convertedFormatType),
                  static_cast<unsigned long long>(f.convertedOther), static_cast<unsigned long long>(f.cpuIndexDraws),
+                 static_cast<unsigned long long>(f.indirectGpu), static_cast<unsigned long long>(f.indirectCpu),
                  static_cast<unsigned long long>(f.uniformBytes / 1024), static_cast<unsigned long long>(f.commits),
                  static_cast<unsigned long long>(f.queryCommits), static_cast<unsigned long long>(f.passEnds[1]),
                  static_cast<unsigned long long>(f.passEnds[2]), static_cast<unsigned long long>(f.passEnds[3]),

@@ -1,6 +1,8 @@
 // GL 4.6 features (contexts above 4.5 go through the development override
 // until the version is advertised).
+#include <chrono>
 #include <climits>
+#include <cstddef>
 #include <cstdlib>
 #include <cstring>
 #include <string>
@@ -1951,4 +1953,295 @@ GPU_TEST_VERSION(gpu_gl46_read_pixels_pack_buffer_float_formats, 46) {
         glDeleteFramebuffers(1, &fbo);
         glDeleteTextures(1, &tex);
     }
+}
+
+namespace {
+
+GLuint computeProgram(const char* source) {
+    GLuint cs = glCreateShader(GL_COMPUTE_SHADER);
+    glShaderSource(cs, 1, &source, nullptr);
+    glCompileShader(cs);
+    GLint ok = 0;
+    glGetShaderiv(cs, GL_COMPILE_STATUS, &ok);
+    CHECK(ok);
+    GLuint p = glCreateProgram();
+    glAttachShader(p, cs);
+    glLinkProgram(p);
+    glGetProgramiv(p, GL_LINK_STATUS, &ok);
+    CHECK(ok);
+    glDeleteShader(cs);
+    return p;
+}
+
+double millisSince(std::chrono::steady_clock::time_point start) {
+    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+}
+
+// A compute program that spins for `iterations` (a uniform), then writes
+// `values` (a uniform array of 5) to the storage buffer at binding 0: slow
+// GPU work whose results are indirect commands.
+const char* const kSlowWriterCs =
+    "#version 460 core\nlayout(local_size_x = 1) in;\n"
+    "layout(std430, binding = 0) buffer Out { uint words[]; };\n"
+    "uniform uint iterations;\nuniform uint values[5];\n"
+    "void main() {\n"
+    "    float x = 1.0;\n"
+    "    for (uint i = 0u; i < iterations; ++i) x = x * 1.0000001 + 1e-7;\n"
+    "    uint keep = x < 0.0 ? 1u : 0u;  // never: makes the loop's result used\n"
+    "    for (int k = 0; k < 5; ++k) words[k] = values[k] + keep;\n"
+    "}\n";
+
+// Iterations of kSlowWriterCs taking at least 60 ms of GPU time, and that time.
+GLuint slowIterations(GLuint writer, double& millis) {
+    GLuint scratch = 0;
+    glGenBuffers(1, &scratch);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, scratch);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, 64, nullptr, GL_DYNAMIC_DRAW);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, scratch);
+    glUseProgram(writer);
+    GLuint iterations = 1u << 20;
+    for (;;) {
+        glUniform1ui(glGetUniformLocation(writer, "iterations"), iterations);
+        glFinish();
+        const auto start = std::chrono::steady_clock::now();
+        glDispatchCompute(1, 1, 1);
+        glFinish();
+        millis = millisSince(start);
+        if (millis >= 60.0 || iterations >= (1u << 30)) break;
+        iterations *= 2;
+    }
+    glDeleteBuffers(1, &scratch);
+    return iterations;
+}
+
+void setWords(GLuint program, const GLuint (&values)[5]) {
+    for (int k = 0; k < 5; ++k) {
+        const std::string name = "values[" + std::to_string(k) + "]";
+        glUniform1ui(glGetUniformLocation(program, name.c_str()), values[k]);
+    }
+}
+
+}  // namespace
+
+GPU_TEST_VERSION(gpu_gl46_indirect_commands_written_by_the_gpu, 46) {
+    // GPU culling: a compute shader writes the draw commands, and indirect
+    // draws read them on the GPU without waiting for it (issue #12).
+    // Draws must still see the commands: count, first index, base instance
+    // (an instanced colour) and gl_DrawID.
+    GLuint writer = computeProgram(kSlowWriterCs);
+    double gpuMillis = 0;
+    const GLuint iterations = slowIterations(writer, gpuMillis);
+    CHECK(gpuMillis >= 60.0);
+    GLuint p = gpu::program("#version 460 core\nlayout(location = 0) in vec2 pos;\nlayout(location = 1) in vec4 color;\n"
+                            "out vec4 c;\n"
+                            "void main() { c = vec4(color.r, max(color.g, gl_DrawID == 1 ? 1.0 : 0.0), color.b, 1.0);\n"
+                            "              gl_Position = vec4(pos, 0.0, 1.0); }\n",
+                            "#version 460 core\nin vec4 c;\nout vec4 o;\nvoid main() { o = c; }\n");
+    // Triangle 0-2: the lower-left half; 3-5: the upper-right half.
+    const float v[] = {-1, -1, 1, -1, -1, 1,   1, 1, -1, 1, 1, -1};
+    const float colors[] = {1, 0, 0, 1,   0, 1, 0, 1,   0, 0, 1, 1};  // red, green, blue by instance
+    const GLushort indices[] = {0, 1, 2, 3, 4, 5};
+    GLuint vao = 0, buffers[4] = {};
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(4, buffers);
+    glBindBuffer(GL_ARRAY_BUFFER, buffers[0]);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(v), v, GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
+    glEnableVertexAttribArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, buffers[1]);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(colors), colors, GL_STATIC_DRAW);
+    glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, 0, nullptr);
+    glVertexAttribDivisor(1, 1);
+    glEnableVertexAttribArray(1);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, buffers[2]);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
+    // Two elements commands of 5 words, each written by the GPU, 256 bytes
+    // apart (storage buffer bindings are aligned).
+    GLint alignment = 0;
+    glGetIntegerv(GL_SHADER_STORAGE_BUFFER_OFFSET_ALIGNMENT, &alignment);
+    CHECK(alignment > 0 && 256 % alignment == 0);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, buffers[3]);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, 512, nullptr, GL_DYNAMIC_DRAW);
+    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, buffers[3]);
+    auto px = [](int x, int y) { return gpu::readRGBA8(x, y, 1, 1); };
+    // Untimed draws first: the timed ones would include building their pipelines.
+    glUseProgram(p);
+    glMultiDrawElementsIndirect(GL_TRIANGLES, GL_UNSIGNED_SHORT, nullptr, 2, 256);
+    glDrawArraysIndirect(GL_TRIANGLES, nullptr);
+    glClearColor(0, 0, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glFinish();  // timing starts from an idle GPU
+    glUseProgram(writer);
+    glUniform1ui(glGetUniformLocation(writer, "iterations"), iterations);
+    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 0, buffers[3], 0, 20);
+    setWords(writer, {3, 1, 0, 0, 2});  // triangle 0-2, instance 2 (blue)
+    glDispatchCompute(1, 1, 1);
+    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 0, buffers[3], 256, 20);
+    setWords(writer, {3, 1, 3, 0, 0});  // triangle 3-5, instance 0 (red)
+    glDispatchCompute(1, 1, 1);
+    glMemoryBarrier(GL_COMMAND_BARRIER_BIT);
+    glUseProgram(p);
+    const auto start = std::chrono::steady_clock::now();
+    glMultiDrawElementsIndirect(GL_TRIANGLES, GL_UNSIGNED_SHORT, nullptr, 2, 256);
+    const double callMillis = millisSince(start);
+    CHECK(callMillis < gpuMillis / 3);  // the GPU's two writes take 2 * gpuMillis
+    if (callMillis >= gpuMillis / 3) std::fprintf(stderr, "  indirect draw waited: %.1f ms (GPU %.1f ms)\n", callMillis, gpuMillis);
+    const uint8_t blue[4] = {0, 0, 255, 255}, yellow[4] = {255, 255, 0, 255}, green[4] = {0, 255, 0, 255};
+    CHECK(gpu::near(px(10, 10).data(), blue));     // command 0: base instance 2, gl_DrawID 0
+    CHECK(gpu::near(px(54, 54).data(), yellow));   // command 1: instance 0 (red), gl_DrawID 1
+    // An arrays command: vertices 3-5, base instance 1 (green).
+    glClear(GL_COLOR_BUFFER_BIT);
+    glFinish();
+    glUseProgram(writer);
+    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 0, buffers[3], 0, 20);
+    setWords(writer, {3, 1, 3, 1, 0});
+    glDispatchCompute(1, 1, 1);
+    glMemoryBarrier(GL_COMMAND_BARRIER_BIT);
+    glUseProgram(p);
+    const auto arraysStart = std::chrono::steady_clock::now();
+    glDrawArraysIndirect(GL_TRIANGLES, nullptr);
+    const double arraysMillis = millisSince(arraysStart);
+    CHECK(arraysMillis < gpuMillis / 3);
+    CHECK(gpu::near(px(54, 54).data(), green));
+    CHECK(px(10, 10)[2] == 0);
+    CHECK_GL();
+    glDeleteBuffers(4, buffers);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
+    glDeleteProgram(writer);
+}
+
+GPU_TEST_VERSION(gpu_gl46_indirect_draws_index_65535_without_restart, 46) {
+    // Metal restarts strips at 0xffff in 16-bit indices whatever the state;
+    // GL without primitive restart draws vertex 65535. An indirect draw of
+    // such indices still draws the triangle.
+    GLuint p = gpu::program("#version 460 core\nlayout(location = 0) in vec2 pos;\n"
+                            "void main() { gl_Position = vec4(pos, 0.0, 1.0); }\n",
+                            "#version 460 core\nout vec4 o;\nvoid main() { o = vec4(1.0); }\n");
+    std::vector<float> v(65536 * 2, 0.0f);
+    v[0] = -1; v[1] = -1; v[2] = 1; v[3] = -1;  // vertices 0 and 1
+    v[65535 * 2] = -1; v[65535 * 2 + 1] = 1;    // vertex 65535
+    const GLushort indices[] = {0, 1, 65535};
+    const GLuint command[] = {3, 1, 0, 0, 0};
+    GLuint vao = 0, buffers[3] = {};
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(3, buffers);
+    glBindBuffer(GL_ARRAY_BUFFER, buffers[0]);
+    glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(v.size() * sizeof(float)), v.data(), GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
+    glEnableVertexAttribArray(0);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, buffers[1]);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
+    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, buffers[2]);
+    glBufferData(GL_DRAW_INDIRECT_BUFFER, sizeof(command), command, GL_STATIC_DRAW);
+    glUseProgram(p);
+    glClearColor(0, 0, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glDrawElementsIndirect(GL_TRIANGLE_STRIP, GL_UNSIGNED_SHORT, nullptr);
+    CHECK(gpu::readRGBA8(10, 10, 1, 1)[0] == 255);
+    CHECK(gpu::readRGBA8(54, 54, 1, 1)[0] == 0);
+    CHECK_GL();
+    glDeleteBuffers(3, buffers);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
+}
+
+GPU_TEST_VERSION(gpu_gl46_dispatch_indirect_written_by_the_gpu, 46) {
+    // glDispatchComputeIndirect reads group counts a shader wrote on the GPU,
+    // without waiting for it (issue #12).
+    GLuint writer = computeProgram(kSlowWriterCs);
+    double gpuMillis = 0;
+    const GLuint iterations = slowIterations(writer, gpuMillis);
+    GLuint counter = computeProgram("#version 460 core\nlayout(local_size_x = 2) in;\n"
+                                    "layout(std430, binding = 1) buffer Count { uint n; };\n"
+                                    "void main() { atomicAdd(n, 1u); }\n");
+    GLuint buffers[2] = {};
+    glGenBuffers(2, buffers);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, buffers[0]);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, 20, nullptr, GL_DYNAMIC_DRAW);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, buffers[0]);
+    const GLuint zero = 0;
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, buffers[1]);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, 4, &zero, GL_DYNAMIC_DRAW);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, buffers[1]);
+    glBindBuffer(GL_DISPATCH_INDIRECT_BUFFER, buffers[0]);
+    // An untimed dispatch first: the timed one would include building its pipeline.
+    glUseProgram(counter);
+    glDispatchCompute(1, 1, 1);
+    glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, 4, &zero);
+    glFinish();
+    glUseProgram(writer);
+    glUniform1ui(glGetUniformLocation(writer, "iterations"), iterations);
+    setWords(writer, {3, 2, 1, 0, 0});  // 3 x 2 x 1 groups
+    glDispatchCompute(1, 1, 1);
+    glMemoryBarrier(GL_COMMAND_BARRIER_BIT);
+    glUseProgram(counter);
+    const auto start = std::chrono::steady_clock::now();
+    glDispatchComputeIndirect(0);
+    const double callMillis = millisSince(start);
+    CHECK(callMillis < gpuMillis / 3);
+    glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
+    GLuint n = 0;
+    glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, 4, &n);
+    CHECK_EQ(n, 12u);  // 6 groups of 2
+    CHECK_GL();
+    glDeleteBuffers(2, buffers);
+    glDeleteProgram(counter);
+    glDeleteProgram(writer);
+}
+
+GPU_TEST_VERSION(gpu_gl46_integer_attributes_of_the_other_signedness, 46) {
+    // GL reinterprets integer attributes whose type differs in signedness
+    // from the shader input; Metal only fetches matching formats (issue #12:
+    // unsigned bone indices read as ivec4). 8- and 16-bit values extend as
+    // their GL type: unsigned 200 stays 200, signed -5 is 0xfffffffb.
+    GLuint p = gpu::program("#version 460 core\nlayout(location = 0) in vec2 pos;\n"
+                            "layout(location = 1) in ivec4 wide;\nlayout(location = 2) in ivec4 bytes;\n"
+                            "layout(location = 3) in uvec4 signedBytes;\nlayout(location = 4) in uvec2 shorts;\n"
+                            "flat out int ok;\n"
+                            "void main() {\n"
+                            "    ok = int(wide == ivec4(7, -2, 3, 4)) + 2 * int(bytes == ivec4(200, 1, 2, 3)) +\n"
+                            "         4 * int(signedBytes == uvec4(0xfffffffbu, 1u, 2u, 3u)) + 8 * int(shorts == uvec2(0xffffff85u, 9u));\n"
+                            "    gl_Position = vec4(pos, 0.0, 1.0);\n"
+                            "}\n",
+                            "#version 460 core\nflat in int ok;\nout vec4 o;\n"
+                            "void main() { o = vec4(float(ok) / 15.0, 0.0, 0.0, 1.0); }\n");
+    const float v[] = {-1, -1, 1, -1, -1, 1, 1, 1};
+    struct Vertex {
+        GLuint wide[4];
+        GLubyte bytes[4];
+        GLbyte signedBytes[4];
+        GLshort shorts[2];
+    };
+    Vertex one{{7, 0xfffffffeu, 3, 4}, {200, 1, 2, 3}, {-5, 1, 2, 3}, {-123, 9}};
+    const Vertex vertices[4] = {one, one, one, one};
+    GLuint vao = 0, buffers[2] = {};
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(2, buffers);
+    glBindBuffer(GL_ARRAY_BUFFER, buffers[0]);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(v), v, GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
+    glEnableVertexAttribArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, buffers[1]);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+    glVertexAttribIPointer(1, 4, GL_UNSIGNED_INT, sizeof(Vertex), reinterpret_cast<const void*>(offsetof(Vertex, wide)));
+    glVertexAttribIPointer(2, 4, GL_UNSIGNED_BYTE, sizeof(Vertex), reinterpret_cast<const void*>(offsetof(Vertex, bytes)));
+    glVertexAttribIPointer(3, 4, GL_BYTE, sizeof(Vertex), reinterpret_cast<const void*>(offsetof(Vertex, signedBytes)));
+    glVertexAttribIPointer(4, 2, GL_SHORT, sizeof(Vertex), reinterpret_cast<const void*>(offsetof(Vertex, shorts)));
+    for (GLuint a = 1; a <= 4; ++a) glEnableVertexAttribArray(a);
+    glUseProgram(p);
+    glClearColor(0, 0, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    const std::vector<uint8_t> got = gpu::readRGBA8(32, 32, 1, 1);
+    CHECK_EQ(static_cast<int>(got[0]), 255);  // every attribute as GL reads it
+    if (got[0] != 255) std::fprintf(stderr, "  attribute checks: %d of 15\n", (got[0] * 15 + 127) / 255);
+    CHECK_GL();
+    glDeleteBuffers(2, buffers);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
 }

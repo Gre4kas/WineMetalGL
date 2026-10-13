@@ -70,6 +70,14 @@ public:
     // Starts a draw of `mode`: the fixed-function program is chosen for it.
     void beginDraw(GLenum mode);
 
+    // One glDraw*Indirect command, read by the GPU from `commands` at
+    // `offset` (validated by the caller: inside the buffer, aligned): a
+    // DrawArraysIndirectCommand, or with `type` (GL_UNSIGNED_SHORT or
+    // GL_UNSIGNED_INT) a DrawElementsIndirectCommand of the element buffer.
+    // False, having drawn nothing, when the draw needs the command on the
+    // CPU (gpuIndirectDrawable); the caller then reads it and draws.
+    bool drawIndirect(GLenum mode, GLenum type, Buffer& commands, uintptr_t offset);
+
     // glDispatchCompute / glDispatchComputeIndirect (validated by the caller);
     // `indirect` is the DISPATCH_INDIRECT_BUFFER, or null.
     void dispatch(GLuint x, GLuint y, GLuint z, Buffer* indirect, GLintptr offset);
@@ -92,11 +100,29 @@ public:
 private:
     bool validateDraw(GLenum mode);
     id<MTLRenderCommandEncoder> prepare(GLenum mode, MTLPrimitiveType& primitive);
+    // An indirect draw command in a buffer, read by the GPU.
+    struct IndirectSource {
+        id<MTLBuffer> buffer;
+        NSUInteger offset;
+    };
     // Encodes one draw. indexData (CPU, uint32) or indexBuffer select indexed drawing.
     // minVertex/vertexSpan is the vertex range attribute conversion must cover.
+    // With `indirect`, the GPU reads the command (count, instances, first and
+    // base vertex) from it instead (gpuIndirectDrawable draws only).
     bool issue(GLenum mode, GLint first, GLsizei count, GLsizei instances, const uint32_t* indexData,
                id<MTLBuffer> indexBuffer, NSUInteger indexOffset, MTLIndexType indexType, GLint baseVertex,
-               GLint minVertex, GLsizei vertexSpan, bool listed = false);
+               GLint minVertex, GLsizei vertexSpan, bool listed = false, const IndirectSource* indirect = nullptr);
+    // Whether a draw of `mode` (`type`: of indices, or GL_NONE) with the
+    // current state can take its command from the GPU: nothing needs the
+    // command's values on the CPU (vertex ranges to convert, indices to
+    // rewrite, emulated stages, counting queries, gl_BaseVertex/BaseInstance).
+    bool gpuIndirectDrawable(GLenum mode, GLenum type, LinkedProgram& program);
+    // No 16-bit (`type` GL_UNSIGNED_SHORT) or 32-bit index in the buffer is
+    // the type's largest value: Metal always restarts strips there (lists
+    // never), GL only with restart enabled (lists too). Scanned once per
+    // contents; false for buffers the CPU cannot read now or that the
+    // application writes behind GL's back.
+    bool noMetalRestartIndex(Buffer& buffer, GLenum type);
     void clearWithDraw(const RenderTargetDesc& target, const TargetFormats& formats, const PendingClear& clear);
     // `gather`, when given, lists the vertex fetched for each vertex of a
     // non-indexed draw (transform feedback capture): per-vertex attributes

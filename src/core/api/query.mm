@@ -191,6 +191,10 @@ bool queriesCountingStatistics(Context& ctx) {
     return false;
 }
 
+bool queriesNeedDrawSizes(Context& ctx) {
+    return ctx.state.activeQueries[kQueryPrimitivesGenerated] || queriesCountingStatistics(ctx) || anyOcclusionActive(ctx);
+}
+
 bool queriesCounting(Context& ctx, PipelineStatistic statistic) {
     return ctx.state.activeQueries[kQueryStatisticsFirst + statistic] != nullptr;
 }

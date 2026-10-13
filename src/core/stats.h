@@ -29,6 +29,9 @@ struct Frame {
     uint64_t convertedVertices = 0, convertedReused = 0, convertedClient = 0, convertedFormat = 0, convertedOther = 0;
     uint64_t convertedFormatType = 0;  // GL type of the last unfetchable one (| 0x10000: normalized)
     uint64_t cpuIndexDraws = 0;        // draws whose indices were rewritten on the CPU
+    // Indirect draw commands read by the GPU, and read on the CPU (after
+    // waiting for GPU writes to the command buffer).
+    uint64_t indirectGpu = 0, indirectCpu = 0;
     uint64_t uniformBytes = 0;         // default uniforms copied to transient memory
     // Command buffers committed, those committed for timer queries, and
     // render passes ended by cause (CommandStream::PassEnd order).

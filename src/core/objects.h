@@ -98,6 +98,11 @@ public:
     // count, type, mode, rotation and restart index; 32-bit indices.
     std::map<std::vector<uint64_t>, std::unique_ptr<ConvertedVertices>> indexLists;
     uint64_t indexListsVersion = 0;
+    // DrawState::drawIndirect's scans for 16-bit and 32-bit indices of the
+    // largest value (where Metal always restarts strips), valid
+    // while `version` is maxIndexScanVersion[0 for 16-bit, 1 for 32-bit].
+    uint64_t maxIndexScanVersion[2] = {~0ull, ~0ull};
+    bool hasMaxIndex[2] = {};
 
     uint8_t* contents() const { return mtl ? static_cast<uint8_t*>(mtl.contents) : nullptr; }
     // Mapped in a way that forbids GPU use (persistent mappings allow it).

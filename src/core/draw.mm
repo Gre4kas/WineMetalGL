@@ -466,6 +466,29 @@ struct VertexFetch {
     uint32_t bytes = 0;
 };
 
+// Metal fetches integer formats only into shader inputs of the same
+// signedness; GL reinterprets the bits (an unsigned array read as ivec4).
+// 32-bit formats swap signedness bit for bit. Narrower ones would extend
+// differently (UChar as Char sign-extends), so they are converted on the CPU.
+MTLVertexFormat matchSignedness(MTLVertexFormat format, char kind) {
+    static const std::pair<MTLVertexFormat, MTLVertexFormat> words[] = {
+        {MTLVertexFormatInt, MTLVertexFormatUInt}, {MTLVertexFormatInt2, MTLVertexFormatUInt2},
+        {MTLVertexFormatInt3, MTLVertexFormatUInt3}, {MTLVertexFormatInt4, MTLVertexFormatUInt4}};
+    static const MTLVertexFormat signedNarrow[] = {
+        MTLVertexFormatChar, MTLVertexFormatChar2, MTLVertexFormatChar3, MTLVertexFormatChar4,
+        MTLVertexFormatShort, MTLVertexFormatShort2, MTLVertexFormatShort3, MTLVertexFormatShort4};
+    static const MTLVertexFormat unsignedNarrow[] = {
+        MTLVertexFormatUChar, MTLVertexFormatUChar2, MTLVertexFormatUChar3, MTLVertexFormatUChar4,
+        MTLVertexFormatUShort, MTLVertexFormatUShort2, MTLVertexFormatUShort3, MTLVertexFormatUShort4};
+    if (kind != 'i' && kind != 'u') return format;
+    for (const auto& [signedFormat, unsignedFormat] : words) {
+        if (format == signedFormat || format == unsignedFormat) return kind == 'i' ? signedFormat : unsignedFormat;
+    }
+    const auto& wrong = kind == 'i' ? unsignedNarrow : signedNarrow;
+    if (std::find(std::begin(wrong), std::end(wrong), format) != std::end(wrong)) return MTLVertexFormatInvalid;
+    return format;
+}
+
 VertexFetch vertexFetch(const shader::StageOutput::VertexInput& input, const VertexAttrib& a) {
     if (input.kind == 'd') {
         const uint32_t element = a.isDouble ? a.elementBytes() : 0,
@@ -474,8 +497,8 @@ VertexFetch vertexFetch(const shader::StageOutput::VertexInput& input, const Ver
         const uint32_t bytes = std::min({16u, element - start, static_cast<uint32_t>(input.components) * 4u});
         return {bytes == 8 ? MTLVertexFormatUInt2 : MTLVertexFormatUInt4, static_cast<NSUInteger>(a.offset) + start, bytes};
     }
-    return {a.isDouble ? MTLVertexFormatInvalid : mtlVertexFormat(a.type, a.size, a.normalized, a.integer),
-            static_cast<NSUInteger>(a.offset), a.elementBytes()};
+    const MTLVertexFormat format = a.isDouble ? MTLVertexFormatInvalid : mtlVertexFormat(a.type, a.size, a.normalized, a.integer);
+    return {a.integer ? matchSignedness(format, input.kind) : format, static_cast<NSUInteger>(a.offset), a.elementBytes()};
 }
 
 }  // namespace
@@ -1764,7 +1787,7 @@ const DrawState::IndexPattern* DrawState::indexPattern(GLenum mode, bool rotate,
 
 bool DrawState::issue(GLenum mode, GLint first, GLsizei count, GLsizei instances, const uint32_t* indexData,
                       id<MTLBuffer> indexBuffer, NSUInteger indexOffset, MTLIndexType indexType, GLint baseVertex,
-                      GLint minVertex, GLsizei vertexSpan, bool listed) {
+                      GLint minVertex, GLsizei vertexSpan, bool listed, const IndirectSource* indirect) {
     queriesCountPrimitives(ctx_, mode, count, instances);
     stats::count(&stats::Frame::draws);
     LinkedProgram* current = executable();
@@ -1831,6 +1854,17 @@ bool DrawState::issue(GLenum mode, GLint first, GLsizei count, GLsizei instances
     if (rotate) native = topologyClass(mode) == MTLPrimitiveTopologyClassLine ? MTLPrimitiveTypeLine : MTLPrimitiveTypeTriangle;
     if (points) native = MTLPrimitiveTypePoint;
     const uint64_t serial = ctx_.stream().serial();
+    if (indirect) {
+        // The GL command structures are Metal's indirect arguments
+        // (MTLDraw[Indexed]PrimitivesIndirectArguments), field for field.
+        if (indexBuffer)
+            [encoder drawIndexedPrimitives:native indexType:indexType indexBuffer:indexBuffer indexBufferOffset:indexOffset
+                            indirectBuffer:indirect->buffer indirectBufferOffset:indirect->offset];
+        else
+            [encoder drawPrimitives:native indirectBuffer:indirect->buffer indirectBufferOffset:indirect->offset];
+        ctx_.stream().noteDraw();
+        return true;
+    }
     if (!indexData && !indexBuffer && !points && (needsIndices || rotate) && count > 0) {
         // Array draws of fans, quads, loops or rotated primitives: the
         // rewritten numbering of 0..count-1, kept per mode and count, drawn
@@ -1870,6 +1904,86 @@ bool DrawState::issue(GLenum mode, GLint first, GLsizei count, GLsizei instances
                    baseInstance:baseInstance_];
     }
     ctx_.stream().noteDraw();
+    return true;
+}
+
+bool DrawState::noMetalRestartIndex(Buffer& buffer, GLenum type) {
+    if (buffer.mapped || buffer.pinned || !buffer.mtl) return false;
+    if (buffer.lastWriteSerial && !ctx_.stream().queue().isComplete(buffer.lastWriteSerial)) return false;
+    const int wide = type == GL_UNSIGNED_INT ? 1 : 0;
+    if (buffer.maxIndexScanVersion[wide] != buffer.version) {
+        // In blocks without early exits, which the compiler vectorizes.
+        const uint8_t* p = buffer.contents();
+        const size_t size = wide ? 4 : 2, n = static_cast<size_t>(buffer.size) / size;
+        bool found = false;
+        for (size_t block = 0; block < n && !found; block += 4096) {
+            const size_t end = std::min(n, block + 4096);
+            if (wide) {
+                for (size_t i = block; i < end; ++i) {
+                    uint32_t v;
+                    std::memcpy(&v, p + i * 4, 4);
+                    found |= v == 0xffffffffu;
+                }
+            } else {
+                for (size_t i = block; i < end; ++i) {
+                    uint16_t v;
+                    std::memcpy(&v, p + i * 2, 2);
+                    found |= v == 0xffffu;
+                }
+            }
+        }
+        buffer.hasMaxIndex[wide] = found;
+        buffer.maxIndexScanVersion[wide] = buffer.version;
+    }
+    return !buffer.hasMaxIndex[wide];
+}
+
+bool DrawState::gpuIndirectDrawable(GLenum mode, GLenum type, LinkedProgram& program) {
+    const ContextState& st = ctx_.state;
+    if (mode == GL_PATCHES || program.link.geometry.active || ffWideLines_ || lineSides_ || linePartners_) return false;
+    if (st.transformFeedback->active || queriesNeedDrawSizes(ctx_)) return false;
+    // Drawn as Metal primitives, indices as they are.
+    bool needsIndices = false;
+    nativePrimitive(mode, needsIndices);
+    if (needsIndices || pointPolygons(mode) || rotateProvoking(mode, program)) return false;
+    // gl_BaseVertex and gl_BaseInstance are uniforms set from the command
+    // (gl_InstanceID and gl_VertexID come from Metal; gl_DrawID is the caller's).
+    if (Program* owner = stageProgram(program, static_cast<int>(Stage::Vertex)); owner && owner->linked) {
+        const shader::LinkResult::BuiltinUniforms& b = owner->linked->link.builtinUniforms;
+        if (b.baseVertex >= 0 || b.baseInstance >= 0) return false;
+    }
+    // Every attribute fetched by Metal: conversions cover the vertices drawn.
+    VertexInputPlan plan;
+    planVertexInputs(program, false, plan);
+    for (const shader::StageOutput::VertexInput& input : program.stage(Stage::Vertex).vertexInputs)
+        if (input.location >= 0 && input.location < VertexArray::kAttribSlots &&
+            plan.how[static_cast<size_t>(input.location)] == VertexInputPlan::Converted)
+            return false;
+    if (type == GL_NONE) return true;
+    // Indices Metal reads as GL does: 16 or 32 bits, with no index where one
+    // of them restarts and the other does not (noMetalRestartIndex).
+    if (type != GL_UNSIGNED_SHORT && type != GL_UNSIGNED_INT) return false;
+    Buffer* elements = st.vertexArray->elementBuffer.get();
+    if (!elements || elements->mappedNonPersistent()) return false;
+    const uint32_t largest = type == GL_UNSIGNED_SHORT ? 0xffffu : 0xffffffffu;
+    if (st.primitiveRestart && !st.primitiveRestartFixedIndex && st.primitiveRestartIndex != largest) return false;
+    return noMetalRestartIndex(*elements, type);
+}
+
+bool DrawState::drawIndirect(GLenum mode, GLenum type, Buffer& commands, uintptr_t offset) {
+    ImageShadowScope shadows(*this);
+    beginDraw(mode);
+    if (!validateDraw(mode) || !conditionalRenderAllows(ctx_)) return true;  // as the CPU path would
+    LinkedProgram* current = executable();
+    if (!current || !commands.mtl || !gpuIndirectDrawable(mode, type, *current)) return false;
+    stats::count(&stats::Frame::indirectGpu);
+    Buffer* elements = type != GL_NONE ? ctx_.state.vertexArray->elementBuffer.get() : nullptr;
+    const IndirectSource source{commands.mtl, static_cast<NSUInteger>(offset)};
+    issue(mode, 0, 0, 1, nullptr, elements ? elements->mtl : nil, 0,
+          type == GL_UNSIGNED_SHORT ? MTLIndexTypeUInt16 : MTLIndexTypeUInt32, 0, 0, 0, false, &source);
+    const uint64_t serial = ctx_.stream().serial();
+    commands.lastUseSerial = serial;
+    if (elements) elements->lastUseSerial = serial;
     return true;
 }
 
@@ -2303,7 +2417,11 @@ void DrawState::dispatch(GLuint x, GLuint y, GLuint z, Buffer* indirect, GLintpt
     LinkedProgram* current = executable();
     if (!current) return;
     LinkedProgram& lp = *current;
-    if (indirect && indirect->lastWriteSerial) ctx_.stream().waitFor(indirect->lastWriteSerial);
+    // The GPU reads the group counts of an indirect dispatch, after the
+    // commands before it (serial compute encoder, tracked buffers): only a
+    // statistics query needs them on the CPU, after their writes complete.
+    const bool countInvocations = queriesCounting(ctx_, kStatComputeShaderInvocations);
+    if (indirect && countInvocations && indirect->lastWriteSerial) ctx_.stream().waitFor(indirect->lastWriteSerial);
     prepareSamplerStorage(lp);
     const int cs = static_cast<int>(Stage::Compute);
     const uint16_t borders = borderVariant(lp, cs);
@@ -2315,7 +2433,7 @@ void DrawState::dispatch(GLuint x, GLuint y, GLuint z, Buffer* indirect, GLintpt
                         &lp.stage(Stage::Compute));
     const uint32_t* local = lp.link.computeLocalSize;
     const MTLSize threads = MTLSizeMake(local[0], local[1], local[2]);
-    if (queriesCounting(ctx_, kStatComputeShaderInvocations)) {
+    if (countInvocations) {
         uint32_t groups[3] = {x, y, z};
         if (indirect) std::memcpy(groups, indirect->contents() + offset, sizeof(groups));  // written by the GPU before the wait above
         queriesCountStatistic(ctx_, kStatComputeShaderInvocations,
