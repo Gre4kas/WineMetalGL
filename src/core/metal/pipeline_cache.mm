@@ -36,7 +36,8 @@ id<MTLRenderPipelineState> PipelineCache::render(const PipelineKey& key, LinkedP
     stats::Timer timer(&stats::Frame::pipelineNanos);
     const bool pointSizeAllowed = key.topologyClass == MTLPrimitiveTopologyClassUnspecified ||
                                   key.topologyClass == MTLPrimitiveTopologyClassPoint;
-    id<MTLFunction> vertex = key.borders[0] && !key.geometryPass
+    id<MTLFunction> vertex = key.tessellation ? program.postTessellationVertex(key.tessellation & 2, key.borders[0])
+                             : key.borders[0] && !key.geometryPass
                                  ? program.vertexWithBorders(key.rasterization, pointSizeAllowed, key.borders[0])
                              : !key.rasterization ? program.vertexNoRaster()
                              : !pointSizeAllowed  ? program.vertexWithoutPointSize(key.geometryPass)
@@ -71,6 +72,14 @@ id<MTLRenderPipelineState> PipelineCache::render(const PipelineKey& key, LinkedP
     desc.alphaToOneEnabled = key.alphaToOne;
     desc.rasterizationEnabled = key.rasterization;
     desc.inputPrimitiveTopology = static_cast<MTLPrimitiveTopologyClass>(key.topologyClass);
+    if (key.tessellation) {
+        desc.tessellationPartitionMode = static_cast<MTLTessellationPartitionMode>((key.tessellation >> 2) & 3);
+        desc.tessellationOutputWindingOrder = key.tessellation & 16 ? MTLWindingClockwise : MTLWindingCounterClockwise;
+        desc.tessellationFactorFormat = MTLTessellationFactorFormatHalf;
+        desc.tessellationFactorStepFunction = MTLTessellationFactorStepFunctionPerPatch;
+        desc.tessellationControlPointIndexType = MTLTessellationControlPointIndexTypeNone;
+        desc.maxTessellationFactor = 64;  // GL_MAX_TESS_GEN_LEVEL
+    }
     for (int i = 0; i < 8; ++i) {
         desc.colorAttachments[i].pixelFormat = static_cast<MTLPixelFormat>(key.colorFormats[i]);
         if (!key.colorFormats[i]) continue;

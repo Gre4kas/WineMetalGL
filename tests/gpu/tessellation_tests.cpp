@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <set>
+#include <string>
 #include <utility>
 
 #include "gpu.h"
@@ -334,6 +335,113 @@ in vec4 color; out vec4 o; void main() { o = color; })";
         for (int x : {1, 32, 62}) CHECK(gpu::near(&pixels[(static_cast<size_t>(y) * 64 + x) * 4], green));
     glDeleteVertexArrays(1, &vao);
     glDeleteProgram(p);
+}
+
+TESS_TEST(gpu_tess_metal_tessellator_matches_cpu) {
+    // Rasterized triangle and quad patches use Metal's tessellator; with a
+    // PRIMITIVES_GENERATED query active they take the CPU tessellator. Both
+    // draw the same pixels for each domain, spacing and vertex order, with
+    // either face culled. Two patches and two instances check patch numbering;
+    // the levels (and the per-patch output) come from the control shader.
+    // The last program names transform feedback varyings: its evaluation
+    // stage carries capture code (inactive here), and it still draws.
+    const char* vs = R"(#version 400 core
+in vec2 position;
+out vec2 pos;
+void main() { pos = position * 0.5 + vec2(gl_InstanceID == 0 ? -0.5 : 0.5, 0.0); gl_Position = vec4(pos, 0.0, 1.0); })";
+    const char* fs = R"(#version 400 core
+in vec4 color; out vec4 o; void main() { o = color; })";
+    struct Case {
+        const char* layout;
+        int vertices;
+        float outer[4], inner[2];
+        bool varyings = false;
+    };
+    const Case cases[] = {
+        {"triangles, fractional_odd_spacing, ccw", 3, {3.5f, 2.25f, 5.0f, 0.0f}, {4.75f, 0.0f}},
+        {"triangles, equal_spacing, cw", 3, {2.3f, 4.0f, 1.0f, 0.0f}, {3.2f, 0.0f}},
+        {"quads, fractional_even_spacing, cw", 4, {2.5f, 4.0f, 3.25f, 6.0f}, {5.5f, 2.75f}},
+        {"quads, equal_spacing, ccw", 4, {2.3f, 3.0f, 1.0f, 4.6f}, {3.3f, 2.2f}},
+        {"quads, fractional_odd_spacing, ccw", 4, {3.0f, 2.5f, 4.0f, 1.5f}, {2.25f, 3.5f}, true},
+    };
+    for (const Case& c : cases) {
+        const std::string n = std::to_string(c.vertices);
+        const std::string tcs = R"(#version 400 core
+layout(vertices = )" + n + R"() out;
+uniform float outer[4];
+uniform float inner[2];
+in vec2 pos[];
+out vec2 cp[];
+patch out float shade;
+void main() {
+    cp[gl_InvocationID] = pos[gl_InvocationID];
+    shade = 0.25 + 0.5 * float(gl_PrimitiveID);
+    for (int i = 0; i < 4; ++i) gl_TessLevelOuter[i] = outer[i];
+    gl_TessLevelInner[0] = inner[0]; gl_TessLevelInner[1] = inner[1];
+})";
+        const bool quads = c.vertices == 4;
+        const std::string tes = std::string("#version 400 core\nlayout(") + c.layout + R"() in;
+in vec2 cp[];
+patch in float shade;
+out vec4 color;
+void main() {
+)" + (quads ? "    vec2 p = mix(mix(cp[0], cp[1], gl_TessCoord.x), mix(cp[2], cp[3], gl_TessCoord.x), gl_TessCoord.y);\n"
+            : "    vec2 p = cp[0] * gl_TessCoord.x + cp[1] * gl_TessCoord.y + cp[2] * gl_TessCoord.z;\n") +
+                                R"(    gl_Position = vec4(p, 0.0, 1.0);
+    color = vec4(gl_TessCoord.xy, shade, 1.0);
+})";
+        GLuint p = c.varyings ? link({vs, tcs.c_str(), tes.c_str(), nullptr, fs}, {"color"})
+                              : link({vs, tcs.c_str(), tes.c_str(), nullptr, fs});
+        glUseProgram(p);
+        for (int i = 0; i < 4; ++i) glUniform1f(glGetUniformLocation(p, ("outer[" + std::to_string(i) + "]").c_str()), c.outer[i]);
+        for (int i = 0; i < 2; ++i) glUniform1f(glGetUniformLocation(p, ("inner[" + std::to_string(i) + "]").c_str()), c.inner[i]);
+        // Two patches side by side in [-1, 1] (each instance halves and shifts them).
+        const float tri[] = {-0.9f, -0.9f, 0.0f, -0.9f, -0.45f, 0.9f, 0.1f, -0.9f, 0.9f, 0.9f, 0.1f, 0.9f};
+        const float quad[] = {-0.9f, -0.9f, -0.1f, -0.9f, -0.9f, 0.9f, -0.1f, 0.9f,
+                              0.1f, -0.9f, 0.9f, -0.9f, 0.1f, 0.9f, 0.9f, 0.9f};
+        GLuint vao = 0, vbo = 0, query = 0;
+        glGenVertexArrays(1, &vao);
+        glBindVertexArray(vao);
+        glGenBuffers(1, &vbo);
+        glBindBuffer(GL_ARRAY_BUFFER, vbo);
+        if (quads) glBufferData(GL_ARRAY_BUFFER, sizeof(quad), quad, GL_STATIC_DRAW);
+        else glBufferData(GL_ARRAY_BUFFER, sizeof(tri), tri, GL_STATIC_DRAW);
+        const GLint position = glGetAttribLocation(p, "position");
+        glVertexAttribPointer(static_cast<GLuint>(position), 2, GL_FLOAT, GL_FALSE, 0, nullptr);
+        glEnableVertexAttribArray(static_cast<GLuint>(position));
+        glGenQueries(1, &query);
+        patchParameteri()(GL_PATCH_VERTICES, c.vertices);
+        glEnable(GL_CULL_FACE);
+        const auto cullFace = reinterpret_cast<void (*)(GLenum)>(wmgl_get_proc_address("glCullFace"));
+        for (GLenum face : {GL_BACK, GL_FRONT}) {
+            cullFace(face);
+            std::vector<uint8_t> images[2];
+            for (int cpu = 0; cpu < 2; ++cpu) {
+                glClearColor(0, 0, 0, 0);
+                glClear(GL_COLOR_BUFFER_BIT);
+                if (cpu) glBeginQuery(GL_PRIMITIVES_GENERATED, query);
+                glDrawArraysInstanced(GL_PATCHES, 0, 2 * c.vertices, 2);
+                if (cpu) glEndQuery(GL_PRIMITIVES_GENERATED);
+                images[cpu] = gpu::readRGBA8(0, 0, 64, 64);
+            }
+            CHECK_GL();
+            int drawn = 0, different = 0;
+            for (size_t i = 0; i < images[0].size(); i += 4) {
+                drawn += images[1][i + 3] != 0;
+                different += !gpu::near(&images[0][i], &images[1][i], 3);
+            }
+            if (different) std::fprintf(stderr, "  %s, %s culled: %d of 4096 pixels differ\n", c.layout,
+                                        face == GL_BACK ? "back" : "front", different);
+            CHECK_EQ(different, 0);
+            CHECK(drawn == 0 || drawn > 200);
+        }
+        cullFace(GL_BACK);
+        glDisable(GL_CULL_FACE);
+        glDeleteQueries(1, &query);
+        glDeleteBuffers(1, &vbo);
+        glDeleteVertexArrays(1, &vao);
+        glDeleteProgram(p);
+    }
 }
 
 TESS_TEST(gpu_tess_primitives_generated) {

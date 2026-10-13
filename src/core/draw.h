@@ -165,6 +165,16 @@ private:
     // segment) as GL_PATCHES through the tessellation emulation
     // (shader/tessellation.h).
     void drawPatches(const std::vector<uint32_t>& vertices, GLsizei instances);
+    // Whether a draw of `program`'s patches can use Metal's tessellator
+    // instead of reading the levels back for the CPU's: triangles or quads
+    // (not point mode), rasterized, and nothing that needs the tessellated
+    // primitives on the CPU (a geometry shader, transform feedback, queries).
+    bool metalTessellation(LinkedProgram& program, LinkedProgram& evaluation);
+    // Draws `patches` patches (patch records at `records`) with Metal's
+    // tessellator, the levels' factors at `factors` (wmgl_tess_factors).
+    void drawMetalPatches(LinkedProgram& program, LinkedProgram& evaluation, id<MTLBuffer> records, NSUInteger recordsOffset,
+                          id<MTLBuffer> factors, NSUInteger factorsOffset, uint64_t patches, uint32_t patchesPerInstance,
+                          uint32_t patchVertices);
     // Uniforms, uniform blocks and samplers of a compute function (the
     // `stage` slots: Stage::Compute for a compute program or the geometry
     // kernel, Stage::TessControl for the tessellation control kernel).

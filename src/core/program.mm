@@ -13,6 +13,7 @@
 #include "core/metal/device.h"
 #include "core/objects.h"
 #include "core/shader/border.h"
+#include "core/shader/tessellation.h"
 #include "core/util/log.h"
 
 namespace wmgl {
@@ -386,6 +387,21 @@ id<MTLComputePipelineState> LinkedProgram::kernelWithBorders(const shader::Stage
     id<MTLComputePipelineState> state = computePipelineFor(output, stage, threads, borders);
     borderKernels_[key] = state;
     return state;
+}
+
+id<MTLFunction> LinkedProgram::postTessellationVertex(bool quads, uint16_t borders) {
+    const int vs = static_cast<int>(shader::Stage::Vertex);
+    if (pipeline) return stageExecutable[vs] ? stageExecutable[vs]->postTessellationVertex(quads, borders) : nil;
+    const std::string key = std::string(quads ? "q" : "t") + std::to_string(borders);
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (auto it = postTessellation_.find(key); it != postTessellation_.end()) return it->second;
+    const shader::StageOutput& output = link.stages[vs];
+    std::string msl = output.present ? shader::postTessellationVertexMsl(output.msl, output.entryPoint, quads) : "";
+    if (!msl.empty()) msl = withoutPointSize(msl);
+    if (!msl.empty() && borders) msl = shader::mslWithBorders(msl, shader::borderVariantDefinitions(borders));
+    id<MTLFunction> function = msl.empty() ? nil : compileFunction(msl, output.entryPoint, vs);
+    postTessellation_[key] = function;
+    return function;
 }
 
 id<MTLComputePipelineState> LinkedProgram::tessControlKernel() {

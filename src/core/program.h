@@ -76,6 +76,11 @@ struct LinkedProgram {
     // program's, in the same order, so the draw binds the program's state.
     id<MTLComputePipelineState> tessControlKernel();
     std::shared_ptr<LinkedProgram> tessEvaluation();
+    // On the evaluation executable: its vertex function as a Metal
+    // post-tessellation vertex function for triangle or quad patches
+    // (shader::postTessellationVertexMsl), without [[point_size]], with
+    // clamp-to-border emulation variant `borders`. Nil if it has none.
+    id<MTLFunction> postTessellationVertex(bool quads, uint16_t borders);
     std::shared_ptr<LinkedProgram> pipelineTessEvaluation(const shader::LinkResult& evaluation, std::shared_ptr<LinkedProgram> out);
     // A pipeline whose vertex processing stages span programs: the emulation
     // assembled from each stage's program (shader::linkPipeline), or null.
@@ -121,6 +126,7 @@ private:
     bool vertexNoRasterFailed_ = false;
     std::unordered_map<std::string, id<MTLFunction>> fragmentVariants_;  // nil entries: failed
     std::unordered_map<std::string, id<MTLFunction>> borderVertex_;
+    std::unordered_map<std::string, id<MTLFunction>> postTessellation_;  // nil entries: failed
     std::unordered_map<std::string, id<MTLComputePipelineState>> borderKernels_;
     id<MTLFunction> passthrough_ = nil;
     id<MTLFunction> noPointSize_[2] = {};

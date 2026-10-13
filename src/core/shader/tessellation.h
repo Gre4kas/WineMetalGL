@@ -20,6 +20,13 @@
 //      the program's transform feedback varyings, so geometry emulation and
 //      capture work unchanged, and draws with the program's fragment shader.
 //
+// Rasterized triangle and quad patches that nothing else needs on the CPU
+// (no geometry shader, transform feedback or counting query) skip steps 3
+// and 4's domain points: a kernel turns the levels into Metal tessellation
+// factors, and Metal's tessellator feeds the evaluation vertex shader as a
+// post-tessellation vertex function (postTessellationVertexMsl), so the
+// draw does not wait for the control stage.
+//
 // The generated kernels come from GLSL that SPIRV-Cross emits for the linked
 // stages, so the default uniform block keeps the program's layout and
 // uniform blocks and samplers keep their names.
@@ -93,5 +100,12 @@ TessControlSources tessControlSources(const TessStageInfo& control, const LinkRe
 // the default levels.
 std::string tessEvaluationVertexShader(const TessStageInfo& evaluation, const TessControlSources* control,
                                        const LinkResult* capture, std::string& log);
+
+// The evaluation vertex function (`msl`, from tessEvaluationVertexShader) as
+// a Metal post-tessellation vertex function for triangle or quad patches:
+// the patch number and gl_TessCoord come from [[patch_id]] and
+// [[position_in_patch]] instead of the domain point buffer, so draws can use
+// Metal's tessellator. Empty when the function does not have the expected form.
+std::string postTessellationVertexMsl(const std::string& msl, const std::string& entryPoint, bool quads);
 
 }  // namespace wmgl::shader

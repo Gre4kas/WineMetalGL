@@ -1612,6 +1612,19 @@ id<MTLComputePipelineState> stripsProvokingLastKernel() {
     return state;
 }
 
+// The utility kernel that writes Metal tessellation factors from patch records.
+id<MTLComputePipelineState> tessFactorsKernel() {
+    static std::once_flag once;
+    static id<MTLComputePipelineState> state = nil;
+    std::call_once(once, [] {
+        id<MTLFunction> function = [Device::get().utilityLibrary() newFunctionWithName:@"wmgl_tess_factors"];
+        NSError* error = nil;
+        if (function) state = [Device::get().mtl() newComputePipelineStateWithFunction:function error:&error];
+        if (!state) WMGL_ERR("tessellation factor kernel: %s", error ? error.localizedDescription.UTF8String : "missing");
+    });
+    return state;
+}
+
 // Lists the primitives of a line or triangle stream with GL's last-vertex
 // provoking vertex first: Metal flat-shades from the first vertex. Each
 // triangle is rotated, so its winding is unchanged.
@@ -2797,6 +2810,7 @@ void DrawState::drawPatches(const std::vector<uint32_t>& vertices, GLsizei insta
     const uint32_t copies = static_cast<uint32_t>(std::max(1, instances));
     const uint64_t total = static_cast<uint64_t>(patches) * copies;  // patch p of instance i is patch i * patches + p
     if (t.hasControl && !lp.tessControlKernel()) return;
+    const bool metal = metalTessellation(lp, *evaluation);
     waitForCpuVertexReads(lp, true);
     prepareSamplerStorage(lp);
     queriesPrepareVisibility(ctx_);
@@ -2832,11 +2846,50 @@ void DrawState::drawPatches(const std::vector<uint32_t>& vertices, GLsizei insta
         [compute setBytes:control length:sizeof(control) atIndex:shader::kSlotFirstXfbBuffer + 2];
         [compute dispatchThreadgroups:MTLSizeMake(total, 1, 1)
                 threadsPerThreadgroup:MTLSizeMake(static_cast<NSUInteger>(t.verticesOut), 1, 1)];
+        if (metal) {
+            // Metal's tessellator reads the levels on the GPU: no read-back.
+            const uint32_t levelsAt = static_cast<uint32_t>(t.verticesOut) * t.vertexWords;
+            TransientAllocation factors = transient_.allocate(total * (t.mode == GL_QUADS ? 12 : 8), serial, 16);
+            if (!factors.buffer) return;
+            const uint32_t params[4] = {recordWords, levelsAt, static_cast<uint32_t>(total),
+                                        (t.mode == GL_QUADS ? 1u : 0u) | (t.spacing == GL_EQUAL ? 2u : 0u)};
+            [compute setComputePipelineState:tessFactorsKernel()];
+            [compute setBuffer:output.buffer offset:output.offset atIndex:0];
+            [compute setBuffer:factors.buffer offset:factors.offset atIndex:1];
+            [compute setBytes:params length:sizeof(params) atIndex:2];
+            [compute dispatchThreads:MTLSizeMake(total, 1, 1) threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
+            drawMetalPatches(lp, *evaluation, output.buffer, output.offset, factors.buffer, factors.offset, total,
+                             static_cast<uint32_t>(patches), patchVertices);
+            return;
+        }
+        stats::count(&stats::Frame::tessCpu);
         ctx_.stream().waitFor(serial);
         const auto* words = static_cast<const uint32_t*>(output.data);
         records.assign(words, words + total * recordWords);
         serial = ctx_.stream().serial();
     }
+
+    if (!t.hasControl && metal) {
+        // The default levels, the same for every patch (a record stride of 0).
+        TransientAllocation levels = transient_.allocate(6 * 4, serial, 16);
+        TransientAllocation factors = transient_.allocate(total * (t.mode == GL_QUADS ? 12 : 8), serial, 16);
+        id<MTLComputePipelineState> kernel = tessFactorsKernel();
+        if (!levels.buffer || !factors.buffer || !kernel) return;
+        std::memcpy(levels.data, ctx_.state.patchDefaultOuterLevel, 4 * 4);
+        std::memcpy(static_cast<uint8_t*>(levels.data) + 16, ctx_.state.patchDefaultInnerLevel, 2 * 4);
+        const uint32_t params[4] = {0, 0, static_cast<uint32_t>(total),
+                                    (t.mode == GL_QUADS ? 1u : 0u) | (t.spacing == GL_EQUAL ? 2u : 0u)};
+        id<MTLComputeCommandEncoder> compute = ctx_.stream().compute();
+        [compute setComputePipelineState:kernel];
+        [compute setBuffer:levels.buffer offset:levels.offset atIndex:0];
+        [compute setBuffer:factors.buffer offset:factors.offset atIndex:1];
+        [compute setBytes:params length:sizeof(params) atIndex:2];
+        [compute dispatchThreads:MTLSizeMake(total, 1, 1) threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
+        drawMetalPatches(lp, *evaluation, captured.buffer, captured.offset, factors.buffer, factors.offset, total,
+                         static_cast<uint32_t>(patches), patchVertices);
+        return;
+    }
+    if (!t.hasControl) stats::count(&stats::Frame::tessCpu);
 
     // 3. Tessellation: domain points (patch, u, v, w) and the primitive list.
     if (!tessellator_) tessellator_ = std::make_unique<tess::Tessellator>();
@@ -2922,6 +2975,91 @@ void DrawState::drawPatches(const std::vector<uint32_t>& vertices, GLsizei insta
         else
             issue(listMode, 0, static_cast<GLsizei>(indices.size()), 1, indices.data(), nil, 0, MTLIndexTypeUInt32, 0, 0,
                   static_cast<GLsizei>(points.size() / 4));
+    }
+    override_ = nullptr;
+    tessInputs_ = {};
+}
+
+bool DrawState::metalTessellation(LinkedProgram& program, LinkedProgram& evaluation) {
+    // WINEMETALGL_METAL_TESSELLATION=0 keeps every draw on the CPU tessellator.
+    static const bool enabled = [] {
+        const char* v = std::getenv("WINEMETALGL_METAL_TESSELLATION");
+        return !v || v[0] != '0';
+    }();
+    const shader::TessellationEmulation& t = program.link.tess;
+    const ContextState& st = ctx_.state;
+    const char* why = !enabled                                                    ? nullptr
+                      : t.mode == GL_ISOLINES || t.pointMode                       ? "isolines or point mode"
+                      : evaluation.link.geometry.active                            ? "geometry shader"
+                      : st.transformFeedback->active                               ? "transform feedback"
+                      : st.rasterizerDiscard                                       ? "rasterizer discard"
+                      : queriesNeedDrawSizes(ctx_)                                 ? "active query"
+                      : pointPolygons(GL_TRIANGLES)                                ? "point polygon mode"
+                      : !tessFactorsKernel()                                       ? "no factor kernel"
+                      : !evaluation.postTessellationVertex(t.mode == GL_QUADS, 0) ? "no post-tessellation function"
+                                                                                   : "";
+    if (why && *why && stats::g_enabled)
+        stats::describeOnce("tess-cpu:" + std::to_string(program.uid) + why, "patches of link %llu tessellated on the CPU: %s",
+                            static_cast<unsigned long long>(program.uid), why);
+    return why && !*why;
+}
+
+void DrawState::drawMetalPatches(LinkedProgram& program, LinkedProgram& evaluation, id<MTLBuffer> records,
+                                 NSUInteger recordsOffset, id<MTLBuffer> factors, NSUInteger factorsOffset, uint64_t patches,
+                                 uint32_t patchesPerInstance, uint32_t patchVertices) {
+    const shader::TessellationEmulation& t = program.link.tess;
+    const uint64_t serial = ctx_.stream().serial();
+    struct {
+        uint32_t patchVertices, patchesPerInstance, pad[2];
+        float outer[4], inner[2], pad2[2];
+    } control = {patchVertices, patchesPerInstance, {0, 0}, {}, {}, {}};
+    std::memcpy(control.outer, ctx_.state.patchDefaultOuterLevel, sizeof(control.outer));
+    std::memcpy(control.inner, ctx_.state.patchDefaultInnerLevel, sizeof(control.inner));
+    TransientAllocation controlData = transient_.allocate(sizeof(control), serial, 16);
+    if (!controlData.buffer) return;
+    std::memcpy(controlData.data, &control, sizeof(control));
+    stats::count(&stats::Frame::tessMetal);
+    stats::count(&stats::Frame::draws);
+    // The domain point buffer is unread (its slot is bound to keep the
+    // argument valid).
+    tessInputs_.active = true;
+    tessInputs_.buffers[0] = controlData.buffer;
+    tessInputs_.offsets[0] = controlData.offset;
+    tessInputs_.buffers[1] = records;
+    tessInputs_.offsets[1] = recordsOffset;
+    tessInputs_.buffers[2] = controlData.buffer;
+    tessInputs_.offsets[2] = controlData.offset;
+    override_ = &evaluation;
+    {
+        stats::Timer timer(&stats::Frame::drawSamplersNanos);
+        prepareSamplerStorage(evaluation);
+    }
+    MTLPrimitiveType primitive = MTLPrimitiveTypeTriangle;
+    id<MTLRenderCommandEncoder> encoder = prepare(GL_TRIANGLES, primitive);
+    if (encoder) {
+        // GL's vertex order is Metal's winding (the CPU path's D3D
+        // tessellator takes the opposite one: tess/tessellator.cpp).
+        const uint8_t partition = static_cast<uint8_t>(t.spacing == GL_FRACTIONAL_ODD    ? MTLTessellationPartitionModeFractionalOdd
+                                                       : t.spacing == GL_FRACTIONAL_EVEN ? MTLTessellationPartitionModeFractionalEven
+                                                                                         : MTLTessellationPartitionModeInteger);
+        PipelineKey key = lastKey_;
+        key.tessellation = static_cast<uint8_t>(1 | (t.mode == GL_QUADS ? 2 : 0) | partition << 2 | (t.order == GL_CW ? 16 : 0));
+        if (stats::g_enabled && rotateProvoking(GL_TRIANGLES, evaluation)) stats::count(&stats::Frame::tessMetalFlat);
+        id<MTLRenderPipelineState> pipeline = ctx_.share().pipelines().render(key, evaluation);
+        if (pipeline) {
+            [encoder setRenderPipelineState:pipeline];
+            bindDrawState(encoder, evaluation);
+            if (evaluation.link.xfbVertexCapture) bindCaptureDefaults(encoder, evaluation);
+            [encoder setTessellationFactorBuffer:factors offset:factorsOffset instanceStride:0];
+            [encoder drawPatches:static_cast<NSUInteger>(t.hasControl ? t.verticesOut : static_cast<GLint>(patchVertices))
+                       patchStart:0
+                       patchCount:static_cast<NSUInteger>(patches)
+                 patchIndexBuffer:nil
+           patchIndexBufferOffset:0
+                    instanceCount:1
+                     baseInstance:0];
+            ctx_.stream().noteDraw();
+        }
     }
     override_ = nullptr;
     tessInputs_ = {};

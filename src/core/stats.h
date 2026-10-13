@@ -49,6 +49,10 @@ struct Frame {
     uint64_t convertedVertices = 0, convertedReused = 0, convertedClient = 0, convertedFormat = 0, convertedOther = 0;
     uint64_t convertedFormatType = 0;  // GL type of the last unfetchable one (| 0x10000: normalized)
     uint64_t cpuIndexDraws = 0;        // draws whose indices were rewritten on the CPU
+    // Patch draws tessellated on the CPU (after reading the levels back), by
+    // Metal's tessellator, and of those, draws whose flat fragment inputs
+    // take Metal's first vertex where GL's convention is the last.
+    uint64_t tessCpu = 0, tessMetal = 0, tessMetalFlat = 0;
     // Indirect draw commands read by the GPU, and read on the CPU (after
     // waiting for GPU writes to the command buffer).
     uint64_t indirectGpu = 0, indirectCpu = 0;

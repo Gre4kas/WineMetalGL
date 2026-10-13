@@ -192,6 +192,32 @@ kernel void wmgl_strips_provoking_last(device const uint* in [[buffer(0)]], devi
     }
     for (; n < params.y; ++n) o[n] = fill;
 }
+
+// Metal tessellation factors (MTLTriangle/QuadTessellationFactorsHalf) from
+// the levels in the tessellation control kernel's patch records: GL's outer
+// levels are D3D's edges in the same order. params.x = record words,
+// params.y = word of the outer levels in a record, params.z = patch count,
+// params.w = bit 0 for quads, bit 1 for integer spacing, whose levels are
+// rounded up first (to an integer, which half represents exactly).
+kernel void wmgl_tess_factors(device const float* records [[buffer(0)]], device half* factors [[buffer(1)]],
+                              constant uint4& params [[buffer(2)]], uint p [[thread_position_in_grid]]) {
+    if (p >= params.z) return;
+    device const float* l = records + p * params.x + params.y;
+    const bool quads = (params.w & 1u) != 0u, integer = (params.w & 2u) != 0u;
+    float level[6] = {l[0], l[1], l[2], l[3], l[4], l[5]};
+    if (integer)
+        for (uint i = 0; i < 6; ++i) level[i] = ceil(level[i]);
+    if (quads) {
+        device half* f = factors + p * 6u;
+        for (uint i = 0; i < 6; ++i) f[i] = half(level[i]);
+    } else {
+        device half* f = factors + p * 4u;
+        f[0] = half(level[0]);
+        f[1] = half(level[1]);
+        f[2] = half(level[2]);
+        f[3] = half(level[4]);
+    }
+}
 )MSL";
 
 }  // namespace wmgl
