@@ -38,7 +38,8 @@ Dead Cells (Requires OpenGL 3.2+) running under MetalSharp Wine-11.17 Using Wine
 DOOM (2016) on its OpenGL renderer under MetalSharp's Wine 11.17 with the
 WineMetalGL module: an OpenGL 4.6 compatibility context on an Apple M4.
 
-![DOOM (2016) gameplay on WineMetalGL, OpenGL 4.6 on an Apple M4](docs/images/doom-2016-gameplay.jpg)
+<img width="1302" height="737" alt="doom_perf" src="https://github.com/user-attachments/assets/f38603ed-b9e8-4ea9-b256-da4ee1cffd52" />
+
 
 ![DOOM (2016) advanced settings with the OpenGL graphics API on WineMetalGL](docs/images/doom-2016-settings.jpg)
 
