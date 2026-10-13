@@ -1,17 +1,70 @@
 #include "core/surface.h"
 
-#include "core/stats.h"
-
-#include <cstdio>
-#include <cstdlib>
+#import <MetalFX/MetalFX.h>
+#include <dlfcn.h>
 
 #include <algorithm>
+#include <climits>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <string>
 
 #include "core/metal/command_stream.h"
 #include "core/metal/device.h"
+#include "core/stats.h"
 #include "core/util/log.h"
+#include "core/util/metalfx_config.h"
 
 namespace wmgl {
+
+namespace {
+
+std::string readFile(const char* path) {
+    std::string text;
+    if (FILE* f = std::fopen(path, "rb")) {
+        char buffer[4096];
+        size_t n;
+        while ((n = std::fread(buffer, 1, sizeof(buffer), f)) > 0) text.append(buffer, n);
+        std::fclose(f);
+    }
+    return text;
+}
+
+// The MetalFX upscale factor of window back buffers (1: off); see
+// metalFxFactor. The Wine installation's etc/dxmt.conf is next to the lib
+// directory holding the core (lib/wine/<arch>-unix/libwinemetalgl.dylib).
+float windowUpscale() {
+    static const float factor = [] {
+        MetalFxSettings settings;
+        settings.winemetalgl = std::getenv("WINEMETALGL_METALFX");
+        settings.swapchain = std::getenv("DXMT_METALFX_SPATIAL_SWAPCHAIN");
+        settings.config = std::getenv("DXMT_CONFIG");
+        if (const char* file = std::getenv("DXMT_CONFIG_FILE")) {
+            settings.configFile = readFile(file);
+        } else {
+            Dl_info info;
+            char resolved[PATH_MAX];
+            if (dladdr(reinterpret_cast<const void*>(&readFile), &info) && info.dli_fname &&
+                realpath(info.dli_fname, resolved)) {
+                std::string path = resolved;
+                for (int up = 0; up < 4; ++up) path = path.substr(0, path.find_last_of('/'));
+                settings.configFile = readFile((path + "/etc/dxmt.conf").c_str());
+            }
+        }
+        const float f = metalFxFactor(settings);
+        if (f <= 1.0f) return 1.0f;
+        if (![MTLFXSpatialScalerDescriptor supportsDevice:Device::get().mtl()]) {
+            WMGL_WARN("MetalFX spatial upscaling (x%.2f) is not supported on this device", f);
+            return 1.0f;
+        }
+        WMGL_INFO("MetalFX spatial upscaling of window back buffers: x%.2f", f);
+        return f;
+    }();
+    return factor;
+}
+
+}  // namespace
 
 const std::vector<wmgl_pixel_format>& pixelFormats() {
     static const std::vector<wmgl_pixel_format> formats = [] {
@@ -66,8 +119,9 @@ Surface::Surface(CAMetalLayer* layer, int format, int width, int height)
         layer_.framebufferOnly = YES;
         layer_.maximumDrawableCount = 3;
         layer_.displaySyncEnabled = YES;
-        layer_.drawableSize = CGSizeMake(width_, height_);
     }
+    if (layer_) upscale_ = windowUpscale();
+    sizeDrawable();
     allocate();
 }
 
@@ -116,12 +170,14 @@ void Surface::allocate() {
                                     height:height_
                                  mipmapped:NO];
     desc.storageMode = MTLStorageModePrivate;
-    desc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead | MTLTextureUsagePixelFormatView;
+    // Only sRGB views of these (linearColor): no format views, which would
+    // turn off lossless compression of the back buffer.
+    desc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
     if (samples_ > 1) {
         MTLTextureDescriptor* ms = [desc copy];
         ms.textureType = MTLTextureType2DMultisample;
         ms.sampleCount = samples_;
-        ms.usage = MTLTextureUsageRenderTarget | MTLTextureUsagePixelFormatView;
+        ms.usage = MTLTextureUsageRenderTarget;
         color_ = [device newTextureWithDescriptor:ms];
         resolve_ = [device newTextureWithDescriptor:desc];
     } else {
@@ -159,7 +215,7 @@ void Surface::resize(int width, int height, CommandStream* stream) {
     const int oldWidth = width_, oldHeight = height_;
     width_ = width;
     height_ = height;
-    if (layer_) layer_.drawableSize = CGSizeMake(width_, height_);
+    sizeDrawable();
     allocate();
     // Keep the overlapping contents: Wine reports a resize right before the
     // swap that presents the frame drawn at the old size.
@@ -277,6 +333,59 @@ void dumpFrame(CommandStream& stream, id<MTLTexture> color, int width, int heigh
 
 }  // namespace
 
+void Surface::sizeDrawable() {
+    if (!layer_) return;
+    layer_.drawableSize = CGSizeMake(std::lround(width_ * upscale_), std::lround(height_ * upscale_));
+}
+
+// Called by the thread presenting (the mailbox presenter for interval 0).
+id<MTLTexture> Surface::upscale(id<MTLCommandBuffer> commandBuffer, id<MTLTexture> source) {
+    if (upscale_ <= 1.0f || upscaleFailed_) return source;
+    const NSUInteger outWidth = static_cast<NSUInteger>(std::lround(source.width * upscale_));
+    const NSUInteger outHeight = static_cast<NSUInteger>(std::lround(source.height * upscale_));
+    id<MTLFXSpatialScaler> scaler = upscaler_;
+    if (!scaler || scaler.inputWidth != source.width || scaler.inputHeight != source.height ||
+        scaler.colorTextureFormat != source.pixelFormat || scaler.outputWidth != outWidth) {
+        MTLFXSpatialScalerDescriptor* desc = [MTLFXSpatialScalerDescriptor new];
+        desc.inputWidth = source.width;
+        desc.inputHeight = source.height;
+        desc.outputWidth = outWidth;
+        desc.outputHeight = outHeight;
+        desc.colorTextureFormat = source.pixelFormat;
+        desc.outputTextureFormat = MTLPixelFormatBGRA8Unorm;
+        // The back buffer holds display-encoded colour.
+        desc.colorProcessingMode = MTLFXSpatialScalerColorProcessingModePerceptual;
+        scaler = [desc newSpatialScalerWithDevice:Device::get().mtl()];
+        upscaler_ = scaler;
+        upscaled_ = nil;
+        if (!scaler) {
+            // The present pass stretches the back buffer over the drawable.
+            WMGL_WARN("MetalFX spatial scaler creation failed (%lux%lu, format %lu); presenting without it",
+                      static_cast<unsigned long>(source.width), static_cast<unsigned long>(source.height),
+                      static_cast<unsigned long>(source.pixelFormat));
+            upscaleFailed_ = true;
+            return source;
+        }
+        MTLTextureDescriptor* out = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+                                                                                       width:outWidth
+                                                                                      height:outHeight
+                                                                                   mipmapped:NO];
+        out.storageMode = MTLStorageModePrivate;
+        out.usage = scaler.outputTextureUsage | MTLTextureUsageShaderRead;
+        upscaled_ = [Device::get().mtl() newTextureWithDescriptor:out];
+        WMGL_INFO("MetalFX spatial scaler %lux%lu -> %lux%lu", static_cast<unsigned long>(source.width),
+                  static_cast<unsigned long>(source.height), static_cast<unsigned long>(outWidth),
+                  static_cast<unsigned long>(outHeight));
+    }
+    if (!upscaled_) return source;
+    scaler.colorTexture = source;
+    scaler.outputTexture = upscaled_;
+    scaler.inputContentWidth = source.width;
+    scaler.inputContentHeight = source.height;
+    [scaler encodeToCommandBuffer:commandBuffer];
+    return upscaled_;
+}
+
 void Surface::ensurePresentPipeline() {
     std::lock_guard<std::mutex> lock(pipelineMutex_);
     if (presentPipeline_) return;
@@ -294,15 +403,17 @@ void Surface::ensurePresentPipeline() {
 }
 
 void Surface::encodePresent(id<MTLCommandBuffer> commandBuffer, id<MTLTexture> source, id<CAMetalDrawable> drawable) {
+    // The back buffer may be sRGB-encoded; present (and upscale) the stored
+    // bytes unchanged.
+    if (source.pixelFormat == MTLPixelFormatRGBA8Unorm_sRGB)
+        source = [source newTextureViewWithPixelFormat:MTLPixelFormatRGBA8Unorm];
+    source = upscale(commandBuffer, source);
     MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
     pass.colorAttachments[0].texture = drawable.texture;
     pass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
     pass.colorAttachments[0].storeAction = MTLStoreActionStore;
     id<MTLRenderCommandEncoder> encoder = [commandBuffer renderCommandEncoderWithDescriptor:pass];
     [encoder setRenderPipelineState:presentPipeline_];
-    // The back buffer may be sRGB-encoded; present the stored bytes unchanged.
-    if (source.pixelFormat == MTLPixelFormatRGBA8Unorm_sRGB)
-        source = [source newTextureViewWithPixelFormat:MTLPixelFormatRGBA8Unorm];
     // No flip in the shader: the drawable's top row samples the back buffer's
     // last row, which is GL's top row (GL row 0 = Metal row 0 = window bottom).
     const float params[4] = {0.0f, 0.0f, 0.0f, 0.0f};

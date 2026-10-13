@@ -494,7 +494,7 @@ void GetBufferSubData(Context& ctx, GLenum target, GLintptr offset, GLsizeiptr s
     // Any non-persistent mapping, not just an overlapping one (GL 4.6 section 6.6).
     if (buffer->mappedNonPersistent()) return ctx.setError(GL_INVALID_OPERATION);
     if (!size || !data || !buffer->mtl) return;
-    waitForGpuUnlocked(ctx, buffer->lastUseSerial);
+    waitForGpuUnlocked(ctx, buffer->lastWriteSerial);  // a CPU read waits for GPU writes only
     // Another context may have respecified the buffer during the wait.
     if (!buffer->mtl || size > buffer->size - offset) return ctx.setError(GL_INVALID_VALUE);
     std::memcpy(data, static_cast<uint8_t*>(buffer->mtl.contents) + offset, static_cast<size_t>(size));
@@ -540,7 +540,8 @@ void* MapBufferRange(Context& ctx, GLenum target, GLintptr offset, GLsizeiptr le
         // Immutable storage is never renamed: an invalidating map just waits.
         if ((access & GL_MAP_INVALIDATE_BUFFER_BIT) && !buffer->immutable && !buffer->pinned) rename(ctx, *buffer, false);
         else if ((access & GL_MAP_INVALIDATE_RANGE_BIT) && !read && !buffer->immutable && !buffer->pinned) rename(ctx, *buffer, true);
-        else waitForGpuUnlocked(ctx, buffer->lastUseSerial);
+        // A read-only mapping waits for GPU writes only; a writable one also for GPU reads.
+        else waitForGpuUnlocked(ctx, (access & GL_MAP_WRITE_BIT) ? buffer->lastUseSerial : buffer->lastWriteSerial);
     }
     // Another context may have respecified or mapped the buffer during a wait.
     if (buffer->mapped || !buffer->mtl || length > buffer->size - offset) {
@@ -662,7 +663,7 @@ void GetBufferPointerv(Context& ctx, GLenum target, GLenum pname, void** params)
 // cannot order fragment-stage writes inside one; see CommandStream).
 void TextureBarrier(Context& ctx) {
     if (ctx.version() < 45 && !ctx.hasExtension("GL_ARB_texture_barrier")) return ctx.unimplemented("glTextureBarrier");
-    ctx.stream().memoryBarrier();
+    ctx.stream().memoryBarrier(true);
 }
 
 void MemoryBarrier(Context& ctx, GLbitfield barriers) {

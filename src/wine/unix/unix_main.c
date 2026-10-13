@@ -116,6 +116,43 @@ NTSTATUS wmgl_after_call( void )
     return queued > delivered ? WMGL_STATUS_DEBUG_MESSAGES : STATUS_SUCCESS;
 }
 
+/* ------------------------------------------------------- batched calls */
+
+extern const unixlib_entry_t __wine_unix_call_funcs[];
+
+/* Runs a batch's records through `table`, in order; debug messages they
+ * queue are delivered after the batch. */
+static NTSTATUS run_batch( const struct wmgl_batch_params *params, const unixlib_entry_t *table )
+{
+    const char *at = (const char *)(ULONG_PTR)params->data, *end = at + params->size;
+    struct wmgl_batch_record record;
+
+    while ((size_t)(end - at) >= sizeof(record))
+    {
+        memcpy( &record, at, sizeof(record) );
+        if (record.size < sizeof(record) || record.size > (size_t)(end - at) || record.code <= unix_wmgl_batch ||
+            record.code >= unix_wmgl_call_count)
+            break;
+        table[record.code]( (void *)(at + sizeof(record)) );
+        at += record.size;
+    }
+    return wmgl_after_call();
+}
+
+NTSTATUS wmgl_unix_batch( void *args )
+{
+    return run_batch( args, __wine_unix_call_funcs );
+}
+
+#ifdef _WIN64
+extern const unixlib_entry_t __wine_unix_call_wow64_funcs[];
+
+NTSTATUS wmgl_unix_batch_wow64( void *args )
+{
+    return run_batch( args, __wine_unix_call_wow64_funcs );
+}
+#endif
+
 static void queue_message( BOOL amd, GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length,
                            const GLchar *message )
 {

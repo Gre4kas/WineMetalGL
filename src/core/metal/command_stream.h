@@ -52,7 +52,8 @@ public:
 
     id<MTLCommandBuffer> commandBuffer();
     // Serial of the command buffer currently being recorded (creates one).
-    uint64_t serial();
+    // Inline: the draw path asks for it many times per draw.
+    uint64_t serial() { return buffer_ ? serial_ : serialSlow(); }
 
     // Returns an encoder for the target, starting a pass if needed. Any
     // pending clear for this target is applied as load actions.
@@ -77,11 +78,14 @@ public:
 
     id<MTLBlitCommandEncoder> blit();
     id<MTLComputeCommandEncoder> compute();
-    void endEncoder();
+    // Why an open render pass ends (stats: each end stores and reloads the
+    // attachments on tile-based GPUs).
+    enum class PassEnd : uint8_t { Other, Target, Blit, Compute, Visibility, Commit, Barrier, Clear, Count };
+    void endEncoder(PassEnd cause = PassEnd::Other);
     // glMemoryBarrier: orders shader writes to buffers and textures before
     // later shader accesses: ends an open render pass, or a barrier in the
     // open compute encoder.
-    void memoryBarrier();
+    void memoryBarrier(bool attachments = false);
     // The open render or compute encoder writes through images or atomic
     // counters. Metal's hazard tracking does not order those writes (texture
     // atomics in particular) before later encoders, so the encoder updates a
@@ -119,6 +123,7 @@ public:
     void noteDraw() { drawsInPass_ = true; }
 
 private:
+    uint64_t serialSlow();
     void startRender(const RenderTargetDesc& target);
 
     Queue& queue_;
@@ -135,6 +140,7 @@ private:
     uint64_t passGeneration_ = 0;
     uint64_t renderCalls_ = 0;
     bool visibilityWanted_ = false, passVisibility_ = false;
+    bool visibilityUsedBefore_ = false;  // occlusion queries were used: passes keep a visibility buffer
     // noteShaderWrites: set while the open encoder writes through images;
     // fenced once such an encoder ended (later encoders wait for writesFence_).
     bool shaderWrites_ = false, fenced_ = false;

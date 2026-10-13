@@ -33,12 +33,16 @@ id<MTLCommandBuffer> CommandStream::commandBuffer() {
     return buffer_;
 }
 
-uint64_t CommandStream::serial() {
+uint64_t CommandStream::serialSlow() {
     commandBuffer();
     return serial_;
 }
 
-void CommandStream::endEncoder() {
+static_assert(static_cast<size_t>(CommandStream::PassEnd::Count) == sizeof(stats::Frame::passEnds) / sizeof(uint64_t),
+              "stats::Frame::passEnds has a counter per PassEnd");
+
+void CommandStream::endEncoder(PassEnd cause) {
+    if (render_ && stats::g_enabled) ++stats::frame().passEnds[static_cast<int>(cause)];
     if (shaderWrites_ && (render_ || compute_)) {
         if (!writesFence_) writesFence_ = [Device::get().mtl() newFence];
         if (render_) [render_ updateFence:writesFence_ afterStages:MTLRenderStageVertex | MTLRenderStageFragment];
@@ -72,7 +76,7 @@ void CommandStream::waitForShaderWrites(id<MTLCommandEncoder> encoder, bool rend
 }
 
 void CommandStream::startRender(const RenderTargetDesc& target) {
-    endEncoder();
+    endEncoder(PassEnd::Target);
     MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
     const bool clearsApply = pending_.any() && pendingTarget_ == target;
     for (size_t i = 0; i < target.color.size(); ++i) {
@@ -117,7 +121,9 @@ void CommandStream::startRender(const RenderTargetDesc& target) {
     }
     if (target.layers) pass.renderTargetArrayLength = target.layers;
     passVisibility_ = false;
-    if (visibilityWanted_) {
+    // Once a context uses occlusion queries, every pass carries the buffer:
+    // a query begun mid-pass then needs no new pass.
+    if (visibilityWanted_ || visibilityUsedBefore_) {
         if (!visibility_) {
             visibility_ = [Device::get().mtl() newBufferWithLength:kVisibilitySlots * 8 options:MTLResourceStorageModeShared];
             std::memset(visibility_.contents, 0, kVisibilitySlots * 8);
@@ -151,7 +157,7 @@ id<MTLRenderCommandEncoder> CommandStream::render(const RenderTargetDesc& target
 bool CommandStream::clearWithLoadAction(const RenderTargetDesc& target, const PendingClear& clear) {
     if (render_ && target_ == target && drawsInPass_) return false;
     if (pending_.any() && pendingTarget_ != target) resolvePendingClear();
-    if (render_ && target_ == target) endEncoder();  // pass has no draws: restart it with clears
+    if (render_ && target_ == target) endEncoder(PassEnd::Clear);  // pass has no draws: restart it with clears
     pendingTarget_ = target;
     for (size_t i = 0; i < 8; ++i) {
         if (clear.colorMask & (1u << i)) {
@@ -181,7 +187,7 @@ id<MTLBlitCommandEncoder> CommandStream::blit() {
     // A clear recorded after this encoder opened must run before new commands.
     if (blit_ && !pending_.any()) return blit_;
     resolvePendingClear();
-    endEncoder();
+    endEncoder(PassEnd::Blit);
     blit_ = [commandBuffer() blitCommandEncoder];
     waitForShaderWrites(blit_, false);
     return blit_;
@@ -190,7 +196,7 @@ id<MTLBlitCommandEncoder> CommandStream::blit() {
 id<MTLComputeCommandEncoder> CommandStream::compute() {
     if (compute_ && !pending_.any()) return compute_;
     resolvePendingClear();
-    endEncoder();
+    endEncoder(PassEnd::Compute);
     compute_ = [commandBuffer() computeCommandEncoder];
     waitForShaderWrites(compute_, false);
     return compute_;
@@ -198,7 +204,8 @@ id<MTLComputeCommandEncoder> CommandStream::compute() {
 
 void CommandStream::setVisibilityWanted(bool wanted) {
     visibilityWanted_ = wanted;
-    if (wanted && render_ && !passVisibility_) endEncoder();
+    if (wanted) visibilityUsedBefore_ = true;
+    if (wanted && render_ && !passVisibility_) endEncoder(PassEnd::Visibility);
 }
 
 bool CommandStream::visibilitySlotAvailable() const { return !visibility_ || visibilityUsed_ < kVisibilitySlots; }
@@ -217,8 +224,9 @@ void CommandStream::present(id<CAMetalDrawable> drawable) {
 
 uint64_t CommandStream::flush() {
     resolvePendingClear();
-    endEncoder();
+    endEncoder(PassEnd::Commit);
     if (!buffer_) return lastCommitted_;
+    stats::count(&stats::Frame::commits);
     queue_.commit(buffer_, serial_);
     lastCommitted_ = serial_;
     buffer_ = nil;
@@ -244,12 +252,15 @@ void CommandStream::waitFor(uint64_t serial) {
     queue_.wait(serial);
 }
 
-void CommandStream::memoryBarrier() {
-    if (render_) {
+void CommandStream::memoryBarrier(bool attachments) {
+    // A render pass whose draws wrote nothing through shaders has nothing to
+    // order (earlier encoders' writes are fenced): it stays open, unless
+    // attachment writes are ordered (glTextureBarrier).
+    if (render_ && (attachments || shaderWrites_)) {
         // Apple GPUs cannot order fragment-stage writes inside a render
         // pass (render-encoder barriers may not wait on the fragment
         // stage): end the pass; Metal orders work across encoders.
-        endEncoder();
+        endEncoder(PassEnd::Barrier);
     } else if (compute_) {
         [compute_ memoryBarrierWithScope:MTLBarrierScopeBuffers | MTLBarrierScopeTextures];
     }

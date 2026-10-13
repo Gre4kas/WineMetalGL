@@ -7,6 +7,7 @@
 #include "core/compat/immediate.h"
 #include "core/context.h"
 #include "core/draw.h"
+#include "core/stats.h"
 #include "gl_api.gen.h"
 
 namespace wmgl::api {
@@ -131,11 +132,25 @@ bool readIndirectCommand(Context& ctx, const void* indirect, uint32_t* words, si
         return buffer->mtl && offset <= size && count * 4 <= size - offset;
     };
     if (!fits()) return ctx.setError(GL_INVALID_OPERATION), false;
+    stats::count(&stats::Frame::indirectCpu);
     if (buffer->lastWriteSerial) waitForGpuUnlocked(ctx, buffer->lastWriteSerial);
     // Another context may have specified the buffer again during the wait.
     if (!fits()) return ctx.setError(GL_INVALID_OPERATION), false;
     std::memcpy(words, buffer->contents() + offset, count * 4);
     return true;
+}
+
+// Draws the command of `count` words at `indirect` in DRAW_INDIRECT_BUFFER
+// with the GPU reading it (DrawState::drawIndirect), so commands that shaders
+// write (GPU culling) draw without waiting for them. False when the draw
+// takes the CPU path instead, which also reports the GL errors.
+bool drawIndirectOnGpu(Context& ctx, GLenum mode, GLenum type, const void* indirect, size_t count) {
+    const uintptr_t offset = reinterpret_cast<uintptr_t>(indirect);
+    Buffer* buffer = ctx.state.drawIndirectBuffer.get();
+    if (!buffer || !buffer->mtl || offset % 4 || buffer->mappedNonPersistent()) return false;
+    const uint64_t size = static_cast<uint64_t>(std::max<GLsizeiptr>(0, buffer->size));
+    if (offset > size || count * 4 > size - offset) return false;
+    return ctx.draw().drawIndirect(mode, type, *buffer, offset);
 }
 
 bool validIndirectMode(Context& ctx, GLenum mode) {
@@ -157,6 +172,7 @@ void DrawArraysIndirect(Context& ctx, GLenum mode, const void* indirect) {
     if (!validIndirectMode(ctx, mode)) return;
     // Core profile: a vertex array object must be bound.
     if (ctx.isCore() && ctx.state.vertexArray == ctx.defaultVertexArray) return ctx.setError(GL_INVALID_OPERATION);
+    if (drawIndirectOnGpu(ctx, mode, GL_NONE, indirect, 4)) return;
     uint32_t command[4];  // count, instance count, first, base instance
     if (!readIndirectCommand(ctx, indirect, command, 4)) return;
     if (command[0] > INT32_MAX || command[1] > INT32_MAX || command[2] > INT32_MAX) return;
@@ -170,6 +186,7 @@ void DrawElementsIndirect(Context& ctx, GLenum mode, GLenum type, const void* in
     if (type != GL_UNSIGNED_BYTE && type != GL_UNSIGNED_SHORT && type != GL_UNSIGNED_INT) return ctx.setError(GL_INVALID_ENUM);
     if (ctx.isCore() && ctx.state.vertexArray == ctx.defaultVertexArray) return ctx.setError(GL_INVALID_OPERATION);
     if (!ctx.state.vertexArray->elementBuffer) return ctx.setError(GL_INVALID_OPERATION);
+    if (drawIndirectOnGpu(ctx, mode, type, indirect, 5)) return;
     uint32_t command[5];  // count, instance count, first index, base vertex, base instance
     if (!readIndirectCommand(ctx, indirect, command, 5)) return;
     if (command[0] > INT32_MAX || command[1] > INT32_MAX) return;
@@ -181,7 +198,7 @@ void DrawElementsIndirect(Context& ctx, GLenum mode, GLenum type, const void* in
 }
 
 // GL 4.3 / GL_ARB_multi_draw_indirect: each command as its own indirect
-// draw (commands are read on the CPU, as for the single-draw forms), with
+// draw (read by the GPU or the CPU, as for the single-draw forms), with
 // gl_DrawID its index.
 namespace {
 

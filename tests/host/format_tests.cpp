@@ -1,3 +1,7 @@
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <vector>
 #include <cstring>
 
 #include "core/format/formats.h"
@@ -100,4 +104,86 @@ TEST(format_vertex_bgra_packed_swaps_red_and_blue) {
     CHECK(out[1] == 1.0f);
     CHECK(out[2] == 0.0f);
     CHECK(out[3] > 0.33f && out[3] < 0.34f);
+}
+
+TEST(format_transfer_fast_paths) {
+    PixelStoreParams ps;  // alignment 4
+    // RGB bytes into RGB8 (stored RGBA8): rows padded to 4 bytes, alpha opaque.
+    const FormatInfo* rgb8 = formatInfo(GL_RGB8);
+    CHECK(rgb8 != nullptr);
+    if (rgb8) {
+        const uint8_t rgb[2][4 * 3] = {{1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 0, 0}, {10, 11, 12, 13, 14, 15, 16, 17, 18, 0, 0, 0}};
+        uint8_t stored[2 * 3 * 4] = {};
+        unpackPixels(rgb, GL_RGB, GL_UNSIGNED_BYTE, 3, 2, 1, ps, *rgb8, stored);
+        const uint8_t want[] = {1, 2, 3, 255, 4, 5, 6, 255, 7, 8, 9, 255, 10, 11, 12, 255, 13, 14, 15, 255, 16, 17, 18, 255};
+        CHECK(std::memcmp(stored, want, sizeof(want)) == 0);
+    }
+    // BGRA into RGBA8, as bytes and as UNSIGNED_INT_8_8_8_8_REV; and back.
+    const FormatInfo* rgba8 = formatInfo(GL_RGBA8);
+    CHECK(rgba8 != nullptr);
+    if (rgba8) {
+        const uint8_t bgra[8] = {10, 20, 30, 40, 50, 60, 70, 80};
+        uint8_t fromBytes[8] = {}, fromRev[8] = {};
+        unpackPixels(bgra, GL_BGRA, GL_UNSIGNED_BYTE, 2, 1, 1, ps, *rgba8, fromBytes);
+        unpackPixels(bgra, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, 2, 1, 1, ps, *rgba8, fromRev);
+        const uint8_t want[8] = {30, 20, 10, 40, 70, 60, 50, 80};
+        CHECK(std::memcmp(fromBytes, want, 8) == 0);
+        CHECK(std::memcmp(fromRev, want, 8) == 0);
+        uint8_t back[8] = {}, backRev[8] = {}, asRgba[8] = {};
+        packPixels(want, *rgba8, 2, 1, 1, GL_BGRA, GL_UNSIGNED_BYTE, ps, true, back);
+        packPixels(want, *rgba8, 2, 1, 1, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, ps, true, backRev);
+        packPixels(want, *rgba8, 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, ps, true, asRgba);
+        CHECK(std::memcmp(back, bgra, 8) == 0);
+        CHECK(std::memcmp(backRev, bgra, 8) == 0);
+        CHECK(std::memcmp(asRgba, want, 8) == 0);
+    }
+    // Half floats into RGBA16F are copied whole, and byte-swapped when asked.
+    const FormatInfo* rgba16f = formatInfo(GL_RGBA16F);
+    CHECK(rgba16f != nullptr);
+    if (rgba16f) {
+        const uint16_t halfs[4] = {0x3c00, 0xc000, 0x7e01, 0x0001};  // 1, -2, a NaN payload, a denormal
+        uint16_t stored[4] = {}, back[4] = {};
+        unpackPixels(halfs, GL_RGBA, GL_HALF_FLOAT, 1, 1, 1, ps, *rgba16f, stored);
+        CHECK(std::memcmp(stored, halfs, 8) == 0);
+        packPixels(stored, *rgba16f, 1, 1, 1, GL_RGBA, GL_HALF_FLOAT, ps, false, back);
+        CHECK(std::memcmp(back, halfs, 8) == 0);
+        PixelStoreParams swapped = ps;
+        swapped.swapBytes = true;
+        uint16_t fromSwapped[4] = {};
+        unpackPixels(halfs, GL_RGBA, GL_HALF_FLOAT, 1, 1, 1, swapped, *rgba16f, fromSwapped);
+        CHECK(fromSwapped[0] == 0x003c && fromSwapped[1] == 0x00c0);
+    }
+    // Luminance-alpha reads back the bytes it stored.
+    const FormatInfo* la = formatInfo(GL_LUMINANCE8_ALPHA8);
+    if (la) {
+        const uint8_t texels[4] = {200, 100, 50, 25};
+        uint8_t stored[4] = {}, back[4] = {};
+        unpackPixels(texels, GL_LUMINANCE_ALPHA, GL_UNSIGNED_BYTE, 2, 1, 1, ps, *la, stored);
+        packPixels(stored, *la, 2, 1, 1, GL_LUMINANCE_ALPHA, GL_UNSIGNED_BYTE, ps, true, back);
+        CHECK(std::memcmp(back, texels, 4) == 0);
+    }
+}
+
+TEST(bench_pixel_transfer) {
+    // WMGL_BENCH: unpack and pack of a 2048x2048 image in common upload formats.
+    if (!std::getenv("WMGL_BENCH")) return;
+    constexpr int kSize = 2048;
+    std::vector<uint8_t> client(static_cast<size_t>(kSize) * kSize * 8, 7), stored(static_cast<size_t>(kSize) * kSize * 8);
+    PixelStoreParams ps;
+    struct Case { const char* name; GLenum internal, format, type; bool pack; };
+    const Case cases[] = {{"RGB8 <- RGB ubyte", GL_RGB8, GL_RGB, GL_UNSIGNED_BYTE, false},
+                          {"RGBA8 <- BGRA ubyte", GL_RGBA8, GL_BGRA, GL_UNSIGNED_BYTE, false},
+                          {"RGBA8 <- BGRA 8888_REV", GL_RGBA8, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, false},
+                          {"RGBA16F <- RGBA half", GL_RGBA16F, GL_RGBA, GL_HALF_FLOAT, false},
+                          {"RGBA8 -> RGBA ubyte", GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, true},
+                          {"RGBA8 -> BGRA ubyte", GL_RGBA8, GL_BGRA, GL_UNSIGNED_BYTE, true}};
+    for (const Case& c : cases) {
+        const FormatInfo* f = formatInfo(c.internal);
+        if (!f) continue;
+        const auto start = std::chrono::steady_clock::now();
+        if (c.pack) packPixels(stored.data(), *f, kSize, kSize, 1, c.format, c.type, ps, true, client.data());
+        else unpackPixels(client.data(), c.format, c.type, kSize, kSize, 1, ps, *f, stored.data());
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+        std::fprintf(stderr, "  bench: %-26s %7.2f ms\n", c.name, ms);
+    }
 }

@@ -125,8 +125,10 @@ Program* blitProgram(Context& ctx, Blit kind) {
 void setUniform(Program& p, const char* name, const float v[4]) {
     for (const shader::UniformInfo& u : p.linked->link.uniforms)
         if (u.blockIndex < 0 && u.name == name && u.offset >= 0 &&
-            static_cast<size_t>(u.offset) + 16 <= p.uniformData.size())
+            static_cast<size_t>(u.offset) + 16 <= p.uniformData.size()) {
             std::memcpy(p.uniformData.data() + u.offset, v, 16);
+            ++p.uniformVersion;
+        }
 }
 
 // FNV-1a over `bytes`, continuing from `hash`.

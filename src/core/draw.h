@@ -6,6 +6,7 @@
 #include <array>
 #include <memory>
 #include <cstdint>
+#include <unordered_map>
 #include <vector>
 
 #include "core/format/formats.h"
@@ -69,6 +70,14 @@ public:
     // Starts a draw of `mode`: the fixed-function program is chosen for it.
     void beginDraw(GLenum mode);
 
+    // One glDraw*Indirect command, read by the GPU from `commands` at
+    // `offset` (validated by the caller: inside the buffer, aligned): a
+    // DrawArraysIndirectCommand, or with `type` (GL_UNSIGNED_SHORT or
+    // GL_UNSIGNED_INT) a DrawElementsIndirectCommand of the element buffer.
+    // False, having drawn nothing, when the draw needs the command on the
+    // CPU (gpuIndirectDrawable); the caller then reads it and draws.
+    bool drawIndirect(GLenum mode, GLenum type, Buffer& commands, uintptr_t offset);
+
     // glDispatchCompute / glDispatchComputeIndirect (validated by the caller);
     // `indirect` is the DISPATCH_INDIRECT_BUFFER, or null.
     void dispatch(GLuint x, GLuint y, GLuint z, Buffer* indirect, GLintptr offset);
@@ -91,11 +100,29 @@ public:
 private:
     bool validateDraw(GLenum mode);
     id<MTLRenderCommandEncoder> prepare(GLenum mode, MTLPrimitiveType& primitive);
+    // An indirect draw command in a buffer, read by the GPU.
+    struct IndirectSource {
+        id<MTLBuffer> buffer;
+        NSUInteger offset;
+    };
     // Encodes one draw. indexData (CPU, uint32) or indexBuffer select indexed drawing.
     // minVertex/vertexSpan is the vertex range attribute conversion must cover.
+    // With `indirect`, the GPU reads the command (count, instances, first and
+    // base vertex) from it instead (gpuIndirectDrawable draws only).
     bool issue(GLenum mode, GLint first, GLsizei count, GLsizei instances, const uint32_t* indexData,
                id<MTLBuffer> indexBuffer, NSUInteger indexOffset, MTLIndexType indexType, GLint baseVertex,
-               GLint minVertex, GLsizei vertexSpan, bool listed = false);
+               GLint minVertex, GLsizei vertexSpan, bool listed = false, const IndirectSource* indirect = nullptr);
+    // Whether a draw of `mode` (`type`: of indices, or GL_NONE) with the
+    // current state can take its command from the GPU: nothing needs the
+    // command's values on the CPU (vertex ranges to convert, indices to
+    // rewrite, emulated stages, counting queries, gl_BaseVertex/BaseInstance).
+    bool gpuIndirectDrawable(GLenum mode, GLenum type, LinkedProgram& program);
+    // No 16-bit (`type` GL_UNSIGNED_SHORT) or 32-bit index in the buffer is
+    // the type's largest value: Metal always restarts strips there (lists
+    // never), GL only with restart enabled (lists too). Scanned once per
+    // contents; false for buffers the CPU cannot read now or that the
+    // application writes behind GL's back.
+    bool noMetalRestartIndex(Buffer& buffer, GLenum type);
     void clearWithDraw(const RenderTargetDesc& target, const TargetFormats& formats, const PendingClear& clear);
     // `gather`, when given, lists the vertex fetched for each vertex of a
     // non-indexed draw (transform feedback capture): per-vertex attributes
@@ -195,6 +222,12 @@ private:
         std::vector<DirectGroup> groups;
     };
     void planVertexInputs(LinkedProgram& program, bool gather, VertexInputPlan& plan) const;
+    // The plan waitForCpuVertexReads made, for the same draw's bindVertexInputs
+    // (plannedFor_: drawCount_ of that draw, 0: none).
+    VertexInputPlan plannedInputs_;
+    uint64_t plannedFor_ = 0;
+    const LinkedProgram* plannedProgram_ = nullptr;
+    bool plannedGather_ = false;
     // Image bindings with a shadow texture (core::ImageShadow) for the draw
     // in progress: copied in by prepareSamplerStorage, back when the draw ends.
     struct PendingShadow {
@@ -214,7 +247,7 @@ private:
     static size_t vertexBufferSlots(LinkedProgram& program);
     void waitForCpuVertexReads(LinkedProgram& program, bool gather);
     const VertexAttrib& attribFor(const VertexArray& vao, int location) const;
-    void bindUniforms(id<MTLRenderCommandEncoder> encoder, LinkedProgram& program);
+    void bindUniforms(id<MTLRenderCommandEncoder> encoder, LinkedProgram& program, bool known);
     // `known`: encoderState_ holds what the encoder has bound (encoderStateValid_).
     void bindTextures(id<MTLRenderCommandEncoder> encoder, LinkedProgram& program, bool known);
     // Builds pending storage of every sampled texture before a draw opens its encoder.
@@ -269,6 +302,22 @@ private:
     PipelineKey lastKey_{};
     // The pipeline of the last draw through issue() and its key (programs carry
     // their link's uid in the key, so a relinked program misses).
+    // Array draws whose numbering is rewritten (fans, quads, loops,
+    // provoking-vertex rotation): the rewritten indices of 0..count-1 per
+    // (mode, rotation, count), drawn with the draw's first vertex as base.
+    struct IndexPattern {
+        id<MTLBuffer> buffer = nil;
+        NSUInteger count = 0;
+    };
+    std::unordered_map<uint64_t, IndexPattern> indexPatterns_;
+    const IndexPattern* indexPattern(GLenum mode, bool rotate, GLsizei count);
+    // The draw target validateDraw built, for the same draw's first prepare()
+    // (validatedFor_: drawCount_ of that draw, 0: none).
+    uint64_t drawCount_ = 0, validatedFor_ = 0;
+    RenderTargetDesc validatedTarget_;
+    TargetFormats validatedFormats_{};
+    DepthStencilKey lastDepthStencilKey_{};
+    id<MTLDepthStencilState> lastDepthStencil_ = nil;
     PipelineKey lastPipelineKey_{};
     id<MTLRenderPipelineState> lastPipeline_ = nil;
     // The dynamic state applyDynamicState last set (and the scissors), on the
@@ -287,6 +336,16 @@ private:
         uint32_t stencil[2];
         float blend[4];
         id<MTLDepthStencilState> depthStencil = nil;
+        // Driver uniforms and each stage's (vertex, fragment) default uniforms
+        // set by bindUniforms: the owner program, its link, uniformVersion and size.
+        uint8_t driver[16];
+        uint32_t fragmentDriver[2];
+        bool driverSet = false, fragmentDriverSet = false;
+        struct Uniforms {
+            const Program* owner = nullptr;
+            uint64_t uid = 0, version = 0;
+            uint32_t size = 0;
+        } uniforms[2];
         // Textures and samplers set per stage (vertex, fragment) by bindTextures.
         id<MTLTexture> textures[2][kTrackedTextures];
         id<MTLSamplerState> samplers[2][kTrackedTextures];

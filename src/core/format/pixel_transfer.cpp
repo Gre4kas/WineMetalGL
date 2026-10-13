@@ -727,8 +727,9 @@ bool identityTransfer(GLenum format, GLenum type, const FormatInfo& info) {
 }  // namespace
 
 bool storedLayout(GLenum format, GLenum type, const FormatInfo& info) {
+    // Byte swapping is the caller's to exclude (PixelStoreParams::swapBytes).
     return groupBytes(format, type) == storageBytes(info.storage) &&
-           (identityTransfer(format, type, info) || (rawTransfer(format, type, info.storage) && typeBytes(type) == 1));
+           (identityTransfer(format, type, info) || rawTransfer(format, type, info.storage));
 }
 
 void unpackPixels(const void* src, GLenum format, GLenum type, int width, int height, int depth,
@@ -742,25 +743,43 @@ void unpackPixels(const void* src, GLenum format, GLenum type, int width, int he
     const bool swap = ps.swapBytes && typeBytes(type) > 1;
     Texel t;
     // Rows that need no conversion are copied whole; BGRA bytes into RGBA8
-    // swap two bytes per texel.
+    // swap two bytes per texel; RGB bytes into RGBA8 gain an opaque alpha.
+    // RGBA and BGRA groups of UNSIGNED_INT_8_8_8_8_REV are the bytes of
+    // UNSIGNED_BYTE groups on a little-endian host.
+    const GLenum byteType = (type == GL_UNSIGNED_INT_8_8_8_8_REV && (format == GL_RGBA || format == GL_BGRA)) ? GL_UNSIGNED_BYTE
+                                                                                                           : type;
+    const bool rgba8 = info.storage == Storage::RGBA8Unorm || info.storage == Storage::RGBA8Unorm_sRGB;
     const size_t rowBytes = static_cast<size_t>(width) * texelBytes;
+    auto rowAt = [&](int z, int y) { return base + static_cast<size_t>(z) * l.imageStride + static_cast<size_t>(y) * l.rowStride; };
     if (!swap && l.groupBytes == texelBytes &&
-        (identityTransfer(format, type, info) || (rawTransfer(format, type, info.storage) && typeBytes(type) == 1))) {
+        (identityTransfer(format, byteType, info) || rawTransfer(format, type, info.storage))) {
         for (int z = 0; z < depth; ++z)
-            for (int y = 0; y < height; ++y, dst += rowBytes)
-                std::memcpy(dst, base + static_cast<size_t>(z) * l.imageStride + static_cast<size_t>(y) * l.rowStride, rowBytes);
+            for (int y = 0; y < height; ++y, dst += rowBytes) std::memcpy(dst, rowAt(z, y), rowBytes);
         return;
     }
-    if (!swap && format == GL_BGRA && type == GL_UNSIGNED_BYTE && l.groupBytes == 4 &&
-        (info.storage == Storage::RGBA8Unorm || info.storage == Storage::RGBA8Unorm_sRGB) && info.baseFormat == GL_RGBA) {
+    if (!swap && format == GL_BGRA && byteType == GL_UNSIGNED_BYTE && l.groupBytes == 4 && rgba8 &&
+        info.baseFormat == GL_RGBA) {
         for (int z = 0; z < depth; ++z)
             for (int y = 0; y < height; ++y) {
-                const uint8_t* row = base + static_cast<size_t>(z) * l.imageStride + static_cast<size_t>(y) * l.rowStride;
+                const uint8_t* row = rowAt(z, y);
                 for (int x = 0; x < width; ++x, row += 4, dst += 4) {
-                    dst[0] = row[2];
+                    uint32_t v;
+                    std::memcpy(&v, row, 4);
+                    v = (v & 0xff00ff00u) | ((v >> 16) & 0xffu) | ((v & 0xffu) << 16);
+                    std::memcpy(dst, &v, 4);
+                }
+            }
+        return;
+    }
+    if (format == GL_RGB && type == GL_UNSIGNED_BYTE && l.groupBytes == 3 && rgba8 && info.baseFormat == GL_RGB) {
+        for (int z = 0; z < depth; ++z)
+            for (int y = 0; y < height; ++y) {
+                const uint8_t* row = rowAt(z, y);
+                for (int x = 0; x < width; ++x, row += 3, dst += 4) {
+                    dst[0] = row[0];
                     dst[1] = row[1];
-                    dst[2] = row[0];
-                    dst[3] = row[3];
+                    dst[2] = row[2];
+                    dst[3] = 0xff;
                 }
             }
         return;
@@ -808,6 +827,33 @@ void packPixels(const void* storage, const FormatInfo& info, int width, int heig
     auto* base = static_cast<uint8_t*>(out) + l.skipBytes;
     const bool swap = ps.swapBytes && typeBytes(type) > 1;
     Texel t;
+    // The fast paths of unpackPixels, reversed: rows in the stored layout
+    // are copied whole (unsigned normalized and integer texels need no
+    // clamping), and RGBA8 texels read as BGRA swap two bytes.
+    const GLenum byteType = (type == GL_UNSIGNED_INT_8_8_8_8_REV && (format == GL_RGBA || format == GL_BGRA)) ? GL_UNSIGNED_BYTE
+                                                                                                           : type;
+    const size_t rowBytes = static_cast<size_t>(width) * texelBytes;
+    auto rowAt = [&](int z, int y) { return base + static_cast<size_t>(z) * l.imageStride + static_cast<size_t>(y) * l.rowStride; };
+    if (!swap && l.groupBytes == texelBytes &&
+        (identityTransfer(format, byteType, info) || rawTransfer(format, type, info.storage))) {
+        for (int z = 0; z < depth; ++z)
+            for (int y = 0; y < height; ++y, src += rowBytes) std::memcpy(rowAt(z, y), src, rowBytes);
+        return;
+    }
+    if (!swap && format == GL_BGRA && byteType == GL_UNSIGNED_BYTE && l.groupBytes == 4 && info.baseFormat == GL_RGBA &&
+        (info.storage == Storage::RGBA8Unorm || info.storage == Storage::RGBA8Unorm_sRGB)) {
+        for (int z = 0; z < depth; ++z)
+            for (int y = 0; y < height; ++y) {
+                uint8_t* row = rowAt(z, y);
+                for (int x = 0; x < width; ++x, row += 4, src += 4) {
+                    uint32_t v;
+                    std::memcpy(&v, src, 4);
+                    v = (v & 0xff00ff00u) | ((v >> 16) & 0xffu) | ((v & 0xffu) << 16);
+                    std::memcpy(row, &v, 4);
+                }
+            }
+        return;
+    }
     const bool raw = rawTransfer(format, type, info.storage) && l.groupBytes == texelBytes;
     const size_t rawComponent = type == GL_BYTE ? 1 : type == GL_HALF_FLOAT || type == GL_SHORT ? 2 : 4;
     for (int z = 0; z < depth; ++z)

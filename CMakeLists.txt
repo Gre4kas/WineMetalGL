@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(WineMetalGL VERSION 3.0.0 LANGUAGES C CXX OBJC OBJCXX)
+project(WineMetalGL VERSION 3.1.0 LANGUAGES C CXX OBJC OBJCXX)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 if(NOT APPLE)
@@ -49,6 +49,7 @@ add_subdirectory(vendor/glslang)
 find_library(FOUNDATION_FRAMEWORK Foundation REQUIRED)
 find_library(METAL_FRAMEWORK Metal REQUIRED)
 find_library(QUARTZCORE_FRAMEWORK QuartzCore REQUIRED)
+find_library(METALFX_FRAMEWORK MetalFX REQUIRED)
 
 # ---------------------------------------------------------------------------
 # WineMetalGL core: the OpenGL implementation on Metal. Built as
@@ -97,6 +98,7 @@ add_library(wmgl_portable STATIC
     src/core/shader/spirv_validate.cpp
     src/core/shader/subroutines.cpp
     src/core/util/log.cpp
+    src/core/util/metalfx_config.cpp
     vendor/tessellator/tessellator.cpp
 )
 add_dependencies(wmgl_portable wmgl_generated)
@@ -131,7 +133,7 @@ set_source_files_properties(
     TARGET_DIRECTORY winemetalgl_core PROPERTIES LANGUAGE OBJCXX)
 target_link_libraries(winemetalgl_core PRIVATE
     wmgl_portable
-    "${FOUNDATION_FRAMEWORK}" "${METAL_FRAMEWORK}" "${QUARTZCORE_FRAMEWORK}")
+    "${FOUNDATION_FRAMEWORK}" "${METAL_FRAMEWORK}" "${QUARTZCORE_FRAMEWORK}" "${METALFX_FRAMEWORK}")
 target_compile_options(winemetalgl_core PRIVATE
     $<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>
     -fvisibility=hidden -Wall -Wno-unused-parameter -Werror=missing-prototypes)
@@ -148,7 +150,7 @@ install(TARGETS winemetalgl_core LIBRARY DESTINATION lib)
 
 # Host tests (no GPU, no Wine).
 add_executable(wmgl_host_tests tests/host/main.cpp tests/host/shader_tests.cpp tests/host/format_tests.cpp
-    tests/host/fp64_tests.cpp)
+    tests/host/fp64_tests.cpp tests/host/metalfx_tests.cpp)
 target_link_libraries(wmgl_host_tests PRIVATE wmgl_portable)
 
 # GPU tests: drive the core through the driver ABI on pbuffers (Metal, no Wine).

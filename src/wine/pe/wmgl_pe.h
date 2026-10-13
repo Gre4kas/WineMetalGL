@@ -2,6 +2,8 @@
 #ifndef WMGL_PE_H
 #define WMGL_PE_H
 
+#include <stddef.h>
+
 /* Windows 10 API level (SetThreadDpiAwarenessContext), before any header. */
 #undef _WIN32_WINNT
 #define _WIN32_WINNT 0x0A00
@@ -55,6 +57,11 @@ typedef UINT64 unixlib_handle_t;
 /* A unix call (wmgl_wine.h); debug messages it queued reach the
  * application's callback before it returns. */
 NTSTATUS wmgl_unix_call( unsigned int code, void *args );
+/* Appends a GL call to the thread's batch (wine_gen.py: commands that
+ * return nothing and take values), with `data_size` bytes of `data` that the
+ * parameter struct points to at `pointer_offset`. FALSE: make the call now. */
+BOOL wmgl_batch( unsigned int code, const void *args, size_t size, const void *data, UINT64 data_size,
+                 size_t pointer_offset );
 #define WMGL_CALL(name, args) wmgl_unix_call( unix_##name, (args) )
 
 struct wmgl_proc

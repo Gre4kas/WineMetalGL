@@ -93,6 +93,16 @@ public:
     }
     std::map<std::vector<uint64_t>, std::unique_ptr<ConvertedVertices>> converted;
     uint64_t convertedVersion = 0;
+    // drawElements' rewritten index lists of ranges of this element buffer
+    // (draw.mm), valid while `version` is `indexListsVersion`: by offset,
+    // count, type, mode, rotation and restart index; 32-bit indices.
+    std::map<std::vector<uint64_t>, std::unique_ptr<ConvertedVertices>> indexLists;
+    uint64_t indexListsVersion = 0;
+    // DrawState::drawIndirect's scans for 16-bit and 32-bit indices of the
+    // largest value (where Metal always restarts strips), valid
+    // while `version` is maxIndexScanVersion[0 for 16-bit, 1 for 32-bit].
+    uint64_t maxIndexScanVersion[2] = {~0ull, ~0ull};
+    bool hasMaxIndex[2] = {};
 
     uint8_t* contents() const { return mtl ? static_cast<uint8_t*>(mtl.contents) : nullptr; }
     // Mapped in a way that forbids GPU use (persistent mappings allow it).
@@ -157,6 +167,12 @@ public:
     // Bound to an image unit (GL 4.2): storage is (re)allocated with
     // shader write (and, for 32-bit integer formats, atomic) usage.
     bool shaderWrite = false;
+    // Views in another format (GL texture views, stencil sampling, image
+    // units) need MTLTextureUsagePixelFormatView, which turns off Apple
+    // GPUs' lossless compression (render passes into a texture take several
+    // times the bandwidth): storage gains it when such a view is first
+    // needed. sRGB and swizzle views do not need it.
+    bool formatViews = false;
     GLint baseLevel = 0, maxLevel = 1000;
     GLenum swizzle[4] = {GL_RED, GL_GREEN, GL_BLUE, GL_ALPHA};
     GLenum depthStencilMode = GL_DEPTH_COMPONENT;

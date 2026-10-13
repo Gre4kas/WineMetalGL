@@ -69,6 +69,9 @@ void queriesNoteXfbOverflow(Context& ctx, GLuint stream);
 // Pipeline statistics (GL 4.6) counted on the CPU from what the draw paths
 // do; FRAGMENT_SHADER_INVOCATIONS is counted by the fragment functions.
 bool queriesCountingStatistics(Context& ctx);  // any statistics query is active
+// A query needs the size of each draw on the CPU: PRIMITIVES_GENERATED,
+// statistics, or occlusion (whose counters are bounded per draw).
+bool queriesNeedDrawSizes(Context& ctx);
 bool queriesCounting(Context& ctx, PipelineStatistic statistic);
 void queriesCountStatistic(Context& ctx, PipelineStatistic statistic, uint64_t n);
 // One restart-delimited run of a draw command's vertices:

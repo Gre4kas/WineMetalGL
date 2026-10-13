@@ -17,6 +17,7 @@
 #include "core/draw.h"
 #include "core/metal/device.h"
 #include "core/query.h"
+#include "core/stats.h"
 #include "core/util/log.h"
 #include "gl_api.gen.h"
 
@@ -190,6 +191,10 @@ bool queriesCountingStatistics(Context& ctx) {
     return false;
 }
 
+bool queriesNeedDrawSizes(Context& ctx) {
+    return ctx.state.activeQueries[kQueryPrimitivesGenerated] || queriesCountingStatistics(ctx) || anyOcclusionActive(ctx);
+}
+
 bool queriesCounting(Context& ctx, PipelineStatistic statistic) {
     return ctx.state.activeQueries[kQueryStatisticsFirst + statistic] != nullptr;
 }
@@ -331,6 +336,7 @@ void markTimerEnd(Context& ctx, Query& q) {
         timer->end = timestamp ? monotonicGpuTime(done.GPUEndTime) : done.GPUEndTime;
         timer->endSet = true;
     }];
+    stats::count(&stats::Frame::queryCommits);
     q.pendingSerial = ctx.stream().flush();
 }
 
@@ -429,6 +435,7 @@ void beginQuery(Context& ctx, GLenum target, int index, GLuint name) {
         ctx.stream().setVisibilityWanted(true);
     } else if (index == kQueryTimeElapsed) {
         // Time from the start of the next command buffer.
+        stats::count(&stats::Frame::queryCommits);
         ctx.stream().flush();
         q->timer = std::make_shared<Query::Timer>();
         std::shared_ptr<Query::Timer> timer = q->timer;

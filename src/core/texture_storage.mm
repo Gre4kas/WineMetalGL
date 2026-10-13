@@ -110,6 +110,8 @@ void initAlphaOne(Context& ctx, id<MTLTexture> texture) {
 
 namespace {
 
+MTLPixelFormat withoutSrgb(MTLPixelFormat f);
+
 // A texture view's storage (GL 4.3): a Metal view of its root texture's
 // levels and layers in the view's format, remade when the root's storage
 // changes. Writes through an image unit need write usage on the root.
@@ -117,6 +119,14 @@ bool ensureViewStorage(Context& ctx, Texture& tex) {
     Texture& root = *tex.viewOf;
     if (tex.shaderWrite && !root.shaderWrite) {
         root.shaderWrite = true;
+        root.storageDirty = true;
+    }
+    // A view in another format (beyond sRGB) needs format views on the root.
+    const TextureImage& viewBase = tex.image(0, 0);
+    const TextureImage& rootBase = root.image(0, root.immutable ? 0 : root.baseLevel);
+    if (viewBase.format && rootBase.format && !root.formatViews &&
+        withoutSrgb(mtlPixelFormat(viewBase.format->storage)) != withoutSrgb(mtlPixelFormat(rootBase.format->storage))) {
+        root.formatViews = true;
         root.storageDirty = true;
     }
     if (!ensureTextureStorage(ctx, root)) return false;
@@ -171,9 +181,20 @@ bool ensureTextureStorage(Context& ctx, Texture& tex) {
     const bool atomics = pixelFormat == MTLPixelFormatR32Uint || pixelFormat == MTLPixelFormatR32Sint;
     const MTLTextureUsage writeUsage =
         tex.shaderWrite && !format->compressed ? MTLTextureUsageShaderWrite | (atomics ? MTLTextureUsageShaderAtomic : 0) : 0;
+    // Multisample storage cannot be copied into new storage later: it has
+    // format views from the start (glClearTexImage and glCopyImageSubData
+    // view it in other formats). The packed float formats keep them too:
+    // they have several encodings of one value, and compressed storage
+    // gives back another encoding than was stored (glCopyImageSubData and
+    // readback must see the bits uploaded; KHR-GL46.copy_image).
+    const MTLTextureUsage viewUsage =
+        tex.formatViews || samples > 1 || format->storage == Storage::RGB9E5Float || format->storage == Storage::RG11B10Float
+            ? MTLTextureUsagePixelFormatView
+            : 0;
     // Reuse the existing storage if it already has this shape.
     if (tex.mtl && tex.storage == format->storage && tex.mtlWidth == w0 && tex.mtlHeight == h0 && tex.mtlDepth == d0 &&
-        tex.mtlSamples == samples && tex.mtlLevels >= levels && (tex.mtl.usage & writeUsage) == writeUsage) {
+        tex.mtlSamples == samples && tex.mtlLevels >= levels && (tex.mtl.usage & writeUsage) == writeUsage &&
+        (tex.mtl.usage & viewUsage) == viewUsage) {
         tex.storageDirty = false;
         return true;
     }
@@ -191,7 +212,7 @@ bool ensureTextureStorage(Context& ctx, Texture& tex) {
     desc.mipmapLevelCount = static_cast<NSUInteger>(levels);
     desc.sampleCount = static_cast<NSUInteger>(std::max(1, samples));
     desc.storageMode = MTLStorageModePrivate;
-    desc.usage = MTLTextureUsageShaderRead | MTLTextureUsagePixelFormatView | writeUsage;
+    desc.usage = MTLTextureUsageShaderRead | viewUsage | writeUsage;
     // Immutable storage can have views of another format, which may be
     // renderable when this one is not (GL_RGB9_E5 as GL_R32UI).
     if ((format->colorRenderable || format->isDepthOrStencil() || format->storedAlphaIsOne || tex.immutable) &&
@@ -384,6 +405,12 @@ bool textureComplete(Context& ctx, Texture& tex, const SamplerParams* params) {
     // Stencil indices sample like integers (GL 4.6 section 8.17).
     const bool stencilSampled = baseImage.format && baseImage.format->isStencil() &&
                                 (!baseImage.format->isDepth() || tex.depthStencilMode == GL_STENCIL_INDEX);
+    // Stencil of a depth-stencil texture is sampled through a view in another format.
+    if (stencilSampled && baseImage.format->isDepth() && !tex.formatViews) {
+        Texture& root = tex.viewOf ? *tex.viewOf : tex;
+        tex.formatViews = root.formatViews = true;
+        root.storageDirty = tex.storageDirty = true;
+    }
     if (baseImage.format && (baseImage.format->isInteger() || stencilSampled) &&
         (p.magFilter != GL_NEAREST || (p.minFilter != GL_NEAREST && p.minFilter != GL_NEAREST_MIPMAP_NEAREST)))
         return false;
@@ -959,6 +986,10 @@ id<MTLTexture> imageView(Context& ctx, const ImageUnit& unit, GLenum imageType, 
     }
     if (!ensureTextureStorage(ctx, *tex) || !tex->mtl || !(tex->mtl.usage & MTLTextureUsageShaderWrite)) return nil;
     if (unit.level >= tex->mtlLevels) return nil;
+    // A level that was never defined (a mipmap-incomplete texture bound at
+    // another level than its base) is not accessible: loads return 0 and
+    // stores are dropped (GL 4.6 section 8.26), whatever its storage holds.
+    if (!tex->image(0, unit.level).defined()) return nil;
     // Image formats reinterpret a texture of the same texel size (GL 4.2
     // IMAGE_FORMAT_COMPATIBILITY_BY_SIZE).
     if (storageBytes(format->storage) != storageBytes(tex->storage) || format->compressed) return nil;

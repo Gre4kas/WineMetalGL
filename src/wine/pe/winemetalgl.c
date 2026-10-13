@@ -11,13 +11,22 @@ static NTSTATUS (WINAPI *unix_call_dispatcher)( unixlib_handle_t, unsigned int, 
 static DWORD tls_index = TLS_OUT_OF_INDEXES;
 static char *wgl_extensions;
 
-/* The thread's current context and DCs (wglGetCurrent*). */
+/* GL calls batched on this thread (wmgl_batch), run by one unix call. */
+#define BATCH_BYTES 16384
+struct batch
+{
+    UINT used;
+    BYTE data[BATCH_BYTES] __attribute__((aligned(16)));
+};
+
+/* The thread's current context and DCs (wglGetCurrent*), and its batch. */
 struct thread_state
 {
     HGLRC context;
     HDC draw, read;
     HGLRC extensions_context;  /* the context `extensions` lists the GL extensions of */
     char *extensions;
+    struct batch *batch;
 };
 
 static struct thread_state *thread_state( BOOL create )
@@ -53,9 +62,66 @@ static void deliver_debug_messages(void)
     } while (params.more);
 }
 
+/* Batching is off with WINEMETALGL_BATCH=0, and once the application
+ * installs a debug callback (its messages then arrive during the call that
+ * caused them, as GL_DEBUG_OUTPUT_SYNCHRONOUS asks). */
+static BOOL batching = TRUE;
+
+/* Runs the thread's batched calls (one unix call); FALSE: delivering
+ * debug messages is left to the caller. */
+static void flush_batch( struct thread_state *state, BOOL deliver )
+{
+    struct wmgl_batch_params params;
+
+    if (!state || !state->batch || !state->batch->used) return;
+    params.data = (UINT64)(ULONG_PTR)state->batch->data;
+    params.size = state->batch->used;
+    state->batch->used = 0;
+    if (unix_call_dispatcher( unixlib, unix_wmgl_batch, &params ) == WMGL_STATUS_DEBUG_MESSAGES && deliver)
+        deliver_debug_messages();
+}
+
+BOOL wmgl_batch( unsigned int code, const void *args, size_t size, const void *data, UINT64 data_size,
+                 size_t pointer_offset )
+{
+    const size_t params_size = (size + 7) & ~(size_t)7;
+    size_t record_size;
+    struct thread_state *state;
+    struct wmgl_batch_record record;
+    BYTE *at;
+
+    /* Large or missing data (the core reports the error) is passed as is. */
+    if (!batching || data_size > BATCH_BYTES || (data_size && !data)) return FALSE;
+    record_size = sizeof(struct wmgl_batch_record) + params_size + (((size_t)data_size + 7) & ~(size_t)7);
+    if (record_size > BATCH_BYTES || !(state = thread_state( TRUE ))) return FALSE;
+    if (!state->batch && !(state->batch = calloc( 1, sizeof(*state->batch) ))) return FALSE;
+    if (state->batch->used + record_size > BATCH_BYTES) flush_batch( state, TRUE );
+    at = state->batch->data + state->batch->used;
+    record.code = code;
+    record.size = (UINT)record_size;
+    memcpy( at, &record, sizeof(record) );
+    memcpy( at + sizeof(record), args, size );
+    if (data_size)
+    {
+        /* The struct points to the copy, which lives until the batch runs. */
+        void *copy = at + sizeof(record) + params_size;
+        memcpy( copy, data, (size_t)data_size );
+        memcpy( at + sizeof(record) + pointer_offset, &copy, sizeof(copy) );
+    }
+    state->batch->used += (UINT)record_size;
+    return TRUE;
+}
+
 NTSTATUS wmgl_unix_call( unsigned int code, void *args )
 {
-    NTSTATUS status = unix_call_dispatcher( unixlib, code, args );
+    NTSTATUS status;
+
+    /* Batched calls run first, in order. */
+    flush_batch( TlsGetValue( tls_index ), TRUE );
+    if (code == unix_glDebugMessageCallback || code == unix_glDebugMessageCallbackARB ||
+        code == unix_glDebugMessageCallbackAMD)
+        batching = FALSE;
+    status = unix_call_dispatcher( unixlib, code, args );
     if (status == WMGL_STATUS_DEBUG_MESSAGES)
     {
         deliver_debug_messages();
@@ -100,7 +166,7 @@ BOOL WINAPI DllMain( HINSTANCE instance, DWORD reason, LPVOID reserved )
     {
     case DLL_PROCESS_ATTACH:
         wmgl_debug = getenv( "WINEMETALGL_WINE_DEBUG" ) != NULL;
-        DisableThreadLibraryCalls( instance );
+        if (getenv( "WINEMETALGL_BATCH" ) && !strcmp( getenv( "WINEMETALGL_BATCH" ), "0" )) batching = FALSE;
         if ((tls_index = TlsAlloc()) == TLS_OUT_OF_INDEXES) return FALSE;
         if (!init_unix_calls( instance ))
         {
@@ -113,9 +179,26 @@ BOOL WINAPI DllMain( HINSTANCE instance, DWORD reason, LPVOID reserved )
             return FALSE;
         }
         break;
+    case DLL_THREAD_DETACH:
+    {
+        /* A thread's batched calls run before it ends. */
+        struct thread_state *state = thread_state( FALSE );
+        if (!state) break;
+        flush_batch( state, FALSE );
+        free( state->batch );
+        free( state->extensions );
+        free( state );
+        TlsSetValue( tls_index, NULL );
+        break;
+    }
     case DLL_PROCESS_DETACH:
         if (reserved) break;
-        if (thread_state( FALSE )) free( thread_state( FALSE )->extensions );
+        if (thread_state( FALSE ))
+        {
+            flush_batch( thread_state( FALSE ), FALSE );
+            free( thread_state( FALSE )->batch );
+            free( thread_state( FALSE )->extensions );
+        }
         free( thread_state( FALSE ) );
         TlsFree( tls_index );
         free( wgl_extensions );

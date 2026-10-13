@@ -5,6 +5,8 @@
 // sampler bind, with a program change every few draws. Runs only with
 // WMGL_BENCH set (frames, default 300); prints CPU microseconds per draw.
 
+#include <thread>
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <string>
@@ -17,12 +19,16 @@ constexpr int kPrograms = 24, kTextures = 64, kDrawsPerFrame = 700, kTargets = 6
 
 GLuint makeProgram(int variant) {
     const std::string vs = "#version 460 core\nlayout(location = 0) in vec4 position;\nlayout(location = 1) in vec4 attrib;\n"
-                           "uniform vec4 _va_[48];\nout vec4 v;\nvoid main() {\n"
+                           "uniform vec4 _va_[48];\nout vec4 v;\nflat out int material;\nvoid main() {\n"
                            "  gl_Position = vec4(dot(position, _va_[0]), dot(position, _va_[1]), dot(position, _va_[2]), dot(position, _va_[3]));\n"
-                           "  v = attrib * _va_[" + std::to_string(4 + variant % 40) + "];\n}\n";
-    const std::string fs = "#version 460 core\nin vec4 v;\nuniform sampler2D t0, t1, t2, t3;\nuniform vec4 _fa_[16];\nout vec4 o;\n"
+                           "  v = attrib * _va_[" + std::to_string(4 + variant % 40) + "];\n  material = gl_VertexID & 3;\n}\n";
+    // WMGL_BENCH_FLAT: a flat varying, as engines pass material ids
+    // (GL's last-vertex convention then rotates every primitive).
+    const bool flat = std::getenv("WMGL_BENCH_FLAT") != nullptr;
+    const std::string fs = std::string("#version 460 core\nin vec4 v;\n") + (flat ? "flat in int material;\n" : "") +
+                           "uniform sampler2D t0, t1, t2, t3;\nuniform vec4 _fa_[16];\nout vec4 o;\n"
                            "void main() { o = v * texture(t0, v.xy) + texture(t1, v.zw) * _fa_[" + std::to_string(variant % 16) +
-                           "] + texture(t2, v.yx) + texture(t3, v.wz); }\n";
+                           "] + texture(t2, v.yx) + texture(t3, v.wz)" + (flat ? " + float(material) * 0.01" : "") + "; }\n";
     GLuint p = gpu::program(vs.c_str(), fs.c_str());
     glUseProgram(p);
     for (int i = 0; i < 4; ++i) glUniform1i(glGetUniformLocation(p, ("t" + std::to_string(i)).c_str()), i);
@@ -129,4 +135,75 @@ TEST(bench_draw_overhead) {
                  frames, kDrawsPerFrame, cpuMicros / (static_cast<double>(frames) * kDrawsPerFrame), cpuMicros / frames / 1000.0,
                  wall / frames);
     CHECK_GL();
+}
+
+TEST(bench_call_overhead) {
+    // The core's own cost per GL call (no Wine): compare with
+    // tests/wine/opengl_call_overhead.c, which adds the Wine module's.
+    if (!std::getenv("WMGL_BENCH")) return;
+    gpu::Fixture fixture(64, 64, false, 46);
+    CHECK(fixture.ok);
+    if (!fixture.ok) return;
+    using IsEnabled = GLboolean (*)(GLenum);
+    const auto isEnabledCall = reinterpret_cast<IsEnabled>(wmgl_get_proc_address("glIsEnabled"));
+    CHECK(isEnabledCall != nullptr);
+    if (!isEnabledCall) return;
+    constexpr int kCalls = 2000000;
+    volatile GLboolean sink = 0;
+    for (int i = 0; i < 10000; ++i) sink = sink ^ isEnabledCall(GL_BLEND);
+    using Clock = std::chrono::steady_clock;
+    auto start = Clock::now();
+    for (int i = 0; i < kCalls; ++i) sink = sink ^ isEnabledCall(GL_BLEND);
+    const double isEnabled = std::chrono::duration<double, std::nano>(Clock::now() - start).count() / kCalls;
+    start = Clock::now();
+    for (int i = 0; i < kCalls; ++i) glColorMask(i & 1, GL_TRUE, GL_TRUE, GL_TRUE);
+    const double colorMask = std::chrono::duration<double, std::nano>(Clock::now() - start).count() / kCalls;
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    std::fprintf(stderr, "  bench: glIsEnabled %.1f ns/call, glColorMask %.1f ns/call (core only)\n", isEnabled, colorMask);
+}
+
+TEST(bench_first_draw) {
+    // WMGL_BENCH: programs linked at "load" (then a pause, as a loading
+    // screen gives), and the time of each one's first draw. A per-run
+    // constant keeps the system's shader cache from answering.
+    if (!std::getenv("WMGL_BENCH")) return;
+    gpu::Fixture fixture(64, 64, false, 46);
+    CHECK(fixture.ok);
+    if (!fixture.ok) return;
+    constexpr int kPrograms = 24;
+    const unsigned salt = static_cast<unsigned>(std::chrono::steady_clock::now().time_since_epoch().count() & 0xffffff);
+    GLuint programs[kPrograms];
+    for (int i = 0; i < kPrograms; ++i) {
+        const std::string vs = "#version 460 core\nlayout(location = 0) in vec2 p;\nout vec2 uv;\n"
+                               "void main() { uv = p * " + std::to_string(i + 1) + ".0 + " + std::to_string(salt % 997) +
+                               ".0; gl_Position = vec4(p, 0.0, 1.0); }\n";
+        const std::string fs = "#version 460 core\nin vec2 uv;\nout vec4 o;\nvoid main() {\n vec4 a = vec4(0.0);\n"
+                               " for (int k = 0; k < " + std::to_string(8 + i) + "; ++k) a += sin(vec4(uv.xyxy * float(k) + " +
+                               std::to_string(salt) + ".0));\n o = a * 0.01;\n}\n";
+        programs[i] = gpu::program(vs.c_str(), fs.c_str());
+    }
+    std::this_thread::sleep_for(std::chrono::seconds(3));
+    GLuint vao = 0, vbo = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    const float tri[] = {-1, -1, 3, -1, -1, 3};
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(tri), tri, GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
+    glEnableVertexAttribArray(0);
+    double total = 0, worst = 0;
+    for (GLuint program : programs) {
+        const auto start = std::chrono::steady_clock::now();
+        glUseProgram(program);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+        total += ms;
+        worst = std::max(worst, ms);
+    }
+    glFinish();
+    std::fprintf(stderr, "  bench: first draws of %d programs: %.2f ms total, %.2f ms worst\n", kPrograms, total, worst);
+    for (GLuint program : programs) glDeleteProgram(program);
+    glDeleteBuffers(1, &vbo);
+    glDeleteVertexArrays(1, &vao);
 }

@@ -52,7 +52,8 @@ void packPixels(const void* storage, const FormatInfo& info, int width, int heig
                 GLenum type, const PixelStoreParams& ps, bool clampColor, void* dst);
 
 // Whether a client group of `format`/`type` has exactly the bytes of a
-// stored texel of `info`: transfers then copy rows as they are.
+// stored texel of `info` (any component size; without byte swapping, which
+// callers exclude): transfers then copy rows as they are.
 bool storedLayout(GLenum format, GLenum type, const FormatInfo& info);
 
 // Single-texel conversions (exposed for tests and the clear/compressed paths).

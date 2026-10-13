@@ -21,6 +21,22 @@
  * the PE side delivers before returning to the application. */
 #define WMGL_STATUS_DEBUG_MESSAGES 0x00000103 /* STATUS_PENDING */
 
+/* Batched GL calls (winemetalgl.c wmgl_batch): one unix call runs a
+ * thread's batch, records of a header and a GL command's parameter struct
+ * (in the caller's layout), then any data the struct points to. Records are
+ * multiples of 8 bytes; codes are GL commands' (above unix_wmgl_batch). */
+struct wmgl_batch_params
+{
+    UINT64 data;
+    UINT size;
+};
+
+struct wmgl_batch_record
+{
+    UINT code;
+    UINT size;  /* bytes of the record, header included */
+};
+
 /* Same as include/winemetalgl/driver.h. */
 struct wmgl_pixel_format
 {
