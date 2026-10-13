@@ -135,6 +135,12 @@ private:
 };
 
 uint64_t nextLinkedProgramId();
+
+// Compiles the Metal functions a program's draws start with (vertex and
+// fragment, or the compute pipeline) on a background queue after a link,
+// so its first draw does not wait for the Metal compiler; a draw that comes
+// first waits for the compile in progress. WINEMETALGL_PREWARM=0 turns it off.
+void prewarmFunctions(std::shared_ptr<LinkedProgram> program);
 // Whether GL_COLOR_LOGIC_OP applies to an attachment of this format
 // (unsigned normalized and integer formats).
 bool logicOpApplies(MTLPixelFormat format);

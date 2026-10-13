@@ -335,7 +335,16 @@ void CompileShader(Context& ctx, GLuint shader) {
     Shader* s = shaderOrError(ctx, shader);
     if (!s) return;
     if (s->spirv) return ctx.setError(GL_INVALID_OPERATION);  // SPIR-V is specialized instead
-    shader::CompileResult result = shader::compile(s->stage, s->source);
+    // Compiling touches no shared state: other contexts of the share group
+    // (a game's render thread while a loader thread compiles) keep running.
+    const RefPtr<Shader> keep(s);
+    const shader::Stage stage = s->stage;
+    const std::string source = s->source;
+    shader::CompileResult result;
+    {
+        ShareUnlock unlocked(ctx);
+        result = shader::compile(stage, source);
+    }
     s->compiled = true;
     s->compileStatus = result.ok;
     s->infoLog = result.log;
@@ -558,6 +567,7 @@ namespace {
 // carry problems found while gathering the input.
 void linkFrom(Context& ctx, Program* p, shader::LinkInput input, std::string log, bool ok) {
     const GLuint program = p->name;
+    const RefPtr<Program> keep(p);  // the link runs without the share-group lock
     p->linkAttempted = true;
     if (ok && input.shaders.empty()) {
         log += "error: no shaders attached\n";
@@ -567,6 +577,7 @@ void linkFrom(Context& ctx, Program* p, shader::LinkInput input, std::string log
     if (ok) {
         stats::count(&stats::Frame::programLinks);
         stats::Timer timer(&stats::Frame::linkNanos);
+        ShareUnlock unlocked(ctx);  // a link reads only `input`, a copy
         result = shader::link(input);
         ok = result.ok;
         log += result.log;
@@ -606,6 +617,7 @@ void linkFrom(Context& ctx, Program* p, shader::LinkInput input, std::string log
         }
     }
     p->linked = std::move(linked);
+    prewarmFunctions(p->linked);
     ++p->uniformVersion;
     if (ctx.state.program.get() == p) ctx.markDirty(kDirtyProgram | kDirtyUniforms | kDirtyTextures | kDirtyVertexInput);
 }

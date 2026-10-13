@@ -1,7 +1,10 @@
 #include "core/program.h"
 
 #include <algorithm>
+#include <cstdlib>
+#include <dispatch/dispatch.h>
 #include <atomic>
+#include <future>
 #include <list>
 #include <mutex>
 #include <string>
@@ -19,16 +22,49 @@ uint64_t nextLinkedProgramId() {
     return next++;
 }
 
+void prewarmFunctions(std::shared_ptr<LinkedProgram> program) {
+    static const bool enabled = [] {
+        const char* v = std::getenv("WINEMETALGL_PREWARM");
+        return !v || v[0] != '0';
+    }();
+    if (!enabled || !program || program->pipeline) return;
+    static dispatch_queue_t queue =
+        dispatch_queue_create_with_target("winemetalgl.prewarm", DISPATCH_QUEUE_CONCURRENT,
+                                          dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0));
+    dispatch_async(queue, ^{
+        @autoreleasepool {
+            LinkedProgram& lp = *program;
+            if (lp.hasStage(shader::Stage::Compute)) {
+                lp.computePipeline();
+                return;
+            }
+            // What PipelineCache::render asks for by default; the variants
+            // (borders, logic operations, culling, ...) still compile on demand.
+            if (lp.hasStage(shader::Stage::Vertex)) lp.function(shader::Stage::Vertex);
+            if (lp.hasStage(shader::Stage::Fragment)) lp.function(shader::Stage::Fragment);
+            if (lp.link.geometry.active) {
+                lp.geometryPassthrough();
+                lp.geometryKernel();
+            }
+        }
+    });
+}
+
 namespace {
 
 // Compiled functions by their source and entry point: programs linked
 // again from the same shaders (shader::link's cache) and stages shared
-// between programs compile once.
+// between programs compile once. A compile in progress (a prewarm, another
+// thread) is waited for rather than repeated.
 struct FunctionCache {
     static constexpr size_t kEntries = 512;
     std::mutex mutex;
     std::list<std::string> order;  // most recently used first
-    std::unordered_map<std::string, std::pair<id<MTLFunction>, std::list<std::string>::iterator>> entries;
+    struct Entry {
+        std::shared_future<id<MTLFunction>> function;
+        std::list<std::string>::iterator position;
+    };
+    std::unordered_map<std::string, Entry> entries;
 };
 
 FunctionCache& functionCache() {
@@ -43,27 +79,39 @@ id<MTLFunction> compileFunction(const std::string& msl, const std::string& entry
     std::string key = entryPoint;
     key += '\0';
     key += msl;
+    std::promise<id<MTLFunction>> promise;
+    std::shared_future<id<MTLFunction>> function;
+    bool compiles = false;
     {
         std::lock_guard<std::mutex> lock(cache.mutex);
         auto it = cache.entries.find(key);
         if (it != cache.entries.end()) {
-            cache.order.splice(cache.order.begin(), cache.order, it->second.second);
-            return it->second.first;
+            cache.order.splice(cache.order.begin(), cache.order, it->second.position);
+            function = it->second.function;
+        } else {
+            function = promise.get_future().share();
+            compiles = true;
+            cache.order.push_front(key);
+            cache.entries.emplace(key, FunctionCache::Entry{function, cache.order.begin()});
+            while (cache.entries.size() > FunctionCache::kEntries) {
+                cache.entries.erase(cache.order.back());
+                cache.order.pop_back();
+            }
         }
     }
-    // Compiled outside the lock: other threads compile other functions meanwhile.
-    id<MTLFunction> function = compileFunctionUncached(msl, entryPoint, stage);
-    if (!function) return nil;
-    std::lock_guard<std::mutex> lock(cache.mutex);
-    if (!cache.entries.count(key)) {
-        cache.order.push_front(key);
-        cache.entries.emplace(std::move(key), std::make_pair(function, cache.order.begin()));
-        while (cache.entries.size() > FunctionCache::kEntries) {
-            cache.entries.erase(cache.order.back());
-            cache.order.pop_back();
+    if (!compiles) return function.get();
+    id<MTLFunction> compiled = compileFunctionUncached(msl, entryPoint, stage);
+    promise.set_value(compiled);
+    if (!compiled) {
+        // Failures are not kept: each program remembers its own.
+        std::lock_guard<std::mutex> lock(cache.mutex);
+        auto it = cache.entries.find(key);
+        if (it != cache.entries.end()) {
+            cache.order.erase(it->second.position);
+            cache.entries.erase(it);
         }
     }
-    return function;
+    return compiled;
 }
 
 id<MTLFunction> compileFunctionUncached(const std::string& msl, const std::string& entryPoint, int stage) {

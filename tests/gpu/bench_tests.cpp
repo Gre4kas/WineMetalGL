@@ -5,6 +5,8 @@
 // sampler bind, with a program change every few draws. Runs only with
 // WMGL_BENCH set (frames, default 300); prints CPU microseconds per draw.
 
+#include <thread>
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <string>
@@ -154,4 +156,50 @@ TEST(bench_call_overhead) {
     const double colorMask = std::chrono::duration<double, std::nano>(Clock::now() - start).count() / kCalls;
     glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
     std::fprintf(stderr, "  bench: glIsEnabled %.1f ns/call, glColorMask %.1f ns/call (core only)\n", isEnabled, colorMask);
+}
+
+TEST(bench_first_draw) {
+    // WMGL_BENCH: programs linked at "load" (then a pause, as a loading
+    // screen gives), and the time of each one's first draw. A per-run
+    // constant keeps the system's shader cache from answering.
+    if (!std::getenv("WMGL_BENCH")) return;
+    gpu::Fixture fixture(64, 64, false, 46);
+    CHECK(fixture.ok);
+    if (!fixture.ok) return;
+    constexpr int kPrograms = 24;
+    const unsigned salt = static_cast<unsigned>(std::chrono::steady_clock::now().time_since_epoch().count() & 0xffffff);
+    GLuint programs[kPrograms];
+    for (int i = 0; i < kPrograms; ++i) {
+        const std::string vs = "#version 460 core\nlayout(location = 0) in vec2 p;\nout vec2 uv;\n"
+                               "void main() { uv = p * " + std::to_string(i + 1) + ".0 + " + std::to_string(salt % 997) +
+                               ".0; gl_Position = vec4(p, 0.0, 1.0); }\n";
+        const std::string fs = "#version 460 core\nin vec2 uv;\nout vec4 o;\nvoid main() {\n vec4 a = vec4(0.0);\n"
+                               " for (int k = 0; k < " + std::to_string(8 + i) + "; ++k) a += sin(vec4(uv.xyxy * float(k) + " +
+                               std::to_string(salt) + ".0));\n o = a * 0.01;\n}\n";
+        programs[i] = gpu::program(vs.c_str(), fs.c_str());
+    }
+    std::this_thread::sleep_for(std::chrono::seconds(3));
+    GLuint vao = 0, vbo = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    const float tri[] = {-1, -1, 3, -1, -1, 3};
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(tri), tri, GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
+    glEnableVertexAttribArray(0);
+    double total = 0, worst = 0;
+    for (GLuint program : programs) {
+        const auto start = std::chrono::steady_clock::now();
+        glUseProgram(program);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+        total += ms;
+        worst = std::max(worst, ms);
+    }
+    glFinish();
+    std::fprintf(stderr, "  bench: first draws of %d programs: %.2f ms total, %.2f ms worst\n", kPrograms, total, worst);
+    for (GLuint program : programs) glDeleteProgram(program);
+    glDeleteBuffers(1, &vbo);
+    glDeleteVertexArrays(1, &vao);
 }
