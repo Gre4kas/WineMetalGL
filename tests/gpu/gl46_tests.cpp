@@ -1914,3 +1914,41 @@ GPU_TEST_VERSION(gpu_gl46_occlusion_queries_begun_mid_pass, 46) {
     glDeleteVertexArrays(1, &vao);
     glDeleteProgram(p);
 }
+
+GPU_TEST_VERSION(gpu_gl46_read_pixels_pack_buffer_float_formats, 46) {
+    // Float texels read in their own layout into a pack buffer (an engine's
+    // auto-exposure readback: GL_RED / GL_FLOAT from R32F) are the stored
+    // bytes, copied by the GPU without waiting for it.
+    struct Case { GLenum internal, format, type; size_t texel; };
+    const Case cases[] = {{GL_R32F, GL_RED, GL_FLOAT, 4}, {GL_RGBA16F, GL_RGBA, GL_HALF_FLOAT, 8}, {GL_RG32F, GL_RG, GL_FLOAT, 8}};
+    for (const Case& c : cases) {
+        uint8_t texels[4 * 4 * 8];
+        for (size_t i = 0; i < sizeof(texels); ++i) texels[i] = static_cast<uint8_t>(i * 37 + 11);
+        // Keep the values finite: clear each component's exponent top bits.
+        if (c.type == GL_FLOAT)
+            for (size_t i = 3; i < sizeof(texels); i += 4) texels[i] &= 0x3f;
+        else
+            for (size_t i = 1; i < sizeof(texels); i += 2) texels[i] &= 0x3b;
+        GLuint tex = 0, fbo = 0, pbo = 0;
+        glGenTextures(1, &tex);
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glTexStorage2D(GL_TEXTURE_2D, 1, c.internal, 4, 4);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 4, 4, c.format, c.type, texels);
+        glGenFramebuffers(1, &fbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+        glGenBuffers(1, &pbo);
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, pbo);
+        glBufferData(GL_PIXEL_PACK_BUFFER, 16 * c.texel, nullptr, GL_STREAM_READ);
+        glReadPixels(0, 0, 4, 4, c.format, c.type, nullptr);
+        uint8_t out[4 * 4 * 8] = {};
+        glGetBufferSubData(GL_PIXEL_PACK_BUFFER, 0, static_cast<GLsizeiptr>(16 * c.texel), out);
+        CHECK(std::memcmp(out, texels, 16 * c.texel) == 0);
+        CHECK_GL();
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glDeleteBuffers(1, &pbo);
+        glDeleteFramebuffers(1, &fbo);
+        glDeleteTextures(1, &tex);
+    }
+}

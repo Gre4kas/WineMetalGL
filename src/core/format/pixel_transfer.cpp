@@ -727,8 +727,9 @@ bool identityTransfer(GLenum format, GLenum type, const FormatInfo& info) {
 }  // namespace
 
 bool storedLayout(GLenum format, GLenum type, const FormatInfo& info) {
+    // Byte swapping is the caller's to exclude (PixelStoreParams::swapBytes).
     return groupBytes(format, type) == storageBytes(info.storage) &&
-           (identityTransfer(format, type, info) || (rawTransfer(format, type, info.storage) && typeBytes(type) == 1));
+           (identityTransfer(format, type, info) || rawTransfer(format, type, info.storage));
 }
 
 void unpackPixels(const void* src, GLenum format, GLenum type, int width, int height, int depth,
