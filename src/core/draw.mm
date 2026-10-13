@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -2051,6 +2052,7 @@ void DrawState::noteIndirectCpu(stats::IndirectCpu reason, GLenum mode, GLenum t
 }
 
 bool DrawState::drawIndirect(GLenum mode, GLenum type, Buffer& commands, uintptr_t offset) {
+    commitLargeWork();
     ImageShadowScope shadows(*this);
     beginDraw(mode);
     if (!validateDraw(mode) || !conditionalRenderAllows(ctx_)) return true;  // as the CPU path would
@@ -2069,6 +2071,14 @@ bool DrawState::drawIndirect(GLenum mode, GLenum type, Buffer& commands, uintptr
     commands.lastUseSerial = serial;
     if (elements) elements->lastUseSerial = serial;
     return true;
+}
+
+void DrawState::commitLargeWork() {
+    static const uint32_t draws = [] {
+        const char* v = std::getenv("WINEMETALGL_COMMIT_DRAWS");
+        return v && *v ? static_cast<uint32_t>(std::strtoul(v, nullptr, 10)) : 256u;
+    }();
+    if (draws && ctx_.stream().drawsSinceCommit() >= draws) ctx_.stream().flush();
 }
 
 bool DrawState::pointPolygons(GLenum mode) const {
@@ -2495,6 +2505,7 @@ void DrawState::bindKernelResources(id<MTLComputeCommandEncoder> encoder, Linked
 }
 
 void DrawState::dispatch(GLuint x, GLuint y, GLuint z, Buffer* indirect, GLintptr offset) {
+    commitLargeWork();
     // Conditional rendering applies to dispatches too (KHR-GL43.compute_shader.conditional-dispatching).
     if (!conditionalRenderAllows(ctx_)) return;
     ImageShadowScope shadows(*this);
@@ -3066,6 +3077,7 @@ void DrawState::drawMetalPatches(LinkedProgram& program, LinkedProgram& evaluati
 }
 
 void DrawState::drawArrays(GLenum mode, GLint first, GLsizei count, GLsizei instances) {
+    commitLargeWork();
     ImageShadowScope shadows(*this);
     beginDraw(mode);
     if (first < 0 || count < 0 || instances < 0) {
@@ -3130,6 +3142,7 @@ void scanIndexRange(const uint8_t* p, GLsizei count, uint32_t& lo, uint32_t& hi)
 
 void DrawState::drawElements(GLenum mode, GLsizei count, GLenum type, const void* indices, GLsizei instances,
                              GLint baseVertex) {
+    commitLargeWork();
     ImageShadowScope shadows(*this);
     beginDraw(mode);
     glBaseVertex_ = baseVertex;

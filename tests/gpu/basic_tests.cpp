@@ -24,6 +24,41 @@ GPU_TEST(gpu_version_string) {
     CHECK_GL();
 }
 
+GPU_TEST(gpu_draws_across_commits) {
+    // More draws than DrawState::commitLargeWork records in one command
+    // buffer: the work is committed while draws are recorded, and every
+    // draw keeps its own uniforms.
+    GLuint p = gpu::program(R"(#version 330 core
+uniform vec4 at;
+void main() { gl_Position = vec4(at.xy, 0.0, 1.0); })",
+                            kColorFs);
+    glUseProgram(p);
+    const GLint at = glGetUniformLocation(p, "at"), color = glGetUniformLocation(p, "color");
+    glClearColor(0, 0, 0, 0);
+    glClear(GL_COLOR_BUFFER_BIT);
+    GLuint vao = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    for (int y = 0; y < 32; ++y)
+        for (int x = 0; x < 32; ++x) {
+            // Pixel (2x, 2y) of the 64x64 target, coloured by its position.
+            glUniform4f(at, (2.0f * x + 0.5f) / 32.0f - 1.0f, (2.0f * y + 0.5f) / 32.0f - 1.0f, 0.0f, 0.0f);
+            glUniform4f(color, static_cast<float>(x * 8) / 255.0f, static_cast<float>(y * 8) / 255.0f, 1.0f, 1.0f);
+            glDrawArrays(GL_POINTS, 0, 1);
+        }
+    CHECK_GL();
+    const auto pixels = gpu::readRGBA8(0, 0, 64, 64);
+    int wrong = 0;
+    for (int y = 0; y < 32; ++y)
+        for (int x = 0; x < 32; ++x) {
+            const uint8_t want[4] = {static_cast<uint8_t>(x * 8), static_cast<uint8_t>(y * 8), 255, 255};
+            wrong += !gpu::near(&pixels[(static_cast<size_t>(2 * y) * 64 + 2 * x) * 4], want);
+        }
+    CHECK_EQ(wrong, 0);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
+}
+
 GPU_TEST(gpu_clear_readback) {
     glClearColor(0.25f, 0.5f, 0.75f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);

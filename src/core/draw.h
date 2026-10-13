@@ -85,6 +85,14 @@ public:
 
     TransientAllocator& transient() { return transient_; }
 
+    // Commits the work recorded so far once it holds WINEMETALGL_COMMIT_DRAWS
+    // draws, so the GPU runs it while the CPU records the rest. Otherwise the
+    // GPU starts on a frame's work only at the next wait or SwapBuffers, and
+    // a wait for GPU results (indirect commands read on the CPU) waits for
+    // all of it. Called where no transient memory is held for work still to
+    // be recorded: when draws and dispatches start.
+    void commitLargeWork();
+
     // GL_ARB_base_instance: the base instance of the draw being issued.
     struct BaseInstanceScope {
         BaseInstanceScope(DrawState& d, GLuint base) : draw(d) { draw.baseInstance_ = base; }

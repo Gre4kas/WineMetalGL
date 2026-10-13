@@ -227,6 +227,7 @@ uint64_t CommandStream::flush() {
     endEncoder(PassEnd::Commit);
     if (!buffer_) return lastCommitted_;
     stats::count(&stats::Frame::commits);
+    drawsSinceCommit_ = 0;
     queue_.commit(buffer_, serial_);
     lastCommitted_ = serial_;
     buffer_ = nil;
