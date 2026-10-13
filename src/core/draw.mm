@@ -1769,15 +1769,25 @@ bool DrawState::issue(GLenum mode, GLint first, GLsizei count, GLsizei instances
     stats::count(&stats::Frame::draws);
     LinkedProgram* current = executable();
     if (!current) return false;
-    waitForCpuVertexReads(*current, false);
-    prepareSamplerStorage(*current);
+    {
+        stats::Timer timer(&stats::Frame::drawVertexNanos);
+        waitForCpuVertexReads(*current, false);
+    }
+    {
+        stats::Timer timer(&stats::Frame::drawSamplersNanos);
+        prepareSamplerStorage(*current);
+    }
     // GL_POINT polygon mode: Metal only fills or outlines triangles, so the
     // vertices of every triangle are drawn as points. Face culling is not
     // applied to them (FRONT_AND_BACK still draws nothing).
     const bool points = pointPolygons(mode);
     if (points && ctx_.state.cullFace && ctx_.state.cullFaceMode == GL_FRONT_AND_BACK) return true;
     MTLPrimitiveType primitive = MTLPrimitiveTypeTriangle;
-    id<MTLRenderCommandEncoder> encoder = prepare(points ? GL_POINTS : mode, primitive);
+    id<MTLRenderCommandEncoder> encoder = nil;
+    {
+        stats::Timer timer(&stats::Frame::drawPrepareNanos);
+        encoder = prepare(points ? GL_POINTS : mode, primitive);
+    }
     if (!encoder) return false;
     queriesBeforeDraw(ctx_, encoder, instances);
     LinkedProgram& program = *current;
@@ -1788,7 +1798,11 @@ bool DrawState::issue(GLenum mode, GLint first, GLsizei count, GLsizei instances
     const GLint rebase = minVertex > 0 && !program.readsVertexId() ? minVertex : 0;
     vertexRebase_ = rebase;
     // Instanced attributes need data for every instance they cover.
-    const bool bound = bindVertexInputs(encoder, key, program, minVertex, vertexSpan, instances);
+    bool bound = false;
+    {
+        stats::Timer timer(&stats::Frame::drawVertexNanos);
+        bound = bindVertexInputs(encoder, key, program, minVertex, vertexSpan, instances);
+    }
     vertexRebase_ = 0;
     if (!bound) {
         WMGL_WARN("too many vertex buffers for one draw");
@@ -1796,6 +1810,7 @@ bool DrawState::issue(GLenum mode, GLint first, GLsizei count, GLsizei instances
     }
     // Consecutive draws often have the same pipeline: compared before the cache's hash.
     id<MTLRenderPipelineState> pipeline = nil;
+    stats::Timer phase(&stats::Frame::drawPipelineNanos);  // then bind, then encode
     if (lastPipeline_ && std::memcmp(&key, &lastPipelineKey_, sizeof(key)) == 0) {
         pipeline = lastPipeline_;
     } else {
@@ -1805,8 +1820,10 @@ bool DrawState::issue(GLenum mode, GLint first, GLsizei count, GLsizei instances
     }
     if (!pipeline) return false;
     [encoder setRenderPipelineState:pipeline];
+    phase.switchTo(&stats::Frame::drawBindNanos);
     bindDrawState(encoder, program);
     if (program.link.xfbVertexCapture) bindCaptureDefaults(encoder, program);
+    phase.switchTo(&stats::Frame::drawEncodeNanos);
 
     bool needsIndices = false;
     MTLPrimitiveType native = nativePrimitive(mode, needsIndices);
@@ -2847,6 +2864,7 @@ void DrawState::drawElements(GLenum mode, GLsizei count, GLenum type, const void
     // use: scanned on the CPU, cached per index range of an element buffer
     // until its contents change (not for persistently mapped buffers, which
     // the application writes behind GL's back).
+    stats::Timer indexTimer(&stats::Frame::drawIndexNanos);  // the used range: kept, or scanned
     uint32_t minIndex = UINT32_MAX, maxIndex = 0;
     bool hasRestart = false;
     const Buffer::IndexRange range{offset, static_cast<uint64_t>(count), type, restart ? restartIndex : ~0ull};
@@ -2884,6 +2902,7 @@ void DrawState::drawElements(GLenum mode, GLsizei count, GLenum type, const void
             scans[range] = {minIndex, maxIndex, hasRestart};
         }
     }
+    indexTimer.switchTo(&stats::Frame::drawOtherNanos);
     if (minIndex == UINT32_MAX) return;  // only restart indices
     // The indices themselves, for the paths that rewrite them on the CPU.
     std::vector<uint32_t> values;

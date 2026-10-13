@@ -3,6 +3,7 @@
 #include <chrono>
 
 #include "core/metal/device.h"
+#include "core/stats.h"
 #include "core/util/log.h"
 
 namespace wmgl {
@@ -27,6 +28,8 @@ void Queue::commit(id<MTLCommandBuffer> buffer, uint64_t serial) {
         inflight_.insert(serial);
     }
     [buffer addCompletedHandler:^(id<MTLCommandBuffer> done) {
+        if (stats::g_enabled && done.GPUEndTime > done.GPUStartTime)
+            stats::addGpuNanos(static_cast<uint64_t>((done.GPUEndTime - done.GPUStartTime) * 1e9));
         if (done.status == MTLCommandBufferStatusError)
             WMGL_ERR("command buffer %llu failed: %s", static_cast<unsigned long long>(serial),
                      done.error.localizedDescription.UTF8String);

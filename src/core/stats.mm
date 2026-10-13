@@ -119,6 +119,12 @@ void printProfile(uint64_t frames) {
 
 }  // namespace
 
+namespace {
+std::atomic<uint64_t> g_gpuNanos{0};
+}  // namespace
+
+void addGpuNanos(uint64_t nanos) { g_gpuNanos.fetch_add(nanos, std::memory_order_relaxed); }
+
 void endFrame() {
     ThreadState& t = thread();
     os_log_t log = signpostLog();
@@ -136,7 +142,8 @@ void endFrame() {
                  "waits %llu (%.2f ms) | lock %.2f ms | converted %llu vertices, %llu reused (client %llu format %llu "
                  "[0x%llx] other %llu) | cpu indices %llu | uniforms %llu KiB | commits %llu (query %llu) | "
                  "pass ends: target %llu blit %llu compute %llu visibility %llu commit %llu barrier %llu clear %llu "
-                 "other %llu | reads async %llu waiting %llu\n",
+                 "other %llu | reads async %llu waiting %llu | gpu %.2f ms | draw cpu: samplers %.2f vertex %.2f "
+                 "prepare %.2f pipeline %.2f bind %.2f encode %.2f index %.2f ms\n",
                  static_cast<unsigned long long>(t.index), t.lastPresent ? ms(now - t.lastPresent) : 0.0, ms(f.glNanos),
                  static_cast<unsigned long long>(f.calls), ms(f.presentNanos), ms(f.drawableNanos),
                  static_cast<unsigned long long>(f.draws),
@@ -153,7 +160,9 @@ void endFrame() {
                  static_cast<unsigned long long>(f.passEnds[4]), static_cast<unsigned long long>(f.passEnds[5]),
                  static_cast<unsigned long long>(f.passEnds[6]), static_cast<unsigned long long>(f.passEnds[7]),
                  static_cast<unsigned long long>(f.passEnds[0]), static_cast<unsigned long long>(f.readsAsync),
-                 static_cast<unsigned long long>(f.readsWaiting));
+                 static_cast<unsigned long long>(f.readsWaiting), ms(g_gpuNanos.exchange(0, std::memory_order_relaxed)),
+                 ms(f.drawSamplersNanos), ms(f.drawVertexNanos), ms(f.drawPrepareNanos), ms(f.drawPipelineNanos),
+                 ms(f.drawBindNanos), ms(f.drawEncodeNanos), ms(f.drawIndexNanos));
     if (t.index % 60 == 59) printProfile(60);
     t.frame = Frame();
     t.lastPresent = now;

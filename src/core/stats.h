@@ -36,7 +36,14 @@ struct Frame {
     uint64_t passEnds[8] = {};
     // glReadPixels copied by the GPU into a pack buffer, and reads that wait for the GPU.
     uint64_t readsAsync = 0, readsWaiting = 0;
+    // Where draws spend CPU time (DrawState::issue and drawElements).
+    uint64_t drawSamplersNanos = 0, drawVertexNanos = 0, drawPrepareNanos = 0, drawPipelineNanos = 0,
+             drawBindNanos = 0, drawEncodeNanos = 0, drawIndexNanos = 0;
+    uint64_t drawOtherNanos = 0;  // not reported: where a phase timer goes after its phase
 };
+
+// GPU time of completed command buffers (any thread; reported and reset per frame).
+void addGpuNanos(uint64_t nanos);
 
 Frame& frame();
 uint64_t nowNanos();
@@ -51,6 +58,15 @@ public:
     explicit Timer(uint64_t Frame::*field) : field_(field), start_(g_enabled ? nowNanos() : 0) {}
     ~Timer() {
         if (start_) frame().*field_ += nowNanos() - start_;
+    }
+    // Ends the current field's time and goes on timing into `field`.
+    void switchTo(uint64_t Frame::*field) {
+        if (start_) {
+            const uint64_t now = nowNanos();
+            frame().*field_ += now - start_;
+            start_ = now;
+        }
+        field_ = field;
     }
 
 private:
