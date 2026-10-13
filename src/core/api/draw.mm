@@ -1,7 +1,9 @@
 // Drawing commands (GL 3.3 section 2.8.3).
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
+#include <string>
 #include <vector>
 
 #include "core/compat/immediate.h"
@@ -133,10 +135,14 @@ bool readIndirectCommand(Context& ctx, const void* indirect, uint32_t* words, si
     };
     if (!fits()) return ctx.setError(GL_INVALID_OPERATION), false;
     stats::count(&stats::Frame::indirectCpu);
+    if (stats::g_enabled && buffer->lastWriteSerial && !ctx.stream().queue().isComplete(buffer->lastWriteSerial))
+        stats::count(&stats::Frame::indirectWaits);
     if (buffer->lastWriteSerial) waitForGpuUnlocked(ctx, buffer->lastWriteSerial);
     // Another context may have specified the buffer again during the wait.
     if (!fits()) return ctx.setError(GL_INVALID_OPERATION), false;
     std::memcpy(words, buffer->contents() + offset, count * 4);
+    // Both command structures start with the vertex and instance counts.
+    if (!words[0] || !words[1]) stats::count(&stats::Frame::indirectCpuEmpty);
     return true;
 }
 
@@ -147,9 +153,16 @@ bool readIndirectCommand(Context& ctx, const void* indirect, uint32_t* words, si
 bool drawIndirectOnGpu(Context& ctx, GLenum mode, GLenum type, const void* indirect, size_t count) {
     const uintptr_t offset = reinterpret_cast<uintptr_t>(indirect);
     Buffer* buffer = ctx.state.drawIndirectBuffer.get();
-    if (!buffer || !buffer->mtl || offset % 4 || buffer->mappedNonPersistent()) return false;
-    const uint64_t size = static_cast<uint64_t>(std::max<GLsizeiptr>(0, buffer->size));
-    if (offset > size || count * 4 > size - offset) return false;
+    const uint64_t size = buffer ? static_cast<uint64_t>(std::max<GLsizeiptr>(0, buffer->size)) : 0;
+    if (!buffer || !buffer->mtl || offset % 4 || buffer->mappedNonPersistent() || offset > size || count * 4 > size - offset) {
+        if (stats::g_enabled) {
+            char detail[128];
+            std::snprintf(detail, sizeof(detail), "command buffer %u (size %llu, mapped %d), offset %llu", buffer ? buffer->name : 0,
+                          static_cast<unsigned long long>(size), buffer && buffer->mapped, static_cast<unsigned long long>(offset));
+            stats::indirectCpu(stats::kIndirectCommands, std::to_string(buffer ? buffer->name : 0), detail);
+        }
+        return false;
+    }
     return ctx.draw().drawIndirect(mode, type, *buffer, offset);
 }
 

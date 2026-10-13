@@ -1938,19 +1938,21 @@ bool DrawState::noMetalRestartIndex(Buffer& buffer, GLenum type) {
     return !buffer.hasMaxIndex[wide];
 }
 
-bool DrawState::gpuIndirectDrawable(GLenum mode, GLenum type, LinkedProgram& program) {
+stats::IndirectCpu DrawState::indirectCpuReason(GLenum mode, GLenum type, LinkedProgram& program) {
     const ContextState& st = ctx_.state;
-    if (mode == GL_PATCHES || program.link.geometry.active || ffWideLines_ || lineSides_ || linePartners_) return false;
-    if (st.transformFeedback->active || queriesNeedDrawSizes(ctx_)) return false;
+    if (mode == GL_PATCHES || program.link.geometry.active || ffWideLines_ || lineSides_ || linePartners_)
+        return stats::kIndirectStage;
+    if (st.transformFeedback->active) return stats::kIndirectCapture;
+    if (queriesNeedDrawSizes(ctx_)) return stats::kIndirectQuery;
     // Drawn as Metal primitives, indices as they are.
     bool needsIndices = false;
     nativePrimitive(mode, needsIndices);
-    if (needsIndices || pointPolygons(mode) || rotateProvoking(mode, program)) return false;
+    if (needsIndices || pointPolygons(mode) || rotateProvoking(mode, program)) return stats::kIndirectPrimitive;
     // gl_BaseVertex and gl_BaseInstance are uniforms set from the command
     // (gl_InstanceID and gl_VertexID come from Metal; gl_DrawID is the caller's).
     if (Program* owner = stageProgram(program, static_cast<int>(Stage::Vertex)); owner && owner->linked) {
         const shader::LinkResult::BuiltinUniforms& b = owner->linked->link.builtinUniforms;
-        if (b.baseVertex >= 0 || b.baseInstance >= 0) return false;
+        if (b.baseVertex >= 0 || b.baseInstance >= 0) return stats::kIndirectParameters;
     }
     // Every attribute fetched by Metal: conversions cover the vertices drawn.
     VertexInputPlan plan;
@@ -1958,16 +1960,81 @@ bool DrawState::gpuIndirectDrawable(GLenum mode, GLenum type, LinkedProgram& pro
     for (const shader::StageOutput::VertexInput& input : program.stage(Stage::Vertex).vertexInputs)
         if (input.location >= 0 && input.location < VertexArray::kAttribSlots &&
             plan.how[static_cast<size_t>(input.location)] == VertexInputPlan::Converted)
-            return false;
-    if (type == GL_NONE) return true;
+            return stats::kIndirectConverted;
+    if (type == GL_NONE) return stats::kIndirectCpuReasons;
     // Indices Metal reads as GL does: 16 or 32 bits, with no index where one
     // of them restarts and the other does not (noMetalRestartIndex).
-    if (type != GL_UNSIGNED_SHORT && type != GL_UNSIGNED_INT) return false;
+    if (type != GL_UNSIGNED_SHORT && type != GL_UNSIGNED_INT) return stats::kIndirectIndexType;
     Buffer* elements = st.vertexArray->elementBuffer.get();
-    if (!elements || elements->mappedNonPersistent()) return false;
+    if (!elements || elements->mappedNonPersistent()) return stats::kIndirectElementsMapped;
     const uint32_t largest = type == GL_UNSIGNED_SHORT ? 0xffffu : 0xffffffffu;
-    if (st.primitiveRestart && !st.primitiveRestartFixedIndex && st.primitiveRestartIndex != largest) return false;
-    return noMetalRestartIndex(*elements, type);
+    if (st.primitiveRestart && !st.primitiveRestartFixedIndex && st.primitiveRestartIndex != largest)
+        return stats::kIndirectRestart;
+    if (noMetalRestartIndex(*elements, type)) return stats::kIndirectCpuReasons;
+    if (elements->mapped || elements->pinned || !elements->mtl) return stats::kIndirectElementsMapped;
+    return elements->lastWriteSerial && !ctx_.stream().queue().isComplete(elements->lastWriteSerial)
+               ? stats::kIndirectElementsWriting
+               : stats::kIndirectMaxIndex;
+}
+
+void DrawState::noteIndirectCpu(stats::IndirectCpu reason, GLenum mode, GLenum type, LinkedProgram& program) {
+    const ContextState& st = ctx_.state;
+    char detail[512];
+    int n = std::snprintf(detail, sizeof(detail), "program %u (link %llu), mode 0x%x, type 0x%x: ",
+                          st.program ? st.program->name : 0, static_cast<unsigned long long>(program.uid), mode, type);
+    char* at = detail + std::clamp(n, 0, static_cast<int>(sizeof(detail)) - 1);
+    const size_t left = sizeof(detail) - static_cast<size_t>(at - detail);
+    std::string cause;  // one description per program and cause
+    const Buffer* elements = st.vertexArray->elementBuffer.get();
+    switch (reason) {
+    case stats::kIndirectStage:
+        std::snprintf(at, left, "%s", mode == GL_PATCHES ? "tessellation" : program.link.geometry.active ? "geometry shader" : "wide lines");
+        break;
+    case stats::kIndirectCapture: std::snprintf(at, left, "transform feedback"); break;
+    case stats::kIndirectQuery: std::snprintf(at, left, "an active query counts primitives or samples"); break;
+    case stats::kIndirectPrimitive: {
+        bool needsIndices = false;
+        nativePrimitive(mode, needsIndices);
+        std::snprintf(at, left, "%s", needsIndices ? "primitive type" : pointPolygons(mode) ? "point polygon mode"
+                                                                      : "flat inputs with the last-vertex convention");
+        break;
+    }
+    case stats::kIndirectParameters: {
+        const Program* owner = stageProgram(program, static_cast<int>(Stage::Vertex));
+        const shader::LinkResult::BuiltinUniforms& b = owner->linked->link.builtinUniforms;
+        std::snprintf(at, left, "reads%s%s", b.baseVertex >= 0 ? " gl_BaseVertex" : "", b.baseInstance >= 0 ? " gl_BaseInstance" : "");
+        break;
+    }
+    case stats::kIndirectConverted: {
+        VertexInputPlan plan;
+        planVertexInputs(program, false, plan);
+        for (const shader::StageOutput::VertexInput& input : program.stage(Stage::Vertex).vertexInputs) {
+            if (input.location < 0 || input.location >= VertexArray::kAttribSlots ||
+                plan.how[static_cast<size_t>(input.location)] != VertexInputPlan::Converted)
+                continue;
+            const VertexAttrib& a = attribFor(*st.vertexArray, input.source());
+            const char* why = !a.buffer || !a.buffer->mtl                                        ? "client memory"
+                              : vertexFetch(input, a).format == MTLVertexFormatInvalid             ? "its format"
+                              : a.offset % 4 || a.effectiveStride() % 4 || !a.effectiveStride() ? "alignment"
+                                                                                                  : "vertex buffer slots";
+            std::snprintf(at, left, "attribute %d converted for %s (type 0x%x, size %d, offset %lld, stride %d)", input.location,
+                          why, a.type, a.size, static_cast<long long>(a.offset), static_cast<int>(a.effectiveStride()));
+            cause = std::to_string(input.location);
+            break;
+        }
+        break;
+    }
+    case stats::kIndirectIndexType: std::snprintf(at, left, "8-bit indices"); break;
+    case stats::kIndirectRestart: std::snprintf(at, left, "restart index 0x%x", st.primitiveRestartIndex); break;
+    case stats::kIndirectElementsMapped: case stats::kIndirectElementsWriting: case stats::kIndirectMaxIndex:
+        std::snprintf(at, left, "element buffer %u (size %lld, mapped %d, access 0x%x, pinned %d)", elements ? elements->name : 0,
+                      elements ? static_cast<long long>(elements->size) : 0LL, elements && elements->mapped,
+                      elements ? elements->mapAccess : 0, elements && elements->pinned);
+        cause = std::to_string(elements ? elements->name : 0);
+        break;
+    default: break;
+    }
+    stats::indirectCpu(reason, std::to_string(program.uid) + ':' + cause, detail);
 }
 
 bool DrawState::drawIndirect(GLenum mode, GLenum type, Buffer& commands, uintptr_t offset) {
@@ -1975,7 +2042,11 @@ bool DrawState::drawIndirect(GLenum mode, GLenum type, Buffer& commands, uintptr
     beginDraw(mode);
     if (!validateDraw(mode) || !conditionalRenderAllows(ctx_)) return true;  // as the CPU path would
     LinkedProgram* current = executable();
-    if (!current || !commands.mtl || !gpuIndirectDrawable(mode, type, *current)) return false;
+    if (!current || !commands.mtl) return false;
+    if (const stats::IndirectCpu reason = indirectCpuReason(mode, type, *current); reason != stats::kIndirectCpuReasons) {
+        if (stats::g_enabled) noteIndirectCpu(reason, mode, type, *current);
+        return false;
+    }
     stats::count(&stats::Frame::indirectGpu);
     Buffer* elements = type != GL_NONE ? ctx_.state.vertexArray->elementBuffer.get() : nullptr;
     const IndirectSource source{commands.mtl, static_cast<NSUInteger>(offset)};

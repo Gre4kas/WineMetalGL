@@ -13,10 +13,30 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 
 namespace wmgl::stats {
 
 extern const bool g_enabled;  // WINEMETALGL_STATS set
+
+// Why an indirect draw command is read on the CPU instead of by the GPU:
+// the first condition that holds of api/draw.mm drawIndirectOnGpu and
+// DrawState::indirectCpuReason.
+enum IndirectCpu : uint8_t {
+    kIndirectCommands,         // the command buffer: none, misaligned, mapped or too small
+    kIndirectStage,            // an emulated stage: patches, a geometry shader, wide lines
+    kIndirectCapture,          // transform feedback
+    kIndirectQuery,            // a query counting the draw's primitives or samples
+    kIndirectPrimitive,        // fans, loops, quads, point polygons, provoking-vertex rotation
+    kIndirectParameters,       // gl_BaseVertex or gl_BaseInstance
+    kIndirectConverted,        // a vertex attribute converted on the CPU
+    kIndirectIndexType,        // 8-bit indices
+    kIndirectRestart,          // a restart index other than the type's largest
+    kIndirectElementsMapped,   // the element buffer is mapped or pinned (written behind GL's back)
+    kIndirectElementsWriting,  // GPU writes to the element buffer have not completed
+    kIndirectMaxIndex,         // the element buffer holds the type's largest index
+    kIndirectCpuReasons
+};
 
 struct Frame {
     uint64_t calls = 0, draws = 0, passes = 0, pipelineMisses = 0, programLinks = 0, transientBytes = 0, waits = 0;
@@ -32,6 +52,11 @@ struct Frame {
     // Indirect draw commands read by the GPU, and read on the CPU (after
     // waiting for GPU writes to the command buffer).
     uint64_t indirectGpu = 0, indirectCpu = 0;
+    // The CPU-read commands by IndirectCpu reason, those that draw nothing
+    // (no vertices or no instances), and the waits for GPU writes to the
+    // commands before reading them.
+    uint64_t indirectCpuReasons[kIndirectCpuReasons] = {};
+    uint64_t indirectCpuEmpty = 0, indirectWaits = 0;
     uint64_t uniformBytes = 0;         // default uniforms copied to transient memory
     // Command buffers committed, those committed for timer queries, and
     // render passes ended by cause (CommandStream::PassEnd order).
@@ -54,6 +79,12 @@ uint64_t nowNanos();
 inline void count(uint64_t Frame::*field, uint64_t n = 1) {
     if (__builtin_expect(g_enabled, 0)) frame().*field += n;
 }
+
+// Logs `format` (when enabled) the first time `key` is seen.
+void describeOnce(const std::string& key, const char* format, ...) __attribute__((format(printf, 2, 3)));
+// An indirect command read on the CPU for `reason`; `detail` is logged the
+// first time the reason is seen with `key` (a program and cause).
+void indirectCpu(IndirectCpu reason, const std::string& key, const char* detail);
 
 // Adds the scope's duration to `field` (when enabled).
 class Timer {
