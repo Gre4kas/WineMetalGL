@@ -1739,6 +1739,29 @@ void appendMetalList(GLenum mode, const std::vector<uint32_t>& v, bool rotate, s
 
 }  // namespace
 
+const DrawState::IndexPattern* DrawState::indexPattern(GLenum mode, bool rotate, GLsizei count) {
+    constexpr GLsizei kMaxCount = 1 << 20;
+    constexpr size_t kMaxPatterns = 256;
+    if (count <= 0 || count > kMaxCount) return nullptr;
+    const uint64_t key = uint64_t{mode} | (rotate ? 1ull << 16 : 0) | (static_cast<uint64_t>(count) << 17);
+    auto it = indexPatterns_.find(key);
+    if (it != indexPatterns_.end()) return &it->second;
+    std::vector<uint32_t> in(static_cast<size_t>(count)), out;
+    for (GLsizei i = 0; i < count; ++i) in[static_cast<size_t>(i)] = static_cast<uint32_t>(i);
+    // As issue() rewrites them on the CPU.
+    if (rotate) expandProvokingLast(mode, in, out);
+    else expandIndices(mode, in, out);
+    IndexPattern pattern;
+    pattern.count = out.size();
+    if (!out.empty()) {
+        pattern.buffer = [Device::get().mtl() newBufferWithBytes:out.data() length:out.size() * 4
+                                                         options:MTLResourceStorageModeShared];
+        if (!pattern.buffer) return nullptr;
+    }
+    if (indexPatterns_.size() >= kMaxPatterns) indexPatterns_.clear();
+    return &indexPatterns_.emplace(key, pattern).first->second;
+}
+
 bool DrawState::issue(GLenum mode, GLint first, GLsizei count, GLsizei instances, const uint32_t* indexData,
                       id<MTLBuffer> indexBuffer, NSUInteger indexOffset, MTLIndexType indexType, GLint baseVertex,
                       GLint minVertex, GLsizei vertexSpan, bool listed) {
@@ -1791,6 +1814,20 @@ bool DrawState::issue(GLenum mode, GLint first, GLsizei count, GLsizei instances
     if (rotate) native = topologyClass(mode) == MTLPrimitiveTopologyClassLine ? MTLPrimitiveTypeLine : MTLPrimitiveTypeTriangle;
     if (points) native = MTLPrimitiveTypePoint;
     const uint64_t serial = ctx_.stream().serial();
+    if (!indexData && !indexBuffer && !points && (needsIndices || rotate) && count > 0) {
+        // Array draws of fans, quads, loops or rotated primitives: the
+        // rewritten numbering of 0..count-1, kept per mode and count, drawn
+        // from the draw's first vertex.
+        if (const IndexPattern* pattern = indexPattern(mode, rotate, count)) {
+            if (pattern->count)
+                [encoder drawIndexedPrimitives:native indexCount:pattern->count indexType:MTLIndexTypeUInt32
+                                   indexBuffer:pattern->buffer indexBufferOffset:0
+                                 instanceCount:std::max(1, instances) baseVertex:first - rebase
+                                  baseInstance:baseInstance_];
+            ctx_.stream().noteDraw();
+            return true;
+        }
+    }
     if (needsIndices || rotate || points || (indexData && !indexBuffer)) {
         stats::count(&stats::Frame::cpuIndexDraws);
         std::vector<uint32_t> in, out;
@@ -2930,6 +2967,48 @@ void DrawState::drawElements(GLenum mode, GLsizei count, GLenum type, const void
     bool needsIndices = false;
     nativePrimitive(mode, needsIndices);
     const bool rotate = rotateProvoking(mode, *executable());
+    // Metal always restarts at the type's largest index; GL only when asked.
+    const uint32_t metalRestart = indexSize == 2 ? 0xffffu : 0xffffffffu;
+    const bool drawnAsIs = !hasRestart && !needsIndices && !rotate && indexSize != 1 && offset % indexSize == 0 &&
+                           maxIndex != metalRestart;
+    if (elementBuffer && !drawnAsIs && !elementBuffer->mapped && !elementBuffer->pinned && !pointPolygons(mode)) {
+        // An element buffer range whose indices are rewritten (restart
+        // segments, provoking-vertex rotation, fans, quads and loops, byte
+        // indices, misaligned offsets) keeps its rewritten list until the
+        // buffer changes: draws of an unchanged mesh read it on the GPU.
+        if (elementBuffer->indexListsVersion != elementBuffer->version) {
+            elementBuffer->indexLists.clear();
+            elementBuffer->indexListsVersion = elementBuffer->version;
+        }
+        std::vector<uint64_t> key = {static_cast<uint64_t>(offset), static_cast<uint64_t>(count), type, mode,
+                                     rotate ? 1u : 0u, restart ? uint64_t{restartIndex} : ~0ull};
+        auto it = elementBuffer->indexLists.find(key);
+        if (it == elementBuffer->indexLists.end()) {
+            std::vector<uint32_t> list;
+            forEachSegment(0, [&](const std::vector<uint32_t>& segment) { appendMetalList(mode, segment, rotate, list); });
+            const size_t bytes = list.size() * 4;
+            if (Buffer::convertedBytes() + bytes > Buffer::kMaxConvertedBytes) {
+                if (!list.empty())
+                    issue(listMode(mode), 0, static_cast<GLsizei>(list.size()), instances, list.data(), nil, 0,
+                          MTLIndexTypeUInt32, baseVertex, spanFirst, span, true);
+                return;
+            }
+            auto entry = std::make_unique<Buffer::ConvertedVertices>();
+            if (bytes) {
+                entry->mtl = [Device::get().mtl() newBufferWithBytes:list.data() length:bytes
+                                                             options:MTLResourceStorageModeShared];
+                if (!entry->mtl) return;
+                entry->bytes = bytes;
+                Buffer::convertedBytes() += bytes;
+            }
+            it = elementBuffer->indexLists.emplace(std::move(key), std::move(entry)).first;
+        }
+        const Buffer::ConvertedVertices& list = *it->second;
+        if (list.bytes)
+            issue(listMode(mode), 0, static_cast<GLsizei>(list.bytes / 4), instances, nullptr, list.mtl, 0,
+                  MTLIndexTypeUInt32, baseVertex, spanFirst, span, true);
+        return;
+    }
     if (hasRestart) {
         std::vector<uint32_t> list;
         forEachSegment(0, [&](const std::vector<uint32_t>& segment) { appendMetalList(mode, segment, rotate, list); });
@@ -2938,10 +3017,7 @@ void DrawState::drawElements(GLenum mode, GLsizei count, GLenum type, const void
                   baseVertex, spanFirst, span, true);
         return;
     }
-    // Metal always restarts at the type's largest index; GL only when asked.
-    const uint32_t metalRestart = indexSize == 2 ? 0xffffu : 0xffffffffu;
-    if (elementBuffer && !needsIndices && !rotate && !pointPolygons(mode) && indexSize != 1 && offset % indexSize == 0 &&
-        maxIndex != metalRestart) {
+    if (elementBuffer && drawnAsIs && !pointPolygons(mode)) {
         elementBuffer->lastUseSerial = ctx_.stream().serial();
         issue(mode, 0, count, instances, nullptr, elementBuffer->mtl, offset,
               indexSize == 2 ? MTLIndexTypeUInt16 : MTLIndexTypeUInt32, baseVertex, spanFirst, span);

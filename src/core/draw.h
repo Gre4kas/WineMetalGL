@@ -6,6 +6,7 @@
 #include <array>
 #include <memory>
 #include <cstdint>
+#include <unordered_map>
 #include <vector>
 
 #include "core/format/formats.h"
@@ -275,6 +276,15 @@ private:
     PipelineKey lastKey_{};
     // The pipeline of the last draw through issue() and its key (programs carry
     // their link's uid in the key, so a relinked program misses).
+    // Array draws whose numbering is rewritten (fans, quads, loops,
+    // provoking-vertex rotation): the rewritten indices of 0..count-1 per
+    // (mode, rotation, count), drawn with the draw's first vertex as base.
+    struct IndexPattern {
+        id<MTLBuffer> buffer = nil;
+        NSUInteger count = 0;
+    };
+    std::unordered_map<uint64_t, IndexPattern> indexPatterns_;
+    const IndexPattern* indexPattern(GLenum mode, bool rotate, GLsizei count);
     // The draw target validateDraw built, for the same draw's first prepare()
     // (validatedFor_: drawCount_ of that draw, 0: none).
     uint64_t drawCount_ = 0, validatedFor_ = 0;

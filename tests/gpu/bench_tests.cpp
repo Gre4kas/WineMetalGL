@@ -19,12 +19,16 @@ constexpr int kPrograms = 24, kTextures = 64, kDrawsPerFrame = 700, kTargets = 6
 
 GLuint makeProgram(int variant) {
     const std::string vs = "#version 460 core\nlayout(location = 0) in vec4 position;\nlayout(location = 1) in vec4 attrib;\n"
-                           "uniform vec4 _va_[48];\nout vec4 v;\nvoid main() {\n"
+                           "uniform vec4 _va_[48];\nout vec4 v;\nflat out int material;\nvoid main() {\n"
                            "  gl_Position = vec4(dot(position, _va_[0]), dot(position, _va_[1]), dot(position, _va_[2]), dot(position, _va_[3]));\n"
-                           "  v = attrib * _va_[" + std::to_string(4 + variant % 40) + "];\n}\n";
-    const std::string fs = "#version 460 core\nin vec4 v;\nuniform sampler2D t0, t1, t2, t3;\nuniform vec4 _fa_[16];\nout vec4 o;\n"
+                           "  v = attrib * _va_[" + std::to_string(4 + variant % 40) + "];\n  material = gl_VertexID & 3;\n}\n";
+    // WMGL_BENCH_FLAT: a flat varying, as engines pass material ids
+    // (GL's last-vertex convention then rotates every primitive).
+    const bool flat = std::getenv("WMGL_BENCH_FLAT") != nullptr;
+    const std::string fs = std::string("#version 460 core\nin vec4 v;\n") + (flat ? "flat in int material;\n" : "") +
+                           "uniform sampler2D t0, t1, t2, t3;\nuniform vec4 _fa_[16];\nout vec4 o;\n"
                            "void main() { o = v * texture(t0, v.xy) + texture(t1, v.zw) * _fa_[" + std::to_string(variant % 16) +
-                           "] + texture(t2, v.yx) + texture(t3, v.wz); }\n";
+                           "] + texture(t2, v.yx) + texture(t3, v.wz)" + (flat ? " + float(material) * 0.01" : "") + "; }\n";
     GLuint p = gpu::program(vs.c_str(), fs.c_str());
     glUseProgram(p);
     for (int i = 0; i < 4; ++i) glUniform1i(glGetUniformLocation(p, ("t" + std::to_string(i)).c_str()), i);

@@ -1737,3 +1737,81 @@ GPU_TEST_VERSION(gpu_gl46_uniforms_between_draws_in_one_pass, 46) {
     glDeleteProgram(small);
     glDeleteProgram(large);
 }
+
+GPU_TEST_VERSION(gpu_gl46_rewritten_indices_follow_buffer_changes, 46) {
+    // Indices rewritten on the CPU (provoking-vertex rotation for a flat
+    // varying, restart, byte-index fans) are kept per element buffer range,
+    // and array fans per count: each draw still uses the indices of the
+    // moment, across buffer changes and other first vertices.
+    GLuint p = gpu::program("#version 460 core\nlayout(location = 0) in vec2 pos;\nflat out int id;\n"
+                            "void main() { id = gl_VertexID; gl_Position = vec4(pos, 0.0, 1.0); }\n",
+                            "#version 460 core\nflat in int id;\nout vec4 o;\n"
+                            "void main() { o = vec4(1.0, float(id & 1), 0.0, 1.0); }\n");
+    // Triangles filling the lower-left half of each quadrant: 0-2 bottom left, 3-5 bottom right,
+    // 6-8 top left, 9-11 top right (probed at 10 and 40 of 64); then two fans.
+    const float v[] = {-1, -1, 0, -1, -1, 0,   0, -1, 1, -1, 0, 0,   -1, 0, 0, 0, -1, 1,   0, 0, 1, 0, 0, 1,
+                       -0.5f, -0.5f, -1, -1, 0, -1, 0, 0, -1, 0, -1, -1,     // fan 12-17 (bottom-left square)
+                       0.5f, 0.5f, 0, 0, 1, 0, 1, 1, 0, 1, 0, 0};             // fan 18-23 (top-right square)
+    GLuint vao = 0, buffers[2] = {};
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(2, buffers);
+    glBindBuffer(GL_ARRAY_BUFFER, buffers[0]);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(v), v, GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
+    glEnableVertexAttribArray(0);
+    glUseProgram(p);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, buffers[1]);
+    const GLuint first[] = {0, 1, 2}, second[] = {9, 10, 11};
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(first), first, GL_DYNAMIC_DRAW);
+    auto lit = [](int x, int y) { return gpu::readRGBA8(x, y, 1, 1)[0] > 128; };
+    glClearColor(0, 0, 0, 1);
+    for (int round = 0; round < 2; ++round) {  // the second draw of each range is the kept one
+        glClear(GL_COLOR_BUFFER_BIT);
+        glDrawElements(GL_TRIANGLES, 3, GL_UNSIGNED_INT, nullptr);
+        CHECK(lit(10, 10));
+        CHECK(!lit(40, 40));
+    }
+    glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, 0, sizeof(second), second);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glDrawElements(GL_TRIANGLES, 3, GL_UNSIGNED_INT, nullptr);
+    CHECK(!lit(10, 10));
+    CHECK(lit(40, 40));
+    // Primitive restart in a strip: two triangles, then one, after a change.
+    glEnable(GL_PRIMITIVE_RESTART_FIXED_INDEX);
+    const GLuint strip[] = {0, 1, 2, 0xffffffffu, 9, 10, 11}, stripLater[] = {3, 4, 5, 0xffffffffu, 6, 7, 8};
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(strip), strip, GL_DYNAMIC_DRAW);
+    for (int round = 0; round < 2; ++round) {
+        glClear(GL_COLOR_BUFFER_BIT);
+        glDrawElements(GL_TRIANGLE_STRIP, 7, GL_UNSIGNED_INT, nullptr);
+        CHECK(lit(10, 10) && lit(40, 40) && !lit(40, 10) && !lit(10, 40));
+    }
+    glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, 0, sizeof(stripLater), stripLater);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glDrawElements(GL_TRIANGLE_STRIP, 7, GL_UNSIGNED_INT, nullptr);
+    CHECK(!lit(10, 10) && !lit(40, 40) && lit(40, 10) && lit(10, 40));
+    glDisable(GL_PRIMITIVE_RESTART_FIXED_INDEX);
+    // A fan of byte indices, then the same range rewritten.
+    const GLubyte fan[] = {12, 13, 14, 15, 16, 17}, fanLater[] = {18, 19, 20, 21, 22, 23};
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(fan), fan, GL_DYNAMIC_DRAW);
+    for (int round = 0; round < 2; ++round) {
+        glClear(GL_COLOR_BUFFER_BIT);
+        glDrawElements(GL_TRIANGLE_FAN, 6, GL_UNSIGNED_BYTE, nullptr);
+        CHECK(lit(16, 16) && !lit(48, 48));
+    }
+    glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, 0, sizeof(fanLater), fanLater);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glDrawElements(GL_TRIANGLE_FAN, 6, GL_UNSIGNED_BYTE, nullptr);
+    CHECK(!lit(16, 16) && lit(48, 48));
+    // Array fans of one count from two first vertices share a numbering.
+    glClear(GL_COLOR_BUFFER_BIT);
+    glDrawArrays(GL_TRIANGLE_FAN, 12, 6);
+    CHECK(lit(16, 16) && !lit(48, 48));
+    glClear(GL_COLOR_BUFFER_BIT);
+    glDrawArrays(GL_TRIANGLE_FAN, 18, 6);
+    CHECK(!lit(16, 16) && lit(48, 48));
+    CHECK_GL();
+    glDeleteBuffers(2, buffers);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
+}

@@ -93,6 +93,11 @@ public:
     }
     std::map<std::vector<uint64_t>, std::unique_ptr<ConvertedVertices>> converted;
     uint64_t convertedVersion = 0;
+    // drawElements' rewritten index lists of ranges of this element buffer
+    // (draw.mm), valid while `version` is `indexListsVersion`: by offset,
+    // count, type, mode, rotation and restart index; 32-bit indices.
+    std::map<std::vector<uint64_t>, std::unique_ptr<ConvertedVertices>> indexLists;
+    uint64_t indexListsVersion = 0;
 
     uint8_t* contents() const { return mtl ? static_cast<uint8_t*>(mtl.contents) : nullptr; }
     // Mapped in a way that forbids GPU use (persistent mappings allow it).
