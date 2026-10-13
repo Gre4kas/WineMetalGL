@@ -162,6 +162,8 @@ src/core/texture_storage.h
 src/core/texture_storage.mm
 src/core/util/log.cpp
 src/core/util/log.h
+src/core/util/metalfx_config.cpp
+src/core/util/metalfx_config.h
 src/core/util/name_table.h
 src/core/util/ref.h
 src/core/util/version.h
@@ -334,6 +336,7 @@ tests/gpu/uniform_block_tests.cpp
 tests/host/format_tests.cpp
 tests/host/fp64_tests.cpp
 tests/host/main.cpp
+tests/host/metalfx_tests.cpp
 tests/host/shader_tests.cpp
 tests/host/test.h
 tests/wine/core_triangle.c
@@ -380,6 +383,7 @@ tests/wine/opengl_module_edges.c
 tests/wine/opengl_multi_draw.c
 tests/wine/opengl_multisample.c
 tests/wine/opengl_pipeline.c
+tests/wine/opengl_present.c
 tests/wine/opengl_query.c
 tests/wine/opengl_rectangle.c
 tests/wine/opengl_renderbuffer.c

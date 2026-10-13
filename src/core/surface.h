@@ -89,6 +89,14 @@ private:
     std::mutex pipelineMutex_;
     id<MTLRenderPipelineState> presentPipeline_ = nil;
     id<MTLSamplerState> presentSampler_ = nil;
+    // MetalFX spatial upscaling of the back buffer into a drawable `upscale_`
+    // times its size (metalFxFactor; 1: off), through `upscaled_`.
+    float upscale_ = 1.0f;
+    bool upscaleFailed_ = false;
+    id upscaler_ = nil;  // id<MTLFXSpatialScaler>
+    id<MTLTexture> upscaled_ = nil;
+    void sizeDrawable();
+    id<MTLTexture> upscale(id<MTLCommandBuffer> commandBuffer, id<MTLTexture> source);
     std::unique_ptr<Mailbox> mailbox_;
 };
 
