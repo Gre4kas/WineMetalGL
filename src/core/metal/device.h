@@ -24,7 +24,7 @@ struct DeviceCaps {
     // -32769 or 65536 draw from the wrong vertices). Draws past that take
     // their vertex numbers from indices (DrawState::issue).
     // WINEMETALGL_VERTEX_OFFSETS16=1 turns it on, to test that path.
-    bool vertexOffsets16 = false;
+    bool drawOffsets16 = false;
     bool primitiveId = false;
     uint32_t maxTextureSize2D = 16384;
     uint32_t maxTextureSize3D = 2048;

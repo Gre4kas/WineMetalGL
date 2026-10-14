@@ -136,7 +136,7 @@ flat in int id; out vec4 o; void main() { o = id >= 100000 ? vec4(0, 1, 0, 1) : 
     CHECK(pixelIs(32, 32, kRed));
     // A far base vertex, and a fan (drawn from an index pattern) from the
     // far first vertex: on Metal devices that keep only 16 bits of vertex
-    // offsets (DeviceCaps::vertexOffsets16) these take indices instead.
+    // offsets (DeviceCaps::drawOffsets16) these take indices instead.
     const GLuint near[] = {0, 1, 2};
     glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(near), near, GL_STATIC_DRAW);
     glClear(GL_COLOR_BUFFER_BIT);

@@ -1827,8 +1827,8 @@ const DrawState::IndexPattern* DrawState::indexPattern(GLenum mode, bool rotate,
 
 namespace {
 // A vertex start or base vertex every Metal device draws from
-// (DeviceCaps::vertexOffsets16).
-bool vertexOffsetFits(int64_t v) { return v >= -32768 && v <= 32767; }
+// (DeviceCaps::drawOffsets16).
+bool drawOffsetFits(int64_t v) { return v >= -32768 && v <= 32767; }
 }  // namespace
 
 bool DrawState::issue(GLenum mode, GLint first, GLsizei count, GLsizei instances, const uint32_t* indexData,
@@ -1911,13 +1911,13 @@ bool DrawState::issue(GLenum mode, GLint first, GLsizei count, GLsizei instances
         ctx_.stream().noteDraw();
         return true;
     }
-    // Metal on some virtual GPUs (DeviceCaps::vertexOffsets16) keeps only 16
+    // Metal on some virtual GPUs (DeviceCaps::drawOffsets16) keeps only 16
     // bits of the vertex start and base vertex: such a draw goes through
     // indices that hold the vertex numbers themselves, with no offset.
     const int64_t arrayStart = int64_t{first} - rebase, indexedBase = int64_t{baseVertex} - rebase;
-    const bool limited = Device::get().caps().vertexOffsets16;
+    const bool limited = Device::get().caps().drawOffsets16;
     std::vector<uint32_t> readIndices;
-    if (limited && indexBuffer && !vertexOffsetFits(indexedBase) && count > 0) {
+    if (limited && indexBuffer && !drawOffsetFits(indexedBase) && count > 0) {
         // drawElements has read the element buffer on the CPU already.
         const uint8_t* at = static_cast<const uint8_t*>(indexBuffer.contents) + indexOffset;
         readIndices.resize(static_cast<size_t>(count));
@@ -1927,7 +1927,7 @@ bool DrawState::issue(GLenum mode, GLint first, GLsizei count, GLsizei instances
         indexData = readIndices.data();
         indexBuffer = nil;
     }
-    const bool offsetIndices = limited && (indexData ? !vertexOffsetFits(indexedBase) : !indexBuffer && !vertexOffsetFits(arrayStart));
+    const bool offsetIndices = limited && (indexData ? !drawOffsetFits(indexedBase) : !indexBuffer && !drawOffsetFits(arrayStart));
     if (!indexData && !indexBuffer && !points && (needsIndices || rotate) && count > 0 && !offsetIndices) {
         // Array draws of fans, quads, loops or rotated primitives: the
         // rewritten numbering of 0..count-1, kept per mode and count, drawn

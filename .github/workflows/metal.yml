@@ -37,7 +37,8 @@ jobs:
         # The core's view of it: the runner's virtual GPU (macOS 15) takes
         # the fallbacks of docs/unsupported.md#macos-15 (lodBias=0,
         # offsets16=1), and every GPU test is required with them.
-        run: WINEMETALGL_LOG=2 ./build/host/wmgl_gpu_tests gpu_version_string 2>&1 | grep "winemetalgl:info: device"
+        run: |
+          WINEMETALGL_LOG=2 ./build/host/wmgl_gpu_tests gpu_version_string 2>&1 | grep "winemetalgl:info: device"
 
       - name: Run the GPU tests
         run: ./build/host/wmgl_gpu_tests
