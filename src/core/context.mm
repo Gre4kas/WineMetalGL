@@ -1,5 +1,7 @@
 #include "core/context.h"
 
+#include <cstdarg>
+
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -228,6 +230,16 @@ bool Context::hasExtension(const char* name) const {
     return std::find(extensions_.begin(), extensions_.end(), name) != extensions_.end();
 }
 
+void logCallArguments(Context& ctx, const char* format, ...) {
+    ctx.logArguments = false;
+    char line[1024];
+    va_list args;
+    va_start(args, format);
+    std::vsnprintf(line, sizeof(line), format, args);
+    va_end(args);
+    WMGL_WARN("  the call: %s", line);
+}
+
 void Context::setError(GLenum error) {
     if (error_ == GL_NO_ERROR) error_ = error;
     if (logEnabled(LogLevel::Trace)) WMGL_TRACE("GL error 0x%04x in %s", error, currentCommand);
@@ -236,7 +248,9 @@ void Context::setError(GLenum error) {
     if (logEnabled(LogLevel::Warn)) {
         char key[96];
         std::snprintf(key, sizeof(key), "error-%s-%04x", currentCommand, error);
-        logOnce(LogLevel::Warn, key, "GL error 0x%04x in %s (reported once per command and error)", error, currentCommand);
+        // The generated entry point then logs the call's arguments.
+        logArguments = logOnce(LogLevel::Warn, key, "GL error 0x%04x in %s (reported once per command and error)", error,
+                               currentCommand) || logArguments;
     }
     if (state.debugOutput) {
         const char* name = error == GL_INVALID_ENUM        ? "GL_INVALID_ENUM"

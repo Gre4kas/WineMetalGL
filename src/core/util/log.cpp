@@ -36,18 +36,19 @@ void logMessage(LogLevel level, const char* format, ...) {
     va_end(args);
 }
 
-void logOnce(LogLevel level, const char* key, const char* format, ...) {
-    if (!logEnabled(level)) return;
+bool logOnce(LogLevel level, const char* key, const char* format, ...) {
+    if (!logEnabled(level)) return false;
     static std::mutex mutex;
     static std::unordered_set<std::string> seen;
     {
         std::lock_guard<std::mutex> lock(mutex);
-        if (!seen.insert(key).second) return;
+        if (!seen.insert(key).second) return false;
     }
     va_list args;
     va_start(args, format);
     vlog(level, format, args);
     va_end(args);
+    return true;
 }
 
 }  // namespace wmgl

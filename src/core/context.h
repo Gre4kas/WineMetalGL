@@ -160,6 +160,9 @@ public:
     bool debugMessageEnabled(GLenum source, GLenum type, GLuint id, GLenum severity) const;
     // Name of the GL command being executed (set by the generated entry points).
     const char* currentCommand = "";
+    // setError logged an error of the current command: its entry point logs
+    // the call's arguments (logCallArguments) when it returns.
+    bool logArguments = false;
 
     // Compatibility profile (W22): the packed wmgl_FixedFunction block
     // (compat/fixed_function.h), immediate mode (compat/immediate.h) and
@@ -208,6 +211,10 @@ extern bool g_traceCalls;
 void traceCall(const char* command);
 void setCurrentContext(Context* context);
 void noCurrentContext(const char* command);
+// Logs the arguments of a GL call whose error setError logged (`format` and
+// the arguments from the generated entry point).
+void logCallArguments(Context& ctx, const char* format, ...) __attribute__((format(printf, 2, 3)));
+
 // An Objective-C autorelease pool for the scope of a GL call. Metal hands
 // back some objects autoreleased (encoders, command buffers, pass
 // descriptors, and the receivers of `contents`, which ARC retains and

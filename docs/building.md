@@ -97,7 +97,7 @@ no `opengl32=native` override, and the program got Wine's own OpenGL.
 | Variable | Effect |
 |---|---|
 | `WINEDLLOVERRIDES=opengl32=b` | Use Wine's own OpenGL instead of WineMetalGL (how reference frames are recorded) |
-| `WINEMETALGL_LOG=1..3` | Log warnings, information or traces (errors are always logged) |
+| `WINEMETALGL_LOG=1..3` | Log warnings, information or traces (errors are always logged). Warnings include each GL error the first time a command raises it, with the call's arguments |
 | `WINEMETALGL_TRACE=1` | Log every GL call |
 | `WINEMETALGL_STATS=1` | Log per-frame statistics: frame and GL time, draws, passes and why they ended, command buffers, pipeline compiles, CPU conversions, readbacks, indirect draw commands read by the GPU or (after a wait) the CPU, and why the CPU reads them (each reason described once per program), and the memory the Metal device has allocated (growing while a scene stands still means GPU resources are retained); every 60 frames, the costliest commands |
 | `WINEMETALGL_BATCH=0` | Make every GL call its own unix call (by default the module batches calls that return nothing and take values, and runs them before the next other call) |
