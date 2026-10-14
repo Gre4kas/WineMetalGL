@@ -17,7 +17,10 @@
 
 namespace wmgl::stats {
 
-extern const bool g_enabled;  // WINEMETALGL_STATS set
+// Counting: WINEMETALGL_STATS set, or turned on by wmgl_stats_enable (tests).
+extern bool g_enabled;
+// Logging the counters and descriptions: WINEMETALGL_STATS set.
+extern const bool g_reporting;
 
 // Why an indirect draw command is read on the CPU instead of by the GPU:
 // the first condition that holds of api/draw.mm drawIndirectOnGpu and
@@ -50,8 +53,11 @@ struct Frame {
     uint64_t convertedFormatType = 0;  // GL type of the last unfetchable one (| 0x10000: normalized)
     uint64_t cpuIndexDraws = 0;        // draws whose indices were rewritten on the CPU
     // Patch draws tessellated on the CPU (after reading the levels back), by
-    // Metal's tessellator, and of those, draws whose flat fragment inputs
-    // take Metal's first vertex where GL's convention is the last.
+    // Metal's tessellator, and of those, draws with flat fragment inputs:
+    // they take the value of the vertex Metal provokes from. GL leaves the
+    // order of a tessellated triangle's vertices to the implementation, so
+    // that is as conforming as the CPU path's last vertex; a game that relies
+    // on one shows here.
     uint64_t tessCpu = 0, tessMetal = 0, tessMetalFlat = 0;
     // Indirect draw commands read by the GPU, and read on the CPU (after
     // waiting for GPU writes to the command buffer).
@@ -78,6 +84,9 @@ struct Frame {
 void addGpuNanos(uint64_t nanos);
 
 Frame& frame();
+// The calling thread's counter `name` (a Frame field, "passEnds.<cause>" or
+// "indirectCpuReasons.<n>") in `value`; false for an unknown name.
+bool counter(const char* name, uint64_t& value);
 uint64_t nowNanos();
 
 inline void count(uint64_t Frame::*field, uint64_t n = 1) {

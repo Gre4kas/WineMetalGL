@@ -25,7 +25,10 @@
 // and 4's domain points: a kernel turns the levels into Metal tessellation
 // factors, and Metal's tessellator feeds the evaluation vertex shader as a
 // post-tessellation vertex function (postTessellationVertexMsl), so the
-// draw does not wait for the control stage.
+// draw does not wait for the control stage. GL leaves the order of a
+// tessellated triangle's vertices (so its provoking vertex) and of the
+// triangles to the implementation; Metal's and the CPU tessellator's differ.
+// Patches are discarded and levels clamped as GL specifies on both.
 //
 // The generated kernels come from GLSL that SPIRV-Cross emits for the linked
 // stages, so the default uniform block keeps the program's layout and

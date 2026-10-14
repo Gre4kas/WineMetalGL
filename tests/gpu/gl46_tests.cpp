@@ -1,6 +1,5 @@
 // GL 4.6 features (contexts above 4.5 go through the development override
 // until the version is advertised).
-#include <chrono>
 #include <climits>
 #include <cstddef>
 #include <cstdlib>
@@ -127,7 +126,15 @@ GPU_TEST_VERSION(gpu_gl46_multi_draw_indirect_on_the_cpu, 46) {
     glBufferData(GL_DRAW_INDIRECT_BUFFER, sizeof(commands), commands, GL_STATIC_DRAW);
     glClearColor(0, 0, 0, 0);
     glClear(GL_COLOR_BUFFER_BIT);
-    glMultiDrawElementsIndirect(GL_POINTS, GL_UNSIGNED_INT, nullptr, 4, 0);
+    {
+        // gl_BaseVertex keeps every command on the CPU; the empty ones draw nothing.
+        gpu::Counters counters;
+        glMultiDrawElementsIndirect(GL_POINTS, GL_UNSIGNED_INT, nullptr, 4, 0);
+        CHECK_EQ(counters["indirectGpu"], 0ull);
+        CHECK_EQ(counters["indirectCpu"], 4ull);
+        CHECK_EQ(counters["indirectCpuEmpty"], 2ull);
+        CHECK_EQ(counters["draws"], 2ull);
+    }
     CHECK_GL();
     CHECK(pixelIs(8, 8, 0, 0, 0, 0));
     CHECK(pixelIs(24, 8, 1, 2, 0));
@@ -2015,46 +2022,13 @@ GLuint computeProgram(const char* source) {
     return p;
 }
 
-double millisSince(std::chrono::steady_clock::time_point start) {
-    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
-}
-
-// A compute program that spins for `iterations` (a uniform), then writes
-// `values` (a uniform array of 5) to the storage buffer at binding 0: slow
-// GPU work whose results are indirect commands.
-const char* const kSlowWriterCs =
+// A compute program writing `values` (a uniform array of 5) to the storage
+// buffer at binding 0: indirect commands written by the GPU.
+const char* const kWriterCs =
     "#version 460 core\nlayout(local_size_x = 1) in;\n"
     "layout(std430, binding = 0) buffer Out { uint words[]; };\n"
-    "uniform uint iterations;\nuniform uint values[5];\n"
-    "void main() {\n"
-    "    float x = 1.0;\n"
-    "    for (uint i = 0u; i < iterations; ++i) x = x * 1.0000001 + 1e-7;\n"
-    "    uint keep = x < 0.0 ? 1u : 0u;  // never: makes the loop's result used\n"
-    "    for (int k = 0; k < 5; ++k) words[k] = values[k] + keep;\n"
-    "}\n";
-
-// Iterations of kSlowWriterCs taking at least 60 ms of GPU time, and that time.
-GLuint slowIterations(GLuint writer, double& millis) {
-    GLuint scratch = 0;
-    glGenBuffers(1, &scratch);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, scratch);
-    glBufferData(GL_SHADER_STORAGE_BUFFER, 64, nullptr, GL_DYNAMIC_DRAW);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, scratch);
-    glUseProgram(writer);
-    GLuint iterations = 1u << 20;
-    for (;;) {
-        glUniform1ui(glGetUniformLocation(writer, "iterations"), iterations);
-        glFinish();
-        const auto start = std::chrono::steady_clock::now();
-        glDispatchCompute(1, 1, 1);
-        glFinish();
-        millis = millisSince(start);
-        if (millis >= 60.0 || iterations >= (1u << 30)) break;
-        iterations *= 2;
-    }
-    glDeleteBuffers(1, &scratch);
-    return iterations;
-}
+    "uniform uint values[5];\n"
+    "void main() { for (int k = 0; k < 5; ++k) words[k] = values[k]; }\n";
 
 void setWords(GLuint program, const GLuint (&values)[5]) {
     for (int k = 0; k < 5; ++k) {
@@ -2067,13 +2041,11 @@ void setWords(GLuint program, const GLuint (&values)[5]) {
 
 GPU_TEST_VERSION(gpu_gl46_indirect_commands_written_by_the_gpu, 46) {
     // GPU culling: a compute shader writes the draw commands, and indirect
-    // draws read them on the GPU without waiting for it (issue #12).
-    // Draws must still see the commands: count, first index, base instance
-    // (an instanced colour) and gl_DrawID.
-    GLuint writer = computeProgram(kSlowWriterCs);
-    double gpuMillis = 0;
-    const GLuint iterations = slowIterations(writer, gpuMillis);
-    CHECK(gpuMillis >= 60.0);
+    // draws hand them to the GPU instead of waiting to read them (issue #12):
+    // no commit between the writes and the draws (a CPU read would commit the
+    // writes to wait for them). Draws must still see the commands: count,
+    // first index, base instance (an instanced colour) and gl_DrawID.
+    GLuint writer = computeProgram(kWriterCs);
     GLuint p = gpu::program("#version 460 core\nlayout(location = 0) in vec2 pos;\nlayout(location = 1) in vec4 color;\n"
                             "out vec4 c;\n"
                             "void main() { c = vec4(color.r, max(color.g, gl_DrawID == 1 ? 1.0 : 0.0), color.b, 1.0);\n"
@@ -2107,15 +2079,10 @@ GPU_TEST_VERSION(gpu_gl46_indirect_commands_written_by_the_gpu, 46) {
     glBufferData(GL_SHADER_STORAGE_BUFFER, 512, nullptr, GL_DYNAMIC_DRAW);
     glBindBuffer(GL_DRAW_INDIRECT_BUFFER, buffers[3]);
     auto px = [](int x, int y) { return gpu::readRGBA8(x, y, 1, 1); };
-    // Untimed draws first: the timed ones would include building their pipelines.
-    glUseProgram(p);
-    glMultiDrawElementsIndirect(GL_TRIANGLES, GL_UNSIGNED_SHORT, nullptr, 2, 256);
-    glDrawArraysIndirect(GL_TRIANGLES, nullptr);
     glClearColor(0, 0, 0, 1);
     glClear(GL_COLOR_BUFFER_BIT);
-    glFinish();  // timing starts from an idle GPU
+    gpu::Counters counters;
     glUseProgram(writer);
-    glUniform1ui(glGetUniformLocation(writer, "iterations"), iterations);
     glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 0, buffers[3], 0, 20);
     setWords(writer, {3, 1, 0, 0, 2});  // triangle 0-2, instance 2 (blue)
     glDispatchCompute(1, 1, 1);
@@ -2124,27 +2091,27 @@ GPU_TEST_VERSION(gpu_gl46_indirect_commands_written_by_the_gpu, 46) {
     glDispatchCompute(1, 1, 1);
     glMemoryBarrier(GL_COMMAND_BARRIER_BIT);
     glUseProgram(p);
-    const auto start = std::chrono::steady_clock::now();
+    const unsigned long long commits = counters["commits"];
     glMultiDrawElementsIndirect(GL_TRIANGLES, GL_UNSIGNED_SHORT, nullptr, 2, 256);
-    const double callMillis = millisSince(start);
-    CHECK(callMillis < gpuMillis / 3);  // the GPU's two writes take 2 * gpuMillis
-    if (callMillis >= gpuMillis / 3) std::fprintf(stderr, "  indirect draw waited: %.1f ms (GPU %.1f ms)\n", callMillis, gpuMillis);
+    CHECK_EQ(counters["indirectGpu"], 2ull);
+    CHECK_EQ(counters["indirectCpu"], 0ull);
+    CHECK_EQ(counters["commits"], commits);
     const uint8_t blue[4] = {0, 0, 255, 255}, yellow[4] = {255, 255, 0, 255}, green[4] = {0, 255, 0, 255};
     CHECK(gpu::near(px(10, 10).data(), blue));     // command 0: base instance 2, gl_DrawID 0
     CHECK(gpu::near(px(54, 54).data(), yellow));   // command 1: instance 0 (red), gl_DrawID 1
     // An arrays command: vertices 3-5, base instance 1 (green).
     glClear(GL_COLOR_BUFFER_BIT);
-    glFinish();
     glUseProgram(writer);
     glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 0, buffers[3], 0, 20);
     setWords(writer, {3, 1, 3, 1, 0});
     glDispatchCompute(1, 1, 1);
     glMemoryBarrier(GL_COMMAND_BARRIER_BIT);
     glUseProgram(p);
-    const auto arraysStart = std::chrono::steady_clock::now();
+    const unsigned long long arraysCommits = counters["commits"];
     glDrawArraysIndirect(GL_TRIANGLES, nullptr);
-    const double arraysMillis = millisSince(arraysStart);
-    CHECK(arraysMillis < gpuMillis / 3);
+    CHECK_EQ(counters["indirectGpu"], 3ull);
+    CHECK_EQ(counters["indirectCpu"], 0ull);
+    CHECK_EQ(counters["commits"], arraysCommits);
     CHECK(gpu::near(px(54, 54).data(), green));
     CHECK(px(10, 10)[2] == 0);
     CHECK_GL();
@@ -2192,10 +2159,9 @@ GPU_TEST_VERSION(gpu_gl46_indirect_draws_index_65535_without_restart, 46) {
 
 GPU_TEST_VERSION(gpu_gl46_dispatch_indirect_written_by_the_gpu, 46) {
     // glDispatchComputeIndirect reads group counts a shader wrote on the GPU,
-    // without waiting for it (issue #12).
-    GLuint writer = computeProgram(kSlowWriterCs);
-    double gpuMillis = 0;
-    const GLuint iterations = slowIterations(writer, gpuMillis);
+    // without waiting for it (issue #12): no commit between the write and the
+    // dispatch.
+    GLuint writer = computeProgram(kWriterCs);
     GLuint counter = computeProgram("#version 460 core\nlayout(local_size_x = 2) in;\n"
                                     "layout(std430, binding = 1) buffer Count { uint n; };\n"
                                     "void main() { atomicAdd(n, 1u); }\n");
@@ -2209,22 +2175,15 @@ GPU_TEST_VERSION(gpu_gl46_dispatch_indirect_written_by_the_gpu, 46) {
     glBufferData(GL_SHADER_STORAGE_BUFFER, 4, &zero, GL_DYNAMIC_DRAW);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, buffers[1]);
     glBindBuffer(GL_DISPATCH_INDIRECT_BUFFER, buffers[0]);
-    // An untimed dispatch first: the timed one would include building its pipeline.
-    glUseProgram(counter);
-    glDispatchCompute(1, 1, 1);
-    glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
-    glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, 4, &zero);
-    glFinish();
+    gpu::Counters counters;
     glUseProgram(writer);
-    glUniform1ui(glGetUniformLocation(writer, "iterations"), iterations);
     setWords(writer, {3, 2, 1, 0, 0});  // 3 x 2 x 1 groups
     glDispatchCompute(1, 1, 1);
     glMemoryBarrier(GL_COMMAND_BARRIER_BIT);
     glUseProgram(counter);
-    const auto start = std::chrono::steady_clock::now();
+    const unsigned long long commits = counters["commits"];
     glDispatchComputeIndirect(0);
-    const double callMillis = millisSince(start);
-    CHECK(callMillis < gpuMillis / 3);
+    CHECK_EQ(counters["commits"], commits);
     glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
     GLuint n = 0;
     glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, 4, &n);

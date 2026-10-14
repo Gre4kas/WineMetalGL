@@ -43,7 +43,8 @@ double ms(uint64_t nanos) { return static_cast<double>(nanos) / 1e6; }
 
 }  // namespace
 
-const bool g_enabled = enabledFromEnvironment();
+const bool g_reporting = enabledFromEnvironment();
+bool g_enabled = g_reporting;
 
 Frame& frame() { return thread().frame; }
 
@@ -128,8 +129,30 @@ std::atomic<uint64_t> g_gpuNanos{0};
 
 void addGpuNanos(uint64_t nanos) { g_gpuNanos.fetch_add(nanos, std::memory_order_relaxed); }
 
+bool counter(const char* name, uint64_t& value) {
+#define WMGL_COUNTER(field) {#field, &Frame::field}
+    static const std::pair<const char*, uint64_t Frame::*> fields[] = {
+        WMGL_COUNTER(calls), WMGL_COUNTER(draws), WMGL_COUNTER(passes), WMGL_COUNTER(pipelineMisses),
+        WMGL_COUNTER(programLinks), WMGL_COUNTER(waits), WMGL_COUNTER(convertedVertices), WMGL_COUNTER(cpuIndexDraws),
+        WMGL_COUNTER(tessCpu), WMGL_COUNTER(tessMetal), WMGL_COUNTER(tessMetalFlat), WMGL_COUNTER(indirectGpu),
+        WMGL_COUNTER(indirectCpu), WMGL_COUNTER(indirectCpuEmpty), WMGL_COUNTER(indirectWaits), WMGL_COUNTER(commits),
+        WMGL_COUNTER(queryCommits), WMGL_COUNTER(readsAsync), WMGL_COUNTER(readsWaiting)};
+#undef WMGL_COUNTER
+    // CommandStream::PassEnd order.
+    static const char* const passEnds[8] = {"other", "target", "blit", "compute", "visibility", "commit", "barrier", "clear"};
+    const Frame& f = frame();
+    const std::string n = name ? name : "";
+    for (const auto& [field, member] : fields)
+        if (n == field) return value = f.*member, true;
+    for (int i = 0; i < 8; ++i)
+        if (n == std::string("passEnds.") + passEnds[i]) return value = f.passEnds[i], true;
+    for (int i = 0; i < kIndirectCpuReasons; ++i)
+        if (n == "indirectCpuReasons." + std::to_string(i)) return value = f.indirectCpuReasons[i], true;
+    return false;
+}
+
 void describeOnce(const std::string& key, const char* format, ...) {
-    if (!g_enabled) return;
+    if (!g_reporting) return;
     static std::mutex mutex;
     static std::unordered_set<std::string> seen;
     {
@@ -167,7 +190,7 @@ void endFrame() {
         t.interval = os_signpost_id_generate(log);
         os_signpost_interval_begin(log, t.interval, "frame");
     }
-    if (!g_enabled) return;
+    if (!g_reporting) return;
     const uint64_t now = nowNanos();
     const Frame& f = t.frame;
     std::fprintf(stderr,

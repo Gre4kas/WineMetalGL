@@ -93,6 +93,15 @@ void wmgl_version(int *major, int *minor, int *patch);
  * frees it. Call before creating contexts. Optional: cores before 3.0.0 do
  * not export it. */
 void wmgl_set_buffer_memory(void *(*allocate)(size_t size), void (*release)(void *memory, size_t size));
+/* Diagnostics, for tests: the WINEMETALGL_STATS counters of the calling
+ * thread (src/core/stats.h). wmgl_stats_enable(1) counts without logging
+ * (0 stops counting unless WINEMETALGL_STATS is set), wmgl_stats_reset zeroes
+ * the counters, and wmgl_stats_counter reads one by name ("draws", "waits",
+ * "commits", "indirectGpu", "tessMetal", "passEnds.commit", ...), returning
+ * 0 for an unknown name. Optional: cores before 3.2.0 do not export them. */
+void wmgl_stats_enable(int enable);
+void wmgl_stats_reset(void);
+int wmgl_stats_counter(const char *name, unsigned long long *value);
 
 #ifdef __cplusplus
 }

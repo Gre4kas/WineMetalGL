@@ -89,9 +89,13 @@ public:
     // draws, so the GPU runs it while the CPU records the rest. Otherwise the
     // GPU starts on a frame's work only at the next wait or SwapBuffers, and
     // a wait for GPU results (indirect commands read on the CPU) waits for
-    // all of it. Called where no transient memory is held for work still to
-    // be recorded: when draws and dispatches start.
-    void commitLargeWork();
+    // all of it. A commit ends the open render pass, which on a tile-based
+    // GPU stores its attachments and loads them again, so a draw that
+    // continues the pass (`target`, null for dispatches) commits only past
+    // 8 times as many draws; one that starts a pass, or a dispatch, ends it
+    // anyway. Called where no transient memory is held for work still to be
+    // recorded: when draws are validated and dispatches start.
+    void commitLargeWork(const RenderTargetDesc* target);
 
     // GL_ARB_base_instance: the base instance of the draw being issued.
     struct BaseInstanceScope {
@@ -180,7 +184,9 @@ private:
     bool metalTessellation(LinkedProgram& program, LinkedProgram& evaluation);
     // Draws `patches` patches (patch records at `records`) with Metal's
     // tessellator, the levels' factors at `factors` (wmgl_tess_factors).
-    void drawMetalPatches(LinkedProgram& program, LinkedProgram& evaluation, id<MTLBuffer> records, NSUInteger recordsOffset,
+    // False, having drawn nothing, when its pipeline cannot be built: the
+    // caller tessellates on the CPU, as later draws of the program do.
+    bool drawMetalPatches(LinkedProgram& program, LinkedProgram& evaluation, id<MTLBuffer> records, NSUInteger recordsOffset,
                           id<MTLBuffer> factors, NSUInteger factorsOffset, uint64_t patches, uint32_t patchesPerInstance,
                           uint32_t patchVertices);
     // Uniforms, uniform blocks and samplers of a compute function (the

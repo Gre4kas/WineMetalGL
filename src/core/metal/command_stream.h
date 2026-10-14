@@ -126,6 +126,8 @@ public:
     }
     // Draws recorded in the command buffer being recorded.
     uint32_t drawsSinceCommit() const { return drawsSinceCommit_; }
+    // Whether a draw to `target` continues the open render pass.
+    bool continuesPass(const RenderTargetDesc& target) const { return render_ && target_ == target; }
 
 private:
     uint64_t serialSlow();

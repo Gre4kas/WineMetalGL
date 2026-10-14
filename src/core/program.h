@@ -81,6 +81,9 @@ struct LinkedProgram {
     // (shader::postTessellationVertexMsl), without [[point_size]], with
     // clamp-to-border emulation variant `borders`. Nil if it has none.
     id<MTLFunction> postTessellationVertex(bool quads, uint16_t borders);
+    // On the evaluation executable: a Metal tessellation pipeline could not
+    // be built, so its patches are tessellated on the CPU.
+    std::atomic<bool> metalTessellationFailed{false};
     std::shared_ptr<LinkedProgram> pipelineTessEvaluation(const shader::LinkResult& evaluation, std::shared_ptr<LinkedProgram> out);
     // A pipeline whose vertex processing stages span programs: the emulation
     // assembled from each stage's program (shader::linkPipeline), or null.

@@ -432,6 +432,7 @@ bool DrawState::validateDraw(GLenum mode) {
     RenderTargetDesc target;
     TargetFormats formats;
     if (!drawTarget(target, formats)) return false;
+    commitLargeWork(&target);
     // The draw's first prepare() takes it instead of building it again.
     validatedTarget_ = std::move(target);
     validatedFormats_ = formats;
@@ -2052,7 +2053,6 @@ void DrawState::noteIndirectCpu(stats::IndirectCpu reason, GLenum mode, GLenum t
 }
 
 bool DrawState::drawIndirect(GLenum mode, GLenum type, Buffer& commands, uintptr_t offset) {
-    commitLargeWork();
     ImageShadowScope shadows(*this);
     beginDraw(mode);
     if (!validateDraw(mode) || !conditionalRenderAllows(ctx_)) return true;  // as the CPU path would
@@ -2073,12 +2073,16 @@ bool DrawState::drawIndirect(GLenum mode, GLenum type, Buffer& commands, uintptr
     return true;
 }
 
-void DrawState::commitLargeWork() {
+void DrawState::commitLargeWork(const RenderTargetDesc* target) {
     static const uint32_t draws = [] {
         const char* v = std::getenv("WINEMETALGL_COMMIT_DRAWS");
         return v && *v ? static_cast<uint32_t>(std::strtoul(v, nullptr, 10)) : 256u;
     }();
-    if (draws && ctx_.stream().drawsSinceCommit() >= draws) ctx_.stream().flush();
+    CommandStream& stream = ctx_.stream();
+    const uint64_t recorded = stream.drawsSinceCommit();
+    if (!draws || recorded < draws) return;
+    if (target && stream.continuesPass(*target) && recorded < uint64_t{draws} * 8) return;
+    stream.flush();
 }
 
 bool DrawState::pointPolygons(GLenum mode) const {
@@ -2505,7 +2509,7 @@ void DrawState::bindKernelResources(id<MTLComputeCommandEncoder> encoder, Linked
 }
 
 void DrawState::dispatch(GLuint x, GLuint y, GLuint z, Buffer* indirect, GLintptr offset) {
-    commitLargeWork();
+    commitLargeWork(nullptr);
     // Conditional rendering applies to dispatches too (KHR-GL43.compute_shader.conditional-dispatching).
     if (!conditionalRenderAllows(ctx_)) return;
     ImageShadowScope shadows(*this);
@@ -2640,7 +2644,11 @@ void DrawState::drawGeometry(GLenum mode, const std::vector<uint32_t>& vertices,
     const size_t indexCount = threads * 2 * maxV;
     TransientAllocation output = transient_.allocate(threads * maxV * g.outputStride * 4, serial, 16);
     TransientAllocation indices = transient_.allocate(indexCount * 4, serial, 16);
-    if (!output.buffer || !indices.buffer) return;
+    // The kernel's parameters: a buffer, not setBytes, since the generated
+    // kernel declares the slot as device memory (Metal validation rejects
+    // read-only bytes there).
+    TransientAllocation params = transient_.allocate(16, serial, 16);
+    if (!output.buffer || !indices.buffer || !params.buffer) return;
     id<MTLComputeCommandEncoder> compute = ctx_.stream().compute();
     [compute setComputePipelineState:kernel];
     bindKernelResources(compute, lp, g.kernel.usesDefaultUniforms, static_cast<int>(Stage::Compute), &g.kernel);
@@ -2648,7 +2656,8 @@ void DrawState::drawGeometry(GLenum mode, const std::vector<uint32_t>& vertices,
     [compute setBuffer:input.buffer offset:input.offset atIndex:shader::kSlotFirstXfbBuffer];
     [compute setBuffer:output.buffer offset:output.offset atIndex:shader::kSlotFirstXfbBuffer + 1];
     [compute setBuffer:indices.buffer offset:indices.offset atIndex:shader::kSlotFirstXfbBuffer + 2];
-    [compute setBytes:control length:sizeof(control) atIndex:shader::kSlotFirstXfbBuffer + 3];
+    std::memcpy(params.data, control, sizeof(control));
+    [compute setBuffer:params.buffer offset:params.offset atIndex:shader::kSlotFirstXfbBuffer + 3];
     const NSUInteger width = std::min<NSUInteger>(64, kernel.maxTotalThreadsPerThreadgroup);
     [compute dispatchThreads:MTLSizeMake(threads, 1, 1) threadsPerThreadgroup:MTLSizeMake(width, 1, 1)];
     primitiveBase += primitives;
@@ -2847,14 +2856,16 @@ void DrawState::drawPatches(const std::vector<uint32_t>& vertices, GLsizei insta
             borders ? lp.kernelWithBorders(t.control, static_cast<int>(Stage::TessControl), borders) : lp.tessControlKernel();
         if (!kernel) return;  // the border variant did not compile (logged)
         TransientAllocation output = transient_.allocate(total * recordWords * 4, serial, 16);
-        if (!output.buffer) return;
+        TransientAllocation params = transient_.allocate(16, serial, 16);  // device memory in the kernel, as above
+        if (!output.buffer || !params.buffer) return;
         id<MTLComputeCommandEncoder> compute = ctx_.stream().compute();
         [compute setComputePipelineState:kernel];
         bindKernelResources(compute, lp, t.control.usesDefaultUniforms, static_cast<int>(Stage::TessControl), &t.control);
         const uint32_t control[4] = {patchVertices, static_cast<uint32_t>(total), static_cast<uint32_t>(patches), 0};
         [compute setBuffer:captured.buffer offset:captured.offset atIndex:shader::kSlotFirstXfbBuffer];
         [compute setBuffer:output.buffer offset:output.offset atIndex:shader::kSlotFirstXfbBuffer + 1];
-        [compute setBytes:control length:sizeof(control) atIndex:shader::kSlotFirstXfbBuffer + 2];
+        std::memcpy(params.data, control, sizeof(control));
+        [compute setBuffer:params.buffer offset:params.offset atIndex:shader::kSlotFirstXfbBuffer + 2];
         [compute dispatchThreadgroups:MTLSizeMake(total, 1, 1)
                 threadsPerThreadgroup:MTLSizeMake(static_cast<NSUInteger>(t.verticesOut), 1, 1)];
         if (metal) {
@@ -2869,9 +2880,9 @@ void DrawState::drawPatches(const std::vector<uint32_t>& vertices, GLsizei insta
             [compute setBuffer:factors.buffer offset:factors.offset atIndex:1];
             [compute setBytes:params length:sizeof(params) atIndex:2];
             [compute dispatchThreads:MTLSizeMake(total, 1, 1) threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
-            drawMetalPatches(lp, *evaluation, output.buffer, output.offset, factors.buffer, factors.offset, total,
-                             static_cast<uint32_t>(patches), patchVertices);
-            return;
+            if (drawMetalPatches(lp, *evaluation, output.buffer, output.offset, factors.buffer, factors.offset, total,
+                                 static_cast<uint32_t>(patches), patchVertices))
+                return;
         }
         stats::count(&stats::Frame::tessCpu);
         ctx_.stream().waitFor(serial);
@@ -2896,9 +2907,9 @@ void DrawState::drawPatches(const std::vector<uint32_t>& vertices, GLsizei insta
         [compute setBuffer:factors.buffer offset:factors.offset atIndex:1];
         [compute setBytes:params length:sizeof(params) atIndex:2];
         [compute dispatchThreads:MTLSizeMake(total, 1, 1) threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
-        drawMetalPatches(lp, *evaluation, captured.buffer, captured.offset, factors.buffer, factors.offset, total,
-                         static_cast<uint32_t>(patches), patchVertices);
-        return;
+        if (drawMetalPatches(lp, *evaluation, captured.buffer, captured.offset, factors.buffer, factors.offset, total,
+                             static_cast<uint32_t>(patches), patchVertices))
+            return;
     }
     if (!t.hasControl) stats::count(&stats::Frame::tessCpu);
 
@@ -3007,6 +3018,7 @@ bool DrawState::metalTessellation(LinkedProgram& program, LinkedProgram& evaluat
                       : queriesNeedDrawSizes(ctx_)                                 ? "active query"
                       : pointPolygons(GL_TRIANGLES)                                ? "point polygon mode"
                       : !tessFactorsKernel()                                       ? "no factor kernel"
+                      : evaluation.metalTessellationFailed                         ? "no Metal tessellation pipeline"
                       : !evaluation.postTessellationVertex(t.mode == GL_QUADS, 0) ? "no post-tessellation function"
                                                                                    : "";
     if (why && *why && stats::g_enabled)
@@ -3015,7 +3027,7 @@ bool DrawState::metalTessellation(LinkedProgram& program, LinkedProgram& evaluat
     return why && !*why;
 }
 
-void DrawState::drawMetalPatches(LinkedProgram& program, LinkedProgram& evaluation, id<MTLBuffer> records,
+bool DrawState::drawMetalPatches(LinkedProgram& program, LinkedProgram& evaluation, id<MTLBuffer> records,
                                  NSUInteger recordsOffset, id<MTLBuffer> factors, NSUInteger factorsOffset, uint64_t patches,
                                  uint32_t patchesPerInstance, uint32_t patchVertices) {
     const shader::TessellationEmulation& t = program.link.tess;
@@ -3027,10 +3039,8 @@ void DrawState::drawMetalPatches(LinkedProgram& program, LinkedProgram& evaluati
     std::memcpy(control.outer, ctx_.state.patchDefaultOuterLevel, sizeof(control.outer));
     std::memcpy(control.inner, ctx_.state.patchDefaultInnerLevel, sizeof(control.inner));
     TransientAllocation controlData = transient_.allocate(sizeof(control), serial, 16);
-    if (!controlData.buffer) return;
+    if (!controlData.buffer) return true;
     std::memcpy(controlData.data, &control, sizeof(control));
-    stats::count(&stats::Frame::tessMetal);
-    stats::count(&stats::Frame::draws);
     // The domain point buffer is unread (its slot is bound to keep the
     // argument valid).
     tessInputs_.active = true;
@@ -3047,6 +3057,7 @@ void DrawState::drawMetalPatches(LinkedProgram& program, LinkedProgram& evaluati
     }
     MTLPrimitiveType primitive = MTLPrimitiveTypeTriangle;
     id<MTLRenderCommandEncoder> encoder = prepare(GL_TRIANGLES, primitive);
+    bool drawn = true;
     if (encoder) {
         // GL's vertex order is Metal's winding (the CPU path's D3D
         // tessellator takes the opposite one: tess/tessellator.cpp).
@@ -3057,7 +3068,14 @@ void DrawState::drawMetalPatches(LinkedProgram& program, LinkedProgram& evaluati
         key.tessellation = static_cast<uint8_t>(1 | (t.mode == GL_QUADS ? 2 : 0) | partition << 2 | (t.order == GL_CW ? 16 : 0));
         if (stats::g_enabled && rotateProvoking(GL_TRIANGLES, evaluation)) stats::count(&stats::Frame::tessMetalFlat);
         id<MTLRenderPipelineState> pipeline = ctx_.share().pipelines().render(key, evaluation);
-        if (pipeline) {
+        if (!pipeline) {
+            evaluation.metalTessellationFailed = true;
+            WMGL_WARN("no Metal tessellation pipeline for the patches of link %llu: tessellating them on the CPU",
+                      static_cast<unsigned long long>(program.uid));
+            drawn = false;
+        } else {
+            stats::count(&stats::Frame::tessMetal);
+            stats::count(&stats::Frame::draws);
             [encoder setRenderPipelineState:pipeline];
             bindDrawState(encoder, evaluation);
             if (evaluation.link.xfbVertexCapture) bindCaptureDefaults(encoder, evaluation);
@@ -3074,10 +3092,10 @@ void DrawState::drawMetalPatches(LinkedProgram& program, LinkedProgram& evaluati
     }
     override_ = nullptr;
     tessInputs_ = {};
+    return drawn;
 }
 
 void DrawState::drawArrays(GLenum mode, GLint first, GLsizei count, GLsizei instances) {
-    commitLargeWork();
     ImageShadowScope shadows(*this);
     beginDraw(mode);
     if (first < 0 || count < 0 || instances < 0) {
@@ -3142,7 +3160,6 @@ void scanIndexRange(const uint8_t* p, GLsizei count, uint32_t& lo, uint32_t& hi)
 
 void DrawState::drawElements(GLenum mode, GLsizei count, GLenum type, const void* indices, GLsizei instances,
                              GLint baseVertex) {
-    commitLargeWork();
     ImageShadowScope shadows(*this);
     beginDraw(mode);
     glBaseVertex_ = baseVertex;
