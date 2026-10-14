@@ -29,6 +29,8 @@ public:
 
     bool isComplete(uint64_t serial);
     bool isCommitted(uint64_t serial);
+    // True when no committed command buffer is still running on the GPU.
+    bool idle();
     // Blocks until the serial completes. Returns immediately for serials that
     // are not committed (their work is not visible to other contexts yet).
     void wait(uint64_t serial);

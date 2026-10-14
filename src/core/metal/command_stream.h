@@ -78,6 +78,18 @@ public:
 
     id<MTLBlitCommandEncoder> blit();
     id<MTLComputeCommandEncoder> compute();
+    // Prelude: two command buffers committed just ahead of the one being
+    // recorded, for work that reads nothing the GPU writes in it. Draws that
+    // need such work first (tessellation: vertex capture, then the control
+    // and tessellation factor kernels) record it there instead of ending the
+    // render pass in progress, which on a tile-based GPU stores and reloads
+    // every attachment. preludeRender: one rasterization-free pass without
+    // attachments; preludeCompute: one compute pass, run after it.
+    id<MTLRenderCommandEncoder> preludeRender();
+    id<MTLComputeCommandEncoder> preludeCompute();
+    // Commits the prelude and the command buffer being recorded, and waits
+    // for the prelude's kernels (the CPU reads their results).
+    void waitForPrelude();
     // Why an open render pass ends (stats: each end stores and reloads the
     // attachments on tile-based GPUs).
     enum class PassEnd : uint8_t { Other, Target, Blit, Compute, Visibility, Commit, Barrier, Clear, Count };
@@ -126,11 +138,17 @@ public:
     }
     // Draws recorded in the command buffer being recorded.
     uint32_t drawsSinceCommit() const { return drawsSinceCommit_; }
+    // The CPU waited this frame for indirect commands the GPU wrote: such a
+    // wait drains the GPU, which then idles while the CPU records
+    // (DrawState::commitLargeWork commits sooner). Until the next present.
+    void noteIndirectWait() { indirectWaited_ = true; }
+    bool indirectWaited() const { return indirectWaited_; }
     // Whether a draw to `target` continues the open render pass.
     bool continuesPass(const RenderTargetDesc& target) const { return render_ && target_ == target; }
 
 private:
     uint64_t serialSlow();
+    void commitPrelude();
     void startRender(const RenderTargetDesc& target);
 
     Queue& queue_;
@@ -140,11 +158,16 @@ private:
     id<MTLRenderCommandEncoder> render_ = nil;
     id<MTLBlitCommandEncoder> blit_ = nil;
     id<MTLComputeCommandEncoder> compute_ = nil;
+    id<MTLCommandBuffer> preludeRenderBuffer_ = nil, preludeComputeBuffer_ = nil;
+    id<MTLRenderCommandEncoder> preludeRender_ = nil;
+    id<MTLComputeCommandEncoder> preludeCompute_ = nil;
+    id<MTLCommandBuffer> lastPrelude_ = nil;  // the last prelude committed (waitForPrelude)
     RenderTargetDesc target_;
     RenderTargetDesc pendingTarget_;
     PendingClear pending_;
     bool drawsInPass_ = false;
     uint32_t drawsSinceCommit_ = 0;
+    bool indirectWaited_ = false;
     uint64_t passGeneration_ = 0;
     uint64_t renderCalls_ = 0;
     bool visibilityWanted_ = false, passVisibility_ = false;

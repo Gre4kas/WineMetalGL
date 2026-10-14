@@ -58,7 +58,7 @@ struct Frame {
     // order of a tessellated triangle's vertices to the implementation, so
     // that is as conforming as the CPU path's last vertex; a game that relies
     // on one shows here.
-    uint64_t tessCpu = 0, tessMetal = 0, tessMetalFlat = 0;
+    uint64_t tessCpu = 0, tessMetal = 0, tessMetalFlat = 0, tessPrelude = 0;
     // Indirect draw commands read by the GPU, and read on the CPU (after
     // waiting for GPU writes to the command buffer).
     uint64_t indirectGpu = 0, indirectCpu = 0;
