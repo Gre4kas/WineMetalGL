@@ -172,9 +172,12 @@ TEST(gpu_memory_streamed_buffers_with_host_memory_are_freed) {
         CHECK(fixture.ok);
         if (fixture.ok) {
             Streamer s;
+            // The virtual GPU's pool of released buffers (growth()) moves by
+            // up to ~20 MiB from one measurement to the next; the leak this
+            // guards against grows ~600 MiB here.
             const long long grew = growth(s, 300, [] { return g_hostBytes.load(); });
-            if (grew >= 16ll << 20) std::fprintf(stderr, "  host memory grew %.1f MiB over 300 frames\n", static_cast<double>(grew) / 1048576.0);
-            CHECK(grew < 16ll << 20);
+            if (grew >= 64ll << 20) std::fprintf(stderr, "  host memory grew %.1f MiB over 300 frames\n", static_cast<double>(grew) / 1048576.0);
+            CHECK(grew < 64ll << 20);
             CHECK_GL();
         }
     }
