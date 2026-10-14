@@ -30,6 +30,14 @@
 // triangles to the implementation; Metal's and the CPU tessellator's differ.
 // Patches are discarded and levels clamped as GL specifies on both.
 //
+// A multi-draw indirect of patches read on the CPU draws runs of commands
+// that each draw one instance of the same number of patches as one batch
+// (DrawState::drawPatchCommands): one vertex capture, control dispatch and
+// tessellation draw instead of a pass of each per command. gl_PrimitiveID
+// still starts again at 0 in each command (the patch number modulo the
+// patches per command); programs reading gl_DrawID, gl_BaseVertex or
+// gl_BaseInstance draw each command on its own.
+//
 // The generated kernels come from GLSL that SPIRV-Cross emits for the linked
 // stages, so the default uniform block keeps the program's layout and
 // uniform blocks and samplers keep their names.

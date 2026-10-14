@@ -357,6 +357,7 @@ tests/wine/opengl_fixed_line.c
 tests/wine/opengl_fixed_point.c
 tests/wine/opengl_fixed_texture.c
 tests/wine/opengl_fixed.c
+tests/wine/opengl_frame_bench.c
 tests/wine/opengl_geometry_points.c
 tests/wine/opengl_geometry_varying.c
 tests/wine/opengl_geometry.c

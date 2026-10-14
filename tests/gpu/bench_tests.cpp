@@ -207,3 +207,73 @@ TEST(bench_first_draw) {
     glDeleteBuffers(1, &vbo);
     glDeleteVertexArrays(1, &vao);
 }
+
+TEST(bench_small_passes) {
+    // WMGL_BENCH: frames of 100 render passes of 6 small draws (by default), cycling over
+    // 3 colour-only 640x360 framebuffers (as a frame's many short passes:
+    // shadow cascades, decals, post effects). Prints wall time per frame
+    // with the GPU finished each frame, so it measures the GPU's per-pass cost.
+    const char* env = std::getenv("WMGL_BENCH");
+    if (!env) return;
+    const int frames = std::atoi(env) > 0 ? std::atoi(env) : 300;
+    // WMGL_BENCH_PASSES, WMGL_BENCH_DRAWS (per pass), WMGL_BENCH_SIZE (target width; 16:9).
+    auto setting = [](const char* name, int fallback) {
+        const char* v = std::getenv(name);
+        return v && std::atoi(v) > 0 ? std::atoi(v) : fallback;
+    };
+    const int passes = setting("WMGL_BENCH_PASSES", 100), draws = setting("WMGL_BENCH_DRAWS", 6);
+    const int width = setting("WMGL_BENCH_SIZE", 640), height = width * 9 / 16;
+    gpu::Fixture fixture(64, 64, true, 46);
+    CHECK(fixture.ok);
+    if (!fixture.ok) return;
+    GLuint p = gpu::program("#version 460 core\nlayout(location = 0) in vec2 pos;\nuniform vec4 at;\n"
+                            "void main() { gl_Position = vec4(pos * at.zw + at.xy, 0.0, 1.0); }\n",
+                            "#version 460 core\nuniform vec4 color;\nout vec4 o;\nvoid main() { o = color; }\n");
+    glUseProgram(p);
+    const GLint at = glGetUniformLocation(p, "at"), color = glGetUniformLocation(p, "color");
+    const float quad[] = {0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1};
+    GLuint vao = 0, vbo = 0, textures[3], fbos[3];
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(quad), quad, GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
+    glEnableVertexAttribArray(0);
+    glGenTextures(3, textures);
+    glGenFramebuffers(3, fbos);
+    for (int i = 0; i < 3; ++i) {
+        glBindTexture(GL_TEXTURE_2D, textures[i]);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glBindFramebuffer(GL_FRAMEBUFFER, fbos[i]);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, textures[i], 0);
+    }
+    glViewport(0, 0, width, height);
+    using Clock = std::chrono::steady_clock;
+    glFinish();
+    double cpuMs = 0;
+    const auto begin = Clock::now();
+    for (int frame = 0; frame < frames; ++frame) {
+        const auto start = Clock::now();
+        for (int pass = 0; pass < passes; ++pass) {
+            glBindFramebuffer(GL_FRAMEBUFFER, fbos[pass % 3]);
+            for (int d = 0; d < draws; ++d) {
+                glUniform4f(at, -1.0f + 0.3f * static_cast<float>(d % 6), -1.0f + 0.02f * static_cast<float>(pass % 100), 0.25f, 0.25f);
+                glUniform4f(color, static_cast<float>(d) / 6.0f, static_cast<float>(pass) / 100.0f, 0.5f, 1.0f);
+                glDrawArrays(GL_TRIANGLES, 0, 6);
+            }
+        }
+        glFlush();
+        cpuMs += std::chrono::duration<double, std::milli>(Clock::now() - start).count();
+        glFinish();
+    }
+    const double wall = std::chrono::duration<double, std::milli>(Clock::now() - begin).count();
+    std::fprintf(stderr, "  bench: %d frames x %d passes x %d draws (%dx%d): %.3f ms wall per frame (%.1f us per pass), %.3f ms CPU per frame\n",
+                 frames, passes, draws, width, height, wall / frames, wall / frames * 1000.0 / passes, cpuMs / frames);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(3, fbos);
+    glDeleteTextures(3, textures);
+    glDeleteBuffers(1, &vbo);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
+}

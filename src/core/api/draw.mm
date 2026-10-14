@@ -1,6 +1,7 @@
 // Drawing commands (GL 3.3 section 2.8.3).
 
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -196,16 +197,21 @@ void drawArraysCommand(Context& ctx, GLenum mode, const void* indirect, bool ski
     ctx.draw().drawArrays(mode, static_cast<GLint>(command[2]), static_cast<GLsizei>(command[0]), static_cast<GLsizei>(command[1]));
 }
 
-void drawElementsCommand(Context& ctx, GLenum mode, GLenum type, const void* indirect, bool skipEmpty) {
-    uint32_t command[5];  // count, instance count, first index, base vertex, base instance
-    if (!readIndirectCommand(ctx, indirect, command, 5)) return;
-    if (skipEmpty && (!command[0] || !command[1])) return;
+// Draws a DrawElementsIndirectCommand already read.
+void drawElementsRead(Context& ctx, GLenum mode, GLenum type, const uint32_t command[5]) {
     if (command[0] > INT32_MAX || command[1] > INT32_MAX) return;
     const size_t size = type == GL_UNSIGNED_BYTE ? 1 : type == GL_UNSIGNED_SHORT ? 2 : 4;
     const uintptr_t offset = static_cast<uintptr_t>(command[2]) * size;
     DrawState::BaseInstanceScope scope(ctx.draw(), command[4]);
     ctx.draw().drawElements(mode, static_cast<GLsizei>(command[0]), type, reinterpret_cast<const void*>(offset),
                             static_cast<GLsizei>(command[1]), static_cast<GLint>(command[3]));
+}
+
+void drawElementsCommand(Context& ctx, GLenum mode, GLenum type, const void* indirect, bool skipEmpty) {
+    uint32_t command[5];  // count, instance count, first index, base vertex, base instance
+    if (!readIndirectCommand(ctx, indirect, command, 5)) return;
+    if (skipEmpty && (!command[0] || !command[1])) return;
+    drawElementsRead(ctx, mode, type, command);
 }
 
 }  // namespace
@@ -264,14 +270,59 @@ void multiDrawArraysIndirect(Context& ctx, GLenum mode, const void* indirect, GL
 
 void multiDrawElementsIndirect(Context& ctx, GLenum mode, GLenum type, const void* indirect, GLsizei drawcount, uintptr_t step) {
     bool cpu = false;
+    // Patches on the CPU path: commands that draw one instance of the same
+    // whole number of patches with the same base instance are drawn as one
+    // batch (one vertex capture, control dispatch and tessellation draw
+    // instead of one each per command), in command order.
+    bool batching = false, direct = false;
+    std::vector<std::array<uint32_t, 5>> batch;
+    auto flush = [&] {
+        if (batch.empty()) return;
+        ctx.draw().drawPatchCommands(type, reinterpret_cast<const uint32_t(*)[5]>(batch.data()), batch.size());
+        batch.clear();
+    };
+    const uint32_t patchVertices = static_cast<uint32_t>(std::max(1, ctx.state.patchVertices));
     for (GLsizei i = 0; i < drawcount; ++i) {
         DrawState::DrawIdScope id(ctx.draw(), i);
         const void* at = reinterpret_cast<const void*>(reinterpret_cast<uintptr_t>(indirect) + step * static_cast<uintptr_t>(i));
         if (cpu) stats::repeatIndirectCpu();
         else if (drawIndirectOnGpu(ctx, mode, type, at, 5)) continue;
+        if (batching) {
+            std::array<uint32_t, 5> command;
+            // After the first read (which waited for GPU writes to the
+            // commands), the rest come straight from the buffer: the
+            // commands were checked to fit before the loop, and the buffer
+            // stays as it is while the lock is held.
+            Buffer* buffer = ctx.state.drawIndirectBuffer.get();
+            const uintptr_t offset = reinterpret_cast<uintptr_t>(at);
+            if (direct && buffer && buffer->mtl && offset + 20 <= static_cast<uint64_t>(buffer->size)) {
+                std::memcpy(command.data(), buffer->contents() + offset, 20);
+                stats::count(&stats::Frame::indirectCpu);
+                if (!command[0] || !command[1]) stats::count(&stats::Frame::indirectCpuEmpty);
+            } else if (!readIndirectCommand(ctx, at, command.data(), 5)) {
+                break;
+            } else {
+                direct = buffer != nullptr;
+            }
+            if (!command[0] || !command[1]) continue;  // draws nothing
+            const bool fits = command[1] == 1 && command[0] % patchVertices == 0 && command[0] <= INT32_MAX &&
+                              (batch.empty() || (command[0] == batch[0][0] && command[4] == batch[0][4]));
+            if (fits) {
+                batch.push_back(command);
+                continue;
+            }
+            flush();
+            if (command[1] == 1 && command[0] % patchVertices == 0 && command[0] <= INT32_MAX) batch.push_back(command);
+            else drawElementsRead(ctx, mode, type, command.data());
+            continue;
+        }
         drawElementsCommand(ctx, mode, type, at, cpu);
+        // After the first command (which reported the state's errors), the
+        // state decides whether the rest can be batched.
+        if (!cpu) batching = mode == GL_PATCHES && ctx.draw().canBatchPatchCommands();
         cpu = true;
     }
+    flush();
 }
 
 // GL 4.6 / GL_ARB_indirect_parameters: the draw count is the uint at

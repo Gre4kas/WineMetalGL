@@ -2818,7 +2818,7 @@ void DrawState::drawGeometry(GLenum mode, const std::vector<uint32_t>& vertices,
 
 // ------------------------------------------------------------ tessellation
 
-void DrawState::drawPatches(const std::vector<uint32_t>& vertices, GLsizei instances) {
+void DrawState::drawPatches(const std::vector<uint32_t>& vertices, GLsizei instances, uint32_t primitiveCycle) {
     LinkedProgram& lp = *executable();
     const shader::TessellationEmulation& t = lp.link.tess;
     std::shared_ptr<LinkedProgram> evaluation = lp.tessEvaluation();
@@ -2829,6 +2829,7 @@ void DrawState::drawPatches(const std::vector<uint32_t>& vertices, GLsizei insta
     const std::vector<uint32_t> list(vertices.begin(), vertices.begin() + static_cast<long>(patches * patchVertices));
     const uint32_t copies = static_cast<uint32_t>(std::max(1, instances));
     const uint64_t total = static_cast<uint64_t>(patches) * copies;  // patch p of instance i is patch i * patches + p
+    const uint32_t cycle = primitiveCycle ? primitiveCycle : static_cast<uint32_t>(patches);  // gl_PrimitiveID = patch % cycle
     if (t.hasControl && !lp.tessControlKernel()) return;
     const bool metal = metalTessellation(lp, *evaluation);
     waitForCpuVertexReads(lp, true);
@@ -2861,7 +2862,7 @@ void DrawState::drawPatches(const std::vector<uint32_t>& vertices, GLsizei insta
         id<MTLComputeCommandEncoder> compute = ctx_.stream().compute();
         [compute setComputePipelineState:kernel];
         bindKernelResources(compute, lp, t.control.usesDefaultUniforms, static_cast<int>(Stage::TessControl), &t.control);
-        const uint32_t control[4] = {patchVertices, static_cast<uint32_t>(total), static_cast<uint32_t>(patches), 0};
+        const uint32_t control[4] = {patchVertices, static_cast<uint32_t>(total), cycle, 0};
         [compute setBuffer:captured.buffer offset:captured.offset atIndex:shader::kSlotFirstXfbBuffer];
         [compute setBuffer:output.buffer offset:output.offset atIndex:shader::kSlotFirstXfbBuffer + 1];
         std::memcpy(params.data, control, sizeof(control));
@@ -2881,7 +2882,7 @@ void DrawState::drawPatches(const std::vector<uint32_t>& vertices, GLsizei insta
             [compute setBytes:params length:sizeof(params) atIndex:2];
             [compute dispatchThreads:MTLSizeMake(total, 1, 1) threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
             if (drawMetalPatches(lp, *evaluation, output.buffer, output.offset, factors.buffer, factors.offset, total,
-                                 static_cast<uint32_t>(patches), patchVertices))
+                                 cycle, patchVertices))
                 return;
         }
         stats::count(&stats::Frame::tessCpu);
@@ -2908,7 +2909,7 @@ void DrawState::drawPatches(const std::vector<uint32_t>& vertices, GLsizei insta
         [compute setBytes:params length:sizeof(params) atIndex:2];
         [compute dispatchThreads:MTLSizeMake(total, 1, 1) threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
         if (drawMetalPatches(lp, *evaluation, captured.buffer, captured.offset, factors.buffer, factors.offset, total,
-                             static_cast<uint32_t>(patches), patchVertices))
+                             cycle, patchVertices))
             return;
     }
     if (!t.hasControl) stats::count(&stats::Frame::tessCpu);
@@ -2974,7 +2975,7 @@ void DrawState::drawPatches(const std::vector<uint32_t>& vertices, GLsizei insta
     struct {
         uint32_t patchVertices, patchesPerInstance, pad[2];
         float outer[4], inner[2], pad2[2];
-    } control = {patchVertices, static_cast<uint32_t>(patches), {0, 0}, {}, {}, {}};
+    } control = {patchVertices, cycle, {0, 0}, {}, {}, {}};
     std::memcpy(control.outer, ctx_.state.patchDefaultOuterLevel, sizeof(control.outer));
     std::memcpy(control.inner, ctx_.state.patchDefaultInnerLevel, sizeof(control.inner));
     TransientAllocation controlData = transient_.allocate(sizeof(control), serial, 16);
@@ -3093,6 +3094,49 @@ bool DrawState::drawMetalPatches(LinkedProgram& program, LinkedProgram& evaluati
     override_ = nullptr;
     tessInputs_ = {};
     return drawn;
+}
+
+bool DrawState::canBatchPatchCommands() {
+    LinkedProgram* lp = executable();
+    if (!lp || !lp->link.tess.active || lp->link.geometry.active || ffWideLines_) return false;
+    if (ctx_.state.transformFeedback->active || queriesNeedDrawSizes(ctx_) || queriesCountingStatistics(ctx_)) return false;
+    if (Program* owner = stageProgram(*lp, static_cast<int>(Stage::Vertex)); owner && owner->linked) {
+        const shader::LinkResult::BuiltinUniforms& b = owner->linked->link.builtinUniforms;
+        if (b.drawId >= 0 || b.baseVertex >= 0 || b.baseInstance >= 0) return false;
+    }
+    return true;
+}
+
+void DrawState::drawPatchCommands(GLenum type, const uint32_t (*commands)[5], size_t count) {
+    if (!count) return;
+    ImageShadowScope shadows(*this);
+    beginDraw(GL_PATCHES);
+    if (!validateDraw(GL_PATCHES) || !conditionalRenderAllows(ctx_)) return;
+    Buffer* elements = ctx_.state.vertexArray->elementBuffer.get();
+    if (!elements || !elements->mtl || elements->mappedNonPersistent()) return;
+    const size_t size = type == GL_UNSIGNED_BYTE ? 1 : type == GL_UNSIGNED_SHORT ? 2 : 4;
+    // The indices are read on the CPU, after GPU writes to the buffer.
+    if (elements->lastWriteSerial) ctx_.stream().waitFor(elements->lastWriteSerial);
+    const uint8_t* data = elements->contents();
+    const uint64_t bytes = static_cast<uint64_t>(std::max<GLsizeiptr>(0, elements->size));
+    std::vector<uint32_t> vertices;
+    vertices.reserve(count * commands[0][0]);
+    for (size_t c = 0; c < count; ++c) {
+        const uint64_t first = uint64_t{commands[c][2]} * size, n = commands[c][0];
+        if (first + n * size > bytes) continue;  // out-of-range index fetches draw nothing (drawElements)
+        const uint32_t bias = commands[c][3];
+        for (uint64_t i = 0; i < n; ++i) {
+            const uint8_t* at = data + first + i * size;
+            uint32_t v;
+            if (size == 1) v = *at;
+            else if (size == 2) { uint16_t x; std::memcpy(&x, at, 2); v = x; }
+            else std::memcpy(&v, at, 4);
+            vertices.push_back(v + bias);
+        }
+    }
+    const uint32_t patchVertices = static_cast<uint32_t>(std::max(1, ctx_.state.patchVertices));
+    BaseInstanceScope scope(*this, commands[0][4]);
+    drawPatches(vertices, 1, commands[0][0] / patchVertices);
 }
 
 void DrawState::drawArrays(GLenum mode, GLint first, GLsizei count, GLsizei instances) {

@@ -77,3 +77,4 @@ core_triangle - gate WMGL_FIRST_LIGHT_OK
 cts_wgl_sequence - gate WMGL_CTS_SEQUENCE_OK
 opengl_batched_calls - gate WINEMETALGL_BATCHED_CALLS_OK
 opengl_call_overhead - bench WINEMETALGL_CALL_OVERHEAD_OK
+opengl_frame_bench - bench WINEMETALGL_FRAME_BENCH_OK

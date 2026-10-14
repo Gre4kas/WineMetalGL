@@ -79,6 +79,21 @@ public:
     // CPU (indirectCpuReason); the caller then reads it and draws.
     bool drawIndirect(GLenum mode, GLenum type, Buffer& commands, uintptr_t offset);
 
+    // Multi-draw indirect commands of patches read on the CPU: whether the
+    // current state lets several be drawn as one batch (drawPatchCommands),
+    // which nothing tells apart from separate draws: a tessellation program
+    // without a geometry shader, no transform feedback or counting query,
+    // and a vertex stage that reads none of gl_DrawID, gl_BaseVertex and
+    // gl_BaseInstance. Valid until the state changes.
+    bool canBatchPatchCommands();
+    // Draws the DrawElementsIndirectCommands `commands` (count, instances,
+    // first index, base vertex, base instance) of `type` indices as one
+    // batch of patches, in order, after an earlier command of the same
+    // multi-draw reported the state's errors. Each draws one instance with
+    // the same base instance and the same number of whole patches, so
+    // gl_PrimitiveID starts again at 0 for each (canBatchPatchCommands).
+    void drawPatchCommands(GLenum type, const uint32_t (*commands)[5], size_t count);
+
     // glDispatchCompute / glDispatchComputeIndirect (validated by the caller);
     // `indirect` is the DISPATCH_INDIRECT_BUFFER, or null.
     void dispatch(GLuint x, GLuint y, GLuint z, Buffer* indirect, GLintptr offset);
@@ -176,7 +191,9 @@ private:
     // Draws `vertices` (vertex numbers in draw order, one restart-free
     // segment) as GL_PATCHES through the tessellation emulation
     // (shader/tessellation.h).
-    void drawPatches(const std::vector<uint32_t>& vertices, GLsizei instances);
+    // `primitiveCycle`: patches after which gl_PrimitiveID starts again at 0
+    // (0: the patches of one instance), for draws that batch several commands.
+    void drawPatches(const std::vector<uint32_t>& vertices, GLsizei instances, uint32_t primitiveCycle = 0);
     // Whether a draw of `program`'s patches can use Metal's tessellator
     // instead of reading the levels back for the CPU's: triangles or quads
     // (not point mode), rasterized, and nothing that needs the tessellated
