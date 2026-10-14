@@ -1314,11 +1314,16 @@ uint16_t DrawState::borderVariant(LinkedProgram& program, int stage) {
         Texture* texture = ctx_.state.textureUnits[unit].bound[slot.textureTarget].get();
         if (!texture) continue;
         const Sampler* samplerObject = ctx_.state.textureUnits[unit].sampler.get();
-        const SamplerParams& params = samplerObject ? samplerObject->params : texture->sampler;
-        if (params.wrapS != GL_CLAMP_TO_BORDER && params.wrapT != GL_CLAMP_TO_BORDER && params.wrapR != GL_CLAMP_TO_BORDER)
+        SamplerParams params = samplerObject ? samplerObject->params : texture->sampler;
+        params.lodBias += compat::textureUnitLodBias(ctx_, unit);  // as samplerBinding
+        // Without sampler LOD bias in Metal (macOS 15), a biased lookup is
+        // filtered in the shader.
+        const bool bias = params.lodBias != 0.0f && !Device::get().caps().samplerLodBias;
+        if (!bias && params.wrapS != GL_CLAMP_TO_BORDER && params.wrapT != GL_CLAMP_TO_BORDER &&
+            params.wrapR != GL_CLAMP_TO_BORDER)
             continue;
         shader::BorderSlot border;
-        if (!textureComplete(ctx_, *texture, &params) || !borderEmulation(*texture, params, slot.shadow, border)) continue;
+        if (!textureComplete(ctx_, *texture, &params) || !borderEmulation(*texture, params, slot.shadow, border, bias)) continue;
         border.texture = static_cast<uint32_t>(index);
         slots.push_back(border);
     }
@@ -1820,6 +1825,12 @@ const DrawState::IndexPattern* DrawState::indexPattern(GLenum mode, bool rotate,
     return &indexPatterns_.emplace(key, pattern).first->second;
 }
 
+namespace {
+// A vertex start or base vertex every Metal device draws from
+// (DeviceCaps::vertexOffsets16).
+bool vertexOffsetFits(int64_t v) { return v >= -32768 && v <= 32767; }
+}  // namespace
+
 bool DrawState::issue(GLenum mode, GLint first, GLsizei count, GLsizei instances, const uint32_t* indexData,
                       id<MTLBuffer> indexBuffer, NSUInteger indexOffset, MTLIndexType indexType, GLint baseVertex,
                       GLint minVertex, GLsizei vertexSpan, bool listed, const IndirectSource* indirect) {
@@ -1900,7 +1911,24 @@ bool DrawState::issue(GLenum mode, GLint first, GLsizei count, GLsizei instances
         ctx_.stream().noteDraw();
         return true;
     }
-    if (!indexData && !indexBuffer && !points && (needsIndices || rotate) && count > 0) {
+    // Metal on some virtual GPUs (DeviceCaps::vertexOffsets16) keeps only 16
+    // bits of the vertex start and base vertex: such a draw goes through
+    // indices that hold the vertex numbers themselves, with no offset.
+    const int64_t arrayStart = int64_t{first} - rebase, indexedBase = int64_t{baseVertex} - rebase;
+    const bool limited = Device::get().caps().vertexOffsets16;
+    std::vector<uint32_t> readIndices;
+    if (limited && indexBuffer && !vertexOffsetFits(indexedBase) && count > 0) {
+        // drawElements has read the element buffer on the CPU already.
+        const uint8_t* at = static_cast<const uint8_t*>(indexBuffer.contents) + indexOffset;
+        readIndices.resize(static_cast<size_t>(count));
+        for (size_t i = 0; i < readIndices.size(); ++i)
+            readIndices[i] = indexType == MTLIndexTypeUInt16 ? reinterpret_cast<const uint16_t*>(at)[i]
+                                                             : reinterpret_cast<const uint32_t*>(at)[i];
+        indexData = readIndices.data();
+        indexBuffer = nil;
+    }
+    const bool offsetIndices = limited && (indexData ? !vertexOffsetFits(indexedBase) : !indexBuffer && !vertexOffsetFits(arrayStart));
+    if (!indexData && !indexBuffer && !points && (needsIndices || rotate) && count > 0 && !offsetIndices) {
         // Array draws of fans, quads, loops or rotated primitives: the
         // rewritten numbering of 0..count-1, kept per mode and count, drawn
         // from the draw's first vertex.
@@ -1914,11 +1942,13 @@ bool DrawState::issue(GLenum mode, GLint first, GLsizei count, GLsizei instances
             return true;
         }
     }
-    if (needsIndices || rotate || points || (indexData && !indexBuffer)) {
+    if (needsIndices || rotate || points || (indexData && !indexBuffer) || offsetIndices) {
         stats::count(&stats::Frame::cpuIndexDraws);
         std::vector<uint32_t> in, out;
         in.reserve(static_cast<size_t>(count));
-        for (GLsizei i = 0; i < count; ++i) in.push_back(indexData ? indexData[i] : static_cast<uint32_t>(first + i - rebase));
+        const int64_t indexBias = offsetIndices ? indexedBase : 0;  // the base vertex, in the indices
+        for (GLsizei i = 0; i < count; ++i)
+            in.push_back(indexData ? static_cast<uint32_t>(indexData[i] + indexBias) : static_cast<uint32_t>(first + i - rebase));
         if (points) appendMetalList(mode, in, false, out);  // each triangle's vertices, shared ones once per triangle
         else if (rotate) expandProvokingLast(mode, in, out);
         else if (needsIndices) expandIndices(mode, in, out);
@@ -1928,7 +1958,7 @@ bool DrawState::issue(GLenum mode, GLint first, GLsizei count, GLsizei instances
         std::memcpy(alloc.data, out.data(), out.size() * 4);
         [encoder drawIndexedPrimitives:native indexCount:out.size() indexType:MTLIndexTypeUInt32
                            indexBuffer:alloc.buffer indexBufferOffset:alloc.offset instanceCount:std::max(1, instances)
-                            baseVertex:indexData ? baseVertex - rebase : 0 baseInstance:baseInstance_];
+                            baseVertex:indexData && !offsetIndices ? baseVertex - rebase : 0 baseInstance:baseInstance_];
     } else if (indexBuffer) {
         [encoder drawIndexedPrimitives:native indexCount:static_cast<NSUInteger>(count) indexType:indexType
                            indexBuffer:indexBuffer indexBufferOffset:indexOffset instanceCount:std::max(1, instances)

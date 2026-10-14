@@ -28,14 +28,18 @@ version:
 The evidence runs on macOS 26 and newer. On macOS 15:
 
 - Texture LOD bias set on a texture or sampler (`GL_TEXTURE_LOD_BIAS`, and
-  `glTexEnv`'s `GL_TEXTURE_FILTER_CONTROL`) has no effect: Metal's sampler
-  LOD bias is macOS 26 API. Bias passed to the GLSL lookup functions works.
-- Indexed draws whose converted vertex attributes start far into the arrays
-  draw with a negative Metal base vertex, which GitHub's macOS 15 virtual
-  GPU does not honour (Apple silicon hardware on macOS 26 and newer does).
+  `glTexEnv`'s `GL_TEXTURE_FILTER_CONTROL`) cannot go into Metal's sampler:
+  its LOD bias is macOS 26 API. Lookups through a biased sampler are filtered
+  in the shader instead (the clamp-to-border emulation's path,
+  `src/core/shader/border.h`), which applies the bias; they lose anisotropic
+  filtering, and cube maps keep the unbiased lookup.
 
-The Metal CI workflow runs on macOS 15 and reports these cases without
-requiring them (`WMGL_GPU_NOT_REQUIRED` in `.github/workflows/metal.yml`).
+The GPU of macOS virtual machines on macOS 15 ("Apple Paravirtual device",
+GitHub's macOS 15 runners) keeps only 16 bits of a draw's Metal vertex start
+and base vertex (measured: a vertex start of 65536 and base vertices of
+-32769 and 65536 draw from the wrong vertices). There, draws whose offsets
+leave -32768 to 32767 take their vertex numbers from indices written on the
+CPU instead.
 
 ### Double precision
 

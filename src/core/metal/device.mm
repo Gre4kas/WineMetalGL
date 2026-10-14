@@ -1,5 +1,6 @@
 #include "core/metal/device.h"
 
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 
@@ -25,14 +26,21 @@ Device::Device() {
     caps_.meshShaders = [device_ supportsFamily:MTLGPUFamilyMetal3];
     caps_.framebufferFetch = [device_ supportsFamily:MTLGPUFamilyApple1];
     caps_.samplerBorderColor = true;
+    {
+        MTLSamplerDescriptor* sampler = [MTLSamplerDescriptor new];
+        const char* env = std::getenv("WINEMETALGL_SAMPLER_LOD_BIAS");
+        caps_.samplerLodBias = [sampler respondsToSelector:NSSelectorFromString(@"setLodBias:")] && !(env && std::strcmp(env, "0") == 0);
+        const char* offsets = std::getenv("WINEMETALGL_VERTEX_OFFSETS16");
+        caps_.vertexOffsets16 = std::strstr(name_, "Paravirtual") != nullptr || (offsets && std::strcmp(offsets, "1") == 0);
+    }
     caps_.primitiveId = [device_ supportsFamily:MTLGPUFamilyApple7] || [device_ supportsFamily:MTLGPUFamilyMac2];
     caps_.workingSetBytes = device_.recommendedMaxWorkingSetSize;
     for (uint32_t samples : {1u, 2u, 4u, 8u}) {
         caps_.sampleCountSupported[samples] = [device_ supportsTextureSampleCount:samples];
         if (caps_.sampleCountSupported[samples]) caps_.maxSamples = samples;
     }
-    WMGL_INFO("device %s: bc=%d mesh=%d fbfetch=%d maxSamples=%u", name_, caps_.bcTextures, caps_.meshShaders,
-              caps_.framebufferFetch, caps_.maxSamples);
+    WMGL_INFO("device %s: bc=%d mesh=%d fbfetch=%d lodBias=%d offsets16=%d maxSamples=%u", name_, caps_.bcTextures,
+              caps_.meshShaders, caps_.framebufferFetch, caps_.samplerLodBias, caps_.vertexOffsets16, caps_.maxSamples);
 }
 
 id<MTLLibrary> Device::utilityLibrary() {

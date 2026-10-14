@@ -18,7 +18,8 @@ namespace {
 // and d, the depth reference; for gathers k, the component.
 //
 // The value stays the hardware's while the filter footprint is inside the
-// image along every CLAMP_TO_BORDER axis. Otherwise nearest filtering gives
+// image along every CLAMP_TO_BORDER axis (unless filter has 32: then every
+// lookup is filtered here, with the LOD bias). Otherwise nearest filtering gives
 // the border colour, and linear filtering is done here from texel reads,
 // with the border colour for texels outside the image (and the texture's
 // other wrap modes); a gather takes the border colour for its texels outside
@@ -27,7 +28,8 @@ constexpr const char* kLibrary = R"MSL(
 // ---- WineMetalGL: clamp-to-border emulation (core/shader/border.h)
 struct wmgl_bp {
     uint axes;     // bits 0-2: S, T, R wrap CLAMP_TO_BORDER
-    uint filter;   // 1: magnification linear, 2: minification linear, 4: mipmaps nearest, 8: linear, 16: rectangle
+    uint filter;   // 1: magnification linear, 2: minification linear, 4: mipmaps nearest, 8: linear, 16: rectangle,
+                   // 32: every lookup (LOD bias), not only those at the border
     uint wrap;     // 4 bits per axis: 0 border, 1 repeat, 2 mirrored repeat, 3 clamp to edge, 4 mirror clamp to edge
     uint cmp;      // compare function (GL_NEVER + n), 8: none
     float minLod, maxLod, lodBias;
@@ -232,10 +234,13 @@ inline vec<B, 4> wmgl_border_sample(vec<B, 4> r, T t, sampler s, C cc, int3 o, i
     const wmgl_lod_choice q = wmgl_choose(t, s, c, lk, la, gx, gy, p);
     float w = wmgl_inside(c, o, wmgl_size(t, q.l0), p.axes, q.linear, rect);
     if (q.f > 0.0) w = mix(w, wmgl_inside(c, o, wmgl_size(t, q.l1), p.axes, q.linear, rect), q.f);
-    if (w >= 1.0) return r;
+    const bool always = (p.filter & 32u) != 0u;
+    if (w >= 1.0 && !always) return r;
+    const uint layer = wmgl_layer_of(t, cc);
+    if (always && (wmgl_integer(B(0)) || (!q.linear && q.f == 0.0)))  // one level, nearest
+        return wmgl_nearest(t, c, o, layer, q.l0, p, border);
     if (!q.linear && q.f == 0.0) return border;
     if (wmgl_integer(B(0))) return w > 0.5 ? r : border;  // integer textures are never filtered
-    const uint layer = wmgl_layer_of(t, cc);
     if (!q.linear)  // NEAREST_MIPMAP_LINEAR: the nearest texels of two levels, blended
         return vec<B, 4>(mix(wmgl_nearest(t, c, o, layer, q.l0, p, float4(border)),
                              wmgl_nearest(t, c, o, layer, q.l1, p, float4(border)), q.f));
@@ -252,9 +257,11 @@ inline float wmgl_border_sample(float r, T t, sampler s, C cc, int3 o, int lk, f
     const wmgl_lod_choice q = wmgl_choose(t, s, c, lk, la, gx, gy, p);
     float w = wmgl_inside(c, o, wmgl_size(t, q.l0), p.axes, q.linear, rect);
     if (q.f > 0.0) w = mix(w, wmgl_inside(c, o, wmgl_size(t, q.l1), p.axes, q.linear, rect), q.f);
-    if (w >= 1.0) return r;
-    if (!q.linear && q.f == 0.0) return wmgl_compare(p.cmp, ref, border.x);
+    const bool always = (p.filter & 32u) != 0u;
+    if (w >= 1.0 && !always) return r;
     const uint layer = wmgl_layer_of(t, cc);
+    if (always && !q.linear && q.f == 0.0) return wmgl_compare(p.cmp, ref, wmgl_nearest(t, c, o, layer, q.l0, p, border.x));
+    if (!q.linear && q.f == 0.0) return wmgl_compare(p.cmp, ref, border.x);
     if (!q.linear)
         return mix(wmgl_compare(p.cmp, ref, wmgl_nearest(t, c, o, layer, q.l0, p, border.x)),
                    wmgl_compare(p.cmp, ref, wmgl_nearest(t, c, o, layer, q.l1, p, border.x)), q.f);
@@ -382,7 +389,7 @@ std::string borderDefinitions(const std::vector<BorderSlot>& slots, bool fragmen
     for (const BorderSlot& s : slots) {
         const std::string n = std::to_string(s.texture);
         const uint32_t filter = (s.magLinear ? 1u : 0u) | (s.minLinear ? 2u : 0u) | (s.mip == 1 ? 4u : s.mip == 2 ? 8u : 0u) |
-                                (s.rect ? 16u : 0u);
+                                (s.rect ? 16u : 0u) | (s.always ? 32u : 0u);
         char params[192];
         std::snprintf(params, sizeof(params), "{%uu, %uu, %uu, %uu, %.9g, %.9g, %.9g}", s.axes, filter, s.wrap,
                       s.compare ? s.compare - 0x0200u : 8u, s.minLod, s.maxLod, s.lodBias);
