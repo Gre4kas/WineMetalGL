@@ -138,10 +138,12 @@ long long settled(Streamer& s, Measure measure) {
 }
 
 // Runs `frames` streamed frames after a warm-up and returns how much
-// `measure` grew.
+// `measure` grew. The warm-up is long: Metal on the GPU of macOS 15 virtual
+// machines (CI) holds on to about 125 MiB of the host memory buffers it has
+// released, filled over the first ~400 frames here and then level.
 template <typename Measure>
 long long growth(Streamer& s, int frames, Measure measure) {
-    for (int f = 0; f < 100; ++f) s.frame(f);
+    for (int f = 0; f < 500; ++f) s.frame(f);
     const long long before = settled(s, measure);
     for (int f = 0; f < frames; ++f) s.frame(f);
     return settled(s, measure) - before;

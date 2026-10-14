@@ -27,9 +27,14 @@ Device::Device() {
     caps_.framebufferFetch = [device_ supportsFamily:MTLGPUFamilyApple1];
     caps_.samplerBorderColor = true;
     {
+        // macOS 15 has the setter, but its samplers ignore the bias (measured
+        // on GitHub's macOS 15 runners). macOS 26 reports itself as 16 to
+        // binaries built with older SDKs.
         MTLSamplerDescriptor* sampler = [MTLSamplerDescriptor new];
         const char* env = std::getenv("WINEMETALGL_SAMPLER_LOD_BIAS");
-        caps_.samplerLodBias = [sampler respondsToSelector:NSSelectorFromString(@"setLodBias:")] && !(env && std::strcmp(env, "0") == 0);
+        caps_.samplerLodBias = [NSProcessInfo.processInfo isOperatingSystemAtLeastVersion:(NSOperatingSystemVersion){16, 0, 0}] &&
+                               [sampler respondsToSelector:NSSelectorFromString(@"setLodBias:")] &&
+                               !(env && std::strcmp(env, "0") == 0);
         const char* offsets = std::getenv("WINEMETALGL_VERTEX_OFFSETS16");
         caps_.drawOffsets16 = std::strstr(name_, "Paravirtual") != nullptr || (offsets && std::strcmp(offsets, "1") == 0);
     }

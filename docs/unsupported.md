@@ -29,7 +29,8 @@ The evidence runs on macOS 26 and newer. On macOS 15:
 
 - Texture LOD bias set on a texture or sampler (`GL_TEXTURE_LOD_BIAS`, and
   `glTexEnv`'s `GL_TEXTURE_FILTER_CONTROL`) cannot go into Metal's sampler:
-  its LOD bias is macOS 26 API. Lookups through a biased sampler are filtered
+  its LOD bias is macOS 26 API (macOS 15 has the setter, but its samplers
+  ignore the value). Lookups through a biased sampler are filtered
   in the shader instead (the clamp-to-border emulation's path,
   `src/core/shader/border.h`), which applies the bias; they lose anisotropic
   filtering, and cube maps keep the unbiased lookup.

@@ -14,7 +14,7 @@ struct DeviceCaps {
     bool meshShaders = false;           // Metal 3 mesh pipelines (geometry-shader emulation)
     bool framebufferFetch = false;      // programmable blending (logic op emulation)
     bool samplerBorderColor = false;
-    // MTLSamplerDescriptor.lodBias (macOS 26). Without it, samplers with a
+    // MTLSamplerDescriptor.lodBias that works (macOS 26). Without it, samplers with a
     // TEXTURE_LOD_BIAS are filtered in the shader (core/shader/border.h).
     // WINEMETALGL_SAMPLER_LOD_BIAS=0 turns it off, to test that path.
     bool samplerLodBias = false;
