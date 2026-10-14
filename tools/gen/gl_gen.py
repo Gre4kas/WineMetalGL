@@ -356,6 +356,11 @@ def main():
             dflt = default_return(ret)
             out.write('    if (__builtin_expect(!ctx, 0)) { wmgl::noCurrentContext("%s"); return%s; }\n' % (
                 cmd, (" " + dflt) if dflt else ""))
+            # Objects Metal autoreleases during the call go when it returns
+            # (declared first: drained after the lock is released).
+            out.write("    wmgl::CallPool callPool;\n")
+            # Only this call's errors log its arguments (below).
+            out.write("    ctx->logArguments = false;\n")
             # CPU time inside GL calls (WINEMETALGL_STATS, core/stats.h).
             out.write('    wmgl::stats::CallTimer statsTimer("%s");\n' % cmd)
             # Every command runs under its share group's lock: contexts on
@@ -371,7 +376,25 @@ def main():
             if impl in recorders:
                 out.write("    if (__builtin_expect(ctx->listCompiler != nullptr, 0) && !wmgl::list::record_%s(%s)) return;\n" % (
                     api_name(impl), call))
-            out.write("    %swmgl::api::%s(%s);\n}\n" % ("return " if dflt else "", api_name(impl), call))
+            # A logged error shows the call's arguments (Context::logArguments).
+            fmt, fargs = [], []
+            for t, n in params:
+                t0 = t.replace("const ", "").strip()
+                if "*" in t or t0 in ("GLsync", "GLDEBUGPROC", "GLDEBUGPROCARB", "GLDEBUGPROCKHR", "GLDEBUGPROCAMD", "GLVULKANPROCNV", "GLeglImageOES", "GLeglClientBufferEXT"):
+                    fmt.append(n + " %p"); fargs.append("reinterpret_cast<const void*>(%s)" % n)
+                elif t0 in ("GLenum", "GLbitfield"):
+                    fmt.append(n + " 0x%x"); fargs.append("static_cast<unsigned>(%s)" % n)
+                elif t0 in ("GLfloat", "GLdouble", "GLclampf", "GLclampd"):
+                    fmt.append(n + " %g"); fargs.append("static_cast<double>(%s)" % n)
+                else:
+                    fmt.append(n + " %lld"); fargs.append("static_cast<long long>(%s)" % n)
+            log = '        wmgl::logCallArguments(*ctx, "%s(%s)"%s);\n' % (cmd, ", ".join(fmt), "".join(", " + a for a in fargs))
+            if dflt:
+                out.write("    auto result = wmgl::api::%s(%s);\n" % (api_name(impl), call))
+                out.write("    if (__builtin_expect(ctx->logArguments, 0)) {\n" + log + "    }\n    return result;\n}\n")
+            else:
+                out.write("    wmgl::api::%s(%s);\n" % (api_name(impl), call))
+                out.write("    if (__builtin_expect(ctx->logArguments, 0)) {\n" + log + "    }\n}\n")
         out.write("\n}  // namespace\n\nnamespace wmgl {\n\nconst ProcEntry kProcTable[] = {\n")
         for cmd in names:
             out.write('    {"%s", reinterpret_cast<void*>(&e_%s)},\n' % (cmd, cmd))

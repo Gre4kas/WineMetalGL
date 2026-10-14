@@ -1,5 +1,7 @@
 #include "core/context.h"
 
+#include <cstdarg>
+
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -107,7 +109,12 @@ void Context::initStrings() {
               "GL_EXT_pixel_buffer_object", "GL_SGIS_generate_mipmap", "GL_ARB_texture_rectangle",
               "GL_NV_texture_rectangle", "GL_NV_blend_square", "GL_EXT_packed_pixels",
               "GL_SGIS_texture_edge_clamp", "GL_ARB_multisample", "GL_EXT_texture3D", "GL_EXT_blend_equation_separate",
-              "GL_ARB_shading_language_100", "GL_ARB_shader_objects", "GL_ARB_vertex_shader", "GL_ARB_fragment_shader"})
+              "GL_ARB_shading_language_100", "GL_ARB_shader_objects", "GL_ARB_vertex_shader", "GL_ARB_fragment_shader",
+              // Compressed luminance formats (RGTC blocks). ATI's 3Dc token
+              // (GL_COMPRESSED_LUMINANCE_ALPHA_3DC_ATI, HPL3's normal maps) is
+              // accepted too; its extension was never registered, so it is
+              // not advertised.
+              "GL_EXT_texture_compression_latc"})
             extensions_.push_back(name);
     }
     extensions_.push_back("GL_ARB_vertex_type_2_10_10_10_rev");
@@ -228,6 +235,16 @@ bool Context::hasExtension(const char* name) const {
     return std::find(extensions_.begin(), extensions_.end(), name) != extensions_.end();
 }
 
+void logCallArguments(Context& ctx, const char* format, ...) {
+    ctx.logArguments = false;
+    char line[1024];
+    va_list args;
+    va_start(args, format);
+    std::vsnprintf(line, sizeof(line), format, args);
+    va_end(args);
+    WMGL_WARN("  the call: %s", line);
+}
+
 void Context::setError(GLenum error) {
     if (error_ == GL_NO_ERROR) error_ = error;
     if (logEnabled(LogLevel::Trace)) WMGL_TRACE("GL error 0x%04x in %s", error, currentCommand);
@@ -236,7 +253,9 @@ void Context::setError(GLenum error) {
     if (logEnabled(LogLevel::Warn)) {
         char key[96];
         std::snprintf(key, sizeof(key), "error-%s-%04x", currentCommand, error);
-        logOnce(LogLevel::Warn, key, "GL error 0x%04x in %s (reported once per command and error)", error, currentCommand);
+        // The generated entry point then logs the call's arguments.
+        logArguments = logOnce(LogLevel::Warn, key, "GL error 0x%04x in %s (reported once per command and error)", error,
+                               currentCommand) || logArguments;
     }
     if (state.debugOutput) {
         const char* name = error == GL_INVALID_ENUM        ? "GL_INVALID_ENUM"

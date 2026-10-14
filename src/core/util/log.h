@@ -11,7 +11,8 @@ enum class LogLevel { Error = 0, Warn = 1, Info = 2, Trace = 3 };
 bool logEnabled(LogLevel level);
 void logMessage(LogLevel level, const char* format, ...) __attribute__((format(printf, 2, 3)));
 // Logs only the first time this exact key is seen (per process).
-void logOnce(LogLevel level, const char* key, const char* format, ...) __attribute__((format(printf, 3, 4)));
+// True when it logged.
+bool logOnce(LogLevel level, const char* key, const char* format, ...) __attribute__((format(printf, 3, 4)));
 
 }  // namespace wmgl
 

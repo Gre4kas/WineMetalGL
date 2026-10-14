@@ -9,6 +9,9 @@
 #include <vector>
 
 #include "core/gl/types.h"
+
+extern "C" void* objc_autoreleasePoolPush(void);
+extern "C" void objc_autoreleasePoolPop(void* token);
 #include "core/metal/command_stream.h"
 #include "core/objects.h"
 #include "core/share_group.h"
@@ -157,6 +160,9 @@ public:
     bool debugMessageEnabled(GLenum source, GLenum type, GLuint id, GLenum severity) const;
     // Name of the GL command being executed (set by the generated entry points).
     const char* currentCommand = "";
+    // setError logged an error of the current command: its entry point logs
+    // the call's arguments (logCallArguments) when it returns.
+    bool logArguments = false;
 
     // Compatibility profile (W22): the packed wmgl_FixedFunction block
     // (compat/fixed_function.h), immediate mode (compat/immediate.h) and
@@ -205,6 +211,23 @@ extern bool g_traceCalls;
 void traceCall(const char* command);
 void setCurrentContext(Context* context);
 void noCurrentContext(const char* command);
+// Logs the arguments of a GL call whose error setError logged (`format` and
+// the arguments from the generated entry point).
+void logCallArguments(Context& ctx, const char* format, ...) __attribute__((format(printf, 2, 3)));
+
+// An Objective-C autorelease pool for the scope of a GL call. Metal hands
+// back some objects autoreleased (encoders, command buffers, pass
+// descriptors, and the receivers of `contents`, which ARC retains and
+// autoreleases), and the threads GL calls come from have no pool that ever
+// drains: without one, every render encoder kept its command buffer, and so
+// every texture and buffer storage the frame used, alive (issue #16).
+struct CallPool {
+    CallPool() : token(objc_autoreleasePoolPush()) {}
+    ~CallPool() { objc_autoreleasePoolPop(token); }
+    CallPool(const CallPool&) = delete;
+    CallPool& operator=(const CallPool&) = delete;
+    void* token;
+};
 
 // Scoped share-group lock (every GL command runs under it).
 struct ShareLock {

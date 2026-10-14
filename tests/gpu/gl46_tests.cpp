@@ -2246,3 +2246,94 @@ GPU_TEST_VERSION(gpu_gl46_integer_attributes_of_the_other_signedness, 46) {
     glDeleteVertexArrays(1, &vao);
     glDeleteProgram(p);
 }
+
+GPU_TEST_VERSION(gpu_gl46_texture_feedback_reads_current_texels, 46) {
+    // A draw may sample the textures its framebuffer renders to, reading
+    // texels no draw of the pass writes (GL 4.6 section 9.3.1), as
+    // KHR-GL46.texture_barrier's disjoint-texels: eight uploaded R32UI
+    // textures, all attached; draws write one colour of a checkerboard of
+    // blocks, each texel the sum of its four neighbours one block away
+    // (the other colour, never written in the round). Rounds upload new
+    // texels and change the block size. Lossless compression returned stale
+    // texels here: textures sampled while attached get uncompressed storage.
+    constexpr int kSize = 64, kTextures = 8;
+    GLuint p = gpu::program("#version 460 core\nlayout(location = 0) in vec2 pos;\n"
+                            "void main() { gl_Position = vec4(pos, 0.0, 1.0); }\n",
+                            "#version 460 core\nuniform int blockSize;\nuniform int modulo;\nuniform usampler2D t[8];\n"
+                            "out uvec4 o[8];\n"
+                            "void main() {\n"
+                            "    ivec2 c = ivec2(gl_FragCoord.xy), b = c / blockSize;\n"
+                            "    ivec2 x = ivec2(blockSize, 0), y = ivec2(0, blockSize);\n"
+                            "    if (((b.x + b.y) % 2) != modulo) discard;\n"
+                            "    for (int i = 0; i < 8; ++i)\n"
+                            "        o[i] = texelFetch(t[i], c + x, 0) + texelFetch(t[i], c - x, 0) + texelFetch(t[i], c + y, 0) +\n"
+                            "               texelFetch(t[i], c - y, 0);\n"
+                            "}\n");
+    const float quad[] = {-1, -1, 1, -1, -1, 1, 1, 1};
+    GLuint vao = 0, vbo = 0, tex[kTextures] = {}, fbo = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(quad), quad, GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
+    glEnableVertexAttribArray(0);
+    glGenTextures(kTextures, tex);
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    GLenum buffers[kTextures];
+    GLint units[kTextures];
+    for (int i = 0; i < kTextures; ++i) {
+        glActiveTexture(GL_TEXTURE0 + i);
+        glBindTexture(GL_TEXTURE_2D, tex[i]);
+        glTexStorage2D(GL_TEXTURE_2D, 1, GL_R32UI, kSize, kSize);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + i, GL_TEXTURE_2D, tex[i], 0);
+        buffers[i] = GL_COLOR_ATTACHMENT0 + i;
+        units[i] = i;
+    }
+    glDrawBuffers(kTextures, buffers);
+    CHECK_EQ(glCheckFramebufferStatus(GL_FRAMEBUFFER), static_cast<GLenum>(GL_FRAMEBUFFER_COMPLETE));
+    glViewport(0, 0, kSize, kSize);
+    glUseProgram(p);
+    glUniform1iv(glGetUniformLocation(p, "t"), kTextures, units);
+    std::vector<GLuint> reference[kTextures], got(kSize * kSize);
+    auto texel = [&](const std::vector<GLuint>& image, int x, int y) -> GLuint {
+        return x < 0 || y < 0 || x >= kSize || y >= kSize ? 0u : image[static_cast<size_t>(y * kSize + x)];
+    };
+    int wrong = 0;
+    for (int round = 0; round < 6; ++round) {
+        const int block = round % 3 + 1 + (round > 2 ? 2 : 0), modulo = round & 1;
+        for (int i = 0; i < kTextures; ++i) {
+            reference[i].resize(kSize * kSize);
+            for (int t = 0; t < kSize * kSize; ++t)
+                reference[i][static_cast<size_t>(t)] = static_cast<GLuint>((i << 24) + (round << 16) + t);
+            glActiveTexture(GL_TEXTURE0 + i);
+            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, kSize, kSize, GL_RED_INTEGER, GL_UNSIGNED_INT, reference[i].data());
+        }
+        glUniform1i(glGetUniformLocation(p, "blockSize"), block);
+        glUniform1i(glGetUniformLocation(p, "modulo"), modulo);
+        for (int d = 0; d < 5; ++d) glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        for (int i = 0; i < kTextures; ++i) {
+            std::vector<GLuint> want = reference[i];
+            for (int y = 0; y < kSize; ++y)
+                for (int x = 0; x < kSize; ++x)
+                    if (((x / block + y / block) % 2) == modulo)
+                        want[static_cast<size_t>(y * kSize + x)] = texel(reference[i], x + block, y) + texel(reference[i], x - block, y) +
+                                                                   texel(reference[i], x, y + block) + texel(reference[i], x, y - block);
+            glActiveTexture(GL_TEXTURE0 + i);
+            glGetTexImage(GL_TEXTURE_2D, 0, GL_RED_INTEGER, GL_UNSIGNED_INT, got.data());
+            for (size_t t = 0; t < got.size(); ++t) wrong += got[t] != want[t];
+        }
+    }
+    if (wrong) std::fprintf(stderr, "  %d texels wrong\n", wrong);
+    CHECK_EQ(wrong, 0);
+    CHECK_GL();
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(kTextures, tex);
+    glDeleteBuffers(1, &vbo);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
+}

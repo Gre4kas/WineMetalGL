@@ -27,24 +27,20 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v4
 
-      - name: Show the Metal device
-        run: system_profiler SPDisplaysDataType | sed -n '1,25p'
-
       - name: Configure for the build machine
         run: cmake -S . -B build/host -G Ninja -DCMAKE_BUILD_TYPE=Release -DWMGL_HOST_ONLY=ON
 
       - name: Build the core and tests
         run: cmake --build build/host --parallel 4
 
+      - name: Show the Metal device
+        # The core's view of it: the runner's virtual GPU (macOS 15) takes
+        # the fallbacks of docs/unsupported.md#macos-15 (lodBias=0,
+        # offsets16=1), and every GPU test is required with them.
+        run: |
+          WINEMETALGL_LOG=2 ./build/host/wmgl_gpu_tests gpu_version_string 2>&1 | grep "winemetalgl:info: device"
+
       - name: Run the GPU tests
-        # Run and reported, not required, on this macOS 15 runner
-        # (docs/unsupported.md#macos-15):
-        # - compat_texture_unit_lod_bias, gpu_texture_lod_bias_vertex: sampler
-        #   LOD bias is macOS 26 Metal API.
-        # - gpu_review_converted_attributes_far_first: the virtual GPU ignores
-        #   a negative base vertex.
-        env:
-          WMGL_GPU_NOT_REQUIRED: compat_texture_unit_lod_bias,gpu_texture_lod_bias_vertex,gpu_review_converted_attributes_far_first
         run: ./build/host/wmgl_gpu_tests
 
       - name: Run the draw overhead benchmark

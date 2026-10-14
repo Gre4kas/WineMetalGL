@@ -3,6 +3,7 @@
 
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 
 #include "gpu.h"
 
@@ -793,12 +794,14 @@ COMPAT_TEST(compat_texture_unit_limits) {
     CHECK(m[0] == 2 && m[5] == 2);
     glLoadIdentity();
     glActiveTexture(GL_TEXTURE0);
-    // The colour matrix belongs to the imaging subset, which is not advertised.
+    // The colour matrix belongs to the imaging subset, which is not
+    // advertised, but is accepted as drivers that implement it do (the Steam
+    // overlay selects it unchecked: compat_steam_overlay_state_round_trip).
     glMatrixMode(GL_COLOR);
-    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_INVALID_ENUM));
+    CHECK_GL();
     GLint mode = 0;
     glGetIntegerv(GL_MATRIX_MODE, &mode);
-    CHECK_EQ(mode, GL_TEXTURE);
+    CHECK_EQ(mode, GL_COLOR);
     glMatrixMode(GL_MODELVIEW);
     CHECK_GL();
 }
@@ -1055,5 +1058,201 @@ TEST(compat_dsa_default_vertex_array) {
     glGetVertexAttribiv(3, GL_VERTEX_ATTRIB_ARRAY_ENABLED, &enabled);
     CHECK_EQ(enabled, 1);
     glDisableVertexArrayAttrib(0, 3);
+    CHECK_GL();
+}
+
+// The Steam overlay's GL renderer (GameOverlayRenderer64.dll), drawing over a
+// compatibility context: it saves, sets and restores the projection,
+// texture, colour (GL_COLOR, unchecked for ARB_imaging) and modelview
+// matrices, and disables GL_VERTEX_PROGRAM_ARB and GL_FRAGMENT_PROGRAM_ARB
+// without checking for them (issue #16). None of it may raise an error or
+// leave the game's matrices changed.
+COMPAT_TEST(compat_steam_overlay_state_round_trip) {
+    auto matrix = [](GLenum pname, float out[16]) { glGetFloatv(pname, out); };
+    auto same = [](const float* a, const float* b) {
+        for (int i = 0; i < 16; ++i)
+            if (a[i] != b[i]) return false;
+        return true;
+    };
+    // The game's state.
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    glOrtho(0, 64, 0, 64, -1, 1);
+    glMatrixMode(GL_TEXTURE);
+    glLoadIdentity();
+    glTranslatef(0.25f, 0.5f, 0);
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
+    glTranslatef(1, 2, 3);
+    float gameProjection[16], gameTexture[16], gameModelview[16];
+    matrix(GL_PROJECTION_MATRIX, gameProjection);
+    matrix(GL_TEXTURE_MATRIX, gameTexture);
+    matrix(GL_MODELVIEW_MATRIX, gameModelview);
+
+    // The overlay's frame: save and set each matrix in turn.
+    float savedProjection[16], savedColor[16], savedModelview[16], overlayProjection[16];
+    glMatrixMode(GL_PROJECTION);
+    matrix(GL_PROJECTION_MATRIX, savedProjection);
+    glLoadIdentity();
+    glScalef(1, -1, 1);
+    glOrtho(0, 64, 0, 64, -1, 1);
+    glTranslatef(0.375f, 0.375f, 0);
+    matrix(GL_PROJECTION_MATRIX, overlayProjection);
+    glMatrixMode(GL_COLOR);
+    matrix(GL_COLOR_MATRIX, savedColor);
+    glLoadIdentity();
+    glTranslatef(0, 0, 0);
+    glMatrixMode(GL_MODELVIEW);
+    matrix(GL_MODELVIEW_MATRIX, savedModelview);
+    glLoadIdentity();
+    glDisable(GL_COLOR_SUM);
+    glDisable(GL_VERTEX_PROGRAM_ARB);
+    glDisable(GL_FRAGMENT_PROGRAM_ARB);
+    CHECK_GL();
+    // The colour matrix commands left the overlay's projection alone.
+    float now[16];
+    matrix(GL_PROJECTION_MATRIX, now);
+    CHECK(same(now, overlayProjection));
+    // ... and restore them.
+    glMatrixMode(GL_PROJECTION);
+    glLoadMatrixf(savedProjection);
+    glMatrixMode(GL_TEXTURE);
+    glLoadMatrixf(gameTexture);
+    glMatrixMode(GL_COLOR);
+    glLoadMatrixf(savedColor);
+    glMatrixMode(GL_MODELVIEW);
+    glLoadMatrixf(savedModelview);
+    CHECK_GL();
+    matrix(GL_PROJECTION_MATRIX, now);
+    CHECK(same(now, gameProjection));
+    matrix(GL_TEXTURE_MATRIX, now);
+    CHECK(same(now, gameTexture));
+    matrix(GL_MODELVIEW_MATRIX, now);
+    CHECK(same(now, gameModelview));
+
+    // ARB assembly programs are never on; they cannot be turned on.
+    CHECK_EQ(glIsEnabled(GL_VERTEX_PROGRAM_ARB), static_cast<GLboolean>(GL_FALSE));
+    CHECK_EQ(glIsEnabled(GL_FRAGMENT_PROGRAM_ARB), static_cast<GLboolean>(GL_FALSE));
+    CHECK_GL();
+    glEnable(GL_VERTEX_PROGRAM_ARB);
+    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_INVALID_ENUM));
+
+    // The colour matrix stack: loaded values read back, two deep.
+    glMatrixMode(GL_COLOR);
+    glLoadIdentity();
+    glScalef(0.5f, 0.25f, 2);
+    matrix(GL_COLOR_MATRIX, now);
+    CHECK(now[0] == 0.5f && now[5] == 0.25f && now[10] == 2 && now[15] == 1);
+    matrix(GL_TRANSPOSE_COLOR_MATRIX, now);
+    CHECK(now[0] == 0.5f && now[5] == 0.25f);
+    GLint depth = 0, maxDepth = 0;
+    glGetIntegerv(GL_MAX_COLOR_MATRIX_STACK_DEPTH, &maxDepth);
+    CHECK_EQ(maxDepth, 2);
+    glPushMatrix();
+    glGetIntegerv(GL_COLOR_MATRIX_STACK_DEPTH, &depth);
+    CHECK_EQ(depth, 2);
+    glPushMatrix();
+    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_STACK_OVERFLOW));
+    glLoadIdentity();
+    glPopMatrix();
+    matrix(GL_COLOR_MATRIX, now);
+    CHECK(now[0] == 0.5f);
+    glMatrixMode(GL_MODELVIEW);
+    CHECK_GL();
+}
+
+// Compressed luminance formats (EXT_texture_compression_latc, ATI's 3Dc):
+// RGTC blocks sampled as luminance (alpha): SOMA's normal maps are 3Dc, read
+// from green and alpha (issue #16).
+COMPAT_TEST(compat_latc_and_3dc_textures) {
+    // BC4 blocks with all indices 0: every texel is the first endpoint.
+    const uint8_t l200[8] = {200, 0, 0, 0, 0, 0, 0, 0}, a60[8] = {60, 0, 0, 0, 0, 0, 0, 0};
+    uint8_t la[16];
+    std::memcpy(la, l200, 8);
+    std::memcpy(la + 8, a60, 8);  // luminance first, then alpha
+    GLuint p = gpu::program(R"(#version 120
+void main() { gl_Position = ftransform(); })",
+                            R"(#version 120
+uniform sampler2D tex;
+void main() { gl_FragColor = texture2D(tex, vec2(0.5)); })");
+    glUseProgram(p);
+    pixelProjection();
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    struct Case { GLenum format; const uint8_t* data; GLsizei size; uint8_t want[4]; GLenum readFormat; uint8_t read[2]; };
+    const Case cases[] = {
+        {GL_COMPRESSED_LUMINANCE_ALPHA_3DC_ATI, la, 16, {200, 200, 200, 60}, GL_LUMINANCE_ALPHA, {200, 60}},
+        {GL_COMPRESSED_LUMINANCE_ALPHA_LATC2_EXT, la, 16, {200, 200, 200, 60}, GL_LUMINANCE_ALPHA, {200, 60}},
+        {GL_COMPRESSED_LUMINANCE_LATC1_EXT, l200, 8, {200, 200, 200, 255}, GL_LUMINANCE, {200, 0}},
+    };
+    for (const Case& c : cases) {
+        glCompressedTexImage2D(GL_TEXTURE_2D, 0, c.format, 4, 4, 0, c.size, c.data);
+        CHECK_GL();
+        GLint compressed = 0, internal = 0, luminance = 0, alpha = 0;
+        glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_COMPRESSED, &compressed);
+        glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_INTERNAL_FORMAT, &internal);
+        glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_LUMINANCE_SIZE, &luminance);
+        glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_ALPHA_SIZE, &alpha);
+        CHECK_EQ(compressed, 1);
+        CHECK_EQ(internal, static_cast<GLint>(c.format));
+        CHECK(luminance > 0);
+        CHECK_EQ(alpha > 0, c.size == 16);
+        clear();
+        glRectf(0, 0, 64, 64);
+        CHECK(pixel(32, 32, c.want));
+        // Decoded on readback to luminance (and alpha).
+        uint8_t read[4 * 4 * 2] = {};
+        glPixelStorei(GL_PACK_ALIGNMENT, 1);
+        glGetTexImage(GL_TEXTURE_2D, 0, c.readFormat, GL_UNSIGNED_BYTE, read);
+        CHECK_EQ(read[0], c.read[0]);
+        if (c.readFormat == GL_LUMINANCE_ALPHA) CHECK_EQ(read[1], c.read[1]);
+        uint8_t blocks[16] = {};
+        glGetCompressedTexImage(GL_TEXTURE_2D, 0, blocks);
+        CHECK(std::memcmp(blocks, c.data, static_cast<size_t>(c.size)) == 0);
+    }
+    // Uncompressed luminance-alpha pixels are encoded into the blocks: alpha
+    // goes to the second block.
+    uint8_t pixels[4 * 4 * 2];
+    for (int i = 0; i < 16; ++i) {
+        pixels[i * 2] = 100;
+        pixels[i * 2 + 1] = 30;
+    }
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_COMPRESSED_LUMINANCE_ALPHA_LATC2_EXT, 4, 4, 0, GL_LUMINANCE_ALPHA, GL_UNSIGNED_BYTE, pixels);
+    CHECK_GL();
+    clear();
+    glRectf(0, 0, 64, 64);
+    const uint8_t encoded[4] = {100, 100, 100, 30};
+    CHECK(pixel(32, 32, encoded));
+    // LATC is advertised in the compatibility profile (3Dc's extension was
+    // never registered).
+    bool latc = false;
+    GLint extensions = 0;
+    glGetIntegerv(GL_NUM_EXTENSIONS, &extensions);
+    for (GLint i = 0; i < extensions; ++i) {
+        const char* name = reinterpret_cast<const char*>(glGetStringi(GL_EXTENSIONS, static_cast<GLuint>(i)));
+        latc = latc || std::strcmp(name, "GL_EXT_texture_compression_latc") == 0;
+    }
+    CHECK(latc);
+    glDeleteTextures(1, &tex);
+    glUseProgram(0);
+    glDeleteProgram(p);
+    CHECK_GL();
+}
+
+// Luminance formats are not part of the core profile.
+GPU_TEST_VERSION(gpu_texture_latc_is_compatibility_only, 46) {
+    const uint8_t block[16] = {200, 0, 0, 0, 0, 0, 0, 0, 60, 0, 0, 0, 0, 0, 0, 0};
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glCompressedTexImage2D(GL_TEXTURE_2D, 0, GL_COMPRESSED_LUMINANCE_ALPHA_3DC_ATI, 4, 4, 0, sizeof(block), block);
+    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_INVALID_ENUM));
+    glCompressedTexImage2D(GL_TEXTURE_2D, 0, GL_COMPRESSED_LUMINANCE_ALPHA_LATC2_EXT, 4, 4, 0, sizeof(block), block);
+    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_INVALID_ENUM));
+    glDeleteTextures(1, &tex);
     CHECK_GL();
 }

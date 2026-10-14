@@ -25,7 +25,7 @@ OUTPUT/
 
 `./install-wine-module.sh /path/to/wine [/path/to/prefix]` installs the module
 into any x86_64 Wine 11.x and, given a prefix, the forwarding `opengl32.dll`
-with the `opengl32=native` override ([Build it yourself](building.md#the-wine-module)).
+(and a copy of `winemetalgl.dll`) with the `opengl32=native` override ([Build it yourself](building.md#the-wine-module)).
 No Wine file is replaced, and the module does not depend on the Wine build it
 was staged with.
 

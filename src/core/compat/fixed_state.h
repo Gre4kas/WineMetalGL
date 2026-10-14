@@ -41,10 +41,14 @@ enum InternalAttrib : int { kLinePartner = kConvEnd, kLineSide, kInternalAttribE
 
 struct FixedState {
     static constexpr int kTextureUnits = 8, kLights = 8, kClipPlanes = 8;
-    static constexpr int kModelViewDepth = 32, kProjectionDepth = 4, kTextureDepth = 4;
+    static constexpr int kModelViewDepth = 32, kProjectionDepth = 4, kTextureDepth = 4, kColorDepth = 2;
 
     GLenum matrixMode = GL_MODELVIEW;
     std::vector<Mat4> modelview{Mat4()}, projection{Mat4()};
+    // The imaging subset's colour matrix (GL_COLOR): kept so applications
+    // that save and restore it (the Steam overlay) round-trip, but it does
+    // not transform pixels, as ARB_imaging is not advertised.
+    std::vector<Mat4> color{Mat4()};
     std::array<std::vector<Mat4>, kTextureUnits> texture;
 
     struct Light {

@@ -160,9 +160,10 @@ id<MTLSamplerState> PipelineCache::sampler(const SamplerKey& key) {
     desc.lodMinClamp = key.lodMin;
     desc.lodMaxClamp = key.lodMax;
     // MTLSamplerDescriptor.lodBias is macOS 26 API; set it through the
-    // runtime so builds with older SDKs (CI) keep it on systems that have it.
+    // runtime so builds with older SDKs (CI) keep it on systems that have it
+    // (without it, the shader applies the bias: DrawState::borderVariant).
     static const SEL setLodBias = NSSelectorFromString(@"setLodBias:");
-    if (key.lodBias != 0.0f && [desc respondsToSelector:setLodBias])
+    if (key.lodBias != 0.0f && Device::get().caps().samplerLodBias)
         reinterpret_cast<void (*)(id, SEL, float)>(objc_msgSend)(desc, setLodBias, key.lodBias);
     desc.supportArgumentBuffers = NO;
     id<MTLSamplerState> state = [Device::get().mtl() newSamplerStateWithDescriptor:desc];

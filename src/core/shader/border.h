@@ -9,7 +9,10 @@
 // sampled value, so the common path costs nothing. A draw that binds such a
 // border uses a variant of the function (mslWithBorders) whose macros for
 // those textures substitute the border colour where the filter footprint
-// leaves the image along a CLAMP_TO_BORDER axis.
+// leaves the image along a CLAMP_TO_BORDER axis. The same path filters
+// every lookup of a texture whose sampler has a TEXTURE_LOD_BIAS on Metal
+// without sampler LOD bias (macOS 15), applying the bias itself (without
+// anisotropy; cube maps keep the unbiased lookup).
 #pragma once
 
 #include <spirv_msl.hpp>
@@ -46,6 +49,8 @@ struct BorderSlot {
     bool rect = false;        // unnormalized coordinates
     float minLod = -1000.0f, maxLod = 1000.0f, lodBias = 0.0f;
     uint32_t compare = 0;     // GL compare function of a shadow sampler, 0: none
+    bool always = false;      // filter every lookup here, not only at the border: the LOD bias
+                              // where Metal's samplers have none (DeviceCaps::samplerLodBias)
     uint32_t border[4] = {};  // the GL border colour after the texture's swizzle (bits)
 };
 

@@ -85,7 +85,8 @@ void addGpuNanos(uint64_t nanos);
 
 Frame& frame();
 // The calling thread's counter `name` (a Frame field, "passEnds.<cause>" or
-// "indirectCpuReasons.<n>") in `value`; false for an unknown name.
+// "indirectCpuReasons.<n>"), or "deviceAllocatedBytes" (the Metal device's
+// allocations), in `value`; false for an unknown name.
 bool counter(const char* name, uint64_t& value);
 uint64_t nowNanos();
 

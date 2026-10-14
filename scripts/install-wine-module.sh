@@ -8,8 +8,8 @@
 #   lib/wine/x86_64-windows/winemetalgl.dll, lib/wine/i386-windows/winemetalgl.dll
 #   lib/wine/x86_64-unix/winemetalgl.so, lib/wine/x86_64-unix/libwinemetalgl.dylib (the core)
 # Into WINEPREFIX (each prefix that should use WineMetalGL): opengl32.dll,
-# which forwards to winemetalgl.dll, in system32 and syswow64, and the DLL
-# override opengl32=native. Removing the override (or the file) gives the
+# which forwards to winemetalgl.dll, and winemetalgl.dll itself, in system32
+# and syswow64, and the DLL override opengl32=native. Removing the override (or the file) gives the
 # prefix Wine's own OpenGL back.
 #
 # From a checkout, MODULE (default build/wine-module) and CORE (default
@@ -53,9 +53,14 @@ echo "Installed winemetalgl into $LIB"
 
 if test -n "$PREFIX"; then
     test -d "$PREFIX/drive_c/windows/system32" || { echo "not a Wine prefix: $PREFIX" >&2; exit 1; }
+    # winemetalgl.dll goes next to the forwarder too: a Wine whose loader
+    # does not search lib/wine/<arch>-windows for it (CrossOver bottles,
+    # issue #16: "Could not create window!") still finds it in the prefix.
     cp "$MODULE/x86_64-windows/opengl32.dll" "$PREFIX/drive_c/windows/system32/opengl32.dll"
+    cp "$MODULE/x86_64-windows/winemetalgl.dll" "$PREFIX/drive_c/windows/system32/winemetalgl.dll"
     if test -d "$PREFIX/drive_c/windows/syswow64"; then
         cp "$MODULE/i386-windows/opengl32.dll" "$PREFIX/drive_c/windows/syswow64/opengl32.dll"
+        cp "$MODULE/i386-windows/winemetalgl.dll" "$PREFIX/drive_c/windows/syswow64/winemetalgl.dll"
     fi
     WINEPREFIX="$PREFIX" WINEDEBUG=-all "$WINE/bin/wine" reg add 'HKCU\Software\Wine\DllOverrides' \
         /v opengl32 /d native /f >/dev/null

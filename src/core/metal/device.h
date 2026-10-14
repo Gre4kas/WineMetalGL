@@ -14,6 +14,17 @@ struct DeviceCaps {
     bool meshShaders = false;           // Metal 3 mesh pipelines (geometry-shader emulation)
     bool framebufferFetch = false;      // programmable blending (logic op emulation)
     bool samplerBorderColor = false;
+    // MTLSamplerDescriptor.lodBias that works (macOS 26). Without it, samplers with a
+    // TEXTURE_LOD_BIAS are filtered in the shader (core/shader/border.h).
+    // WINEMETALGL_SAMPLER_LOD_BIAS=0 turns it off, to test that path.
+    bool samplerLodBias = false;
+    // Metal keeps only 16 bits of a draw's vertex start and base vertex:
+    // "Apple Paravirtual device", the GPU of macOS virtual machines (CI
+    // runners) on macOS 15, measured (vertexStart 65536 and base vertices
+    // -32769 or 65536 draw from the wrong vertices). Draws past that take
+    // their vertex numbers from indices (DrawState::issue).
+    // WINEMETALGL_VERTEX_OFFSETS16=1 turns it on, to test that path.
+    bool drawOffsets16 = false;
     bool primitiveId = false;
     uint32_t maxTextureSize2D = 16384;
     uint32_t maxTextureSize3D = 2048;

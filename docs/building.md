@@ -49,7 +49,7 @@ and on MetalSharp's Wine 11.17.
 
 | File | Where | What |
 |---|---|---|
-| `winemetalgl.dll` | `lib/wine/x86_64-windows`, `lib/wine/i386-windows` | WGL and the GL entry points, for 64- and 32-bit programs |
+| `winemetalgl.dll` | `lib/wine/x86_64-windows`, `lib/wine/i386-windows`, and the prefix's `system32` and `syswow64` | WGL and the GL entry points, for 64- and 32-bit programs |
 | `winemetalgl.so` | `lib/wine/x86_64-unix` | its unix side, which runs both (32-bit calls through Wine's WoW64 thunks) |
 | `libwinemetalgl.dylib` | `lib/wine/x86_64-unix` | the core |
 | `opengl32.dll` | the prefix's `system32` and `syswow64` | forwards every export to `winemetalgl.dll` |
@@ -62,7 +62,9 @@ and on MetalSharp's Wine 11.17.
 
 `install-wine-module.sh` adds the module and the core to the Wine installation
 without replacing any of Wine's files. Given a prefix, it also puts the
-forwarding `opengl32.dll` into it and sets the DLL override
+forwarding `opengl32.dll` into it, with a copy of `winemetalgl.dll` for Wines
+whose loader does not look in `lib/wine` for it (CrossOver bottles, where a
+program otherwise fails to create its window), and sets the DLL override
 `opengl32=native`; run it once per prefix. Removing the override (or running
 a program with `WINEDLLOVERRIDES=opengl32=b`) gives that prefix Wine's own
 OpenGL back.
@@ -95,12 +97,14 @@ no `opengl32=native` override, and the program got Wine's own OpenGL.
 | Variable | Effect |
 |---|---|
 | `WINEDLLOVERRIDES=opengl32=b` | Use Wine's own OpenGL instead of WineMetalGL (how reference frames are recorded) |
-| `WINEMETALGL_LOG=1..3` | Log warnings, information or traces (errors are always logged) |
+| `WINEMETALGL_LOG=1..3` | Log warnings, information or traces (errors are always logged). Warnings include each GL error the first time a command raises it, with the call's arguments |
 | `WINEMETALGL_TRACE=1` | Log every GL call |
-| `WINEMETALGL_STATS=1` | Log per-frame statistics: frame and GL time, draws, passes and why they ended, command buffers, pipeline compiles, CPU conversions, readbacks, indirect draw commands read by the GPU or (after a wait) the CPU, and why the CPU reads them (each reason described once per program); every 60 frames, the costliest commands |
+| `WINEMETALGL_STATS=1` | Log per-frame statistics: frame and GL time, draws, passes and why they ended, command buffers, pipeline compiles, CPU conversions, readbacks, indirect draw commands read by the GPU or (after a wait) the CPU, and why the CPU reads them (each reason described once per program), and the memory the Metal device has allocated (growing while a scene stands still means GPU resources are retained); every 60 frames, the costliest commands |
 | `WINEMETALGL_BATCH=0` | Make every GL call its own unix call (by default the module batches calls that return nothing and take values, and runs them before the next other call) |
 | `WINEMETALGL_COMMIT_DRAWS=<n>` | Commit the recorded work to the GPU once it holds `n` draws (default 256), so the GPU runs a frame's work while the CPU records the rest: where a draw starts a render pass, or within one past `8 × n` draws (a commit ends the pass); 0 commits only when a GL call needs the GPU's results and at SwapBuffers |
 | `WINEMETALGL_METAL_TESSELLATION=0` | Tessellate every patch on the CPU, after reading the control stage's levels back, instead of drawing rasterized triangle and quad patches with Metal's tessellator |
+| `WINEMETALGL_SAMPLER_LOD_BIAS=0` | Filter lookups through samplers with a LOD bias in the shader, as on macOS 15 where Metal's samplers have no LOD bias (for testing that path) |
+| `WINEMETALGL_VERTEX_OFFSETS16=1` | Draw with vertex starts and base vertices past 16 bits through CPU-written indices, as on macOS virtual machines' GPU (for testing that path) |
 | `WINEMETALGL_PREWARM=0` | Compile a program's Metal functions at its first draw instead of in the background after it links |
 | `WINEMETALGL_SAFE_MATH=1` | Compile shaders with Metal's safe math instead of relaxed math (relaxed allows optimizations such as reassociation that can change results slightly, and keeps infinities and NaN; safe allows none) |
 | `WINEMETALGL_METALFX=0`, `=<factor>` | Turn off, or set the factor of, MetalFX spatial upscaling of window back buffers. Unset, WineMetalGL follows DXMT's setting: off when `DXMT_METALFX_SPATIAL_SWAPCHAIN=0`, else `d3d11.metalSpatialUpscaleFactor` from `DXMT_CONFIG`, `DXMT_CONFIG_FILE` or the Wine installation's `etc/dxmt.conf` (2 when only `DXMT_METALFX_SPATIAL_SWAPCHAIN=1` is set). Factors above 1 (at most 4) present a back buffer through the MetalFX spatial scaler into a drawable that much larger, on GPUs MetalFX supports |

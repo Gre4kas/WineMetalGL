@@ -127,6 +127,12 @@ public:
 
 private:
     bool validateDraw(GLenum mode);
+    // A draw that samples a texture its framebuffer renders to (a feedback
+    // loop, which GL defines for disjoint texels and after glTextureBarrier)
+    // reads stale texels from losslessly compressed storage: such a texture
+    // gets uncompressed storage (Texture::formatViews), contents copied,
+    // before the draw's pass starts. Once per texture.
+    void uncompressFeedbackTextures(LinkedProgram& program);
     id<MTLRenderCommandEncoder> prepare(GLenum mode, MTLPrimitiveType& primitive);
     // An indirect draw command in a buffer, read by the GPU.
     struct IndirectSource {

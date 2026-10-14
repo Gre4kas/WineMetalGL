@@ -28,14 +28,19 @@ version:
 The evidence runs on macOS 26 and newer. On macOS 15:
 
 - Texture LOD bias set on a texture or sampler (`GL_TEXTURE_LOD_BIAS`, and
-  `glTexEnv`'s `GL_TEXTURE_FILTER_CONTROL`) has no effect: Metal's sampler
-  LOD bias is macOS 26 API. Bias passed to the GLSL lookup functions works.
-- Indexed draws whose converted vertex attributes start far into the arrays
-  draw with a negative Metal base vertex, which GitHub's macOS 15 virtual
-  GPU does not honour (Apple silicon hardware on macOS 26 and newer does).
+  `glTexEnv`'s `GL_TEXTURE_FILTER_CONTROL`) cannot go into Metal's sampler:
+  its LOD bias is macOS 26 API (macOS 15 has the setter, but its samplers
+  ignore the value). Lookups through a biased sampler are filtered
+  in the shader instead (the clamp-to-border emulation's path,
+  `src/core/shader/border.h`), which applies the bias; they lose anisotropic
+  filtering, and cube maps keep the unbiased lookup.
 
-The Metal CI workflow runs on macOS 15 and reports these cases without
-requiring them (`WMGL_GPU_NOT_REQUIRED` in `.github/workflows/metal.yml`).
+The GPU of macOS virtual machines on macOS 15 ("Apple Paravirtual device",
+GitHub's macOS 15 runners) keeps only 16 bits of a draw's Metal vertex start
+and base vertex (measured: a vertex start of 65536 and base vertices of
+-32769 and 65536 draw from the wrong vertices). There, draws whose offsets
+leave -32768 to 32767 take their vertex numbers from indices written on the
+CPU instead.
 
 ### Double precision
 
@@ -77,7 +82,7 @@ logged once.
 
 | Feature | Version | Behaviour now | Why it is left out | What it would take |
 |---|---|---|---|---|
-| ARB assembly programs (`GL_ARB_vertex_program`, `GL_ARB_fragment_program`) | Extensions | Not advertised | Extensions, not core GL, so a 3.3 compatibility context does not need them; they are the most useful item here for games (KOTOR, Doom 3 and other 2002 to 2005 titles) | A translator from ARB assembly to SPIR-V |
+| ARB assembly programs (`GL_ARB_vertex_program`, `GL_ARB_fragment_program`) | Extensions | Not advertised; `glDisable` of `GL_VERTEX_PROGRAM_ARB` and `GL_FRAGMENT_PROGRAM_ARB` is accepted and `glIsEnabled` returns false (the Steam overlay disables them unchecked), `glEnable` is `GL_INVALID_ENUM` | Extensions, not core GL, so a 3.3 compatibility context does not need them; they are the most useful item here for games (KOTOR, Doom 3 and other 2002 to 2005 titles) | A translator from ARB assembly to SPIR-V |
 | Accumulation buffer (`glAccum`) | 1.0 | `GL_INVALID_OPERATION` | Rare; a few old games use it for motion blur | An RGBA16F texture and blits |
 | Selection and feedback (`glRenderMode`) | 1.0 | Nothing is drawn outside `GL_RENDER`, and no records are returned | Mostly CAD programs and old editors' picking | Transforming vertices on the CPU and writing the records |
 | Evaluators (`glMap*`, `glEval*`) | 1.0 | `GL_INVALID_OPERATION` | Very rare in games | Generating the vertices on the CPU and drawing them as immediate mode |
@@ -86,7 +91,7 @@ logged once.
 | Face culling in `GL_POINT` polygon mode | 1.0 | The vertices of every triangle are drawn | Metal has no point polygon mode, and drawing vertices as points loses each triangle's facing | Computing facing per triangle before the points are expanded |
 | Pixel maps, transfer scale and bias | 1.0 | Only the defaults apply; `glPixelMap*` generates `GL_INVALID_OPERATION` | Rare | A conversion step in the pixel-transfer path |
 | `GL_POINT_FADE_THRESHOLD_SIZE` | 1.4 | Stored and not applied | A small gap, not yet done | Fading the alpha of small fixed-function points |
-| Imaging subset (colour tables, convolution, histogram, colour matrix) | 1.2 | `GL_INVALID_OPERATION`; `GL_ARB_imaging` is not advertised | Optional in the specification: it exists only when `GL_ARB_imaging` is advertised | Large, for almost no use |
+| Imaging subset (colour tables, convolution, histogram, colour matrix) | 1.2 | `GL_INVALID_OPERATION`; `GL_ARB_imaging` is not advertised. The colour matrix stack (`glMatrixMode(GL_COLOR)`, two deep) is kept and reads back, as the Steam overlay saves and restores it unchecked, but it does not transform pixels | Optional in the specification: it exists only when `GL_ARB_imaging` is advertised | Large, for almost no use |
 | Colour-index mode | 1.0 | Unreachable | Wine's macOS driver offers only RGBA pixel formats, so no program can create a colour-index context | Nothing worth doing |
 
 ## Conformance notes

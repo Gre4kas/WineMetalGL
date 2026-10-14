@@ -505,7 +505,7 @@ id<MTLTexture> samplingView(Context& ctx, Texture& tex, bool skipSrgbDecode) {
     return view;
 }
 
-bool borderEmulation(const Texture& tex, const SamplerParams& p, bool shadow, shader::BorderSlot& out) {
+bool borderEmulation(const Texture& tex, const SamplerParams& p, bool shadow, shader::BorderSlot& out, bool always) {
     int dims = 0;
     switch (tex.target) {
     case GL_TEXTURE_1D: case GL_TEXTURE_1D_ARRAY: dims = 1; break;
@@ -526,7 +526,8 @@ bool borderEmulation(const Texture& tex, const SamplerParams& p, bool shadow, sh
         }
         out.wrap |= mode << (4 * a);
     }
-    if (!out.axes) return false;
+    out.always = always;
+    if (!out.axes && !always) return false;
     const FormatInfo* format = tex.baseImage().format;
     if (!format) return false;
     const bool stencil = format->isStencil() && (!format->isDepth() || tex.depthStencilMode == GL_STENCIL_INDEX);
@@ -574,12 +575,13 @@ bool borderEmulation(const Texture& tex, const SamplerParams& p, bool shadow, sh
     // borders, and for shadow lookups whose border depth it has.
     const bool rect = tex.target == GL_TEXTURE_RECTANGLE;
     const float metal = f[3] == 0.0f ? 0.0f : (f[0] + f[1] + f[2]) > 1.5f ? 1.0f : 0.0f;
-    if (!rect && out.kind == 'f') {
+    if (!rect && out.kind == 'f' && !always) {
         if (shadow && f[0] == metal) return false;
         const bool black = f[0] == 0.0f && f[1] == 0.0f && f[2] == 0.0f, white = f[0] == 1.0f && f[1] == 1.0f && f[2] == 1.0f;
         if (!shadow && identity && ((black && (f[3] == 0.0f || f[3] == 1.0f)) || (white && f[3] == 1.0f))) return false;
     }
-    if (!rect && out.kind != 'f' && !shadow && n[0] == 0 && n[1] == 0 && n[2] == 0 && n[3] == 0 && identity) return false;
+    if (!rect && out.kind != 'f' && !shadow && n[0] == 0 && n[1] == 0 && n[2] == 0 && n[3] == 0 && identity && !always)
+        return false;
     const auto linear = [](GLenum filter) {
         return filter == GL_LINEAR || filter == GL_LINEAR_MIPMAP_NEAREST || filter == GL_LINEAR_MIPMAP_LINEAR;
     };
