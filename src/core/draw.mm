@@ -2174,6 +2174,23 @@ bool DrawState::pointPolygons(GLenum mode) const {
 
 bool DrawState::rotateProvoking(GLenum mode, LinkedProgram& program) const {
     if (ctx_.state.provokingVertex != GL_LAST_VERTEX_CONVENTION || !program.stage(Stage::Fragment).flatInputs) return false;
+    // Flat inputs the vertex stage computes from per-instance or disabled
+    // attributes and values constant over the draw are the same at every
+    // vertex of a primitive (Foundation's material ids, issue #12).
+    // WINEMETALGL_FLAT_ANALYSIS=0 rotates for every flat input.
+    static const bool analysis = [] {
+        const char* v = std::getenv("WINEMETALGL_FLAT_ANALYSIS");
+        return !v || v[0] != '0';
+    }();
+    if (analysis && !program.pipeline && !program.link.flatPerVertex) {
+        const VertexArray& vao = *ctx_.state.vertexArray;
+        bool varies = false;
+        for (uint32_t bits = program.link.flatAttribs; bits && !varies; bits &= bits - 1) {
+            const VertexAttrib& a = vao.attribs[static_cast<size_t>(__builtin_ctz(bits))];
+            varies = a.enabled && a.divisor == 0 && !a.zeroStride;
+        }
+        if (!varies) return false;
+    }
     switch (mode) {
     case GL_LINES: case GL_LINE_STRIP: case GL_LINE_LOOP: case GL_TRIANGLES: case GL_TRIANGLE_STRIP: case GL_TRIANGLE_FAN:
     case GL_QUADS: case GL_QUAD_STRIP:  // a polygon's provoking vertex is its first in both conventions

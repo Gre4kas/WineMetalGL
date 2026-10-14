@@ -1,5 +1,10 @@
 #include "core/shader/spirv_passes.h"
 
+#define SPV_ENABLE_UTILITY_CODE
+#include <spirv.hpp>
+
+#include <algorithm>
+#include <cstring>
 #include <map>
 #include <set>
 
@@ -421,6 +426,479 @@ std::vector<uint32_t> inferStorageImageAccess(std::vector<uint32_t> spirv) {
     if (!at) return spirv;
     spirv.insert(spirv.begin() + static_cast<long>(at), added.begin(), added.end());
     return spirv;
+}
+
+namespace {
+
+// A module's declarations (before its first function), for flatVaryingSources.
+struct Declarations {
+    std::map<uint32_t, std::string> names;
+    std::map<uint32_t, std::map<uint32_t, uint32_t>> decorations;  // id -> decoration -> its first operand
+    std::map<uint32_t, std::vector<uint32_t>> types;               // type -> its instruction's words
+    std::map<uint32_t, uint32_t> constants;                        // 32-bit scalar constants
+    struct Variable {
+        uint32_t type, storage, initializer;
+    };
+    std::map<uint32_t, Variable> variables;  // module-scope variables
+    size_t firstFunction = 0;
+
+    bool read(const std::vector<uint32_t>& spirv) {
+        if (spirv.size() < 5) return false;
+        for (size_t i = 5; i < spirv.size();) {
+            const uint32_t count = spirv[i] >> 16, op = spirv[i] & 0xffff;
+            if (!count || i + count > spirv.size()) return false;
+            const uint32_t* w = &spirv[i];
+            if (op == spv::OpFunction) {
+                if (!firstFunction) firstFunction = i;
+            } else if (firstFunction) {
+            } else if (op == spv::OpName && count >= 3) {
+                const char* name = reinterpret_cast<const char*>(w + 2);
+                names[w[1]] = std::string(name, strnlen(name, (count - 2) * 4));
+            } else if (op == spv::OpDecorate && count >= 3) {
+                decorations[w[1]][w[2]] = count > 3 ? w[3] : 0;
+            } else if (op >= spv::OpTypeVoid && op < spv::OpTypeForwardPointer) {
+                types[w[1]].assign(w, w + count);
+            } else if (op == spv::OpConstant && count == 4) {
+                constants[w[2]] = w[3];
+            } else if (op == spv::OpVariable && count >= 4) {
+                variables[w[2]] = {w[1], w[3], count > 4 ? w[4] : 0};
+            }
+            i += count;
+        }
+        return firstFunction != 0;
+    }
+    const uint32_t* decoration(uint32_t id, spv::Decoration which) const {
+        auto it = decorations.find(id);
+        if (it == decorations.end()) return nullptr;
+        auto found = it->second.find(which);
+        return found == it->second.end() ? nullptr : &found->second;
+    }
+    uint32_t opcode(uint32_t type) const {
+        auto it = types.find(type);
+        return it == types.end() ? 0 : it->second[0] & 0xffff;
+    }
+    // The type a variable of pointer type `pointer` holds.
+    uint32_t pointee(uint32_t pointer) const {
+        auto it = types.find(pointer);
+        return it != types.end() && opcode(pointer) == spv::OpTypePointer && it->second.size() >= 4 ? it->second[3] : 0;
+    }
+    // The type under `type`'s vectors, matrices and arrays.
+    uint32_t element(uint32_t type) const {
+        for (int depth = 0; depth < 16; ++depth) {
+            const uint32_t op = opcode(type);
+            if (op != spv::OpTypeVector && op != spv::OpTypeMatrix && op != spv::OpTypeArray) return type;
+            type = types.at(type)[2];
+        }
+        return 0;
+    }
+    // The locations a varying of `type` takes; 0 when not known here
+    // (structures, 64-bit types).
+    uint32_t locations(uint32_t type) const {
+        auto it = types.find(type);
+        if (it == types.end()) return 0;
+        const std::vector<uint32_t>& t = it->second;
+        switch (t[0] & 0xffff) {
+        case spv::OpTypeBool:
+            return 1;
+        case spv::OpTypeInt:
+        case spv::OpTypeFloat:
+            return t.size() >= 3 && t[2] <= 32 ? 1 : 0;
+        case spv::OpTypeVector:
+            return t.size() >= 4 ? locations(t[2]) : 0;
+        case spv::OpTypeMatrix:
+            return t.size() >= 4 ? t[3] * locations(t[2]) : 0;
+        case spv::OpTypeArray: {
+            auto length = t.size() >= 4 ? constants.find(t[3]) : constants.end();
+            return length != constants.end() ? length->second * locations(t[2]) : 0;
+        }
+        default:
+            return 0;
+        }
+    }
+};
+
+// A function's blocks and their control dependences: the branches that
+// decide whether a block runs, which are those with the block on a path
+// from one of their targets to their immediate post-dominator.
+struct ControlFlow {
+    struct Block {
+        uint32_t condition = 0;         // the OpBranchConditional condition or OpSwitch selector
+        std::vector<uint32_t> targets;  // labels; none: the block leaves the function
+        std::vector<int> successors;    // -1: the function's exit
+        std::vector<int> predecessors;
+        std::vector<int> controlledBy;  // blocks whose branch decides whether this one runs
+    };
+    std::vector<Block> blocks;
+    std::map<uint32_t, int> index;  // label -> block
+    // A block that never reaches the exit (an endless loop): every branch
+    // is taken to control every block.
+    bool everywhere = false;
+
+    bool analyze() {
+        const int n = static_cast<int>(blocks.size()), exit = n;
+        for (int b = 0; b < n; ++b) {
+            for (uint32_t label : blocks[b].targets) {
+                auto it = index.find(label);
+                if (it == index.end()) return false;
+                blocks[b].successors.push_back(it->second);
+                blocks[it->second].predecessors.push_back(b);
+            }
+            if (blocks[b].successors.empty()) blocks[b].successors.push_back(-1);
+        }
+        // Blocks that reach the exit, walking predecessors back from it.
+        std::vector<bool> reaches(n, false);
+        std::vector<int> work;
+        for (int b = 0; b < n; ++b)
+            if (blocks[b].successors[0] == -1) reaches[b] = true, work.push_back(b);
+        while (!work.empty()) {
+            const int b = work.back();
+            work.pop_back();
+            for (int p : blocks[b].predecessors)
+                if (!reaches[p]) reaches[p] = true, work.push_back(p);
+        }
+        if (std::find(reaches.begin(), reaches.end(), false) != reaches.end()) {
+            everywhere = true;
+            return true;
+        }
+        // Post-dominator sets, one bit per block and the exit.
+        const size_t words = static_cast<size_t>(n + 1 + 63) / 64;
+        std::vector<std::vector<uint64_t>> pdom(static_cast<size_t>(n + 1), std::vector<uint64_t>(words, ~uint64_t{0}));
+        auto set = [](std::vector<uint64_t>& bits, int b) { bits[static_cast<size_t>(b) / 64] |= uint64_t{1} << (b % 64); };
+        auto has = [](const std::vector<uint64_t>& bits, int b) { return (bits[static_cast<size_t>(b) / 64] >> (b % 64)) & 1; };
+        pdom[static_cast<size_t>(exit)].assign(words, 0);
+        set(pdom[static_cast<size_t>(exit)], exit);
+        for (bool changed = true; changed;) {
+            changed = false;
+            for (int b = n - 1; b >= 0; --b) {
+                std::vector<uint64_t> meet(words, ~uint64_t{0});
+                for (int s : blocks[b].successors)
+                    for (size_t w = 0; w < words; ++w) meet[w] &= pdom[static_cast<size_t>(s < 0 ? exit : s)][w];
+                set(meet, b);
+                if (meet != pdom[static_cast<size_t>(b)]) pdom[static_cast<size_t>(b)] = std::move(meet), changed = true;
+            }
+        }
+        std::vector<int> sizes(static_cast<size_t>(n));
+        for (int b = 0; b < n; ++b)
+            for (uint64_t w : pdom[static_cast<size_t>(b)]) sizes[static_cast<size_t>(b)] += __builtin_popcountll(w);
+        for (int b = 0; b < n; ++b) {
+            if (!blocks[b].condition) continue;
+            // The immediate post-dominator: the strict post-dominator that
+            // every other one post-dominates.
+            const std::vector<uint64_t>& mine = pdom[static_cast<size_t>(b)];
+            int ipdom = exit;
+            for (int p = 0; p < n; ++p)
+                if (p != b && has(mine, p) && sizes[static_cast<size_t>(p)] == sizes[static_cast<size_t>(b)] - 1) ipdom = p;
+            std::vector<bool> seen(n, false);
+            for (int s : blocks[b].successors)
+                if (s >= 0 && s != ipdom && !seen[s]) seen[s] = true, work.push_back(s);
+            while (!work.empty()) {
+                const int c = work.back();
+                work.pop_back();
+                blocks[c].controlledBy.push_back(b);
+                for (int s : blocks[c].successors)
+                    if (s >= 0 && s != ipdom && !seen[s]) seen[s] = true, work.push_back(s);
+            }
+        }
+        return true;
+    }
+};
+
+// Storage a store makes visible to other invocations.
+bool sharedStorage(uint32_t storage) {
+    switch (storage) {
+    case spv::StorageClassUniform:  // BufferBlock storage blocks
+    case spv::StorageClassStorageBuffer:
+    case spv::StorageClassPhysicalStorageBuffer:
+    case spv::StorageClassImage:
+    case spv::StorageClassWorkgroup:
+    case spv::StorageClassCrossWorkgroup:
+    case spv::StorageClassAtomicCounter:
+    case spv::StorageClassGeneric:
+        return true;
+    default:
+        return false;
+    }
+}
+
+}  // namespace
+
+FlatSources flatVaryingSources(const std::vector<uint32_t>& vertex, const std::vector<uint32_t>& fragment,
+                               const std::function<bool(const std::string& name, uint32_t& locations)>& attribute) {
+    const FlatSources varies;
+    Declarations fs, vs;
+    if (!fs.read(fragment) || !vs.read(vertex)) return varies;
+
+    // The locations of the fragment stage's flat inputs (integers are flat
+    // whatever their declaration).
+    std::set<uint32_t> flat;
+    for (const auto& [id, v] : fs.variables) {
+        if (v.storage != spv::StorageClassInput || fs.decoration(id, spv::DecorationBuiltIn)) continue;
+        const uint32_t type = fs.pointee(v.type), element = fs.element(type);
+        // Blocks may have flat members (OpMemberDecorate, not read here).
+        if (!element || fs.opcode(element) == spv::OpTypeStruct || fs.decoration(id, spv::DecorationPerVertexKHR))
+            return varies;
+        if (!fs.decoration(id, spv::DecorationFlat) && fs.opcode(element) != spv::OpTypeInt) continue;
+        const uint32_t* location = fs.decoration(id, spv::DecorationLocation);
+        const uint32_t count = fs.locations(type);
+        if (!location || !count) return varies;
+        for (uint32_t l = 0; l < count; ++l) flat.insert(*location + l);
+    }
+    if (flat.empty()) return varies;
+
+    // The vertex stage's outputs at those locations (the linker matched
+    // varyings by name and gave both stages the same locations).
+    std::set<uint32_t> outputs;
+    for (const auto& [id, v] : vs.variables) {
+        if (v.storage != spv::StorageClassOutput || vs.decoration(id, spv::DecorationBuiltIn)) continue;
+        const uint32_t type = vs.pointee(v.type);
+        const uint32_t* location = vs.decoration(id, spv::DecorationLocation);
+        if (!location) {
+            auto name = vs.names.find(type);
+            if (vs.opcode(type) == spv::OpTypeStruct && name != vs.names.end() && name->second == "gl_PerVertex") continue;
+            return varies;
+        }
+        const uint32_t count = vs.locations(type);
+        if (!count) {
+            if (*location <= *flat.rbegin()) return varies;
+            continue;
+        }
+        if (flat.lower_bound(*location) != flat.lower_bound(*location + count)) outputs.insert(id);
+    }
+
+    // What reaches each variable's contents and each value: attribute
+    // locations, or kVaries for anything that differs between vertices.
+    // Iterated to a fixed point (loops store after they load).
+    constexpr uint64_t kVaries = uint64_t{1} << 63;
+    std::map<uint32_t, uint64_t> content, value, address;  // address: the indices of an access chain
+    std::map<uint32_t, uint32_t> root;                     // pointer -> its variable
+    for (const auto& [id, v] : vs.variables) {
+        uint64_t bits = 0;
+        if (v.storage == spv::StorageClassInput) {
+            if (const uint32_t* builtin = vs.decoration(id, spv::DecorationBuiltIn)) {
+                const bool perInstance = *builtin == spv::BuiltInInstanceId || *builtin == spv::BuiltInInstanceIndex ||
+                                         *builtin == spv::BuiltInBaseVertex || *builtin == spv::BuiltInBaseInstance ||
+                                         *builtin == spv::BuiltInDrawIndex;
+                bits = perInstance ? 0 : kVaries;
+            } else {
+                uint32_t locations = 0;
+                auto name = vs.names.find(id);
+                bits = name != vs.names.end() && attribute(name->second, locations) ? locations : kVaries;
+            }
+        } else if (v.storage != spv::StorageClassUniformConstant && v.storage != spv::StorageClassUniform &&
+                   v.storage != spv::StorageClassPushConstant && v.storage != spv::StorageClassStorageBuffer &&
+                   v.storage != spv::StorageClassOutput && v.storage != spv::StorageClassPrivate) {
+            bits = kVaries;
+        }
+        content[id] = bits;
+    }
+    // Functions' parameters, in order. glslang passes most arguments as
+    // pointers: such a parameter is a variable of its own, which takes the
+    // contents of every argument and gives its own back (out parameters).
+    std::map<uint32_t, std::vector<uint32_t>> parameters;
+    std::map<uint32_t, uint64_t> returned;  // function -> what its return values carry
+    std::map<uint32_t, uint64_t> called;    // function -> the conditions deciding whether it runs
+    std::map<uint32_t, ControlFlow> flows;
+    {
+        uint32_t function = 0;
+        ControlFlow* flow = nullptr;
+        for (size_t i = vs.firstFunction; i < vertex.size(); i += vertex[i] >> 16) {
+            const uint32_t count = vertex[i] >> 16, op = vertex[i] & 0xffff;
+            const uint32_t* w = &vertex[i];
+            ControlFlow::Block* block = flow && !flow->blocks.empty() ? &flow->blocks.back() : nullptr;
+            if (op == spv::OpFunction && count >= 3) {
+                function = w[2];
+                flow = &flows[function];
+            } else if (op == spv::OpFunctionParameter && count >= 3) {
+                parameters[function].push_back(w[2]);
+                if (vs.opcode(w[1]) == spv::OpTypePointer) root[w[2]] = w[2];
+            } else if (op == spv::OpVariable && count >= 4) {
+                root[w[2]] = w[2];  // a function's variable
+            } else if (op == spv::OpLabel && count >= 2 && flow) {
+                flow->index[w[1]] = static_cast<int>(flow->blocks.size());
+                flow->blocks.emplace_back();
+            } else if (op == spv::OpBranch && count >= 2 && block) {
+                block->targets = {w[1]};
+            } else if (op == spv::OpBranchConditional && count >= 4 && block) {
+                block->condition = w[1];
+                block->targets = {w[2], w[3]};
+            } else if (op == spv::OpSwitch && count >= 3 && block) {
+                // 32-bit selectors: (literal, label) pairs.
+                block->condition = w[1];
+                block->targets = {w[2]};
+                for (uint32_t k = 4; k < count; k += 2) block->targets.push_back(w[k]);
+            } else if (op == spv::OpFunctionEnd && flow) {
+                if (!flow->analyze()) return varies;
+                flow = nullptr;
+            }
+        }
+    }
+    auto get = [](const std::map<uint32_t, uint64_t>& bits, uint32_t id) {
+        auto it = bits.find(id);
+        return it == bits.end() ? uint64_t{0} : it->second;
+    };
+    auto rootOf = [&](uint32_t pointer) {
+        auto it = root.find(pointer);
+        return it == root.end() ? pointer : it->second;
+    };
+    auto isPointer = [&](uint32_t id) { return root.count(id) || vs.variables.count(id); };
+    auto storageOf = [&](uint32_t variable) {
+        auto it = vs.variables.find(variable);
+        return it == vs.variables.end() ? static_cast<uint32_t>(spv::StorageClassFunction) : it->second.storage;
+    };
+    bool changed = true;
+    auto merge = [&](std::map<uint32_t, uint64_t>& bits, uint32_t id, uint64_t add) {
+        uint64_t& at = bits[id];
+        if ((at | add) != at) {
+            at |= add;
+            changed = true;
+        }
+    };
+    for (int pass = 0; changed; ++pass) {
+        if (pass == 64) return varies;
+        changed = false;
+        uint32_t function = 0;
+        const ControlFlow* flow = nullptr;
+        int block = -1;
+        // What decides whether block `b` of the current function runs: the
+        // conditions of the branches it depends on, and its function's calls.
+        auto controlOf = [&](int b) {
+            uint64_t bits = get(called, function);
+            if (!flow || b < 0) return bits | kVaries;
+            const ControlFlow::Block& at = flow->blocks[static_cast<size_t>(b)];
+            if (flow->everywhere) {
+                for (const ControlFlow::Block& other : flow->blocks)
+                    if (other.condition) bits |= get(value, other.condition);
+                return bits;
+            }
+            for (int c : at.controlledBy) bits |= get(value, flow->blocks[static_cast<size_t>(c)].condition);
+            return bits;
+        };
+        for (size_t i = vs.firstFunction; i < vertex.size();) {
+            const uint32_t count = vertex[i] >> 16, op = vertex[i] & 0xffff;
+            const uint32_t* w = &vertex[i];
+            if ((op >= spv::OpAtomicLoad && op <= spv::OpAtomicXor) || op == spv::OpAtomicFlagTestAndSet ||
+                op == spv::OpAtomicFlagClear || op == spv::OpAtomicFMinEXT || op == spv::OpAtomicFMaxEXT ||
+                op == spv::OpAtomicFAddEXT || op == spv::OpImageWrite || op == spv::OpImageTexelPointer)
+                return varies;
+            const uint64_t control = op == spv::OpStore || op == spv::OpCopyMemory || op == spv::OpFunctionCall ||
+                                             op == spv::OpReturnValue || op == spv::OpExtInst
+                                         ? controlOf(block)
+                                         : 0;
+            switch (op) {
+            case spv::OpFunction:
+                if (count >= 3) {
+                    function = w[2];
+                    flow = &flows[function];
+                    block = -1;
+                }
+                break;
+            case spv::OpLabel:
+                if (count >= 2 && flow) {
+                    auto it = flow->index.find(w[1]);
+                    block = it == flow->index.end() ? -1 : it->second;
+                }
+                break;
+            case spv::OpFunctionCall: {
+                if (count < 4) return varies;
+                auto callee = parameters.find(w[3]);
+                const size_t arguments = count - 4;
+                if (arguments && (callee == parameters.end() || callee->second.size() != arguments)) return varies;
+                for (size_t k = 0; k < arguments; ++k) {
+                    const uint32_t argument = w[4 + k], parameter = callee->second[k];
+                    if (root.count(parameter) && !isPointer(argument)) return varies;
+                    if (!isPointer(argument)) {
+                        merge(value, parameter, get(value, argument));
+                        continue;
+                    }
+                    if (!root.count(parameter) || sharedStorage(storageOf(rootOf(argument)))) return varies;
+                    merge(content, parameter, get(content, rootOf(argument)) | get(address, argument));
+                    merge(content, rootOf(argument), get(content, parameter) | get(address, argument) | control);
+                }
+                merge(called, w[3], control);
+                merge(value, w[2], get(returned, w[3]));
+                break;
+            }
+            case spv::OpReturnValue:
+                if (count >= 2) merge(returned, function, get(value, w[1]) | control);
+                break;
+            case spv::OpFunctionParameter:  // takes its call sites' arguments
+                break;
+            case spv::OpVariable:
+                if (count > 4) merge(content, w[2], get(value, w[4]));
+                break;
+            case spv::OpAccessChain:
+            case spv::OpInBoundsAccessChain:
+            case spv::OpPtrAccessChain:
+            case spv::OpInBoundsPtrAccessChain: {
+                if (count < 4) return varies;
+                root[w[2]] = rootOf(w[3]);
+                uint64_t bits = get(address, w[3]);
+                for (uint32_t k = 4; k < count; ++k) bits |= get(value, w[k]);
+                merge(address, w[2], bits);
+                break;
+            }
+            case spv::OpLoad:
+                if (count < 4) return varies;
+                merge(value, w[2], get(content, rootOf(w[3])) | get(address, w[3]));
+                break;
+            case spv::OpStore:
+            case spv::OpCopyMemory: {
+                if (count < 3) return varies;
+                const uint32_t target = rootOf(w[1]);
+                if (sharedStorage(storageOf(target))) return varies;
+                const uint64_t source =
+                    op == spv::OpStore ? get(value, w[2]) : get(content, rootOf(w[2])) | get(address, w[2]);
+                merge(content, target, source | get(address, w[1]) | control);
+                break;
+            }
+            case spv::OpPhi: {
+                // Which value arrives depends on the branches that decide
+                // which predecessor ran, and on those ending in a branch.
+                if (vs.opcode(w[1]) == spv::OpTypePointer) return varies;
+                uint64_t bits = 0;
+                for (uint32_t k = 3; k + 1 < count; k += 2) {
+                    bits |= get(value, w[k]);
+                    auto parent = flow ? flow->index.find(w[k + 1]) : std::map<uint32_t, int>::const_iterator();
+                    if (!flow || parent == flow->index.end()) return varies;
+                    bits |= controlOf(parent->second) | get(value, flow->blocks[static_cast<size_t>(parent->second)].condition);
+                }
+                merge(value, w[2], bits);
+                break;
+            }
+            default: {
+                bool hasResult = false, hasType = false;
+                spv::HasResultAndType(static_cast<spv::Op>(op), &hasResult, &hasType);
+                if (!hasResult || !hasType || count < 3) break;
+                // A pointer from anything else (OpSelect, a conversion)
+                // has no known variable.
+                if (op != spv::OpCopyObject && vs.opcode(w[1]) == spv::OpTypePointer) return varies;
+                // Every operand that is a value or a pointer; a literal that
+                // happens to equal an id only adds sources.
+                uint64_t bits = 0;
+                for (uint32_t k = 3; k < count; ++k)
+                    bits |= get(value, w[k]) | (isPointer(w[k]) ? get(content, rootOf(w[k])) | get(address, w[k]) : 0);
+                if (op == spv::OpCopyObject && count >= 4 && isPointer(w[3])) {
+                    root[w[2]] = rootOf(w[3]);
+                    merge(address, w[2], get(address, w[3]));
+                }
+                // Extended instructions (modf, frexp) may write through a pointer operand.
+                if (op == spv::OpExtInst)
+                    for (uint32_t k = 5; k < count; ++k)
+                        if (isPointer(w[k])) {
+                            if (sharedStorage(storageOf(rootOf(w[k])))) return varies;
+                            merge(content, rootOf(w[k]), bits | control);
+                        }
+                merge(value, w[2], bits);
+                break;
+            }
+            }
+            i += count;
+        }
+    }
+    uint64_t bits = 0;
+    for (uint32_t id : outputs) bits |= get(content, id);
+    if (bits & kVaries) return varies;
+    return {false, static_cast<uint32_t>(bits)};
 }
 
 }  // namespace wmgl::shader

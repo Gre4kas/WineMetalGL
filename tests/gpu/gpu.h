@@ -73,6 +73,7 @@
     X(glVertexArrayAttribFormat) X(glVertexArrayAttribBinding) X(glEnableVertexArrayAttrib) X(glBindTextureUnit)  \
     X(glTextureParameteri) X(glGetNamedBufferSubData) X(glBlitNamedFramebuffer) X(glGetTextureSubImage)          \
     X(glGetCompressedTextureSubImage) X(glTextureStorage3D) X(glTextureSubImage3D) X(glVertexAttrib4fv)          \
+    X(glDisableVertexAttribArray) X(glVertexAttribI4ui)                                                       \
     X(glMultiDrawArrays) X(glMultiDrawArraysIndirectCount) X(glDrawElementsBaseVertex) X(glBeginQueryIndexed)     \
     X(glEndQueryIndexed) X(glGetProgramInterfaceiv) X(glCompressedTexSubImage2D) X(glSampleMaski) X(glDeleteRenderbuffers) \
     X(glCopyBufferSubData) X(glCompressedTexImage3D) X(glTexStorage2DMultisample) X(glNamedFramebufferTextureLayer) \

@@ -387,6 +387,12 @@ struct LinkResult {
     // ("uniform vec4 v = vec4(1.0);"), zero elsewhere.
     std::vector<uint8_t> defaultBlockInit;
     StageOutput stages[kStageCount];
+    // The fragment stage's flat inputs, when the vertex stage computes them
+    // from nothing that differs between vertices but the attributes in
+    // `flatAttribs` (bit = GL location): flatPerVertex false
+    // (flatVaryingSources). Programs with other stages keep true.
+    bool flatPerVertex = true;
+    uint32_t flatAttribs = 0;
     // Geometry shader layout (for emulation).
     GLenum geometryInputType = 0, geometryOutputType = 0;
     GLint geometryVerticesOut = 0, geometryInvocations = 1;

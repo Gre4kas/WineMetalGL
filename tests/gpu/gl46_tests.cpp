@@ -2195,6 +2195,101 @@ GPU_TEST_VERSION(gpu_gl46_multi_draw_indirect_binds_once, 46) {
     glDeleteProgram(p);
 }
 
+// Flat inputs that the vertex stage computes from uniforms and per-instance
+// (or disabled) attributes are the same at every vertex of a triangle, so
+// the last-vertex convention needs no index rotation and the GPU reads the
+// indirect command. Anything per vertex keeps the rotation (the CPU reads
+// the command): a divisor-0 attribute, gl_VertexID, a branch, loop, switch
+// or early return on a per-vertex value, through functions too; a loop on a
+// per-vertex value that decides nothing flat does not. Each draw passes only
+// with GL's last vertex (id 7; perVertex is 1, 1, 7).
+GPU_TEST_VERSION(gpu_gl46_flat_inputs_constant_per_primitive, 46) {
+    const char* fs = "#version 460 core\nflat in vec4 color;\nflat in uint id;\nout vec4 o;\n"
+                     "void main() { o = id == 7u ? color : vec4(0.0, 0.0, 0.0, 1.0); }\n";
+    auto vs = [](const char* functions, const char* body) {
+        return std::string("#version 460 core\nlayout(location = 0) in vec2 pos;\nlayout(location = 1) in uint perVertex;\n"
+                           "layout(location = 2) in uint material;\nuniform vec4 tint;\nflat out vec4 color;\nflat out uint id;\n") +
+               functions + "\nvoid main() {\n    gl_Position = vec4(pos, 0.0, 1.0);\n    color = tint;\n    " + body + "\n}\n";
+    };
+    struct Case {
+        const char* functions;
+        const char* body;
+        unsigned long long readOnCpu;
+    };
+    const Case cases[] = {
+        {"", "id = material;", 0},
+        {"void pick(out uint v) { v = material; }", "pick(id);", 0},
+        {"", "uint n = 0u; for (uint i = 0u; i < perVertex; ++i) n += 1u; gl_PointSize = float(n); id = material;", 0},
+        {"", "id = gl_VertexID == 2 ? 7u : 1u;", 1},
+        {"uint pick() { return gl_VertexID == 2 ? 7u : 1u; }", "id = pick();", 1},
+        {"void pick(out uint v) { v = perVertex; }", "pick(id);", 1},
+        {"", "id = perVertex;", 1},
+        {"", "if (pos.y > 2.0) id = material; else id = 0u;", 1},
+        {"", "id = material; if (perVertex == 7u) return; id = 0u;", 1},
+        {"", "id = 0u; for (uint i = 0u; i < perVertex; ++i) id = material;", 1},
+        {"", "switch (perVertex) { case 7u: id = material; break; default: id = 0u; }", 1},
+        {"", "id = perVertex == 7u && (material + 1u) == 8u ? 7u : 0u;", 1},  // short-circuit: a phi
+    };
+    std::vector<GLuint> programs;
+    for (const Case& c : cases) programs.push_back(gpu::program(vs(c.functions, c.body).c_str(), fs));
+    const float tri[] = {-1, -1, 3, -1, -1, 3};
+    const GLuint ids[] = {1, 1, 7}, material[] = {7};
+    GLuint vao = 0, buffers[4] = {};
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(4, buffers);
+    glBindBuffer(GL_ARRAY_BUFFER, buffers[0]);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(tri), tri, GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
+    glEnableVertexAttribArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, buffers[1]);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(ids), ids, GL_STATIC_DRAW);
+    glVertexAttribIPointer(1, 1, GL_UNSIGNED_INT, 0, nullptr);
+    glEnableVertexAttribArray(1);
+    glBindBuffer(GL_ARRAY_BUFFER, buffers[2]);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(material), material, GL_STATIC_DRAW);
+    glVertexAttribIPointer(2, 1, GL_UNSIGNED_INT, 0, nullptr);
+    glVertexAttribDivisor(2, 1);
+    glEnableVertexAttribArray(2);
+    const GLuint command[4] = {3, 1, 0, 0};
+    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, buffers[3]);
+    glBufferData(GL_DRAW_INDIRECT_BUFFER, sizeof(command), command, GL_STATIC_DRAW);
+    const uint8_t tint[4] = {51, 102, 204, 255};
+    auto draw = [&](GLuint program, unsigned long long readOnCpu) {
+        glUseProgram(program);
+        glUniform4f(glGetUniformLocation(program, "tint"), 0.2f, 0.4f, 0.8f, 1.0f);
+        glClearColor(0, 0, 0, 1);
+        glClear(GL_COLOR_BUFFER_BIT);
+        gpu::Counters counters;
+        glDrawArraysIndirect(GL_TRIANGLES, nullptr);
+        CHECK_EQ(counters["indirectCpu"], readOnCpu);
+        CHECK_EQ(counters["indirectGpu"], 1 - readOnCpu);
+        CHECK(gpu::near(gpu::readRGBA8(32, 32, 1, 1).data(), tint));
+        CHECK_GL();
+    };
+    for (size_t i = 0; i < programs.size(); ++i) draw(programs[i], cases[i].readOnCpu);
+    // The draw-time half: the material attribute disabled (its current
+    // value), then per vertex.
+    glDisableVertexAttribArray(2);
+    glVertexAttribI4ui(2, 7, 0, 0, 0);
+    draw(programs[0], 0);
+    glEnableVertexAttribArray(2);
+    glBindBuffer(GL_ARRAY_BUFFER, buffers[1]);
+    glVertexAttribIPointer(2, 1, GL_UNSIGNED_INT, 0, nullptr);
+    glVertexAttribDivisor(2, 0);
+    draw(programs[0], 1);
+    glProvokingVertex(GL_FIRST_VERTEX_CONVENTION);
+    glUseProgram(programs[6]);  // id = perVertex: the first vertex's, 1
+    glDrawArraysIndirect(GL_TRIANGLES, nullptr);
+    const uint8_t black[4] = {0, 0, 0, 255};
+    CHECK(gpu::near(gpu::readRGBA8(32, 32, 1, 1).data(), black));
+    glProvokingVertex(GL_LAST_VERTEX_CONVENTION);
+    glDeleteBuffers(4, buffers);
+    glDeleteVertexArrays(1, &vao);
+    for (GLuint p : programs) glDeleteProgram(p);
+    CHECK_GL();
+}
+
 GPU_TEST_VERSION(gpu_gl46_indirect_draws_index_65535_without_restart, 46) {
     // Metal restarts strips at 0xffff in 16-bit indices whatever the state;
     // GL without primitive restart draws vertex 65535. An indirect draw of

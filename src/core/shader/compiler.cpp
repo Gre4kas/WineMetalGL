@@ -2961,6 +2961,28 @@ static LinkResult linkImplCore(const LinkInput& input, const CaptureCode* captur
         result.programOutputs.push_back(info);
     }
 
+    // Whether the provoking vertex can change the fragment stage's flat
+    // inputs (DrawState::rotateProvoking), when the vertex stage feeds it.
+    if (result.stages[static_cast<int>(Stage::Vertex)].present && result.stages[static_cast<int>(Stage::Fragment)].present &&
+        !result.stages[static_cast<int>(Stage::Geometry)].present &&
+        !result.stages[static_cast<int>(Stage::TessControl)].present &&
+        !result.stages[static_cast<int>(Stage::TessEval)].present) {
+        const FlatSources flat = flatVaryingSources(
+            result.stages[static_cast<int>(Stage::Vertex)].spirv, result.stages[static_cast<int>(Stage::Fragment)].spirv,
+            [&](const std::string& name, uint32_t& locations) {
+                const std::string glName = unescapeName(name);
+                for (const AttribInfo& a : result.attribs) {
+                    if (a.name != glName) continue;
+                    if (a.location < 0 || a.location + a.locationCount > 32) return false;
+                    for (int l = 0; l < a.locationCount; ++l) locations |= 1u << (a.location + l);
+                    return true;
+                }
+                return false;
+            });
+        result.flatPerVertex = flat.perVertex;
+        result.flatAttribs = flat.attribs;
+    }
+
     // Metal translation per stage. The vertex stage is translated twice: the
     // second variant returns void, as Metal requires when rasterization is
     // disabled (GL_RASTERIZER_DISCARD, transform feedback capture passes).
