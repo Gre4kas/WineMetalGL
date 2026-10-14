@@ -49,7 +49,7 @@ and on MetalSharp's Wine 11.17.
 
 | File | Where | What |
 |---|---|---|
-| `winemetalgl.dll` | `lib/wine/x86_64-windows`, `lib/wine/i386-windows` | WGL and the GL entry points, for 64- and 32-bit programs |
+| `winemetalgl.dll` | `lib/wine/x86_64-windows`, `lib/wine/i386-windows`, and the prefix's `system32` and `syswow64` | WGL and the GL entry points, for 64- and 32-bit programs |
 | `winemetalgl.so` | `lib/wine/x86_64-unix` | its unix side, which runs both (32-bit calls through Wine's WoW64 thunks) |
 | `libwinemetalgl.dylib` | `lib/wine/x86_64-unix` | the core |
 | `opengl32.dll` | the prefix's `system32` and `syswow64` | forwards every export to `winemetalgl.dll` |
@@ -62,7 +62,9 @@ and on MetalSharp's Wine 11.17.
 
 `install-wine-module.sh` adds the module and the core to the Wine installation
 without replacing any of Wine's files. Given a prefix, it also puts the
-forwarding `opengl32.dll` into it and sets the DLL override
+forwarding `opengl32.dll` into it, with a copy of `winemetalgl.dll` for Wines
+whose loader does not look in `lib/wine` for it (CrossOver bottles, where a
+program otherwise fails to create its window), and sets the DLL override
 `opengl32=native`; run it once per prefix. Removing the override (or running
 a program with `WINEDLLOVERRIDES=opengl32=b`) gives that prefix Wine's own
 OpenGL back.
