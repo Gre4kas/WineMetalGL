@@ -436,6 +436,23 @@ void storedToRgba(const FormatInfo& info, Texel& t) {
 
 void mapRgbaToStored(const FormatInfo& info, Texel& t) { rgbaToStored(info, t); }
 
+namespace {
+
+template <void (*Map)(const FormatInfo&, Texel&)>
+void mapTexels(const FormatInfo& info, float* rgba, size_t texels) {
+    for (size_t i = 0; i < texels; ++i) {
+        Texel t;
+        for (int c = 0; c < 4; ++c) t.c[c] = rgba[i * 4 + c];
+        Map(info, t);
+        for (int c = 0; c < 4; ++c) rgba[i * 4 + c] = static_cast<float>(t.c[c]);
+    }
+}
+
+}  // namespace
+
+void mapRgbaToStored(const FormatInfo& info, float* rgba, size_t texels) { mapTexels<rgbaToStored>(info, rgba, texels); }
+void mapStoredToRgba(const FormatInfo& info, float* rgba, size_t texels) { mapTexels<storedToRgba>(info, rgba, texels); }
+
 // ------------------------------------------------------------- storage
 
 void decodeStorage(Storage s, const uint8_t* p, Texel& t) {

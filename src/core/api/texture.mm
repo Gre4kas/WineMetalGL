@@ -359,6 +359,8 @@ bool compressedFormatSupported(Context& ctx, const FormatInfo* info) {
     if (info->storage >= Storage::ETC2_RGB8 && info->storage <= Storage::EAC_RG11Snorm)
         return ctx.version() >= 43 || ctx.hasExtension("GL_ARB_ES3_compatibility");  // native on Apple GPUs
     if (!Device::get().caps().bcTextures) return false;
+    // LATC and 3Dc: luminance formats, compatibility profile only.
+    if (info->baseFormat == GL_LUMINANCE || info->baseFormat == GL_LUMINANCE_ALPHA) return ctx.isCompat();
     switch (info->storage) {
     case Storage::BC1_RGBA: case Storage::BC1_RGBA_sRGB: case Storage::BC2_RGBA: case Storage::BC2_RGBA_sRGB:
     case Storage::BC3_RGBA: case Storage::BC3_RGBA_sRGB:
@@ -398,7 +400,10 @@ void uploadRgtcRegion(Context& ctx, Texture& tex, int face, int level, int x, in
     std::vector<float> texels(static_cast<size_t>(w) * h * d * 4);
     unpackPixels(src, format, type, w, h, d, pixelStoreParams(ctx.state.unpack, threeDTarget(tex.target)), *rgba, texels.data());
     std::vector<uint8_t> blocks(compressedSize(*image.format, w, h, d));
-    if (isRgtcStorage(image.format->storage)) encodeRgtc(image.format->storage, texels.data(), w, h, d, blocks.data());
+    if (isRgtcStorage(image.format->storage)) {
+        mapRgbaToStored(*image.format, texels.data(), texels.size() / 4);
+        encodeRgtc(image.format->storage, texels.data(), w, h, d, blocks.data());
+    }
     else encodeBlocks(image.format->storage, texels.data(), w, h, d, blocks.data());
     metalRegion(tex, x, y, z, w, h, d);
     uploadCompressed(ctx, tex, face, level, x, y, z, w, h, d, blocks.data());
@@ -2092,6 +2097,7 @@ void GetTexImage(Context& ctx, GLenum target, GLint level, GLenum format, GLenum
         std::vector<float> rgba(static_cast<size_t>(image.width) * image.height * image.depth * 4);
         decodeRgtc(info.storage, static_cast<const uint8_t*>(staging.contents), image.width, image.height, image.depth,
                    rgba.data());
+        mapStoredToRgba(info, rgba.data(), rgba.size() / 4);
         packPixels(rgba.data(), *formatInfo(GL_RGBA32F), image.width, image.height, image.depth, format, type, ps, false, dst);
         return;
     }
@@ -2220,6 +2226,7 @@ std::vector<float> decodedSlice(Context& ctx, Texture& tex, const FormatInfo& in
                        destinationOffset:0 destinationBytesPerRow:rowBytes destinationBytesPerImage:imageBytes];
     ctx.stream().finish();
     decodeRgtc(info.storage, static_cast<const uint8_t*>(staging.contents), width, height, 1, rgba.data());
+    mapStoredToRgba(info, rgba.data(), rgba.size() / 4);
     return rgba;
 }
 

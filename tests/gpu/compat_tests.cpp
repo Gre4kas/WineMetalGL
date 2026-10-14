@@ -3,6 +3,7 @@
 
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 
 #include "gpu.h"
 
@@ -1157,5 +1158,101 @@ COMPAT_TEST(compat_steam_overlay_state_round_trip) {
     matrix(GL_COLOR_MATRIX, now);
     CHECK(now[0] == 0.5f);
     glMatrixMode(GL_MODELVIEW);
+    CHECK_GL();
+}
+
+// Compressed luminance formats (EXT_texture_compression_latc, ATI's 3Dc):
+// RGTC blocks sampled as luminance (alpha): SOMA's normal maps are 3Dc, read
+// from green and alpha (issue #16).
+COMPAT_TEST(compat_latc_and_3dc_textures) {
+    // BC4 blocks with all indices 0: every texel is the first endpoint.
+    const uint8_t l200[8] = {200, 0, 0, 0, 0, 0, 0, 0}, a60[8] = {60, 0, 0, 0, 0, 0, 0, 0};
+    uint8_t la[16];
+    std::memcpy(la, l200, 8);
+    std::memcpy(la + 8, a60, 8);  // luminance first, then alpha
+    GLuint p = gpu::program(R"(#version 120
+void main() { gl_Position = ftransform(); })",
+                            R"(#version 120
+uniform sampler2D tex;
+void main() { gl_FragColor = texture2D(tex, vec2(0.5)); })");
+    glUseProgram(p);
+    pixelProjection();
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    struct Case { GLenum format; const uint8_t* data; GLsizei size; uint8_t want[4]; GLenum readFormat; uint8_t read[2]; };
+    const Case cases[] = {
+        {GL_COMPRESSED_LUMINANCE_ALPHA_3DC_ATI, la, 16, {200, 200, 200, 60}, GL_LUMINANCE_ALPHA, {200, 60}},
+        {GL_COMPRESSED_LUMINANCE_ALPHA_LATC2_EXT, la, 16, {200, 200, 200, 60}, GL_LUMINANCE_ALPHA, {200, 60}},
+        {GL_COMPRESSED_LUMINANCE_LATC1_EXT, l200, 8, {200, 200, 200, 255}, GL_LUMINANCE, {200, 0}},
+    };
+    for (const Case& c : cases) {
+        glCompressedTexImage2D(GL_TEXTURE_2D, 0, c.format, 4, 4, 0, c.size, c.data);
+        CHECK_GL();
+        GLint compressed = 0, internal = 0, luminance = 0, alpha = 0;
+        glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_COMPRESSED, &compressed);
+        glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_INTERNAL_FORMAT, &internal);
+        glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_LUMINANCE_SIZE, &luminance);
+        glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_ALPHA_SIZE, &alpha);
+        CHECK_EQ(compressed, 1);
+        CHECK_EQ(internal, static_cast<GLint>(c.format));
+        CHECK(luminance > 0);
+        CHECK_EQ(alpha > 0, c.size == 16);
+        clear();
+        glRectf(0, 0, 64, 64);
+        CHECK(pixel(32, 32, c.want));
+        // Decoded on readback to luminance (and alpha).
+        uint8_t read[4 * 4 * 2] = {};
+        glPixelStorei(GL_PACK_ALIGNMENT, 1);
+        glGetTexImage(GL_TEXTURE_2D, 0, c.readFormat, GL_UNSIGNED_BYTE, read);
+        CHECK_EQ(read[0], c.read[0]);
+        if (c.readFormat == GL_LUMINANCE_ALPHA) CHECK_EQ(read[1], c.read[1]);
+        uint8_t blocks[16] = {};
+        glGetCompressedTexImage(GL_TEXTURE_2D, 0, blocks);
+        CHECK(std::memcmp(blocks, c.data, static_cast<size_t>(c.size)) == 0);
+    }
+    // Uncompressed luminance-alpha pixels are encoded into the blocks: alpha
+    // goes to the second block.
+    uint8_t pixels[4 * 4 * 2];
+    for (int i = 0; i < 16; ++i) {
+        pixels[i * 2] = 100;
+        pixels[i * 2 + 1] = 30;
+    }
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_COMPRESSED_LUMINANCE_ALPHA_LATC2_EXT, 4, 4, 0, GL_LUMINANCE_ALPHA, GL_UNSIGNED_BYTE, pixels);
+    CHECK_GL();
+    clear();
+    glRectf(0, 0, 64, 64);
+    const uint8_t encoded[4] = {100, 100, 100, 30};
+    CHECK(pixel(32, 32, encoded));
+    // LATC is advertised in the compatibility profile (3Dc's extension was
+    // never registered).
+    bool latc = false;
+    GLint extensions = 0;
+    glGetIntegerv(GL_NUM_EXTENSIONS, &extensions);
+    for (GLint i = 0; i < extensions; ++i) {
+        const char* name = reinterpret_cast<const char*>(glGetStringi(GL_EXTENSIONS, static_cast<GLuint>(i)));
+        latc = latc || std::strcmp(name, "GL_EXT_texture_compression_latc") == 0;
+    }
+    CHECK(latc);
+    glDeleteTextures(1, &tex);
+    glUseProgram(0);
+    glDeleteProgram(p);
+    CHECK_GL();
+}
+
+// Luminance formats are not part of the core profile.
+GPU_TEST_VERSION(gpu_texture_latc_is_compatibility_only, 46) {
+    const uint8_t block[16] = {200, 0, 0, 0, 0, 0, 0, 0, 60, 0, 0, 0, 0, 0, 0, 0};
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glCompressedTexImage2D(GL_TEXTURE_2D, 0, GL_COMPRESSED_LUMINANCE_ALPHA_3DC_ATI, 4, 4, 0, sizeof(block), block);
+    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_INVALID_ENUM));
+    glCompressedTexImage2D(GL_TEXTURE_2D, 0, GL_COMPRESSED_LUMINANCE_ALPHA_LATC2_EXT, 4, 4, 0, sizeof(block), block);
+    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_INVALID_ENUM));
+    glDeleteTextures(1, &tex);
     CHECK_GL();
 }

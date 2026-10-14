@@ -62,6 +62,11 @@ void encodeStorage(Storage storage, const Texel& in, uint8_t* texel);
 // Maps an RGBA texel to the stored channels of a format (alpha, luminance
 // alpha and RGB formats store channels differently).
 void mapRgbaToStored(const FormatInfo& info, Texel& t);
+// The same for tightly packed RGBA float texels, both ways: the RGTC paths
+// convert with these around encodeRgtc and decodeRgtc, which work on stored
+// channels (LATC and 3Dc keep luminance in the first, alpha in the second).
+void mapRgbaToStored(const FormatInfo& info, float* rgba, size_t texels);
+void mapStoredToRgba(const FormatInfo& info, float* rgba, size_t texels);
 
 // RGTC (BC4/BC5) block compression between canonical RGBA float texels
 // (tightly packed, 4 floats per texel) and blocks. Images are compressed

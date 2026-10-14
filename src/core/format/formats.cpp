@@ -205,6 +205,16 @@ std::unordered_map<GLenum, FormatInfo> buildTable() {
     legacy(GL_ALPHA16F_ARB, GL_ALPHA, S::R16Float, CT::Float, 0, 16, 0, SwzZero, SwzZero, SwzZero, SwzR, GL_ALPHA, HF);
     legacy(GL_LUMINANCE16F_ARB, GL_LUMINANCE, S::R16Float, CT::Float, 16, 0, 0, SwzR, SwzR, SwzR, SwzOne, GL_LUMINANCE, HF);
     legacy(GL_LUMINANCE_ALPHA16F_ARB, GL_LUMINANCE_ALPHA, S::RG16Float, CT::Float, 16, 16, 0, SwzR, SwzR, SwzR, SwzG, GL_LUMINANCE_ALPHA, HF);
+    // Compressed luminance (EXT_texture_compression_latc, and ATI's 3Dc, the
+    // same blocks as LATC2: luminance in the first 64 bits, alpha in the
+    // second): RGTC blocks read with luminance swizzles. Frictional's HPL3
+    // (SOMA) stores normal maps as 3Dc and reads them as luminance alpha
+    // (green and alpha).
+    legacy(GL_COMPRESSED_LUMINANCE_LATC1_EXT, GL_LUMINANCE, S::BC4_RUnorm, CT::UnsignedNormalized, 8, 0, 0, SwzR, SwzR, SwzR, SwzOne, GL_LUMINANCE, UB);
+    legacy(GL_COMPRESSED_SIGNED_LUMINANCE_LATC1_EXT, GL_LUMINANCE, S::BC4_RSnorm, CT::SignedNormalized, 8, 0, 0, SwzR, SwzR, SwzR, SwzOne, GL_LUMINANCE, B);
+    legacy(GL_COMPRESSED_LUMINANCE_ALPHA_LATC2_EXT, GL_LUMINANCE_ALPHA, S::BC5_RGUnorm, CT::UnsignedNormalized, 8, 8, 0, SwzR, SwzR, SwzR, SwzG, GL_LUMINANCE_ALPHA, UB);
+    legacy(GL_COMPRESSED_SIGNED_LUMINANCE_ALPHA_LATC2_EXT, GL_LUMINANCE_ALPHA, S::BC5_RGSnorm, CT::SignedNormalized, 8, 8, 0, SwzR, SwzR, SwzR, SwzG, GL_LUMINANCE_ALPHA, B);
+    legacy(GL_COMPRESSED_LUMINANCE_ALPHA_3DC_ATI, GL_LUMINANCE_ALPHA, S::BC5_RGUnorm, CT::UnsignedNormalized, 8, 8, 0, SwzR, SwzR, SwzR, SwzG, GL_LUMINANCE_ALPHA, UB);
     return table;
 }
 

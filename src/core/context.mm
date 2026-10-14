@@ -109,7 +109,12 @@ void Context::initStrings() {
               "GL_EXT_pixel_buffer_object", "GL_SGIS_generate_mipmap", "GL_ARB_texture_rectangle",
               "GL_NV_texture_rectangle", "GL_NV_blend_square", "GL_EXT_packed_pixels",
               "GL_SGIS_texture_edge_clamp", "GL_ARB_multisample", "GL_EXT_texture3D", "GL_EXT_blend_equation_separate",
-              "GL_ARB_shading_language_100", "GL_ARB_shader_objects", "GL_ARB_vertex_shader", "GL_ARB_fragment_shader"})
+              "GL_ARB_shading_language_100", "GL_ARB_shader_objects", "GL_ARB_vertex_shader", "GL_ARB_fragment_shader",
+              // Compressed luminance formats (RGTC blocks). ATI's 3Dc token
+              // (GL_COMPRESSED_LUMINANCE_ALPHA_3DC_ATI, HPL3's normal maps) is
+              // accepted too; its extension was never registered, so it is
+              // not advertised.
+              "GL_EXT_texture_compression_latc"})
             extensions_.push_back(name);
     }
     extensions_.push_back("GL_ARB_vertex_type_2_10_10_10_rev");
