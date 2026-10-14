@@ -69,6 +69,7 @@ Surface* asSurface(wmgl_surface* s) { return reinterpret_cast<Surface*>(s); }
 }  // namespace
 
 WMGL_EXPORT int wmgl_initialize(unsigned int abi_version) {
+    CallPool pool;  // see CallPool (context.h)
     if (abi_version != WMGL_DRIVER_ABI_VERSION) {
         WMGL_ERR("driver ABI mismatch: caller %u, core %u", abi_version, WMGL_DRIVER_ABI_VERSION);
         return -1;
@@ -86,6 +87,7 @@ WMGL_EXPORT unsigned int wmgl_get_pixel_formats(struct wmgl_pixel_format* format
 }
 
 WMGL_EXPORT wmgl_surface* wmgl_surface_create_window(void* layer, int format, int width, int height) {
+    CallPool pool;  // see CallPool (context.h)
     auto* surface = new Surface((__bridge CAMetalLayer*)layer, format, width, height);
     surface->retain();
     WMGL_TRACE("surface %p window %dx%d format %d", surface, width, height, format);
@@ -93,16 +95,19 @@ WMGL_EXPORT wmgl_surface* wmgl_surface_create_window(void* layer, int format, in
 }
 
 WMGL_EXPORT wmgl_surface* wmgl_surface_create_pbuffer(int format, int width, int height) {
+    CallPool pool;  // see CallPool (context.h)
     auto* surface = new Surface(nil, format, width, height);
     surface->retain();
     return reinterpret_cast<wmgl_surface*>(surface);
 }
 
 WMGL_EXPORT void wmgl_surface_destroy(wmgl_surface* surface) {
+    CallPool pool;  // see CallPool (context.h)
     if (surface) asSurface(surface)->release();
 }
 
 WMGL_EXPORT void wmgl_surface_flush(wmgl_surface* handle, unsigned int flags, int width, int height, int interval) {
+    CallPool pool;  // see CallPool (context.h)
     Surface* surface = asSurface(handle);
     if (!surface) return;
     if (flags & WMGL_FLUSH_UPDATED) {
@@ -118,6 +123,7 @@ WMGL_EXPORT void wmgl_surface_flush(wmgl_surface* handle, unsigned int flags, in
 }
 
 WMGL_EXPORT int wmgl_surface_swap(wmgl_surface* handle) {
+    CallPool pool;  // see CallPool (context.h)
     Surface* surface = asSurface(handle);
     if (!surface) return 0;
     Context* ctx = currentContext();
@@ -133,6 +139,7 @@ WMGL_EXPORT int wmgl_surface_swap(wmgl_surface* handle) {
 }
 
 WMGL_EXPORT wmgl_context* wmgl_context_create(int format, wmgl_context* share, const int* attribs, int* error) {
+    CallPool pool;  // see CallPool (context.h)
     if (error) *error = WMGL_ERROR_NONE;
     ContextConfig config;
     int requestedMajor = 1, requestedMinor = 0, flags = 0, profile = kCoreBit;
@@ -195,6 +202,7 @@ WMGL_EXPORT wmgl_context* wmgl_context_create(int format, wmgl_context* share, c
 }
 
 WMGL_EXPORT void wmgl_context_destroy(wmgl_context* handle) {
+    CallPool pool;  // see CallPool (context.h)
     Context* ctx = asContext(handle);
     if (!ctx) return;
     if (currentContext() == ctx) setCurrentContext(nullptr);
@@ -202,6 +210,7 @@ WMGL_EXPORT void wmgl_context_destroy(wmgl_context* handle) {
 }
 
 WMGL_EXPORT int wmgl_make_current(wmgl_context* handle, wmgl_surface* draw, wmgl_surface* read) {
+    CallPool pool;  // see CallPool (context.h)
     Context* previous = currentContext();
     Context* ctx = asContext(handle);
     // Switching contexts flushes the previous one (WGL requires an implicit glFlush).

@@ -1,5 +1,7 @@
 #include "core/stats.h"
 
+#include "core/metal/device.h"
+
 #include <mach/mach_time.h>
 #include <os/signpost.h>
 
@@ -142,6 +144,9 @@ bool counter(const char* name, uint64_t& value) {
     static const char* const passEnds[8] = {"other", "target", "blit", "compute", "visibility", "commit", "barrier", "clear"};
     const Frame& f = frame();
     const std::string n = name ? name : "";
+    // Not a frame counter: the bytes the Metal device has allocated (all of
+    // the process's buffers, textures and heaps), for leak checks.
+    if (n == "deviceAllocatedBytes") return value = Device::get().mtl().currentAllocatedSize, true;
     for (const auto& [field, member] : fields)
         if (n == field) return value = f.*member, true;
     for (int i = 0; i < 8; ++i)
@@ -201,7 +206,7 @@ void endFrame() {
                  "stage %llu capture %llu query %llu primitive %llu parameters %llu converted %llu index type %llu "
                  "restart %llu elements mapped %llu writing %llu max index %llu) | uniforms %llu KiB | commits %llu (query %llu) | "
                  "pass ends: target %llu blit %llu compute %llu visibility %llu commit %llu barrier %llu clear %llu "
-                 "other %llu | reads async %llu waiting %llu | gpu %.2f ms | draw cpu: samplers %.2f vertex %.2f "
+                 "other %llu | reads async %llu waiting %llu | gpu %.2f ms | metal %.1f MiB | draw cpu: samplers %.2f vertex %.2f "
                  "prepare %.2f pipeline %.2f bind %.2f encode %.2f index %.2f ms\n",
                  static_cast<unsigned long long>(t.index), t.lastPresent ? ms(now - t.lastPresent) : 0.0, ms(f.glNanos),
                  static_cast<unsigned long long>(f.calls), ms(f.presentNanos), ms(f.drawableNanos),
@@ -236,6 +241,7 @@ void endFrame() {
                  static_cast<unsigned long long>(f.passEnds[6]), static_cast<unsigned long long>(f.passEnds[7]),
                  static_cast<unsigned long long>(f.passEnds[0]), static_cast<unsigned long long>(f.readsAsync),
                  static_cast<unsigned long long>(f.readsWaiting), ms(g_gpuNanos.exchange(0, std::memory_order_relaxed)),
+                 static_cast<double>(Device::get().mtl().currentAllocatedSize) / 1048576.0,
                  ms(f.drawSamplersNanos), ms(f.drawVertexNanos), ms(f.drawPrepareNanos), ms(f.drawPipelineNanos),
                  ms(f.drawBindNanos), ms(f.drawEncodeNanos), ms(f.drawIndexNanos));
     if (t.index % 60 == 59) printProfile(60);

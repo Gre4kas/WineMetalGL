@@ -9,6 +9,9 @@
 #include <vector>
 
 #include "core/gl/types.h"
+
+extern "C" void* objc_autoreleasePoolPush(void);
+extern "C" void objc_autoreleasePoolPop(void* token);
 #include "core/metal/command_stream.h"
 #include "core/objects.h"
 #include "core/share_group.h"
@@ -205,6 +208,19 @@ extern bool g_traceCalls;
 void traceCall(const char* command);
 void setCurrentContext(Context* context);
 void noCurrentContext(const char* command);
+// An Objective-C autorelease pool for the scope of a GL call. Metal hands
+// back some objects autoreleased (encoders, command buffers, pass
+// descriptors, and the receivers of `contents`, which ARC retains and
+// autoreleases), and the threads GL calls come from have no pool that ever
+// drains: without one, every render encoder kept its command buffer, and so
+// every texture and buffer storage the frame used, alive (issue #16).
+struct CallPool {
+    CallPool() : token(objc_autoreleasePoolPush()) {}
+    ~CallPool() { objc_autoreleasePoolPop(token); }
+    CallPool(const CallPool&) = delete;
+    CallPool& operator=(const CallPool&) = delete;
+    void* token;
+};
 
 // Scoped share-group lock (every GL command runs under it).
 struct ShareLock {

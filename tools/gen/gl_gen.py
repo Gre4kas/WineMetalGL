@@ -356,6 +356,9 @@ def main():
             dflt = default_return(ret)
             out.write('    if (__builtin_expect(!ctx, 0)) { wmgl::noCurrentContext("%s"); return%s; }\n' % (
                 cmd, (" " + dflt) if dflt else ""))
+            # Objects Metal autoreleases during the call go when it returns
+            # (declared first: drained after the lock is released).
+            out.write("    wmgl::CallPool callPool;\n")
             # CPU time inside GL calls (WINEMETALGL_STATS, core/stats.h).
             out.write('    wmgl::stats::CallTimer statsTimer("%s");\n' % cmd)
             # Every command runs under its share group's lock: contexts on
