@@ -2095,6 +2095,7 @@ GPU_TEST_VERSION(gpu_gl46_indirect_commands_written_by_the_gpu, 46) {
     glMultiDrawElementsIndirect(GL_TRIANGLES, GL_UNSIGNED_SHORT, nullptr, 2, 256);
     CHECK_EQ(counters["indirectGpu"], 2ull);
     CHECK_EQ(counters["indirectCpu"], 0ull);
+    CHECK_EQ(counters["indirectGpuBatches"], 0ull);  // gl_DrawID: one command at a time
     CHECK_EQ(counters["commits"], commits);
     const uint8_t blue[4] = {0, 0, 255, 255}, yellow[4] = {255, 255, 0, 255}, green[4] = {0, 255, 0, 255};
     CHECK(gpu::near(px(10, 10).data(), blue));     // command 0: base instance 2, gl_DrawID 0
@@ -2119,6 +2120,79 @@ GPU_TEST_VERSION(gpu_gl46_indirect_commands_written_by_the_gpu, 46) {
     glDeleteVertexArrays(1, &vao);
     glDeleteProgram(p);
     glDeleteProgram(writer);
+}
+
+// A multi-draw whose commands the GPU reads, with a program that reads no
+// draw parameter: the draw state is validated and bound once for all the
+// commands (indirectGpuBatches), which still draw with their own count,
+// first index, base vertex and base instance (an instanced colour), and
+// draw nothing when empty. Additive blending shows each drew once.
+GPU_TEST_VERSION(gpu_gl46_multi_draw_indirect_binds_once, 46) {
+    GLuint p = gpu::program("#version 460 core\nlayout(location = 0) in vec2 pos;\nlayout(location = 1) in vec4 color;\n"
+                            "out vec4 c;\nvoid main() { c = color; gl_Position = vec4(pos, 0.0, 1.0); }\n",
+                            "#version 460 core\nin vec4 c;\nout vec4 o;\nvoid main() { o = c; }\n");
+    glUseProgram(p);
+    // Triangle 0-2: the lower-left half; 3-5: the upper-right half.
+    const float v[] = {-1, -1, 1, -1, -1, 1,   1, 1, -1, 1, 1, -1};
+    const float colors[] = {0.5f, 0, 0, 1,   0, 0.5f, 0, 1,   0, 0, 0.5f, 1};  // red, green, blue by instance
+    const GLushort indices[] = {0, 1, 2};
+    GLuint vao = 0, buffers[3] = {};
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(3, buffers);
+    glBindBuffer(GL_ARRAY_BUFFER, buffers[0]);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(v), v, GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
+    glEnableVertexAttribArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, buffers[1]);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(colors), colors, GL_STATIC_DRAW);
+    glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, 0, nullptr);
+    glVertexAttribDivisor(1, 1);
+    glEnableVertexAttribArray(1);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, buffers[2]);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
+    GLuint indirect = 0;
+    glGenBuffers(1, &indirect);
+    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, indirect);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_ONE, GL_ONE);
+    glClearColor(0, 0, 0, 1);
+    auto px = [](int x, int y) { return gpu::readRGBA8(x, y, 1, 1); };
+    const uint8_t red[4] = {128, 0, 0, 255}, green[4] = {0, 128, 0, 255}, blue[4] = {0, 0, 128, 255};
+    {
+        // count, instances, first index, base vertex, base instance; 32 bytes apart.
+        const GLuint elements[4][8] = {{3, 1, 0, 0, 2}, {0, 1, 0, 3, 0}, {3, 0, 0, 3, 0}, {3, 1, 0, 3, 1}};
+        glBufferData(GL_DRAW_INDIRECT_BUFFER, sizeof(elements), elements, GL_STATIC_DRAW);
+        glClear(GL_COLOR_BUFFER_BIT);
+        gpu::Counters counters;
+        glMultiDrawElementsIndirect(GL_TRIANGLES, GL_UNSIGNED_SHORT, nullptr, 4, 32);
+        CHECK_EQ(counters["indirectGpu"], 4ull);
+        CHECK_EQ(counters["indirectCpu"], 0ull);
+        CHECK_EQ(counters["indirectGpuBatches"], 1ull);
+        CHECK_EQ(counters["draws"], 4ull);
+        CHECK_GL();
+        CHECK(gpu::near(px(10, 10).data(), blue));   // command 0: base instance 2
+        CHECK(gpu::near(px(54, 54).data(), green));  // command 3: base vertex 3, base instance 1
+    }
+    {
+        // count, instances, first, base instance; tightly packed.
+        const GLuint arrays[3][4] = {{3, 1, 0, 0}, {0, 1, 3, 1}, {3, 1, 3, 2}};
+        glBufferData(GL_DRAW_INDIRECT_BUFFER, sizeof(arrays), arrays, GL_STATIC_DRAW);
+        glClear(GL_COLOR_BUFFER_BIT);
+        gpu::Counters counters;
+        glMultiDrawArraysIndirect(GL_TRIANGLES, nullptr, 3, 0);
+        CHECK_EQ(counters["indirectGpu"], 3ull);
+        CHECK_EQ(counters["indirectCpu"], 0ull);
+        CHECK_EQ(counters["indirectGpuBatches"], 1ull);
+        CHECK_GL();
+        CHECK(gpu::near(px(10, 10).data(), red));   // command 0: instance 0
+        CHECK(gpu::near(px(54, 54).data(), blue));  // command 2: vertices 3-5, base instance 2
+    }
+    glDisable(GL_BLEND);
+    glDeleteBuffers(1, &indirect);
+    glDeleteBuffers(3, buffers);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
 }
 
 GPU_TEST_VERSION(gpu_gl46_indirect_draws_index_65535_without_restart, 46) {

@@ -1908,13 +1908,18 @@ bool DrawState::issue(GLenum mode, GLint first, GLsizei count, GLsizei instances
     const uint64_t serial = ctx_.stream().serial();
     if (indirect) {
         // The GL command structures are Metal's indirect arguments
-        // (MTLDraw[Indexed]PrimitivesIndirectArguments), field for field.
-        if (indexBuffer)
-            [encoder drawIndexedPrimitives:native indexType:indexType indexBuffer:indexBuffer indexBufferOffset:indexOffset
-                            indirectBuffer:indirect->buffer indirectBufferOffset:indirect->offset];
-        else
-            [encoder drawPrimitives:native indirectBuffer:indirect->buffer indirectBufferOffset:indirect->offset];
-        ctx_.stream().noteDraw();
+        // (MTLDraw[Indexed]PrimitivesIndirectArguments), field for field;
+        // a multi-draw's commands share everything bound above.
+        stats::count(&stats::Frame::draws, indirect->count - 1);
+        for (NSUInteger i = 0; i < indirect->count; ++i) {
+            const NSUInteger at = indirect->offset + i * indirect->stride;
+            if (indexBuffer)
+                [encoder drawIndexedPrimitives:native indexType:indexType indexBuffer:indexBuffer indexBufferOffset:indexOffset
+                                indirectBuffer:indirect->buffer indirectBufferOffset:at];
+            else
+                [encoder drawPrimitives:native indirectBuffer:indirect->buffer indirectBufferOffset:at];
+            ctx_.stream().noteDraw();
+        }
         return true;
     }
     // Metal on some virtual GPUs (DeviceCaps::drawOffsets16) keeps only 16
@@ -2108,25 +2113,33 @@ void DrawState::noteIndirectCpu(stats::IndirectCpu reason, GLenum mode, GLenum t
     stats::indirectCpu(reason, std::to_string(program.uid) + ':' + cause, detail);
 }
 
-bool DrawState::drawIndirect(GLenum mode, GLenum type, Buffer& commands, uintptr_t offset) {
+GLsizei DrawState::drawIndirect(GLenum mode, GLenum type, Buffer& commands, uintptr_t offset, GLsizei count,
+                                uintptr_t stride) {
     ImageShadowScope shadows(*this);
     beginDraw(mode);
-    if (!validateDraw(mode) || !conditionalRenderAllows(ctx_)) return true;  // as the CPU path would
+    if (!validateDraw(mode) || !conditionalRenderAllows(ctx_)) return count;  // as the CPU path would, for each command
     LinkedProgram* current = executable();
-    if (!current || !commands.mtl) return false;
+    if (!current || !commands.mtl) return 0;
     if (const stats::IndirectCpu reason = indirectCpuReason(mode, type, *current); reason != stats::kIndirectCpuReasons) {
         if (stats::g_enabled) noteIndirectCpu(reason, mode, type, *current);
-        return false;
+        return 0;
     }
-    stats::count(&stats::Frame::indirectGpu);
+    // gl_DrawID is a uniform, set for each command.
+    if (count > 1)
+        if (Program* owner = stageProgram(*current, static_cast<int>(Stage::Vertex));
+            owner && owner->linked && owner->linked->link.builtinUniforms.drawId >= 0)
+            count = 1;
+    stats::count(&stats::Frame::indirectGpu, static_cast<uint64_t>(count));
+    if (count > 1) stats::count(&stats::Frame::indirectGpuBatches);
     Buffer* elements = type != GL_NONE ? ctx_.state.vertexArray->elementBuffer.get() : nullptr;
-    const IndirectSource source{commands.mtl, static_cast<NSUInteger>(offset)};
+    const IndirectSource source{commands.mtl, static_cast<NSUInteger>(offset), static_cast<NSUInteger>(count),
+                                static_cast<NSUInteger>(stride)};
     issue(mode, 0, 0, 1, nullptr, elements ? elements->mtl : nil, 0,
           type == GL_UNSIGNED_SHORT ? MTLIndexTypeUInt16 : MTLIndexTypeUInt32, 0, 0, 0, false, &source);
     const uint64_t serial = ctx_.stream().serial();
     commands.lastUseSerial = serial;
     if (elements) elements->lastUseSerial = serial;
-    return true;
+    return count;
 }
 
 namespace {
