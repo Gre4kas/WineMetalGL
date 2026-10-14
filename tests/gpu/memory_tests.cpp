@@ -138,12 +138,10 @@ long long settled(Streamer& s, Measure measure) {
 }
 
 // Runs `frames` streamed frames after a warm-up and returns how much
-// `measure` grew. The warm-up is long: Metal on the GPU of macOS 15 virtual
-// machines (CI) holds on to about 125 MiB of the host memory buffers it has
-// released, filled over the first ~400 frames here and then level.
+// `measure` grew.
 template <typename Measure>
 long long growth(Streamer& s, int frames, Measure measure) {
-    for (int f = 0; f < 500; ++f) s.frame(f);
+    for (int f = 0; f < 100; ++f) s.frame(f);
     const long long before = settled(s, measure);
     for (int f = 0; f < frames; ++f) s.frame(f);
     return settled(s, measure) - before;
@@ -172,12 +170,15 @@ TEST(gpu_memory_streamed_buffers_with_host_memory_are_freed) {
         CHECK(fixture.ok);
         if (fixture.ok) {
             Streamer s;
-            // The virtual GPU's pool of released buffers (growth()) moves by
-            // up to ~20 MiB from one measurement to the next; the leak this
-            // guards against grows ~600 MiB here.
-            const long long grew = growth(s, 300, [] { return g_hostBytes.load(); });
-            if (grew >= 64ll << 20) std::fprintf(stderr, "  host memory grew %.1f MiB over 300 frames\n", static_cast<double>(grew) / 1048576.0);
-            CHECK(grew < 64ll << 20);
+            // Metal on the GPU of macOS 15 virtual machines (CI) holds on to
+            // released buffers in host memory, up to a bound: measured, it
+            // filled to about 125 MiB at some point of the run and stayed
+            // there through 1000 frames. Over 1000 frames, that pool fits
+            // under 256 MiB whenever it fills; the leak this guards against
+            // grows ~2 GiB.
+            const long long grew = growth(s, 1000, [] { return g_hostBytes.load(); });
+            if (grew >= 256ll << 20) std::fprintf(stderr, "  host memory grew %.1f MiB over 1000 frames\n", static_cast<double>(grew) / 1048576.0);
+            CHECK(grew < 256ll << 20);
             CHECK_GL();
         }
     }
