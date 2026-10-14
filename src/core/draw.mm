@@ -429,6 +429,7 @@ bool DrawState::validateDraw(GLenum mode) {
             return false;
         }
     }
+    if (LinkedProgram* lp = executable()) uncompressFeedbackTextures(*lp);
     RenderTargetDesc target;
     TargetFormats formats;
     if (!drawTarget(target, formats)) return false;
@@ -1248,6 +1249,25 @@ void DrawState::markSampled(Texture& texture) {
     texture.lastUseSerial = ctx_.stream().serial();
     // A buffer texture reads its buffer: writes to the buffer must wait for this draw.
     if (texture.target == GL_TEXTURE_BUFFER && texture.buffer) texture.buffer->lastUseSerial = texture.lastUseSerial;
+}
+
+void DrawState::uncompressFeedbackTextures(LinkedProgram& program) {
+    const Framebuffer* fb = ctx_.state.drawFramebuffer.get();
+    if (!fb || program.link.samplers.empty()) return;
+    auto root = [](Texture* t) { return t && t->viewOf ? t->viewOf.get() : t; };
+    for (size_t index = 0; index < program.link.samplers.size(); ++index) {
+        const shader::SamplerSlotInfo& slot = program.link.samplers[index];
+        const auto [owner, ownIndex] = samplerSource(program, index);
+        const GLint unit = owner && ownIndex < owner->samplerUnits.size() ? owner->samplerUnits[ownIndex] : 0;
+        if (unit < 0 || unit >= ContextState::kMaxTextureUnits || slot.textureTarget < 0) continue;
+        Texture* sampled = root(ctx_.state.textureUnits[unit].bound[slot.textureTarget].get());
+        if (!sampled || sampled->formatViews) continue;
+        bool attached = root(fb->depth.texture.get()) == sampled || root(fb->stencil.texture.get()) == sampled;
+        for (const Attachment& a : fb->color) attached = attached || root(a.texture.get()) == sampled;
+        if (!attached) continue;
+        sampled->formatViews = sampled->storageDirty = true;
+        if (sampled->mtl) ensureTextureStorage(ctx_, *sampled);
+    }
 }
 
 void DrawState::samplerBinding(LinkedProgram& program, size_t index, __strong id<MTLTexture>& view,
