@@ -3,9 +3,11 @@
 // #16) must not grow the Metal device's allocations, nor the host memory a
 // 32-bit application's buffers live in.
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <thread>
 #include <vector>
 
 #include "gpu.h"
@@ -39,7 +41,7 @@ void hostRelease(void* p, size_t bytes) {
 // specified again, two new textures (DXT1 and RGBA8) sampled and deleted, a
 // vertex array made and deleted, and an occlusion query.
 struct Streamer {
-    GLuint program = 0, vbo = 0, stream = 0, query = 0, ubos[4] = {};
+    GLuint program = 0, vbo = 0, stream = 0, query = 0, scratch = 0, ubos[4] = {};
     std::vector<uint8_t> dxt1 = std::vector<uint8_t>(256 * 256 / 2, 0x55), rgba = std::vector<uint8_t>(256 * 256 * 4, 0x80),
                          data = std::vector<uint8_t>(64 * 1024, 0x22);
 
@@ -63,11 +65,13 @@ struct Streamer {
             glBufferData(GL_UNIFORM_BUFFER, 64 * 1024, nullptr, GL_STREAM_DRAW);
         }
         glGenBuffers(1, &stream);
+        glGenBuffers(1, &scratch);
         glGenQueries(1, &query);
     }
     ~Streamer() {
         glDeleteQueries(1, &query);
         glDeleteBuffers(1, &stream);
+        glDeleteBuffers(1, &scratch);
         glDeleteBuffers(4, ubos);
         glDeleteBuffers(1, &vbo);
         glDeleteProgram(program);
@@ -115,16 +119,32 @@ struct Streamer {
     }
 };
 
+// `measure` once the GPU is done and Metal has let go of what it used. Metal
+// drops storage on its own completion thread, possibly after glFinish
+// returns, and host memory goes back to the host at the next allocation:
+// allocate (a small buffer), wait a little, until the value stays put.
+template <typename Measure>
+long long settled(Streamer& s, Measure measure) {
+    long long value = 0, previous = -1;
+    for (int i = 0; i < 200 && value != previous; ++i) {
+        previous = value;
+        glFinish();
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        glBindBuffer(GL_COPY_WRITE_BUFFER, s.scratch);
+        glBufferData(GL_COPY_WRITE_BUFFER, 16, nullptr, GL_STREAM_DRAW);
+        value = measure();
+    }
+    return value;
+}
+
 // Runs `frames` streamed frames after a warm-up and returns how much
 // `measure` grew.
 template <typename Measure>
 long long growth(Streamer& s, int frames, Measure measure) {
     for (int f = 0; f < 100; ++f) s.frame(f);
-    glFinish();
-    const long long before = measure();
+    const long long before = settled(s, measure);
     for (int f = 0; f < frames; ++f) s.frame(f);
-    glFinish();
-    return measure() - before;
+    return settled(s, measure) - before;
 }
 
 }  // namespace
