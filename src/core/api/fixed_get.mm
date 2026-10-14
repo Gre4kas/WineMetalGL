@@ -171,11 +171,12 @@ int getFixedState(Context& ctx, GLenum pname, double* values, char& kind) {
     case GL_TRANSPOSE_MODELVIEW_MATRIX: return o.matrix(f.modelview.back(), true);
     case GL_TRANSPOSE_PROJECTION_MATRIX: return o.matrix(f.projection.back(), true);
     case GL_TRANSPOSE_TEXTURE_MATRIX: return o.matrix(f.texture[unit].back(), true);
-    case GL_COLOR_MATRIX: case GL_TRANSPOSE_COLOR_MATRIX: return o.matrix(Mat4(), false);
+    case GL_COLOR_MATRIX: return o.matrix(f.color.back(), false);
+    case GL_TRANSPOSE_COLOR_MATRIX: return o.matrix(f.color.back(), true);
     case GL_MODELVIEW_STACK_DEPTH: return o.ints({static_cast<double>(f.modelview.size())});
     case GL_PROJECTION_STACK_DEPTH: return o.ints({static_cast<double>(f.projection.size())});
     case GL_TEXTURE_STACK_DEPTH: return o.ints({static_cast<double>(f.texture[unit].size())});
-    case GL_COLOR_MATRIX_STACK_DEPTH: return o.ints({1});
+    case GL_COLOR_MATRIX_STACK_DEPTH: return o.ints({static_cast<double>(f.color.size())});
     // --- lighting
     case GL_SHADE_MODEL: return o.ints({static_cast<double>(f.shadeModel)});
     case GL_COLOR_MATERIAL_FACE: return o.ints({static_cast<double>(f.colorMaterialFace)});
@@ -220,7 +221,7 @@ int getFixedState(Context& ctx, GLenum pname, double* values, char& kind) {
     case GL_MAX_MODELVIEW_STACK_DEPTH: return o.ints({FixedState::kModelViewDepth});
     case GL_MAX_PROJECTION_STACK_DEPTH: return o.ints({FixedState::kProjectionDepth});
     case GL_MAX_TEXTURE_STACK_DEPTH: return o.ints({FixedState::kTextureDepth});
-    case GL_MAX_COLOR_MATRIX_STACK_DEPTH: return o.ints({1});
+    case GL_MAX_COLOR_MATRIX_STACK_DEPTH: return o.ints({FixedState::kColorDepth});
     case GL_MAX_LIGHTS: return o.ints({FixedState::kLights});
     case GL_MAX_CLIP_PLANES: return o.ints({FixedState::kClipPlanes});
     case GL_MAX_TEXTURE_UNITS: case GL_MAX_TEXTURE_COORDS: return o.ints({FixedState::kTextureUnits});
