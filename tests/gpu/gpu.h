@@ -105,6 +105,23 @@ std::vector<uint8_t> readRGBA8(int x, int y, int width, int height);
 // True if every channel of `got` is within `tolerance` of `want`.
 bool near(const uint8_t* got, const uint8_t want[4], int tolerance = 1);
 
+// The core's WINEMETALGL_STATS counters on this thread (wmgl_stats_counter),
+// counted from zero while a Counters lives: what a draw did (indirect
+// commands read by the GPU or the CPU, commits, waits, render pass ends...).
+struct Counters {
+    Counters() {
+        wmgl_stats_enable(1);
+        wmgl_stats_reset();
+    }
+    ~Counters() { wmgl_stats_enable(0); }
+    unsigned long long operator[](const char* name) const {
+        unsigned long long value = 0;
+        const int known = wmgl_stats_counter(name, &value);
+        CHECK(known);
+        return value;
+    }
+};
+
 }  // namespace gpu
 
 #define CHECK_GL() CHECK_EQ(glGetError(), static_cast<GLenum>(GL_NO_ERROR))

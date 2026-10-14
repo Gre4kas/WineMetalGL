@@ -4,6 +4,7 @@
 #include <cctype>
 #include <cstdlib>
 #include <map>
+#include <regex>
 #include <set>
 #include <sstream>
 
@@ -686,6 +687,53 @@ std::string tessEvaluationVertexShader(const TessStageInfo& info, const TessCont
     }
     v += "    wmgl_tess_main();\n}\n";
     return v;
+}
+
+std::string postTessellationVertexMsl(const std::string& msl, const std::string& entryPoint, bool quads) {
+    // The entry point's parameters: the vertex number (which indexed the
+    // domain points) becomes the patch number and the position in the patch.
+    const std::regex entry("\\nvertex [A-Za-z0-9_]+ " + entryPoint + "\\(");
+    std::smatch m;
+    if (!std::regex_search(msl, m, entry)) return "";
+    const size_t start = static_cast<size_t>(m.position(0)) + 1, open = start + m.length(0) - 2;
+    size_t close = open + 1;
+    for (int depth = 1; close < msl.size(); ++close) {
+        depth += msl[close] == '(' ? 1 : msl[close] == ')' ? -1 : 0;
+        if (!depth) break;
+    }
+    const size_t body = msl.find('{', close);
+    if (close >= msl.size() || body == std::string::npos) return "";
+    std::string parameters = msl.substr(open, close - open);
+    const std::string vertexId = "uint gl_VertexIndex [[vertex_id]]";
+    const size_t at = parameters.find(vertexId);
+    if (at == std::string::npos || parameters.find("[[stage_in]]") != std::string::npos ||
+        parameters.find("[[base_vertex]]") != std::string::npos)
+        return "";
+    parameters.replace(at, vertexId.size(),
+                       std::string("uint wmgl_patch_id [[patch_id]], ") + (quads ? "float2" : "float3") +
+                           " wmgl_position_in_patch [[position_in_patch]]");
+    // Only main() may read the domain points: a helper that does (transform
+    // feedback capture wraps main) has no [[patch_id]] to read instead.
+    if (msl.find(".wmgl_tes_v[") < body) return "";
+    std::string code = msl.substr(body + 1);
+    // Reads of the domain point (patch, u, v, w) by the generated main().
+    static const std::regex patch("_[A-Za-z0-9_]+\\.wmgl_tes_v\\[wmgl_r\\]");
+    static const std::regex coord("as_type<float>\\(_[A-Za-z0-9_]+\\.wmgl_tes_v\\[wmgl_r \\+ ([123])u\\]\\)");
+    code = std::regex_replace(code, patch, "wmgl_patch_id");
+    std::string out;
+    auto last = code.cbegin();
+    for (std::sregex_iterator it(code.begin(), code.end(), coord), end; it != end; ++it) {
+        out.append(last, (*it)[0].first);
+        const char component = (*it)[1].str()[0];
+        out += component == '1' ? "wmgl_position_in_patch.x" : component == '2' ? "wmgl_position_in_patch.y"
+               : quads              ? "0.0"
+                                    : "wmgl_position_in_patch.z";
+        last = (*it)[0].second;
+    }
+    out.append(last, code.cend());
+    if (out.find("wmgl_tes_v[") != std::string::npos || out.find("[[vertex_id]]") != std::string::npos) return "";
+    return msl.substr(0, start) + (quads ? "[[patch(quad)]] " : "[[patch(triangle)]] ") + msl.substr(start, open - start) +
+           parameters + msl.substr(close, body + 1 - close) + "\n    uint gl_VertexIndex = 0u;" + out;
 }
 
 }  // namespace wmgl::shader

@@ -1,4 +1,5 @@
 // Clears, draws and read-back on the default framebuffer.
+#include <cstdlib>
 #include <cstring>
 
 #include "gpu.h"
@@ -22,6 +23,101 @@ GPU_TEST(gpu_version_string) {
     const char* version = reinterpret_cast<const char*>(glGetString(GL_VERSION));
     CHECK(version && std::strncmp(version, "4.6", 3) == 0);
     CHECK_GL();
+}
+
+GPU_TEST(gpu_draws_across_commits) {
+    // More draws than DrawState::commitLargeWork records in one command
+    // buffer: the work is committed while draws are recorded, and every
+    // draw keeps its own uniforms.
+    GLuint p = gpu::program(R"(#version 330 core
+uniform vec4 at;
+void main() { gl_Position = vec4(at.xy, 0.0, 1.0); })",
+                            kColorFs);
+    glUseProgram(p);
+    const GLint at = glGetUniformLocation(p, "at"), color = glGetUniformLocation(p, "color");
+    glClearColor(0, 0, 0, 0);
+    glClear(GL_COLOR_BUFFER_BIT);
+    GLuint vao = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    for (int y = 0; y < 32; ++y)
+        for (int x = 0; x < 32; ++x) {
+            // Pixel (2x, 2y) of the 64x64 target, coloured by its position.
+            glUniform4f(at, (2.0f * x + 0.5f) / 32.0f - 1.0f, (2.0f * y + 0.5f) / 32.0f - 1.0f, 0.0f, 0.0f);
+            glUniform4f(color, static_cast<float>(x * 8) / 255.0f, static_cast<float>(y * 8) / 255.0f, 1.0f, 1.0f);
+            glDrawArrays(GL_POINTS, 0, 1);
+        }
+    CHECK_GL();
+    const auto pixels = gpu::readRGBA8(0, 0, 64, 64);
+    int wrong = 0;
+    for (int y = 0; y < 32; ++y)
+        for (int x = 0; x < 32; ++x) {
+            const uint8_t want[4] = {static_cast<uint8_t>(x * 8), static_cast<uint8_t>(y * 8), 255, 255};
+            wrong += !gpu::near(&pixels[(static_cast<size_t>(2 * y) * 64 + 2 * x) * 4], want);
+        }
+    CHECK_EQ(wrong, 0);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
+}
+
+GPU_TEST(gpu_commits_wait_for_pass_boundaries) {
+    // DrawState::commitLargeWork commits at 256 recorded draws where a draw
+    // starts a new render pass, and within one pass only past 8 times as
+    // many: a commit ends the pass, whose attachments a tile-based GPU then
+    // stores and loads again. (Counts assume the default threshold.)
+    if (std::getenv("WINEMETALGL_COMMIT_DRAWS")) return;
+    GLuint p = gpu::program(R"(#version 330 core
+void main() { gl_Position = vec4(0.0, 0.0, 0.0, 1.0); })",
+                            kColorFs);
+    glUseProgram(p);
+    glUniform4f(glGetUniformLocation(p, "color"), 1.0f, 1.0f, 1.0f, 1.0f);
+    GLuint vao = 0, textures[2] = {}, framebuffers[2] = {};
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenTextures(2, textures);
+    glGenFramebuffers(2, framebuffers);
+    for (int i = 0; i < 2; ++i) {
+        glBindTexture(GL_TEXTURE_2D, textures[i]);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 8, 8, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glBindFramebuffer(GL_FRAMEBUFFER, framebuffers[i]);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, textures[i], 0);
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glFinish();
+    {
+        // One pass of 1024 draws: no commit splits it.
+        gpu::Counters counters;
+        for (int i = 0; i < 1024; ++i) glDrawArrays(GL_POINTS, 0, 1);
+        CHECK_EQ(counters["passes"], 1ull);
+        CHECK_EQ(counters["commits"], 0ull);
+    }
+    glFinish();
+    {
+        // One pass past 8 x 256 draws: one commit, which splits it once.
+        gpu::Counters counters;
+        for (int i = 0; i < 2100; ++i) glDrawArrays(GL_POINTS, 0, 1);
+        CHECK_EQ(counters["commits"], 1ull);
+        CHECK_EQ(counters["passes"], 2ull);
+    }
+    glFinish();
+    {
+        // Ten passes of 64 draws, alternating between two framebuffers: the
+        // work is committed where a pass starts anyway (draws 320 and 576),
+        // so there are still ten passes.
+        gpu::Counters counters;
+        for (int pass = 0; pass < 10; ++pass) {
+            glBindFramebuffer(GL_FRAMEBUFFER, framebuffers[pass & 1]);
+            for (int i = 0; i < 64; ++i) glDrawArrays(GL_POINTS, 0, 1);
+        }
+        CHECK_EQ(counters["passes"], 10ull);
+        CHECK_EQ(counters["commits"], 2ull);
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    CHECK_GL();
+    glDeleteFramebuffers(2, framebuffers);
+    glDeleteTextures(2, textures);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
 }
 
 GPU_TEST(gpu_clear_readback) {

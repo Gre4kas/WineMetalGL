@@ -828,7 +828,7 @@ void ReadPixels(Context& ctx, GLint x, GLint y, GLsizei width, GLsizei height, G
     }
     // The paths below wait for the GPU.
     stats::count(&stats::Frame::readsWaiting);
-    if (stats::g_enabled) {
+    if (stats::g_reporting) {
         // Once per format, type and destination: what keeps a read from the asynchronous path.
         static std::mutex mutex;
         static std::set<uint64_t> seen;

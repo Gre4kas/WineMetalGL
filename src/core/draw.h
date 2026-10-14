@@ -15,6 +15,7 @@
 #include "core/metal/pipeline_cache.h"
 #include "core/metal/transient.h"
 #include "core/shader/compiler.h"
+#include "core/stats.h"
 #include "core/texture_storage.h"
 #include "core/tess/tessellator.h"
 
@@ -75,14 +76,41 @@ public:
     // DrawArraysIndirectCommand, or with `type` (GL_UNSIGNED_SHORT or
     // GL_UNSIGNED_INT) a DrawElementsIndirectCommand of the element buffer.
     // False, having drawn nothing, when the draw needs the command on the
-    // CPU (gpuIndirectDrawable); the caller then reads it and draws.
+    // CPU (indirectCpuReason); the caller then reads it and draws.
     bool drawIndirect(GLenum mode, GLenum type, Buffer& commands, uintptr_t offset);
+
+    // Multi-draw indirect commands of patches read on the CPU: whether the
+    // current state lets several be drawn as one batch (drawPatchCommands),
+    // which nothing tells apart from separate draws: a tessellation program
+    // without a geometry shader, no transform feedback or counting query,
+    // and a vertex stage that reads none of gl_DrawID, gl_BaseVertex and
+    // gl_BaseInstance. Valid until the state changes.
+    bool canBatchPatchCommands();
+    // Draws the DrawElementsIndirectCommands `commands` (count, instances,
+    // first index, base vertex, base instance) of `type` indices as one
+    // batch of patches, in order, after an earlier command of the same
+    // multi-draw reported the state's errors. Each draws one instance with
+    // the same base instance and the same number of whole patches, so
+    // gl_PrimitiveID starts again at 0 for each (canBatchPatchCommands).
+    void drawPatchCommands(GLenum type, const uint32_t (*commands)[5], size_t count);
 
     // glDispatchCompute / glDispatchComputeIndirect (validated by the caller);
     // `indirect` is the DISPATCH_INDIRECT_BUFFER, or null.
     void dispatch(GLuint x, GLuint y, GLuint z, Buffer* indirect, GLintptr offset);
 
     TransientAllocator& transient() { return transient_; }
+
+    // Commits the work recorded so far once it holds WINEMETALGL_COMMIT_DRAWS
+    // draws, so the GPU runs it while the CPU records the rest. Otherwise the
+    // GPU starts on a frame's work only at the next wait or SwapBuffers, and
+    // a wait for GPU results (indirect commands read on the CPU) waits for
+    // all of it. A commit ends the open render pass, which on a tile-based
+    // GPU stores its attachments and loads them again, so a draw that
+    // continues the pass (`target`, null for dispatches) commits only past
+    // 8 times as many draws; one that starts a pass, or a dispatch, ends it
+    // anyway. Called where no transient memory is held for work still to be
+    // recorded: when draws are validated and dispatches start.
+    void commitLargeWork(const RenderTargetDesc* target);
 
     // GL_ARB_base_instance: the base instance of the draw being issued.
     struct BaseInstanceScope {
@@ -108,15 +136,18 @@ private:
     // Encodes one draw. indexData (CPU, uint32) or indexBuffer select indexed drawing.
     // minVertex/vertexSpan is the vertex range attribute conversion must cover.
     // With `indirect`, the GPU reads the command (count, instances, first and
-    // base vertex) from it instead (gpuIndirectDrawable draws only).
+    // base vertex) from it instead (draws indirectCpuReason allows).
     bool issue(GLenum mode, GLint first, GLsizei count, GLsizei instances, const uint32_t* indexData,
                id<MTLBuffer> indexBuffer, NSUInteger indexOffset, MTLIndexType indexType, GLint baseVertex,
                GLint minVertex, GLsizei vertexSpan, bool listed = false, const IndirectSource* indirect = nullptr);
-    // Whether a draw of `mode` (`type`: of indices, or GL_NONE) with the
-    // current state can take its command from the GPU: nothing needs the
+    // Why a draw of `mode` (`type`: of indices, or GL_NONE) with the current
+    // state cannot take its command from the GPU: something needs the
     // command's values on the CPU (vertex ranges to convert, indices to
     // rewrite, emulated stages, counting queries, gl_BaseVertex/BaseInstance).
-    bool gpuIndirectDrawable(GLenum mode, GLenum type, LinkedProgram& program);
+    // stats::kIndirectCpuReasons when it can.
+    stats::IndirectCpu indirectCpuReason(GLenum mode, GLenum type, LinkedProgram& program);
+    // WINEMETALGL_STATS: counts and describes `reason` for the draw.
+    void noteIndirectCpu(stats::IndirectCpu reason, GLenum mode, GLenum type, LinkedProgram& program);
     // No 16-bit (`type` GL_UNSIGNED_SHORT) or 32-bit index in the buffer is
     // the type's largest value: Metal always restarts strips there (lists
     // never), GL only with restart enabled (lists too). Scanned once per
@@ -160,7 +191,21 @@ private:
     // Draws `vertices` (vertex numbers in draw order, one restart-free
     // segment) as GL_PATCHES through the tessellation emulation
     // (shader/tessellation.h).
-    void drawPatches(const std::vector<uint32_t>& vertices, GLsizei instances);
+    // `primitiveCycle`: patches after which gl_PrimitiveID starts again at 0
+    // (0: the patches of one instance), for draws that batch several commands.
+    void drawPatches(const std::vector<uint32_t>& vertices, GLsizei instances, uint32_t primitiveCycle = 0);
+    // Whether a draw of `program`'s patches can use Metal's tessellator
+    // instead of reading the levels back for the CPU's: triangles or quads
+    // (not point mode), rasterized, and nothing that needs the tessellated
+    // primitives on the CPU (a geometry shader, transform feedback, queries).
+    bool metalTessellation(LinkedProgram& program, LinkedProgram& evaluation);
+    // Draws `patches` patches (patch records at `records`) with Metal's
+    // tessellator, the levels' factors at `factors` (wmgl_tess_factors).
+    // False, having drawn nothing, when its pipeline cannot be built: the
+    // caller tessellates on the CPU, as later draws of the program do.
+    bool drawMetalPatches(LinkedProgram& program, LinkedProgram& evaluation, id<MTLBuffer> records, NSUInteger recordsOffset,
+                          id<MTLBuffer> factors, NSUInteger factorsOffset, uint64_t patches, uint32_t patchesPerInstance,
+                          uint32_t patchVertices);
     // Uniforms, uniform blocks and samplers of a compute function (the
     // `stage` slots: Stage::Compute for a compute program or the geometry
     // kernel, Stage::TessControl for the tessellation control kernel).

@@ -45,6 +45,10 @@ struct PipelineKey {
     uint8_t geometryPass;   // vertex function: the geometry emulation's pass-through
     uint8_t cull;           // cull distances the vertex function writes (LinkedProgram::fragmentVariant)
     uint8_t countFragments;  // fragment function counts its invocations (FRAGMENT_SHADER_INVOCATIONS)
+    // Metal tessellation (the vertex function is the post-tessellation
+    // variant): 0 = none, else bit 0 set, bit 1 quads, bits 2-3 the
+    // MTLTessellationPartitionMode, bit 4 MTLWindingClockwise.
+    uint8_t tessellation;
     uint16_t borders[2];    // clamp-to-border emulation variants: vertex, fragment (shader::borderVariantId)
     uint16_t colorFormats[8];  // MTLPixelFormat
     uint16_t depthFormat, stencilFormat;

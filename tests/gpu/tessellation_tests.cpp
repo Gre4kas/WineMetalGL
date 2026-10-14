@@ -2,7 +2,10 @@
 // in GL 4.x contexts (gpu::Fixture).
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
+#include <cstring>
 #include <set>
+#include <string>
 #include <utility>
 
 #include "gpu.h"
@@ -334,6 +337,279 @@ in vec4 color; out vec4 o; void main() { o = color; })";
         for (int x : {1, 32, 62}) CHECK(gpu::near(&pixels[(static_cast<size_t>(y) * 64 + x) * 4], green));
     glDeleteVertexArrays(1, &vao);
     glDeleteProgram(p);
+}
+
+TESS_TEST(gpu_tess_metal_tessellator_matches_cpu) {
+    // Rasterized triangle and quad patches use Metal's tessellator; with a
+    // PRIMITIVES_GENERATED query active they take the CPU tessellator (the
+    // stats counters say which ran). Both draw the same pixels for each
+    // domain, spacing and vertex order, with either face culled. Two patches
+    // and two instances check patch numbering; the levels (and the per-patch
+    // output) come from the control shader, or without one from
+    // glPatchParameterfv. Levels that discard the patch (a relevant outer
+    // level of 0, below 0 or NaN) draw nothing on either; levels above 64
+    // clamp, and an inner level of 0 is 1. The program naming transform
+    // feedback varyings carries capture code (inactive here): it keeps the
+    // CPU tessellator and still draws.
+    const char* vs = R"(#version 400 core
+in vec2 position;
+out vec2 pos;
+void main() { pos = position * 0.5 + vec2(gl_InstanceID == 0 ? -0.5 : 0.5, 0.0); gl_Position = vec4(pos, 0.0, 1.0); })";
+    const char* fs = R"(#version 400 core
+in vec4 color; out vec4 o; void main() { o = color; })";
+    const float nan = std::nanf("");
+    struct Case {
+        const char* layout;
+        int vertices;
+        float outer[4], inner[2];
+        bool varyings = false, control = true, discarded = false;
+    };
+    const Case cases[] = {
+        {"triangles, fractional_odd_spacing, ccw", 3, {3.5f, 2.25f, 5.0f, 0.0f}, {4.75f, 0.0f}},
+        {"triangles, equal_spacing, cw", 3, {2.3f, 4.0f, 1.0f, 0.0f}, {3.2f, 0.0f}},
+        {"quads, fractional_even_spacing, cw", 4, {2.5f, 4.0f, 3.25f, 6.0f}, {5.5f, 2.75f}},
+        {"quads, equal_spacing, ccw", 4, {2.3f, 3.0f, 1.0f, 4.6f}, {3.3f, 2.2f}},
+        {"quads, fractional_odd_spacing, ccw", 4, {3.0f, 2.5f, 4.0f, 1.5f}, {2.25f, 3.5f}, true},
+        // Without a control shader: the default levels.
+        {"triangles, fractional_even_spacing, ccw", 3, {3.0f, 5.5f, 2.0f, 1.0f}, {4.5f, 1.0f}, false, false},
+        {"quads, equal_spacing, cw", 4, {2.0f, 3.0f, 4.0f, 5.0f}, {3.0f, 2.0f}, false, false},
+        // Inner level 0, levels above GL_MAX_TESS_GEN_LEVEL, and an unused
+        // fourth outer level of a triangle that would otherwise discard it.
+        {"triangles, equal_spacing, ccw", 3, {2.0f, 3.0f, 4.0f, -1.0f}, {0.0f, 0.0f}},
+        {"quads, fractional_odd_spacing, cw", 4, {80.0f, 2.0f, 70.0f, 3.0f}, {100.0f, 0.0f}},
+        // Discarded patches.
+        {"triangles, equal_spacing, ccw", 3, {2.0f, 0.0f, 3.0f, 1.0f}, {2.0f, 0.0f}, false, true, true},
+        {"quads, fractional_even_spacing, ccw", 4, {2.0f, 3.0f, 4.0f, -1.0f}, {2.0f, 2.0f}, false, true, true},
+        {"triangles, fractional_odd_spacing, cw", 3, {nan, 2.0f, 3.0f, 1.0f}, {2.0f, 0.0f}, false, true, true},
+        {"quads, equal_spacing, ccw", 4, {2.0f, 3.0f, 4.0f, nan}, {2.0f, 2.0f}, false, false, true},
+    };
+    for (const Case& c : cases) {
+        const std::string n = std::to_string(c.vertices);
+        const std::string tcs = R"(#version 400 core
+layout(vertices = )" + n + R"() out;
+uniform float outer[4];
+uniform float inner[2];
+in vec2 pos[];
+out vec2 cp[];
+patch out float shade;
+void main() {
+    cp[gl_InvocationID] = pos[gl_InvocationID];
+    shade = 0.25 + 0.5 * float(gl_PrimitiveID);
+    for (int i = 0; i < 4; ++i) gl_TessLevelOuter[i] = outer[i];
+    gl_TessLevelInner[0] = inner[0]; gl_TessLevelInner[1] = inner[1];
+})";
+        const bool quads = c.vertices == 4;
+        const std::string in = c.control ? "cp" : "pos";
+        const std::string tes = std::string("#version 400 core\nlayout(") + c.layout + ") in;\nin vec2 " + in + "[];\n" +
+                                (c.control ? "patch in float shade;\n" : "const float shade = 0.5;\n") +
+                                "out vec4 color;\nvoid main() {\n" +
+                                (quads ? "    vec2 p = mix(mix(" + in + "[0], " + in + "[1], gl_TessCoord.x), mix(" + in + "[2], " + in +
+                                             "[3], gl_TessCoord.x), gl_TessCoord.y);\n"
+                                       : "    vec2 p = " + in + "[0] * gl_TessCoord.x + " + in + "[1] * gl_TessCoord.y + " + in +
+                                             "[2] * gl_TessCoord.z;\n") +
+                                R"(    gl_Position = vec4(p, 0.0, 1.0);
+    color = vec4(gl_TessCoord.xy, shade, 1.0);
+})";
+        const char* control = c.control ? tcs.c_str() : nullptr;
+        GLuint p = c.varyings ? link({vs, control, tes.c_str(), nullptr, fs}, {"color"})
+                              : link({vs, control, tes.c_str(), nullptr, fs});
+        glUseProgram(p);
+        if (c.control) {
+            for (int i = 0; i < 4; ++i)
+                glUniform1f(glGetUniformLocation(p, ("outer[" + std::to_string(i) + "]").c_str()), c.outer[i]);
+            for (int i = 0; i < 2; ++i)
+                glUniform1f(glGetUniformLocation(p, ("inner[" + std::to_string(i) + "]").c_str()), c.inner[i]);
+        } else {
+            patchParameterfv()(GL_PATCH_DEFAULT_OUTER_LEVEL, c.outer);
+            patchParameterfv()(GL_PATCH_DEFAULT_INNER_LEVEL, c.inner);
+        }
+        // Two patches side by side in [-1, 1] (each instance halves and shifts them).
+        const float tri[] = {-0.9f, -0.9f, 0.0f, -0.9f, -0.45f, 0.9f, 0.1f, -0.9f, 0.9f, 0.9f, 0.1f, 0.9f};
+        const float quad[] = {-0.9f, -0.9f, -0.1f, -0.9f, -0.9f, 0.9f, -0.1f, 0.9f,
+                              0.1f, -0.9f, 0.9f, -0.9f, 0.1f, 0.9f, 0.9f, 0.9f};
+        GLuint vao = 0, vbo = 0, query = 0;
+        glGenVertexArrays(1, &vao);
+        glBindVertexArray(vao);
+        glGenBuffers(1, &vbo);
+        glBindBuffer(GL_ARRAY_BUFFER, vbo);
+        if (quads) glBufferData(GL_ARRAY_BUFFER, sizeof(quad), quad, GL_STATIC_DRAW);
+        else glBufferData(GL_ARRAY_BUFFER, sizeof(tri), tri, GL_STATIC_DRAW);
+        const GLint position = glGetAttribLocation(p, "position");
+        glVertexAttribPointer(static_cast<GLuint>(position), 2, GL_FLOAT, GL_FALSE, 0, nullptr);
+        glEnableVertexAttribArray(static_cast<GLuint>(position));
+        glGenQueries(1, &query);
+        patchParameteri()(GL_PATCH_VERTICES, c.vertices);
+        glEnable(GL_CULL_FACE);
+        const auto cullFace = reinterpret_cast<void (*)(GLenum)>(wmgl_get_proc_address("glCullFace"));
+        int drawnEither = 0;
+        for (GLenum face : {GL_BACK, GL_FRONT}) {
+            cullFace(face);
+            std::vector<uint8_t> images[2];
+            for (int cpu = 0; cpu < 2; ++cpu) {
+                glClearColor(0, 0, 0, 0);
+                glClear(GL_COLOR_BUFFER_BIT);
+                gpu::Counters counters;
+                if (cpu) glBeginQuery(GL_PRIMITIVES_GENERATED, query);
+                glDrawArraysInstanced(GL_PATCHES, 0, 2 * c.vertices, 2);
+                if (cpu) glEndQuery(GL_PRIMITIVES_GENERATED);
+                // A program naming transform feedback varyings keeps the CPU
+                // tessellator (its capture code wraps the evaluation stage),
+                // as does every program with WINEMETALGL_METAL_TESSELLATION=0.
+                const char* setting = std::getenv("WINEMETALGL_METAL_TESSELLATION");
+                const bool onMetal = !cpu && !c.varyings && !(setting && setting[0] == '0');
+                const unsigned long long metal = counters["tessMetal"], onCpu = counters["tessCpu"];
+                if (metal != (onMetal ? 1u : 0u) || onCpu != (onMetal ? 0u : 1u))
+                    std::fprintf(stderr, "  %s%s: tessellated by %s\n", c.layout, c.control ? "" : " (default levels)",
+                                 metal ? "Metal" : "the CPU");
+                CHECK_EQ(metal, onMetal ? 1ull : 0ull);
+                CHECK_EQ(onCpu, onMetal ? 0ull : 1ull);
+                images[cpu] = gpu::readRGBA8(0, 0, 64, 64);
+            }
+            CHECK_GL();
+            int drawn = 0, different = 0;
+            for (size_t i = 0; i < images[0].size(); i += 4) {
+                drawn += images[1][i + 3] != 0;
+                different += !gpu::near(&images[0][i], &images[1][i], 3);
+            }
+            if (different) std::fprintf(stderr, "  %s%s, %s culled: %d of 4096 pixels differ\n", c.layout,
+                                        c.control ? "" : " (default levels)", face == GL_BACK ? "back" : "front", different);
+            CHECK_EQ(different, 0);
+            CHECK(drawn == 0 || drawn > 200);
+            drawnEither += drawn;
+        }
+        CHECK(c.discarded ? drawnEither == 0 : drawnEither > 200);
+        cullFace(GL_BACK);
+        glDisable(GL_CULL_FACE);
+        glDeleteQueries(1, &query);
+        glDeleteBuffers(1, &vbo);
+        glDeleteVertexArrays(1, &vao);
+        glDeleteProgram(p);
+    }
+    const float ones[4] = {1, 1, 1, 1};
+    patchParameterfv()(GL_PATCH_DEFAULT_OUTER_LEVEL, ones);
+    patchParameterfv()(GL_PATCH_DEFAULT_INNER_LEVEL, ones);
+}
+
+GPU_TEST_VERSION(gpu_tess_multi_draw_batches_patch_commands, 46) {
+    // A multi-draw of patches read on the CPU draws runs of commands that
+    // each draw one instance of the same number of patches as one batch, and
+    // the image is the one of drawing every command on its own: levels and
+    // colours depend on gl_PrimitiveID, which starts again at 0 in each
+    // command. Empty commands, a two-instance command and a change of size
+    // end a batch. A vertex stage reading gl_DrawID keeps the commands apart.
+    const char* tcs = R"(#version 460 core
+layout(vertices = 4) out;
+in vec2 pos[];
+out vec2 cp[];
+patch out float shade;
+void main() {
+    cp[gl_InvocationID] = pos[gl_InvocationID];
+    shade = 0.2 + 0.3 * float(gl_PrimitiveID);
+    float level = 1.0 + float(gl_PrimitiveID);
+    for (int i = 0; i < 4; ++i) gl_TessLevelOuter[i] = level;
+    gl_TessLevelInner[0] = level; gl_TessLevelInner[1] = level;
+})";
+    const char* tes = R"(#version 460 core
+layout(quads, equal_spacing, ccw) in;
+in vec2 cp[];
+patch in float shade;
+out vec4 color;
+void main() {
+    vec2 p = mix(mix(cp[0], cp[1], gl_TessCoord.x), mix(cp[3], cp[2], gl_TessCoord.x), gl_TessCoord.y);
+    gl_Position = vec4(p, 0.0, 1.0);
+    color = vec4(shade, gl_TessCoord.x, float(gl_PrimitiveID) * 0.5, 1.0);
+})";
+    const char* fs = "#version 460 core\nin vec4 color; out vec4 o; void main() { o = color; }\n";
+    const char* plainVs = R"(#version 460 core
+layout(location = 0) in vec2 position;
+out vec2 pos;
+void main() { pos = position + vec2(0.0, 0.25 * float(gl_InstanceID)); })";
+    const char* drawIdVs = R"(#version 460 core
+layout(location = 0) in vec2 position;
+out vec2 pos;
+void main() { pos = position + vec2(0.0, 0.25 * float(gl_InstanceID) + 0.05 * float(gl_DrawID)); })";
+    // Six chunks of two quad patches (8 vertices each) on a 3 x 2 grid.
+    std::vector<float> v;
+    for (int c = 0; c < 6; ++c)
+        for (int q = 0; q < 2; ++q) {
+            const float x = -0.95f + 0.65f * static_cast<float>(c % 3) + 0.3f * static_cast<float>(q);
+            const float y = -0.9f + 0.9f * static_cast<float>(c / 3), s = 0.28f;
+            const float quad[8] = {x, y, x + s, y, x + s, y + s, x, y + s};
+            v.insert(v.end(), quad, quad + 8);
+        }
+    std::vector<GLuint> indices(48);
+    for (GLuint i = 0; i < 48; ++i) indices[i] = i;
+    // count, instances, first index, base vertex, base instance
+    const GLuint commands[8][5] = {
+        {8, 1, 0, 0, 0},    // drawn on its own (it reports the state's errors)
+        {0, 1, 8, 0, 0},    // empty
+        {8, 1, 8, 0, 0},    // batch of two
+        {8, 1, 16, 0, 0},
+        {8, 2, 24, 0, 0},   // two instances: on its own
+        {4, 1, 32, 0, 0},   // one patch: a new batch
+        {8, 1, 40, 0, 0},   // two patches again: a new batch
+        {8, 0, 0, 0, 0},    // no instances
+    };
+    GLuint vao = 0, buffers[3] = {};
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(3, buffers);
+    glBindBuffer(GL_ARRAY_BUFFER, buffers[0]);
+    glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(v.size() * sizeof(float)), v.data(), GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
+    glEnableVertexAttribArray(0);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, buffers[1]);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, static_cast<GLsizeiptr>(indices.size() * 4), indices.data(), GL_STATIC_DRAW);
+    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, buffers[2]);
+    glBufferData(GL_DRAW_INDIRECT_BUFFER, sizeof(commands), commands, GL_STATIC_DRAW);
+    glPatchParameteri(GL_PATCH_VERTICES, 4);
+    for (const char* vs : {plainVs, drawIdVs}) {
+        GLuint p = link({vs, tcs, tes, nullptr, fs});
+        glUseProgram(p);
+        std::vector<uint8_t> images[2];
+        unsigned long long tessellated[2] = {};
+        for (int separate = 0; separate < 2; ++separate) {
+            glClearColor(0, 0, 0, 0);
+            glClear(GL_COLOR_BUFFER_BIT);
+            gpu::Counters counters;
+            if (separate) {
+                // Each command on its own, keeping its gl_DrawID: a multi-draw
+                // of it after empty commands.
+                for (int i = 0; i < 8; ++i) {
+                    GLuint one[8][5] = {};
+                    for (int k = 0; k <= i; ++k) one[k][1] = 1;
+                    std::memcpy(one[i], commands[i], sizeof(one[i]));
+                    GLuint scratch = 0;
+                    glGenBuffers(1, &scratch);
+                    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, scratch);
+                    glBufferData(GL_DRAW_INDIRECT_BUFFER, sizeof(one), one, GL_STATIC_DRAW);
+                    glMultiDrawElementsIndirect(GL_PATCHES, GL_UNSIGNED_INT, nullptr, i + 1, 0);
+                    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, buffers[2]);
+                    glDeleteBuffers(1, &scratch);
+                }
+            } else {
+                glMultiDrawElementsIndirect(GL_PATCHES, GL_UNSIGNED_INT, nullptr, 8, 0);
+            }
+            tessellated[separate] = counters["tessMetal"] + counters["tessCpu"];
+            images[separate] = gpu::readRGBA8(0, 0, 64, 64);
+        }
+        CHECK_GL();
+        int drawn = 0, different = 0;
+        for (size_t i = 0; i < images[0].size(); i += 4) {
+            drawn += images[1][i + 3] != 0;
+            different += !gpu::near(&images[0][i], &images[1][i], 1);
+        }
+        if (different) std::fprintf(stderr, "  %s: %d of 4096 pixels differ\n", vs == plainVs ? "batched" : "gl_DrawID", different);
+        CHECK_EQ(different, 0);
+        CHECK(drawn > 400);
+        CHECK_EQ(tessellated[1], 6ull);  // the six commands that draw, one by one
+        // Batched: the first command, the batch of two, the two-instance
+        // command and the two one-command batches; with gl_DrawID, six draws.
+        CHECK_EQ(tessellated[0], vs == plainVs ? 5ull : 6ull);
+        glDeleteProgram(p);
+    }
+    glDeleteBuffers(3, buffers);
+    glDeleteVertexArrays(1, &vao);
 }
 
 TESS_TEST(gpu_tess_primitives_generated) {

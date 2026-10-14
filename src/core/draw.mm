@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -431,6 +432,7 @@ bool DrawState::validateDraw(GLenum mode) {
     RenderTargetDesc target;
     TargetFormats formats;
     if (!drawTarget(target, formats)) return false;
+    commitLargeWork(&target);
     // The draw's first prepare() takes it instead of building it again.
     validatedTarget_ = std::move(target);
     validatedFormats_ = formats;
@@ -1612,6 +1614,19 @@ id<MTLComputePipelineState> stripsProvokingLastKernel() {
     return state;
 }
 
+// The utility kernel that writes Metal tessellation factors from patch records.
+id<MTLComputePipelineState> tessFactorsKernel() {
+    static std::once_flag once;
+    static id<MTLComputePipelineState> state = nil;
+    std::call_once(once, [] {
+        id<MTLFunction> function = [Device::get().utilityLibrary() newFunctionWithName:@"wmgl_tess_factors"];
+        NSError* error = nil;
+        if (function) state = [Device::get().mtl() newComputePipelineStateWithFunction:function error:&error];
+        if (!state) WMGL_ERR("tessellation factor kernel: %s", error ? error.localizedDescription.UTF8String : "missing");
+    });
+    return state;
+}
+
 // Lists the primitives of a line or triangle stream with GL's last-vertex
 // provoking vertex first: Metal flat-shades from the first vertex. Each
 // triangle is rotated, so its winding is unchanged.
@@ -1938,19 +1953,21 @@ bool DrawState::noMetalRestartIndex(Buffer& buffer, GLenum type) {
     return !buffer.hasMaxIndex[wide];
 }
 
-bool DrawState::gpuIndirectDrawable(GLenum mode, GLenum type, LinkedProgram& program) {
+stats::IndirectCpu DrawState::indirectCpuReason(GLenum mode, GLenum type, LinkedProgram& program) {
     const ContextState& st = ctx_.state;
-    if (mode == GL_PATCHES || program.link.geometry.active || ffWideLines_ || lineSides_ || linePartners_) return false;
-    if (st.transformFeedback->active || queriesNeedDrawSizes(ctx_)) return false;
+    if (mode == GL_PATCHES || program.link.geometry.active || ffWideLines_ || lineSides_ || linePartners_)
+        return stats::kIndirectStage;
+    if (st.transformFeedback->active) return stats::kIndirectCapture;
+    if (queriesNeedDrawSizes(ctx_)) return stats::kIndirectQuery;
     // Drawn as Metal primitives, indices as they are.
     bool needsIndices = false;
     nativePrimitive(mode, needsIndices);
-    if (needsIndices || pointPolygons(mode) || rotateProvoking(mode, program)) return false;
+    if (needsIndices || pointPolygons(mode) || rotateProvoking(mode, program)) return stats::kIndirectPrimitive;
     // gl_BaseVertex and gl_BaseInstance are uniforms set from the command
     // (gl_InstanceID and gl_VertexID come from Metal; gl_DrawID is the caller's).
     if (Program* owner = stageProgram(program, static_cast<int>(Stage::Vertex)); owner && owner->linked) {
         const shader::LinkResult::BuiltinUniforms& b = owner->linked->link.builtinUniforms;
-        if (b.baseVertex >= 0 || b.baseInstance >= 0) return false;
+        if (b.baseVertex >= 0 || b.baseInstance >= 0) return stats::kIndirectParameters;
     }
     // Every attribute fetched by Metal: conversions cover the vertices drawn.
     VertexInputPlan plan;
@@ -1958,16 +1975,81 @@ bool DrawState::gpuIndirectDrawable(GLenum mode, GLenum type, LinkedProgram& pro
     for (const shader::StageOutput::VertexInput& input : program.stage(Stage::Vertex).vertexInputs)
         if (input.location >= 0 && input.location < VertexArray::kAttribSlots &&
             plan.how[static_cast<size_t>(input.location)] == VertexInputPlan::Converted)
-            return false;
-    if (type == GL_NONE) return true;
+            return stats::kIndirectConverted;
+    if (type == GL_NONE) return stats::kIndirectCpuReasons;
     // Indices Metal reads as GL does: 16 or 32 bits, with no index where one
     // of them restarts and the other does not (noMetalRestartIndex).
-    if (type != GL_UNSIGNED_SHORT && type != GL_UNSIGNED_INT) return false;
+    if (type != GL_UNSIGNED_SHORT && type != GL_UNSIGNED_INT) return stats::kIndirectIndexType;
     Buffer* elements = st.vertexArray->elementBuffer.get();
-    if (!elements || elements->mappedNonPersistent()) return false;
+    if (!elements || elements->mappedNonPersistent()) return stats::kIndirectElementsMapped;
     const uint32_t largest = type == GL_UNSIGNED_SHORT ? 0xffffu : 0xffffffffu;
-    if (st.primitiveRestart && !st.primitiveRestartFixedIndex && st.primitiveRestartIndex != largest) return false;
-    return noMetalRestartIndex(*elements, type);
+    if (st.primitiveRestart && !st.primitiveRestartFixedIndex && st.primitiveRestartIndex != largest)
+        return stats::kIndirectRestart;
+    if (noMetalRestartIndex(*elements, type)) return stats::kIndirectCpuReasons;
+    if (elements->mapped || elements->pinned || !elements->mtl) return stats::kIndirectElementsMapped;
+    return elements->lastWriteSerial && !ctx_.stream().queue().isComplete(elements->lastWriteSerial)
+               ? stats::kIndirectElementsWriting
+               : stats::kIndirectMaxIndex;
+}
+
+void DrawState::noteIndirectCpu(stats::IndirectCpu reason, GLenum mode, GLenum type, LinkedProgram& program) {
+    const ContextState& st = ctx_.state;
+    char detail[512];
+    int n = std::snprintf(detail, sizeof(detail), "program %u (link %llu), mode 0x%x, type 0x%x: ",
+                          st.program ? st.program->name : 0, static_cast<unsigned long long>(program.uid), mode, type);
+    char* at = detail + std::clamp(n, 0, static_cast<int>(sizeof(detail)) - 1);
+    const size_t left = sizeof(detail) - static_cast<size_t>(at - detail);
+    std::string cause;  // one description per program and cause
+    const Buffer* elements = st.vertexArray->elementBuffer.get();
+    switch (reason) {
+    case stats::kIndirectStage:
+        std::snprintf(at, left, "%s", mode == GL_PATCHES ? "tessellation" : program.link.geometry.active ? "geometry shader" : "wide lines");
+        break;
+    case stats::kIndirectCapture: std::snprintf(at, left, "transform feedback"); break;
+    case stats::kIndirectQuery: std::snprintf(at, left, "an active query counts primitives or samples"); break;
+    case stats::kIndirectPrimitive: {
+        bool needsIndices = false;
+        nativePrimitive(mode, needsIndices);
+        std::snprintf(at, left, "%s", needsIndices ? "primitive type" : pointPolygons(mode) ? "point polygon mode"
+                                                                      : "flat inputs with the last-vertex convention");
+        break;
+    }
+    case stats::kIndirectParameters: {
+        const Program* owner = stageProgram(program, static_cast<int>(Stage::Vertex));
+        const shader::LinkResult::BuiltinUniforms& b = owner->linked->link.builtinUniforms;
+        std::snprintf(at, left, "reads%s%s", b.baseVertex >= 0 ? " gl_BaseVertex" : "", b.baseInstance >= 0 ? " gl_BaseInstance" : "");
+        break;
+    }
+    case stats::kIndirectConverted: {
+        VertexInputPlan plan;
+        planVertexInputs(program, false, plan);
+        for (const shader::StageOutput::VertexInput& input : program.stage(Stage::Vertex).vertexInputs) {
+            if (input.location < 0 || input.location >= VertexArray::kAttribSlots ||
+                plan.how[static_cast<size_t>(input.location)] != VertexInputPlan::Converted)
+                continue;
+            const VertexAttrib& a = attribFor(*st.vertexArray, input.source());
+            const char* why = !a.buffer || !a.buffer->mtl                                        ? "client memory"
+                              : vertexFetch(input, a).format == MTLVertexFormatInvalid             ? "its format"
+                              : a.offset % 4 || a.effectiveStride() % 4 || !a.effectiveStride() ? "alignment"
+                                                                                                  : "vertex buffer slots";
+            std::snprintf(at, left, "attribute %d converted for %s (type 0x%x, size %d, offset %lld, stride %d)", input.location,
+                          why, a.type, a.size, static_cast<long long>(a.offset), static_cast<int>(a.effectiveStride()));
+            cause = std::to_string(input.location);
+            break;
+        }
+        break;
+    }
+    case stats::kIndirectIndexType: std::snprintf(at, left, "8-bit indices"); break;
+    case stats::kIndirectRestart: std::snprintf(at, left, "restart index 0x%x", st.primitiveRestartIndex); break;
+    case stats::kIndirectElementsMapped: case stats::kIndirectElementsWriting: case stats::kIndirectMaxIndex:
+        std::snprintf(at, left, "element buffer %u (size %lld, mapped %d, access 0x%x, pinned %d)", elements ? elements->name : 0,
+                      elements ? static_cast<long long>(elements->size) : 0LL, elements && elements->mapped,
+                      elements ? elements->mapAccess : 0, elements && elements->pinned);
+        cause = std::to_string(elements ? elements->name : 0);
+        break;
+    default: break;
+    }
+    stats::indirectCpu(reason, std::to_string(program.uid) + ':' + cause, detail);
 }
 
 bool DrawState::drawIndirect(GLenum mode, GLenum type, Buffer& commands, uintptr_t offset) {
@@ -1975,7 +2057,11 @@ bool DrawState::drawIndirect(GLenum mode, GLenum type, Buffer& commands, uintptr
     beginDraw(mode);
     if (!validateDraw(mode) || !conditionalRenderAllows(ctx_)) return true;  // as the CPU path would
     LinkedProgram* current = executable();
-    if (!current || !commands.mtl || !gpuIndirectDrawable(mode, type, *current)) return false;
+    if (!current || !commands.mtl) return false;
+    if (const stats::IndirectCpu reason = indirectCpuReason(mode, type, *current); reason != stats::kIndirectCpuReasons) {
+        if (stats::g_enabled) noteIndirectCpu(reason, mode, type, *current);
+        return false;
+    }
     stats::count(&stats::Frame::indirectGpu);
     Buffer* elements = type != GL_NONE ? ctx_.state.vertexArray->elementBuffer.get() : nullptr;
     const IndirectSource source{commands.mtl, static_cast<NSUInteger>(offset)};
@@ -1985,6 +2071,18 @@ bool DrawState::drawIndirect(GLenum mode, GLenum type, Buffer& commands, uintptr
     commands.lastUseSerial = serial;
     if (elements) elements->lastUseSerial = serial;
     return true;
+}
+
+void DrawState::commitLargeWork(const RenderTargetDesc* target) {
+    static const uint32_t draws = [] {
+        const char* v = std::getenv("WINEMETALGL_COMMIT_DRAWS");
+        return v && *v ? static_cast<uint32_t>(std::strtoul(v, nullptr, 10)) : 256u;
+    }();
+    CommandStream& stream = ctx_.stream();
+    const uint64_t recorded = stream.drawsSinceCommit();
+    if (!draws || recorded < draws) return;
+    if (target && stream.continuesPass(*target) && recorded < uint64_t{draws} * 8) return;
+    stream.flush();
 }
 
 bool DrawState::pointPolygons(GLenum mode) const {
@@ -2411,6 +2509,7 @@ void DrawState::bindKernelResources(id<MTLComputeCommandEncoder> encoder, Linked
 }
 
 void DrawState::dispatch(GLuint x, GLuint y, GLuint z, Buffer* indirect, GLintptr offset) {
+    commitLargeWork(nullptr);
     // Conditional rendering applies to dispatches too (KHR-GL43.compute_shader.conditional-dispatching).
     if (!conditionalRenderAllows(ctx_)) return;
     ImageShadowScope shadows(*this);
@@ -2545,7 +2644,11 @@ void DrawState::drawGeometry(GLenum mode, const std::vector<uint32_t>& vertices,
     const size_t indexCount = threads * 2 * maxV;
     TransientAllocation output = transient_.allocate(threads * maxV * g.outputStride * 4, serial, 16);
     TransientAllocation indices = transient_.allocate(indexCount * 4, serial, 16);
-    if (!output.buffer || !indices.buffer) return;
+    // The kernel's parameters: a buffer, not setBytes, since the generated
+    // kernel declares the slot as device memory (Metal validation rejects
+    // read-only bytes there).
+    TransientAllocation params = transient_.allocate(16, serial, 16);
+    if (!output.buffer || !indices.buffer || !params.buffer) return;
     id<MTLComputeCommandEncoder> compute = ctx_.stream().compute();
     [compute setComputePipelineState:kernel];
     bindKernelResources(compute, lp, g.kernel.usesDefaultUniforms, static_cast<int>(Stage::Compute), &g.kernel);
@@ -2553,7 +2656,8 @@ void DrawState::drawGeometry(GLenum mode, const std::vector<uint32_t>& vertices,
     [compute setBuffer:input.buffer offset:input.offset atIndex:shader::kSlotFirstXfbBuffer];
     [compute setBuffer:output.buffer offset:output.offset atIndex:shader::kSlotFirstXfbBuffer + 1];
     [compute setBuffer:indices.buffer offset:indices.offset atIndex:shader::kSlotFirstXfbBuffer + 2];
-    [compute setBytes:control length:sizeof(control) atIndex:shader::kSlotFirstXfbBuffer + 3];
+    std::memcpy(params.data, control, sizeof(control));
+    [compute setBuffer:params.buffer offset:params.offset atIndex:shader::kSlotFirstXfbBuffer + 3];
     const NSUInteger width = std::min<NSUInteger>(64, kernel.maxTotalThreadsPerThreadgroup);
     [compute dispatchThreads:MTLSizeMake(threads, 1, 1) threadsPerThreadgroup:MTLSizeMake(width, 1, 1)];
     primitiveBase += primitives;
@@ -2714,7 +2818,7 @@ void DrawState::drawGeometry(GLenum mode, const std::vector<uint32_t>& vertices,
 
 // ------------------------------------------------------------ tessellation
 
-void DrawState::drawPatches(const std::vector<uint32_t>& vertices, GLsizei instances) {
+void DrawState::drawPatches(const std::vector<uint32_t>& vertices, GLsizei instances, uint32_t primitiveCycle) {
     LinkedProgram& lp = *executable();
     const shader::TessellationEmulation& t = lp.link.tess;
     std::shared_ptr<LinkedProgram> evaluation = lp.tessEvaluation();
@@ -2725,7 +2829,9 @@ void DrawState::drawPatches(const std::vector<uint32_t>& vertices, GLsizei insta
     const std::vector<uint32_t> list(vertices.begin(), vertices.begin() + static_cast<long>(patches * patchVertices));
     const uint32_t copies = static_cast<uint32_t>(std::max(1, instances));
     const uint64_t total = static_cast<uint64_t>(patches) * copies;  // patch p of instance i is patch i * patches + p
+    const uint32_t cycle = primitiveCycle ? primitiveCycle : static_cast<uint32_t>(patches);  // gl_PrimitiveID = patch % cycle
     if (t.hasControl && !lp.tessControlKernel()) return;
+    const bool metal = metalTessellation(lp, *evaluation);
     waitForCpuVertexReads(lp, true);
     prepareSamplerStorage(lp);
     queriesPrepareVisibility(ctx_);
@@ -2751,21 +2857,62 @@ void DrawState::drawPatches(const std::vector<uint32_t>& vertices, GLsizei insta
             borders ? lp.kernelWithBorders(t.control, static_cast<int>(Stage::TessControl), borders) : lp.tessControlKernel();
         if (!kernel) return;  // the border variant did not compile (logged)
         TransientAllocation output = transient_.allocate(total * recordWords * 4, serial, 16);
-        if (!output.buffer) return;
+        TransientAllocation params = transient_.allocate(16, serial, 16);  // device memory in the kernel, as above
+        if (!output.buffer || !params.buffer) return;
         id<MTLComputeCommandEncoder> compute = ctx_.stream().compute();
         [compute setComputePipelineState:kernel];
         bindKernelResources(compute, lp, t.control.usesDefaultUniforms, static_cast<int>(Stage::TessControl), &t.control);
-        const uint32_t control[4] = {patchVertices, static_cast<uint32_t>(total), static_cast<uint32_t>(patches), 0};
+        const uint32_t control[4] = {patchVertices, static_cast<uint32_t>(total), cycle, 0};
         [compute setBuffer:captured.buffer offset:captured.offset atIndex:shader::kSlotFirstXfbBuffer];
         [compute setBuffer:output.buffer offset:output.offset atIndex:shader::kSlotFirstXfbBuffer + 1];
-        [compute setBytes:control length:sizeof(control) atIndex:shader::kSlotFirstXfbBuffer + 2];
+        std::memcpy(params.data, control, sizeof(control));
+        [compute setBuffer:params.buffer offset:params.offset atIndex:shader::kSlotFirstXfbBuffer + 2];
         [compute dispatchThreadgroups:MTLSizeMake(total, 1, 1)
                 threadsPerThreadgroup:MTLSizeMake(static_cast<NSUInteger>(t.verticesOut), 1, 1)];
+        if (metal) {
+            // Metal's tessellator reads the levels on the GPU: no read-back.
+            const uint32_t levelsAt = static_cast<uint32_t>(t.verticesOut) * t.vertexWords;
+            TransientAllocation factors = transient_.allocate(total * (t.mode == GL_QUADS ? 12 : 8), serial, 16);
+            if (!factors.buffer) return;
+            const uint32_t params[4] = {recordWords, levelsAt, static_cast<uint32_t>(total),
+                                        (t.mode == GL_QUADS ? 1u : 0u) | (t.spacing == GL_EQUAL ? 2u : 0u)};
+            [compute setComputePipelineState:tessFactorsKernel()];
+            [compute setBuffer:output.buffer offset:output.offset atIndex:0];
+            [compute setBuffer:factors.buffer offset:factors.offset atIndex:1];
+            [compute setBytes:params length:sizeof(params) atIndex:2];
+            [compute dispatchThreads:MTLSizeMake(total, 1, 1) threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
+            if (drawMetalPatches(lp, *evaluation, output.buffer, output.offset, factors.buffer, factors.offset, total,
+                                 cycle, patchVertices))
+                return;
+        }
+        stats::count(&stats::Frame::tessCpu);
         ctx_.stream().waitFor(serial);
         const auto* words = static_cast<const uint32_t*>(output.data);
         records.assign(words, words + total * recordWords);
         serial = ctx_.stream().serial();
     }
+
+    if (!t.hasControl && metal) {
+        // The default levels, the same for every patch (a record stride of 0).
+        TransientAllocation levels = transient_.allocate(6 * 4, serial, 16);
+        TransientAllocation factors = transient_.allocate(total * (t.mode == GL_QUADS ? 12 : 8), serial, 16);
+        id<MTLComputePipelineState> kernel = tessFactorsKernel();
+        if (!levels.buffer || !factors.buffer || !kernel) return;
+        std::memcpy(levels.data, ctx_.state.patchDefaultOuterLevel, 4 * 4);
+        std::memcpy(static_cast<uint8_t*>(levels.data) + 16, ctx_.state.patchDefaultInnerLevel, 2 * 4);
+        const uint32_t params[4] = {0, 0, static_cast<uint32_t>(total),
+                                    (t.mode == GL_QUADS ? 1u : 0u) | (t.spacing == GL_EQUAL ? 2u : 0u)};
+        id<MTLComputeCommandEncoder> compute = ctx_.stream().compute();
+        [compute setComputePipelineState:kernel];
+        [compute setBuffer:levels.buffer offset:levels.offset atIndex:0];
+        [compute setBuffer:factors.buffer offset:factors.offset atIndex:1];
+        [compute setBytes:params length:sizeof(params) atIndex:2];
+        [compute dispatchThreads:MTLSizeMake(total, 1, 1) threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
+        if (drawMetalPatches(lp, *evaluation, captured.buffer, captured.offset, factors.buffer, factors.offset, total,
+                             cycle, patchVertices))
+            return;
+    }
+    if (!t.hasControl) stats::count(&stats::Frame::tessCpu);
 
     // 3. Tessellation: domain points (patch, u, v, w) and the primitive list.
     if (!tessellator_) tessellator_ = std::make_unique<tess::Tessellator>();
@@ -2828,7 +2975,7 @@ void DrawState::drawPatches(const std::vector<uint32_t>& vertices, GLsizei insta
     struct {
         uint32_t patchVertices, patchesPerInstance, pad[2];
         float outer[4], inner[2], pad2[2];
-    } control = {patchVertices, static_cast<uint32_t>(patches), {0, 0}, {}, {}, {}};
+    } control = {patchVertices, cycle, {0, 0}, {}, {}, {}};
     std::memcpy(control.outer, ctx_.state.patchDefaultOuterLevel, sizeof(control.outer));
     std::memcpy(control.inner, ctx_.state.patchDefaultInnerLevel, sizeof(control.inner));
     TransientAllocation controlData = transient_.allocate(sizeof(control), serial, 16);
@@ -2854,6 +3001,142 @@ void DrawState::drawPatches(const std::vector<uint32_t>& vertices, GLsizei insta
     }
     override_ = nullptr;
     tessInputs_ = {};
+}
+
+bool DrawState::metalTessellation(LinkedProgram& program, LinkedProgram& evaluation) {
+    // WINEMETALGL_METAL_TESSELLATION=0 keeps every draw on the CPU tessellator.
+    static const bool enabled = [] {
+        const char* v = std::getenv("WINEMETALGL_METAL_TESSELLATION");
+        return !v || v[0] != '0';
+    }();
+    const shader::TessellationEmulation& t = program.link.tess;
+    const ContextState& st = ctx_.state;
+    const char* why = !enabled                                                    ? nullptr
+                      : t.mode == GL_ISOLINES || t.pointMode                       ? "isolines or point mode"
+                      : evaluation.link.geometry.active                            ? "geometry shader"
+                      : st.transformFeedback->active                               ? "transform feedback"
+                      : st.rasterizerDiscard                                       ? "rasterizer discard"
+                      : queriesNeedDrawSizes(ctx_)                                 ? "active query"
+                      : pointPolygons(GL_TRIANGLES)                                ? "point polygon mode"
+                      : !tessFactorsKernel()                                       ? "no factor kernel"
+                      : evaluation.metalTessellationFailed                         ? "no Metal tessellation pipeline"
+                      : !evaluation.postTessellationVertex(t.mode == GL_QUADS, 0) ? "no post-tessellation function"
+                                                                                   : "";
+    if (why && *why && stats::g_enabled)
+        stats::describeOnce("tess-cpu:" + std::to_string(program.uid) + why, "patches of link %llu tessellated on the CPU: %s",
+                            static_cast<unsigned long long>(program.uid), why);
+    return why && !*why;
+}
+
+bool DrawState::drawMetalPatches(LinkedProgram& program, LinkedProgram& evaluation, id<MTLBuffer> records,
+                                 NSUInteger recordsOffset, id<MTLBuffer> factors, NSUInteger factorsOffset, uint64_t patches,
+                                 uint32_t patchesPerInstance, uint32_t patchVertices) {
+    const shader::TessellationEmulation& t = program.link.tess;
+    const uint64_t serial = ctx_.stream().serial();
+    struct {
+        uint32_t patchVertices, patchesPerInstance, pad[2];
+        float outer[4], inner[2], pad2[2];
+    } control = {patchVertices, patchesPerInstance, {0, 0}, {}, {}, {}};
+    std::memcpy(control.outer, ctx_.state.patchDefaultOuterLevel, sizeof(control.outer));
+    std::memcpy(control.inner, ctx_.state.patchDefaultInnerLevel, sizeof(control.inner));
+    TransientAllocation controlData = transient_.allocate(sizeof(control), serial, 16);
+    if (!controlData.buffer) return true;
+    std::memcpy(controlData.data, &control, sizeof(control));
+    // The domain point buffer is unread (its slot is bound to keep the
+    // argument valid).
+    tessInputs_.active = true;
+    tessInputs_.buffers[0] = controlData.buffer;
+    tessInputs_.offsets[0] = controlData.offset;
+    tessInputs_.buffers[1] = records;
+    tessInputs_.offsets[1] = recordsOffset;
+    tessInputs_.buffers[2] = controlData.buffer;
+    tessInputs_.offsets[2] = controlData.offset;
+    override_ = &evaluation;
+    {
+        stats::Timer timer(&stats::Frame::drawSamplersNanos);
+        prepareSamplerStorage(evaluation);
+    }
+    MTLPrimitiveType primitive = MTLPrimitiveTypeTriangle;
+    id<MTLRenderCommandEncoder> encoder = prepare(GL_TRIANGLES, primitive);
+    bool drawn = true;
+    if (encoder) {
+        // GL's vertex order is Metal's winding (the CPU path's D3D
+        // tessellator takes the opposite one: tess/tessellator.cpp).
+        const uint8_t partition = static_cast<uint8_t>(t.spacing == GL_FRACTIONAL_ODD    ? MTLTessellationPartitionModeFractionalOdd
+                                                       : t.spacing == GL_FRACTIONAL_EVEN ? MTLTessellationPartitionModeFractionalEven
+                                                                                         : MTLTessellationPartitionModeInteger);
+        PipelineKey key = lastKey_;
+        key.tessellation = static_cast<uint8_t>(1 | (t.mode == GL_QUADS ? 2 : 0) | partition << 2 | (t.order == GL_CW ? 16 : 0));
+        if (stats::g_enabled && rotateProvoking(GL_TRIANGLES, evaluation)) stats::count(&stats::Frame::tessMetalFlat);
+        id<MTLRenderPipelineState> pipeline = ctx_.share().pipelines().render(key, evaluation);
+        if (!pipeline) {
+            evaluation.metalTessellationFailed = true;
+            WMGL_WARN("no Metal tessellation pipeline for the patches of link %llu: tessellating them on the CPU",
+                      static_cast<unsigned long long>(program.uid));
+            drawn = false;
+        } else {
+            stats::count(&stats::Frame::tessMetal);
+            stats::count(&stats::Frame::draws);
+            [encoder setRenderPipelineState:pipeline];
+            bindDrawState(encoder, evaluation);
+            if (evaluation.link.xfbVertexCapture) bindCaptureDefaults(encoder, evaluation);
+            [encoder setTessellationFactorBuffer:factors offset:factorsOffset instanceStride:0];
+            [encoder drawPatches:static_cast<NSUInteger>(t.hasControl ? t.verticesOut : static_cast<GLint>(patchVertices))
+                       patchStart:0
+                       patchCount:static_cast<NSUInteger>(patches)
+                 patchIndexBuffer:nil
+           patchIndexBufferOffset:0
+                    instanceCount:1
+                     baseInstance:0];
+            ctx_.stream().noteDraw();
+        }
+    }
+    override_ = nullptr;
+    tessInputs_ = {};
+    return drawn;
+}
+
+bool DrawState::canBatchPatchCommands() {
+    LinkedProgram* lp = executable();
+    if (!lp || !lp->link.tess.active || lp->link.geometry.active || ffWideLines_) return false;
+    if (ctx_.state.transformFeedback->active || queriesNeedDrawSizes(ctx_) || queriesCountingStatistics(ctx_)) return false;
+    if (Program* owner = stageProgram(*lp, static_cast<int>(Stage::Vertex)); owner && owner->linked) {
+        const shader::LinkResult::BuiltinUniforms& b = owner->linked->link.builtinUniforms;
+        if (b.drawId >= 0 || b.baseVertex >= 0 || b.baseInstance >= 0) return false;
+    }
+    return true;
+}
+
+void DrawState::drawPatchCommands(GLenum type, const uint32_t (*commands)[5], size_t count) {
+    if (!count) return;
+    ImageShadowScope shadows(*this);
+    beginDraw(GL_PATCHES);
+    if (!validateDraw(GL_PATCHES) || !conditionalRenderAllows(ctx_)) return;
+    Buffer* elements = ctx_.state.vertexArray->elementBuffer.get();
+    if (!elements || !elements->mtl || elements->mappedNonPersistent()) return;
+    const size_t size = type == GL_UNSIGNED_BYTE ? 1 : type == GL_UNSIGNED_SHORT ? 2 : 4;
+    // The indices are read on the CPU, after GPU writes to the buffer.
+    if (elements->lastWriteSerial) ctx_.stream().waitFor(elements->lastWriteSerial);
+    const uint8_t* data = elements->contents();
+    const uint64_t bytes = static_cast<uint64_t>(std::max<GLsizeiptr>(0, elements->size));
+    std::vector<uint32_t> vertices;
+    vertices.reserve(count * commands[0][0]);
+    for (size_t c = 0; c < count; ++c) {
+        const uint64_t first = uint64_t{commands[c][2]} * size, n = commands[c][0];
+        if (first + n * size > bytes) continue;  // out-of-range index fetches draw nothing (drawElements)
+        const uint32_t bias = commands[c][3];
+        for (uint64_t i = 0; i < n; ++i) {
+            const uint8_t* at = data + first + i * size;
+            uint32_t v;
+            if (size == 1) v = *at;
+            else if (size == 2) { uint16_t x; std::memcpy(&x, at, 2); v = x; }
+            else std::memcpy(&v, at, 4);
+            vertices.push_back(v + bias);
+        }
+    }
+    const uint32_t patchVertices = static_cast<uint32_t>(std::max(1, ctx_.state.patchVertices));
+    BaseInstanceScope scope(*this, commands[0][4]);
+    drawPatches(vertices, 1, commands[0][0] / patchVertices);
 }
 
 void DrawState::drawArrays(GLenum mode, GLint first, GLsizei count, GLsizei instances) {

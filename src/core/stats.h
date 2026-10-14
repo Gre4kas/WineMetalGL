@@ -13,10 +13,33 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 
 namespace wmgl::stats {
 
-extern const bool g_enabled;  // WINEMETALGL_STATS set
+// Counting: WINEMETALGL_STATS set, or turned on by wmgl_stats_enable (tests).
+extern bool g_enabled;
+// Logging the counters and descriptions: WINEMETALGL_STATS set.
+extern const bool g_reporting;
+
+// Why an indirect draw command is read on the CPU instead of by the GPU:
+// the first condition that holds of api/draw.mm drawIndirectOnGpu and
+// DrawState::indirectCpuReason.
+enum IndirectCpu : uint8_t {
+    kIndirectCommands,         // the command buffer: none, misaligned, mapped or too small
+    kIndirectStage,            // an emulated stage: patches, a geometry shader, wide lines
+    kIndirectCapture,          // transform feedback
+    kIndirectQuery,            // a query counting the draw's primitives or samples
+    kIndirectPrimitive,        // fans, loops, quads, point polygons, provoking-vertex rotation
+    kIndirectParameters,       // gl_BaseVertex or gl_BaseInstance
+    kIndirectConverted,        // a vertex attribute converted on the CPU
+    kIndirectIndexType,        // 8-bit indices
+    kIndirectRestart,          // a restart index other than the type's largest
+    kIndirectElementsMapped,   // the element buffer is mapped or pinned (written behind GL's back)
+    kIndirectElementsWriting,  // GPU writes to the element buffer have not completed
+    kIndirectMaxIndex,         // the element buffer holds the type's largest index
+    kIndirectCpuReasons
+};
 
 struct Frame {
     uint64_t calls = 0, draws = 0, passes = 0, pipelineMisses = 0, programLinks = 0, transientBytes = 0, waits = 0;
@@ -29,9 +52,21 @@ struct Frame {
     uint64_t convertedVertices = 0, convertedReused = 0, convertedClient = 0, convertedFormat = 0, convertedOther = 0;
     uint64_t convertedFormatType = 0;  // GL type of the last unfetchable one (| 0x10000: normalized)
     uint64_t cpuIndexDraws = 0;        // draws whose indices were rewritten on the CPU
+    // Patch draws tessellated on the CPU (after reading the levels back), by
+    // Metal's tessellator, and of those, draws with flat fragment inputs:
+    // they take the value of the vertex Metal provokes from. GL leaves the
+    // order of a tessellated triangle's vertices to the implementation, so
+    // that is as conforming as the CPU path's last vertex; a game that relies
+    // on one shows here.
+    uint64_t tessCpu = 0, tessMetal = 0, tessMetalFlat = 0;
     // Indirect draw commands read by the GPU, and read on the CPU (after
     // waiting for GPU writes to the command buffer).
     uint64_t indirectGpu = 0, indirectCpu = 0;
+    // The CPU-read commands by IndirectCpu reason, those that draw nothing
+    // (no vertices or no instances), and the waits for GPU writes to the
+    // commands before reading them.
+    uint64_t indirectCpuReasons[kIndirectCpuReasons] = {};
+    uint64_t indirectCpuEmpty = 0, indirectWaits = 0;
     uint64_t uniformBytes = 0;         // default uniforms copied to transient memory
     // Command buffers committed, those committed for timer queries, and
     // render passes ended by cause (CommandStream::PassEnd order).
@@ -49,11 +84,22 @@ struct Frame {
 void addGpuNanos(uint64_t nanos);
 
 Frame& frame();
+// The calling thread's counter `name` (a Frame field, "passEnds.<cause>" or
+// "indirectCpuReasons.<n>") in `value`; false for an unknown name.
+bool counter(const char* name, uint64_t& value);
 uint64_t nowNanos();
 
 inline void count(uint64_t Frame::*field, uint64_t n = 1) {
     if (__builtin_expect(g_enabled, 0)) frame().*field += n;
 }
+
+// Logs `format` (when enabled) the first time `key` is seen.
+void describeOnce(const std::string& key, const char* format, ...) __attribute__((format(printf, 2, 3)));
+// An indirect command read on the CPU for `reason`; `detail` is logged the
+// first time the reason is seen with `key` (a program and cause).
+void indirectCpu(IndirectCpu reason, const std::string& key, const char* detail);
+// Another command of the same multi-draw read on the CPU for the same reason.
+void repeatIndirectCpu();
 
 // Adds the scope's duration to `field` (when enabled).
 class Timer {

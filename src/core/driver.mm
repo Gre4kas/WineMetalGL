@@ -228,6 +228,17 @@ WMGL_EXPORT void wmgl_set_buffer_memory(void* (*allocate)(size_t), void (*releas
     wmgl::api::g_bufferRelease = release;
 }
 
+WMGL_EXPORT void wmgl_stats_enable(int enable) { stats::g_enabled = enable || stats::g_reporting; }
+
+WMGL_EXPORT void wmgl_stats_reset(void) { stats::frame() = stats::Frame(); }
+
+WMGL_EXPORT int wmgl_stats_counter(const char* name, unsigned long long* value) {
+    uint64_t v = 0;
+    if (!stats::counter(name, v)) return 0;
+    if (value) *value = v;
+    return 1;
+}
+
 WMGL_EXPORT void wmgl_version(int* major, int* minor, int* patch) {
     int v[3] = {0, 0, 0};
     std::sscanf(WMGL_VERSION, "%d.%d.%d", &v[0], &v[1], &v[2]);

@@ -5,11 +5,14 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
 #include <map>
 #include <mutex>
+#include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace wmgl::stats {
@@ -40,7 +43,8 @@ double ms(uint64_t nanos) { return static_cast<double>(nanos) / 1e6; }
 
 }  // namespace
 
-const bool g_enabled = enabledFromEnvironment();
+const bool g_reporting = enabledFromEnvironment();
+bool g_enabled = g_reporting;
 
 Frame& frame() { return thread().frame; }
 
@@ -125,6 +129,59 @@ std::atomic<uint64_t> g_gpuNanos{0};
 
 void addGpuNanos(uint64_t nanos) { g_gpuNanos.fetch_add(nanos, std::memory_order_relaxed); }
 
+bool counter(const char* name, uint64_t& value) {
+#define WMGL_COUNTER(field) {#field, &Frame::field}
+    static const std::pair<const char*, uint64_t Frame::*> fields[] = {
+        WMGL_COUNTER(calls), WMGL_COUNTER(draws), WMGL_COUNTER(passes), WMGL_COUNTER(pipelineMisses),
+        WMGL_COUNTER(programLinks), WMGL_COUNTER(waits), WMGL_COUNTER(convertedVertices), WMGL_COUNTER(cpuIndexDraws),
+        WMGL_COUNTER(tessCpu), WMGL_COUNTER(tessMetal), WMGL_COUNTER(tessMetalFlat), WMGL_COUNTER(indirectGpu),
+        WMGL_COUNTER(indirectCpu), WMGL_COUNTER(indirectCpuEmpty), WMGL_COUNTER(indirectWaits), WMGL_COUNTER(commits),
+        WMGL_COUNTER(queryCommits), WMGL_COUNTER(readsAsync), WMGL_COUNTER(readsWaiting)};
+#undef WMGL_COUNTER
+    // CommandStream::PassEnd order.
+    static const char* const passEnds[8] = {"other", "target", "blit", "compute", "visibility", "commit", "barrier", "clear"};
+    const Frame& f = frame();
+    const std::string n = name ? name : "";
+    for (const auto& [field, member] : fields)
+        if (n == field) return value = f.*member, true;
+    for (int i = 0; i < 8; ++i)
+        if (n == std::string("passEnds.") + passEnds[i]) return value = f.passEnds[i], true;
+    for (int i = 0; i < kIndirectCpuReasons; ++i)
+        if (n == "indirectCpuReasons." + std::to_string(i)) return value = f.indirectCpuReasons[i], true;
+    return false;
+}
+
+void describeOnce(const std::string& key, const char* format, ...) {
+    if (!g_reporting) return;
+    static std::mutex mutex;
+    static std::unordered_set<std::string> seen;
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (!seen.insert(key).second) return;
+    }
+    char message[1024];
+    va_list args;
+    va_start(args, format);
+    std::vsnprintf(message, sizeof(message), format, args);
+    va_end(args);
+    std::fprintf(stderr, "winemetalgl:stats: %s\n", message);
+}
+
+namespace {
+thread_local IndirectCpu t_lastIndirectCpu = kIndirectCpuReasons;
+}  // namespace
+
+void indirectCpu(IndirectCpu reason, const std::string& key, const char* detail) {
+    if (!g_enabled) return;
+    t_lastIndirectCpu = reason;
+    ++frame().indirectCpuReasons[reason];
+    describeOnce("indirect:" + std::to_string(reason) + ':' + key, "indirect commands read on the CPU: %s", detail);
+}
+
+void repeatIndirectCpu() {
+    if (g_enabled && t_lastIndirectCpu < kIndirectCpuReasons) ++frame().indirectCpuReasons[t_lastIndirectCpu];
+}
+
 void endFrame() {
     ThreadState& t = thread();
     os_log_t log = signpostLog();
@@ -133,14 +190,16 @@ void endFrame() {
         t.interval = os_signpost_id_generate(log);
         os_signpost_interval_begin(log, t.interval, "frame");
     }
-    if (!g_enabled) return;
+    if (!g_reporting) return;
     const uint64_t now = nowNanos();
     const Frame& f = t.frame;
     std::fprintf(stderr,
                  "winemetalgl:stats: frame %llu %.2f ms | gl %.2f ms in %llu calls | present %.2f ms (drawable %.2f ms) | "
                  "draws %llu passes %llu | pipelines %llu (%.2f ms) links %llu (%.2f ms) | transient %llu KiB | "
                  "waits %llu (%.2f ms) | lock %.2f ms | converted %llu vertices, %llu reused (client %llu format %llu "
-                 "[0x%llx] other %llu) | cpu indices %llu | indirect gpu %llu cpu %llu | uniforms %llu KiB | commits %llu (query %llu) | "
+                 "[0x%llx] other %llu) | cpu indices %llu | tessellation cpu %llu metal %llu (flat %llu) | indirect gpu %llu cpu %llu (empty %llu waits %llu; commands %llu "
+                 "stage %llu capture %llu query %llu primitive %llu parameters %llu converted %llu index type %llu "
+                 "restart %llu elements mapped %llu writing %llu max index %llu) | uniforms %llu KiB | commits %llu (query %llu) | "
                  "pass ends: target %llu blit %llu compute %llu visibility %llu commit %llu barrier %llu clear %llu "
                  "other %llu | reads async %llu waiting %llu | gpu %.2f ms | draw cpu: samplers %.2f vertex %.2f "
                  "prepare %.2f pipeline %.2f bind %.2f encode %.2f index %.2f ms\n",
@@ -154,7 +213,22 @@ void endFrame() {
                  static_cast<unsigned long long>(f.convertedReused), static_cast<unsigned long long>(f.convertedClient),
                  static_cast<unsigned long long>(f.convertedFormat), static_cast<unsigned long long>(f.convertedFormatType),
                  static_cast<unsigned long long>(f.convertedOther), static_cast<unsigned long long>(f.cpuIndexDraws),
+                 static_cast<unsigned long long>(f.tessCpu), static_cast<unsigned long long>(f.tessMetal),
+                 static_cast<unsigned long long>(f.tessMetalFlat),
                  static_cast<unsigned long long>(f.indirectGpu), static_cast<unsigned long long>(f.indirectCpu),
+                 static_cast<unsigned long long>(f.indirectCpuEmpty), static_cast<unsigned long long>(f.indirectWaits),
+                 static_cast<unsigned long long>(f.indirectCpuReasons[kIndirectCommands]),
+                 static_cast<unsigned long long>(f.indirectCpuReasons[kIndirectStage]),
+                 static_cast<unsigned long long>(f.indirectCpuReasons[kIndirectCapture]),
+                 static_cast<unsigned long long>(f.indirectCpuReasons[kIndirectQuery]),
+                 static_cast<unsigned long long>(f.indirectCpuReasons[kIndirectPrimitive]),
+                 static_cast<unsigned long long>(f.indirectCpuReasons[kIndirectParameters]),
+                 static_cast<unsigned long long>(f.indirectCpuReasons[kIndirectConverted]),
+                 static_cast<unsigned long long>(f.indirectCpuReasons[kIndirectIndexType]),
+                 static_cast<unsigned long long>(f.indirectCpuReasons[kIndirectRestart]),
+                 static_cast<unsigned long long>(f.indirectCpuReasons[kIndirectElementsMapped]),
+                 static_cast<unsigned long long>(f.indirectCpuReasons[kIndirectElementsWriting]),
+                 static_cast<unsigned long long>(f.indirectCpuReasons[kIndirectMaxIndex]),
                  static_cast<unsigned long long>(f.uniformBytes / 1024), static_cast<unsigned long long>(f.commits),
                  static_cast<unsigned long long>(f.queryCommits), static_cast<unsigned long long>(f.passEnds[1]),
                  static_cast<unsigned long long>(f.passEnds[2]), static_cast<unsigned long long>(f.passEnds[3]),

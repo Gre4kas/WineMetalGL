@@ -120,7 +120,14 @@ public:
 
     Queue& queue() { return queue_; }
     bool hasDraws() const { return drawsInPass_; }
-    void noteDraw() { drawsInPass_ = true; }
+    void noteDraw() {
+        drawsInPass_ = true;
+        ++drawsSinceCommit_;
+    }
+    // Draws recorded in the command buffer being recorded.
+    uint32_t drawsSinceCommit() const { return drawsSinceCommit_; }
+    // Whether a draw to `target` continues the open render pass.
+    bool continuesPass(const RenderTargetDesc& target) const { return render_ && target_ == target; }
 
 private:
     uint64_t serialSlow();
@@ -137,6 +144,7 @@ private:
     RenderTargetDesc pendingTarget_;
     PendingClear pending_;
     bool drawsInPass_ = false;
+    uint32_t drawsSinceCommit_ = 0;
     uint64_t passGeneration_ = 0;
     uint64_t renderCalls_ = 0;
     bool visibilityWanted_ = false, passVisibility_ = false;
