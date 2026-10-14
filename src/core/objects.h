@@ -204,6 +204,9 @@ public:
     GLsizei mtlLevels = 0;          // levels allocated (from level 0)
     GLsizei mtlWidth = 0, mtlHeight = 0, mtlDepth = 0, mtlSamples = 0;
     bool storageDirty = true;       // images changed shape; storage must be rebuilt
+    // An image was defined without data (glTexStorage*, glTexImage* with a
+    // null pointer, multisample images): the next new storage starts zeroed.
+    bool zeroStorage = false;
     // Cached views keyed by (base, max, swizzle, format) for sampling.
     struct View { uint64_t key; id<MTLTexture> view; };
     std::vector<View> views;

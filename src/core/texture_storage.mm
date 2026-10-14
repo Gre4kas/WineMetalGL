@@ -76,12 +76,17 @@ bool baseDimensions(const Texture& tex, GLsizei& w0, GLsizei& h0, GLsizei& d0, c
     return false;
 }
 
-// RGB formats are stored with an alpha channel that must read as one (copies
-// and blits move it as stored). New storage is cleared to (0, 0, 0, 1) in a
-// command buffer of its own, committed ahead of the stream's: nothing else
-// references the new texture yet, and it keeps any render pass the stream is
-// encoding open.
-void initAlphaOne(Context& ctx, id<MTLTexture> texture) {
+// Clears new storage to `color` in a command buffer of its own, committed
+// ahead of the stream's: nothing else references the new texture yet, and
+// it keeps any render pass the stream is encoding open.
+// - RGB formats are stored with an alpha channel that must read as one
+//   (copies and blits move it as stored): (0, 0, 0, 1).
+// - Images defined without data start zeroed, as on Windows, where new
+//   allocations are zero-filled. Metal leaves private storage undefined, and
+//   games blend into textures they never cleared: Foundation's map generator
+//   blurs heightmaps with SRC_ALPHA/ONE_MINUS_SRC_ALPHA into fresh R32F
+//   textures, and dst * 0 is NaN when the old memory held NaN (issue #12).
+void initStorage(Context& ctx, id<MTLTexture> texture, MTLClearColor color) {
     id<MTLCommandBuffer> commandBuffer = [ctx.stream().queue().mtl() commandBuffer];
     const bool volume = texture.textureType == MTLTextureType3D;
     const NSUInteger faces = texture.textureType == MTLTextureTypeCube        ? 6
@@ -98,7 +103,7 @@ void initAlphaOne(Context& ctx, id<MTLTexture> texture) {
             if (volume) pass.colorAttachments[0].depthPlane = i;
             else if (faces > 1) pass.renderTargetArrayLength = faces;
             pass.colorAttachments[0].loadAction = MTLLoadActionClear;
-            pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1);
+            pass.colorAttachments[0].clearColor = color;
             pass.colorAttachments[0].storeAction = MTLStoreActionStore;
             [[commandBuffer renderCommandEncoderWithDescriptor:pass] endEncoding];
         }
@@ -224,7 +229,10 @@ bool ensureTextureStorage(Context& ctx, Texture& tex) {
         WMGL_ERR("texture allocation failed (%dx%dx%d %s)", w0, h0, d0, storageName(format->storage));
         return false;
     }
-    if (format->storedAlphaIsOne) initAlphaOne(ctx, texture);
+    if (format->storedAlphaIsOne) initStorage(ctx, texture, MTLClearColorMake(0, 0, 0, 1));
+    else if (tex.zeroStorage && format->colorRenderable && !format->compressed && !format->isDepthOrStencil())
+        initStorage(ctx, texture, MTLClearColorMake(0, 0, 0, 0));
+    tex.zeroStorage = false;
     // Keep existing contents of levels that still match.
     if (tex.mtl && tex.storage == format->storage && tex.mtl.textureType == texture.textureType &&
         tex.mtl.sampleCount == texture.sampleCount) {

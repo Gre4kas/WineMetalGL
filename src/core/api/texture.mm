@@ -480,6 +480,7 @@ void texImage(Context& ctx, int dims, GLenum target, GLint level, GLint internal
     const TransferLayout layout = transferLayout(format, type, width, height, depth, ps);
     const uint8_t* src = nullptr;
     if (!unpackSource(ctx, pixels, width && height && depth ? layout.bytesNeeded : 0, typeSize(type), src)) return;
+    if (!src) t.tex->zeroStorage = true;
     defineImage(ctx, *t.tex, t.face, level, requested, info, width, height, depth);
     if (info->compressed) {
         // Uncompressed data is compressed on the CPU (RGTC, S3TC, BPTC, ETC2/EAC).
@@ -1234,6 +1235,7 @@ void texImageMultisample(Context& ctx, GLenum target, bool proxy, GLsizei sample
         image.fixedSampleLocations = fixedsamplelocations != GL_FALSE;
         return;
     }
+    tex->zeroStorage = true;
     defineImage(ctx, *tex, 0, 0, internalformat, info, width, height, depth, actual, fixedsamplelocations != GL_FALSE);
     ensureTextureStorage(ctx, *tex);
 }
@@ -1301,6 +1303,7 @@ void texStorage(Context& ctx, int dims, GLenum target, GLsizei levels, GLenum in
     tex->viewNumLevels = static_cast<GLuint>(levels);
     tex->viewNumLayers = static_cast<GLuint>(oneDArray ? height : arrays ? depth : base == GL_TEXTURE_CUBE_MAP ? 6 : 1);
     tex->storageDirty = true;
+    tex->zeroStorage = true;
     ensureTextureStorage(ctx, *tex);
 }
 
