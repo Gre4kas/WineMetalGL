@@ -153,11 +153,14 @@ GPU_TEST_VERSION(gpu_memory_streamed_objects_are_freed, 46) {
     // Before the fix, every replaced uniform storage (2 MiB a frame here)
     // stayed: Metal's autoreleased objects were never drained (ARC
     // autoreleases the receiver of `contents`, and render encoders, which
-    // hold their command buffers and so all they used).
+    // hold their command buffers and so all they used). The bound allows for
+    // the device's own pools: on the GPU of macOS 15 virtual machines (CI),
+    // its allocations step up 16 MiB at a time; the leak grows ~2 GiB over
+    // these 1000 frames.
     Streamer s;
-    const long long grew = growth(s, 300, [] { return static_cast<long long>(deviceBytes()); });
-    if (grew >= 16ll << 20) std::fprintf(stderr, "  device allocations grew %.1f MiB over 300 frames\n", static_cast<double>(grew) / 1048576.0);
-    CHECK(grew < 16ll << 20);
+    const long long grew = growth(s, 1000, [] { return static_cast<long long>(deviceBytes()); });
+    if (grew >= 256ll << 20) std::fprintf(stderr, "  device allocations grew %.1f MiB over 1000 frames\n", static_cast<double>(grew) / 1048576.0);
+    CHECK(grew < 256ll << 20);
     CHECK_GL();
 }
 
