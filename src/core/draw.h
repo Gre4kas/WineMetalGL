@@ -89,9 +89,9 @@ public:
     // Draws the DrawElementsIndirectCommands `commands` (count, instances,
     // first index, base vertex, base instance) of `type` indices as one
     // batch of patches, in order, after an earlier command of the same
-    // multi-draw reported the state's errors. Each draws one instance with
-    // the same base instance and the same number of whole patches, so
-    // gl_PrimitiveID starts again at 0 for each (canBatchPatchCommands).
+    // multi-draw reported the state's errors. Each draws one instance of the
+    // same number of whole patches, so gl_PrimitiveID starts again at 0 for
+    // each (canBatchPatchCommands); base instances may differ.
     void drawPatchCommands(GLenum type, const uint32_t (*commands)[5], size_t count);
 
     // glDispatchCompute / glDispatchComputeIndirect (validated by the caller);
@@ -108,7 +108,9 @@ public:
     // GPU stores its attachments and loads them again, so a draw that
     // continues the pass (`target`, null for dispatches) commits only past
     // 8 times as many draws; one that starts a pass, or a dispatch, ends it
-    // anyway. Called where no transient memory is held for work still to be
+    // anyway. In frames where the CPU waited for GPU-written indirect
+    // commands, 32 draws are enough while the GPU is idle, whatever the pass
+    // (ending it costs less than the GPU waiting). Called where no transient memory is held for work still to be
     // recorded: when draws are validated and dispatches start.
     void commitLargeWork(const RenderTargetDesc* target);
 
@@ -199,7 +201,12 @@ private:
     // (shader/tessellation.h).
     // `primitiveCycle`: patches after which gl_PrimitiveID starts again at 0
     // (0: the patches of one instance), for draws that batch several commands.
-    void drawPatches(const std::vector<uint32_t>& vertices, GLsizei instances, uint32_t primitiveCycle = 0);
+    // `bases` (batched indirect commands): where in `vertices` each command's
+    // patches start, with its base instance; their vertices are captured per
+    // command, the rest of the pipeline runs once for all of them.
+    struct PatchBase { size_t first; uint32_t baseInstance; };
+    void drawPatches(const std::vector<uint32_t>& vertices, GLsizei instances, uint32_t primitiveCycle = 0,
+                     const std::vector<PatchBase>* bases = nullptr);
     // Whether a draw of `program`'s patches can use Metal's tessellator
     // instead of reading the levels back for the CPU's: triangles or quads
     // (not point mode), rasterized, and nothing that needs the tessellated
@@ -245,6 +252,9 @@ private:
     // The program object whose state feeds `stage` (pipelines: the stage's
     // program), and the owner and own index of a uniform block or sampler.
     Program* stageProgram(LinkedProgram& program, int stage);
+    // Whether a tessellated draw's vertex capture and control kernel can run
+    // in the stream's prelude (CommandStream::preludeRender).
+    bool tessPrelude(LinkedProgram& program);
     std::pair<Program*, size_t> blockSource(LinkedProgram& program, size_t block);
     std::pair<Program*, size_t> samplerSource(LinkedProgram& program, size_t index);
     // The clamp-to-border emulation variant the textures and samplers bound
@@ -279,6 +289,10 @@ private:
     uint64_t plannedFor_ = 0;
     const LinkedProgram* plannedProgram_ = nullptr;
     bool plannedGather_ = false;
+    // Gathered draws (a vertex list): the instance each vertex reads its
+    // per-instance attributes from (batched indirect commands with their own
+    // base instances, drawPatches), or null for the draw's instances.
+    const std::vector<uint32_t>* instanceGather_ = nullptr;
     // Image bindings with a shadow texture (core::ImageShadow) for the draw
     // in progress: copied in by prepareSamplerStorage, back when the draw ends.
     struct PendingShadow {
@@ -343,6 +357,9 @@ private:
     const std::vector<uint32_t>* linePartners_ = nullptr;
     // The order a capture pass draws its list in (provokingOrder), or none.
     const std::vector<uint32_t>* captureOrder_ = nullptr;
+    // runVertexCapture records into the stream's prelude (tessellation, see
+    // tessPrelude) instead of the render pass in progress.
+    bool preludeCapture_ = false;
     const std::vector<float>* lineSides_ = nullptr;
     Program* ffProgram_ = nullptr;
     struct {

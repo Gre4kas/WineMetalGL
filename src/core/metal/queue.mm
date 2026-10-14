@@ -53,6 +53,11 @@ bool Queue::isComplete(uint64_t serial) {
     return !inflight_.count(serial) && !reserved_.count(serial);
 }
 
+bool Queue::idle() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return inflight_.empty();
+}
+
 bool Queue::isCommitted(uint64_t serial) {
     std::lock_guard<std::mutex> lock(mutex_);
     return !reserved_.count(serial);

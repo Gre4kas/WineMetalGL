@@ -136,8 +136,10 @@ bool readIndirectCommand(Context& ctx, const void* indirect, uint32_t* words, si
     };
     if (!fits()) return ctx.setError(GL_INVALID_OPERATION), false;
     stats::count(&stats::Frame::indirectCpu);
-    if (stats::g_enabled && buffer->lastWriteSerial && !ctx.stream().queue().isComplete(buffer->lastWriteSerial))
+    if (buffer->lastWriteSerial && !ctx.stream().queue().isComplete(buffer->lastWriteSerial)) {
         stats::count(&stats::Frame::indirectWaits);
+        ctx.stream().noteIndirectWait();
+    }
     if (buffer->lastWriteSerial) waitForGpuUnlocked(ctx, buffer->lastWriteSerial);
     // Another context may have specified the buffer again during the wait.
     if (!fits()) return ctx.setError(GL_INVALID_OPERATION), false;
@@ -271,9 +273,10 @@ void multiDrawArraysIndirect(Context& ctx, GLenum mode, const void* indirect, GL
 void multiDrawElementsIndirect(Context& ctx, GLenum mode, GLenum type, const void* indirect, GLsizei drawcount, uintptr_t step) {
     bool cpu = false;
     // Patches on the CPU path: commands that draw one instance of the same
-    // whole number of patches with the same base instance are drawn as one
-    // batch (one vertex capture, control dispatch and tessellation draw
-    // instead of one each per command), in command order.
+    // whole number of patches are drawn as one batch (one control dispatch
+    // and tessellation draw instead of one each per command; one vertex
+    // capture per base instance), in command order. Foundation gives each
+    // terrain tile a base instance of its own (issue #12).
     bool batching = false, direct = false;
     std::vector<std::array<uint32_t, 5>> batch;
     auto flush = [&] {
@@ -306,7 +309,7 @@ void multiDrawElementsIndirect(Context& ctx, GLenum mode, GLenum type, const voi
             }
             if (!command[0] || !command[1]) continue;  // draws nothing
             const bool fits = command[1] == 1 && command[0] % patchVertices == 0 && command[0] <= INT32_MAX &&
-                              (batch.empty() || (command[0] == batch[0][0] && command[4] == batch[0][4]));
+                              (batch.empty() || command[0] == batch[0][0]);
             if (fits) {
                 batch.push_back(command);
                 continue;

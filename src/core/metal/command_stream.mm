@@ -220,11 +220,61 @@ bool CommandStream::allocateVisibilitySlot(__strong id<MTLBuffer>& buffer, NSUIn
 
 void CommandStream::present(id<CAMetalDrawable> drawable) {
     [commandBuffer() presentDrawable:drawable];
+    indirectWaited_ = false;
+}
+
+id<MTLRenderCommandEncoder> CommandStream::preludeRender() {
+    if (preludeRender_) return preludeRender_;
+    if (!preludeRenderBuffer_) {
+        preludeRenderBuffer_ = [queue_.mtl() commandBuffer];
+        preludeRenderBuffer_.label = @"WineMetalGL prelude (vertex capture)";
+    }
+    MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
+    pass.renderTargetWidth = 1;
+    pass.renderTargetHeight = 1;
+    pass.defaultRasterSampleCount = 1;
+    preludeRender_ = [preludeRenderBuffer_ renderCommandEncoderWithDescriptor:pass];
+    return preludeRender_;
+}
+
+id<MTLComputeCommandEncoder> CommandStream::preludeCompute() {
+    if (preludeCompute_) return preludeCompute_;
+    if (!preludeComputeBuffer_) {
+        preludeComputeBuffer_ = [queue_.mtl() commandBuffer];
+        preludeComputeBuffer_.label = @"WineMetalGL prelude (kernels)";
+    }
+    preludeCompute_ = [preludeComputeBuffer_ computeCommandEncoder];
+    return preludeCompute_;
+}
+
+void CommandStream::commitPrelude() {
+    // In queue order ahead of the command buffer being committed: the
+    // capture pass, then the kernels that read it (tracked resources order
+    // the kernels after the captures and the draws after the kernels).
+    if (preludeRender_) [preludeRender_ endEncoding];
+    if (preludeCompute_) [preludeCompute_ endEncoding];
+    if (preludeRenderBuffer_) [preludeRenderBuffer_ commit];
+    if (preludeComputeBuffer_) [preludeComputeBuffer_ commit];
+    if (preludeComputeBuffer_ || preludeRenderBuffer_) lastPrelude_ = preludeComputeBuffer_ ?: preludeRenderBuffer_;
+    preludeRender_ = nil;
+    preludeCompute_ = nil;
+    preludeRenderBuffer_ = nil;
+    preludeComputeBuffer_ = nil;
+}
+
+void CommandStream::waitForPrelude() {
+    flush();
+    if (!lastPrelude_) return;
+    stats::count(&stats::Frame::waits);
+    stats::Timer timer(&stats::Frame::waitNanos);
+    [lastPrelude_ waitUntilCompleted];
+    lastPrelude_ = nil;
 }
 
 uint64_t CommandStream::flush() {
     resolvePendingClear();
     endEncoder(PassEnd::Commit);
+    commitPrelude();
     if (!buffer_) return lastCommitted_;
     stats::count(&stats::Frame::commits);
     drawsSinceCommit_ = 0;

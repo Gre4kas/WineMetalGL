@@ -612,6 +612,112 @@ void main() { pos = position + vec2(0.0, 0.25 * float(gl_InstanceID) + 0.05 * fl
     glDeleteVertexArrays(1, &vao);
 }
 
+GPU_TEST_VERSION(gpu_tess_multi_draw_batches_base_instances, 46) {
+    // Commands that differ only in their base instance batch too (Foundation
+    // gives each terrain tile one, issue #12): each command's vertices are
+    // captured with its own instance attributes (divisor 1), and the image
+    // is the one of drawing every command on its own.
+    const char* vs = R"(#version 460 core
+layout(location = 0) in vec2 position;
+layout(location = 1) in vec4 instance;  // xy offset, z shade
+out vec2 pos;
+out float shadeIn;
+void main() { pos = position + instance.xy; shadeIn = instance.z; })";
+    const char* tcs = R"(#version 460 core
+layout(vertices = 4) out;
+in vec2 pos[];
+in float shadeIn[];
+out vec2 cp[];
+patch out float shade;
+void main() {
+    cp[gl_InvocationID] = pos[gl_InvocationID];
+    shade = shadeIn[0];
+    for (int i = 0; i < 4; ++i) gl_TessLevelOuter[i] = 3.0;
+    gl_TessLevelInner[0] = 3.0; gl_TessLevelInner[1] = 3.0;
+})";
+    const char* tes = R"(#version 460 core
+layout(quads, equal_spacing, ccw) in;
+in vec2 cp[];
+patch in float shade;
+out vec4 color;
+void main() {
+    vec2 p = mix(mix(cp[0], cp[1], gl_TessCoord.x), mix(cp[3], cp[2], gl_TessCoord.x), gl_TessCoord.y);
+    gl_Position = vec4(p, 0.0, 1.0);
+    color = vec4(shade, gl_TessCoord.y, 0.5, 1.0);
+})";
+    const char* fs = "#version 460 core\nin vec4 color; out vec4 o; void main() { o = color; }\n";
+    // One quad patch at the origin; eight instances place and shade it.
+    const float quad[8] = {0, 0, 0.3f, 0, 0.3f, 0.3f, 0, 0.3f};
+    float instances[8][4];
+    for (int i = 0; i < 8; ++i) {
+        instances[i][0] = -0.95f + 0.45f * static_cast<float>(i % 4);
+        instances[i][1] = -0.8f + 0.9f * static_cast<float>(i / 4);
+        instances[i][2] = 0.1f + 0.1f * static_cast<float>(i);
+        instances[i][3] = 1.0f;
+    }
+    const GLuint indices[4] = {0, 1, 2, 3};
+    // count, instances, first index, base vertex, base instance
+    const GLuint commands[7][5] = {
+        {4, 1, 0, 0, 7},  // on its own (it reports the state's errors)
+        {4, 1, 0, 0, 0},  // a batch of five, each its own base instance
+        {4, 0, 0, 0, 1},  // empty
+        {4, 1, 0, 0, 2},
+        {4, 1, 0, 0, 3},
+        {4, 1, 0, 0, 5},
+        {4, 1, 0, 0, 6},
+    };
+    GLuint vao = 0, buffers[4] = {};
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(4, buffers);
+    glBindBuffer(GL_ARRAY_BUFFER, buffers[0]);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(quad), quad, GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
+    glEnableVertexAttribArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, buffers[1]);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(instances), instances, GL_STATIC_DRAW);
+    glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, 0, nullptr);
+    glVertexAttribDivisor(1, 1);
+    glEnableVertexAttribArray(1);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, buffers[2]);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
+    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, buffers[3]);
+    glBufferData(GL_DRAW_INDIRECT_BUFFER, sizeof(commands), commands, GL_STATIC_DRAW);
+    glPatchParameteri(GL_PATCH_VERTICES, 4);
+    GLuint p = link({vs, tcs, tes, nullptr, fs});
+    glUseProgram(p);
+    std::vector<uint8_t> images[2];
+    unsigned long long tessellated[2] = {};
+    for (int separate = 0; separate < 2; ++separate) {
+        glClearColor(0, 0, 0, 0);
+        glClear(GL_COLOR_BUFFER_BIT);
+        gpu::Counters counters;
+        if (separate) {
+            for (size_t i = 0; i < 7; ++i)
+                if (commands[i][1])
+                    glDrawElementsIndirect(GL_PATCHES, GL_UNSIGNED_INT, reinterpret_cast<const void*>(i * sizeof(commands[0])));
+        } else {
+            glMultiDrawElementsIndirect(GL_PATCHES, GL_UNSIGNED_INT, nullptr, 7, 0);
+        }
+        tessellated[separate] = counters["tessMetal"] + counters["tessCpu"];
+        images[separate] = gpu::readRGBA8(0, 0, 64, 64);
+    }
+    CHECK_GL();
+    int drawn = 0, different = 0;
+    for (size_t i = 0; i < images[0].size(); i += 4) {
+        drawn += images[1][i + 3] != 0;
+        different += !gpu::near(&images[0][i], &images[1][i], 1);
+    }
+    if (different) std::fprintf(stderr, "  %d of 4096 pixels differ\n", different);
+    CHECK_EQ(different, 0);
+    CHECK(drawn > 300);
+    CHECK_EQ(tessellated[1], 6ull);
+    CHECK_EQ(tessellated[0], 2ull);  // the first command, then one batch
+    glDeleteProgram(p);
+    glDeleteBuffers(4, buffers);
+    glDeleteVertexArrays(1, &vao);
+}
+
 TESS_TEST(gpu_tess_primitives_generated) {
     // Every outer and inner level 1: one triangle per patch.
     const char* tes = R"(#version 400 core
