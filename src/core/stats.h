@@ -60,8 +60,9 @@ struct Frame {
     // on one shows here.
     uint64_t tessCpu = 0, tessMetal = 0, tessMetalFlat = 0, tessPrelude = 0;
     // Indirect draw commands read by the GPU, and read on the CPU (after
-    // waiting for GPU writes to the command buffer).
-    uint64_t indirectGpu = 0, indirectCpu = 0;
+    // waiting for GPU writes to the command buffer); multi-draws whose
+    // commands the GPU read with the draw state bound once for several.
+    uint64_t indirectGpu = 0, indirectCpu = 0, indirectGpuBatches = 0;
     // The CPU-read commands by IndirectCpu reason, those that draw nothing
     // (no vertices or no instances), and the waits for GPU writes to the
     // commands before reading them.

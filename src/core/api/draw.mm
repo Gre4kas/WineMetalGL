@@ -149,11 +149,14 @@ bool readIndirectCommand(Context& ctx, const void* indirect, uint32_t* words, si
     return true;
 }
 
-// Draws the command of `count` words at `indirect` in DRAW_INDIRECT_BUFFER
-// with the GPU reading it (DrawState::drawIndirect), so commands that shaders
-// write (GPU culling) draw without waiting for them. False when the draw
-// takes the CPU path instead, which also reports the GL errors.
-bool drawIndirectOnGpu(Context& ctx, GLenum mode, GLenum type, const void* indirect, size_t count) {
+// Draws the command of `count` words at `indirect` in DRAW_INDIRECT_BUFFER,
+// and up to `draws` - 1 more `step` bytes apart (a multi-draw's, which the
+// caller checked fit), with the GPU reading them (DrawState::drawIndirect),
+// so commands that shaders write (GPU culling) draw without waiting for them.
+// Returns the commands drawn; 0 when the draw takes the CPU path instead,
+// which also reports the GL errors.
+GLsizei drawIndirectOnGpu(Context& ctx, GLenum mode, GLenum type, const void* indirect, size_t count, GLsizei draws = 1,
+                          uintptr_t step = 0) {
     const uintptr_t offset = reinterpret_cast<uintptr_t>(indirect);
     Buffer* buffer = ctx.state.drawIndirectBuffer.get();
     const uint64_t size = buffer ? static_cast<uint64_t>(std::max<GLsizeiptr>(0, buffer->size)) : 0;
@@ -164,9 +167,9 @@ bool drawIndirectOnGpu(Context& ctx, GLenum mode, GLenum type, const void* indir
                           static_cast<unsigned long long>(size), buffer && buffer->mapped, static_cast<unsigned long long>(offset));
             stats::indirectCpu(stats::kIndirectCommands, std::to_string(buffer ? buffer->name : 0), detail);
         }
-        return false;
+        return 0;
     }
-    return ctx.draw().drawIndirect(mode, type, *buffer, offset);
+    return ctx.draw().drawIndirect(mode, type, *buffer, offset, draws, step);
 }
 
 bool validIndirectMode(Context& ctx, GLenum mode) {
@@ -237,12 +240,13 @@ void DrawElementsIndirect(Context& ctx, GLenum mode, GLenum type, const void* in
     drawElementsCommand(ctx, mode, type, indirect, false);
 }
 
-// GL 4.3 / GL_ARB_multi_draw_indirect: each command as its own indirect
-// draw (read by the GPU or the CPU, as for the single-draw forms), with
-// gl_DrawID its index. The commands share the draw state (validMultiDraw
-// checked the rest): once one takes the CPU path, so do the others, without
-// trying the GPU's, and those that draw nothing (GPU culling leaves most
-// commands empty) cost a read.
+// GL 4.3 / GL_ARB_multi_draw_indirect: the commands read by the GPU or the
+// CPU, as for the single-draw forms, with gl_DrawID their index. The
+// commands share the draw state (validMultiDraw checked the rest): the GPU
+// reads them all after one validation and one binding of the state (one at
+// a time when the vertex stage reads gl_DrawID); once one takes the CPU
+// path, so do the others, without trying the GPU's, and those that draw
+// nothing (GPU culling leaves most commands empty) cost a read.
 namespace {
 
 // INVALID_OPERATION, before anything draws, when `drawcount` commands of
@@ -263,8 +267,12 @@ void multiDrawArraysIndirect(Context& ctx, GLenum mode, const void* indirect, GL
     for (GLsizei i = 0; i < drawcount; ++i) {
         DrawState::DrawIdScope id(ctx.draw(), i);
         const void* at = reinterpret_cast<const void*>(reinterpret_cast<uintptr_t>(indirect) + step * static_cast<uintptr_t>(i));
-        if (cpu) stats::repeatIndirectCpu();
-        else if (drawIndirectOnGpu(ctx, mode, GL_NONE, at, 4)) continue;
+        if (cpu) {
+            stats::repeatIndirectCpu();
+        } else if (const GLsizei drawn = drawIndirectOnGpu(ctx, mode, GL_NONE, at, 4, drawcount - i, step)) {
+            i += drawn - 1;
+            continue;
+        }
         drawArraysCommand(ctx, mode, at, cpu);
         cpu = true;
     }
@@ -288,8 +296,12 @@ void multiDrawElementsIndirect(Context& ctx, GLenum mode, GLenum type, const voi
     for (GLsizei i = 0; i < drawcount; ++i) {
         DrawState::DrawIdScope id(ctx.draw(), i);
         const void* at = reinterpret_cast<const void*>(reinterpret_cast<uintptr_t>(indirect) + step * static_cast<uintptr_t>(i));
-        if (cpu) stats::repeatIndirectCpu();
-        else if (drawIndirectOnGpu(ctx, mode, type, at, 5)) continue;
+        if (cpu) {
+            stats::repeatIndirectCpu();
+        } else if (const GLsizei drawn = drawIndirectOnGpu(ctx, mode, type, at, 5, drawcount - i, step)) {
+            i += drawn - 1;
+            continue;
+        }
         if (batching) {
             std::array<uint32_t, 5> command;
             // After the first read (which waited for GPU writes to the

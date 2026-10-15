@@ -2,6 +2,8 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
+#include <string>
 #include <vector>
 
 namespace wmgl::shader {
@@ -30,5 +32,25 @@ std::vector<uint32_t> flattenArraysOfArrays(std::vector<uint32_t> spirv);
 // textures: a Metal function takes only 8 read_write textures. Atomics,
 // images passed to functions and any other use keep both accesses.
 std::vector<uint32_t> inferStorageImageAccess(std::vector<uint32_t> spirv);
+
+// What the flat inputs of `fragment` are computed from in `vertex`, the
+// stage that feeds them. When nothing that differs between the vertices of
+// a primitive reaches them other than vertex attributes, `perVertex` is
+// false and `attribs` lists those attributes (bit = GL location). With each
+// of them per instance or disabled, the vertices of a primitive then give
+// the same flat values, so its provoking vertex makes no difference.
+// Uniforms, constants, buffer and texture reads, gl_InstanceID,
+// gl_BaseVertex, gl_BaseInstance and gl_DrawID are the same for every
+// vertex of a primitive; gl_VertexID or a memory write makes `perVertex`
+// true. A branch condition counts as a source of the stores and return
+// values whose running it decides (control dependence). `attribute`
+// gives the locations (bit = GL location) of the vertex input named
+// `name`, false for an unknown name.
+struct FlatSources {
+    bool perVertex = true;
+    uint32_t attribs = 0;
+};
+FlatSources flatVaryingSources(const std::vector<uint32_t>& vertex, const std::vector<uint32_t>& fragment,
+                               const std::function<bool(const std::string& name, uint32_t& locations)>& attribute);
 
 }  // namespace wmgl::shader

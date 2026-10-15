@@ -130,6 +130,7 @@ no `opengl32=native` override, and the program got Wine's own OpenGL.
 | `WINEMETALGL_BATCH=0` | Make every GL call its own unix call (by default the module batches calls that return nothing and take values, and runs them before the next other call) |
 | `WINEMETALGL_COMMIT_DRAWS=<n>` | Commit the recorded work to the GPU once it holds `n` draws (default 256), so the GPU runs a frame's work while the CPU records the rest: where a draw starts a render pass, or within one past `8 × n` draws (a commit ends the pass); 0 commits only when a GL call needs the GPU's results and at SwapBuffers |
 | `WINEMETALGL_METAL_TESSELLATION=0` | Tessellate every patch on the CPU, after reading the control stage's levels back, instead of drawing rasterized triangle and quad patches with Metal's tessellator |
+| `WINEMETALGL_FLAT_ANALYSIS=0` | Rotate the indices of every draw with flat fragment inputs and the last-vertex convention (reading indirect commands on the CPU), instead of only those whose flat values can differ between a primitive's vertices |
 | `WINEMETALGL_SAMPLER_LOD_BIAS=0` | Filter lookups through samplers with a LOD bias in the shader, as on macOS 15 where Metal's samplers have no LOD bias (for testing that path) |
 | `WINEMETALGL_VERTEX_OFFSETS16=1` | Draw with vertex starts and base vertices past 16 bits through CPU-written indices, as on macOS virtual machines' GPU (for testing that path) |
 | `WINEMETALGL_PREWARM=0` | Compile a program's Metal functions at its first draw instead of in the background after it links |

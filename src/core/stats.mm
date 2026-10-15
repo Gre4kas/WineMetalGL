@@ -137,6 +137,7 @@ bool counter(const char* name, uint64_t& value) {
         WMGL_COUNTER(calls), WMGL_COUNTER(draws), WMGL_COUNTER(passes), WMGL_COUNTER(pipelineMisses),
         WMGL_COUNTER(programLinks), WMGL_COUNTER(waits), WMGL_COUNTER(convertedVertices), WMGL_COUNTER(cpuIndexDraws),
         WMGL_COUNTER(tessCpu), WMGL_COUNTER(tessMetal), WMGL_COUNTER(tessMetalFlat), WMGL_COUNTER(indirectGpu),
+        WMGL_COUNTER(indirectGpuBatches),
         WMGL_COUNTER(indirectCpu), WMGL_COUNTER(indirectCpuEmpty), WMGL_COUNTER(indirectWaits), WMGL_COUNTER(commits),
         WMGL_COUNTER(queryCommits), WMGL_COUNTER(readsAsync), WMGL_COUNTER(readsWaiting)};
 #undef WMGL_COUNTER
@@ -202,7 +203,7 @@ void endFrame() {
                  "winemetalgl:stats: frame %llu %.2f ms | gl %.2f ms in %llu calls | present %.2f ms (drawable %.2f ms) | "
                  "draws %llu passes %llu | pipelines %llu (%.2f ms) links %llu (%.2f ms) | transient %llu KiB | "
                  "waits %llu (%.2f ms) | lock %.2f ms | converted %llu vertices, %llu reused (client %llu format %llu "
-                 "[0x%llx] other %llu) | cpu indices %llu | tessellation cpu %llu metal %llu (flat %llu, prelude %llu) | indirect gpu %llu cpu %llu (empty %llu waits %llu; commands %llu "
+                 "[0x%llx] other %llu) | cpu indices %llu | tessellation cpu %llu metal %llu (flat %llu, prelude %llu) | indirect gpu %llu (batches %llu) cpu %llu (empty %llu waits %llu; commands %llu "
                  "stage %llu capture %llu query %llu primitive %llu parameters %llu converted %llu index type %llu "
                  "restart %llu elements mapped %llu writing %llu max index %llu) | uniforms %llu KiB | commits %llu (query %llu) | "
                  "pass ends: target %llu blit %llu compute %llu visibility %llu commit %llu barrier %llu clear %llu "
@@ -220,7 +221,8 @@ void endFrame() {
                  static_cast<unsigned long long>(f.convertedOther), static_cast<unsigned long long>(f.cpuIndexDraws),
                  static_cast<unsigned long long>(f.tessCpu), static_cast<unsigned long long>(f.tessMetal),
                  static_cast<unsigned long long>(f.tessMetalFlat), static_cast<unsigned long long>(f.tessPrelude),
-                 static_cast<unsigned long long>(f.indirectGpu), static_cast<unsigned long long>(f.indirectCpu),
+                 static_cast<unsigned long long>(f.indirectGpu), static_cast<unsigned long long>(f.indirectGpuBatches),
+                 static_cast<unsigned long long>(f.indirectCpu),
                  static_cast<unsigned long long>(f.indirectCpuEmpty), static_cast<unsigned long long>(f.indirectWaits),
                  static_cast<unsigned long long>(f.indirectCpuReasons[kIndirectCommands]),
                  static_cast<unsigned long long>(f.indirectCpuReasons[kIndirectStage]),

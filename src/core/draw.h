@@ -71,13 +71,19 @@ public:
     // Starts a draw of `mode`: the fixed-function program is chosen for it.
     void beginDraw(GLenum mode);
 
-    // One glDraw*Indirect command, read by the GPU from `commands` at
-    // `offset` (validated by the caller: inside the buffer, aligned): a
+    // glDraw*Indirect commands read by the GPU from `commands` at `offset`:
+    // one, or the `count` commands `stride` bytes apart of a multi-draw
+    // (validated by the caller: inside the buffer, aligned). Each is a
     // DrawArraysIndirectCommand, or with `type` (GL_UNSIGNED_SHORT or
     // GL_UNSIGNED_INT) a DrawElementsIndirectCommand of the element buffer.
-    // False, having drawn nothing, when the draw needs the command on the
-    // CPU (indirectCpuReason); the caller then reads it and draws.
-    bool drawIndirect(GLenum mode, GLenum type, Buffer& commands, uintptr_t offset);
+    // The commands of a multi-draw share the draw state, which is validated
+    // and bound once for all of them (one Metal indirect draw each), except
+    // when the vertex stage reads gl_DrawID: then one command is drawn and
+    // the caller sets gl_DrawID for the next. Returns the commands drawn; 0,
+    // having drawn nothing, when the draw needs the commands on the CPU
+    // (indirectCpuReason): the caller then reads them and draws.
+    GLsizei drawIndirect(GLenum mode, GLenum type, Buffer& commands, uintptr_t offset, GLsizei count = 1,
+                         uintptr_t stride = 0);
 
     // Multi-draw indirect commands of patches read on the CPU: whether the
     // current state lets several be drawn as one batch (drawPatchCommands),
@@ -136,10 +142,12 @@ private:
     // before the draw's pass starts. Once per texture.
     void uncompressFeedbackTextures(LinkedProgram& program);
     id<MTLRenderCommandEncoder> prepare(GLenum mode, MTLPrimitiveType& primitive);
-    // An indirect draw command in a buffer, read by the GPU.
+    // Indirect draw commands in a buffer, read by the GPU: `count` of them,
+    // `stride` bytes apart.
     struct IndirectSource {
         id<MTLBuffer> buffer;
         NSUInteger offset;
+        NSUInteger count = 1, stride = 0;
     };
     // Encodes one draw. indexData (CPU, uint32) or indexBuffer select indexed drawing.
     // minVertex/vertexSpan is the vertex range attribute conversion must cover.
