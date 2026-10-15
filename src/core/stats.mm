@@ -156,7 +156,7 @@ bool counter(const char* name, uint64_t& value) {
     static const std::pair<const char*, uint64_t Frame::*> fields[] = {
         WMGL_COUNTER(calls), WMGL_COUNTER(draws), WMGL_COUNTER(passes), WMGL_COUNTER(pipelineMisses),
         WMGL_COUNTER(programLinks), WMGL_COUNTER(waits), WMGL_COUNTER(convertedVertices), WMGL_COUNTER(cpuIndexDraws),
-        WMGL_COUNTER(tessCpu), WMGL_COUNTER(tessMetal), WMGL_COUNTER(tessMetalFlat), WMGL_COUNTER(tessMdiGpu), WMGL_COUNTER(indirectGpu),
+        WMGL_COUNTER(tessCpu), WMGL_COUNTER(tessMetal), WMGL_COUNTER(tessMetalFlat), WMGL_COUNTER(tessMdiGpu), WMGL_COUNTER(positionOnlyPipelines), WMGL_COUNTER(indirectGpu),
         WMGL_COUNTER(indirectGpuBatches),
         WMGL_COUNTER(indirectCpu), WMGL_COUNTER(indirectCpuEmpty), WMGL_COUNTER(indirectWaits), WMGL_COUNTER(commits),
         WMGL_COUNTER(queryCommits), WMGL_COUNTER(readsAsync), WMGL_COUNTER(readsWaiting)};

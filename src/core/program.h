@@ -80,7 +80,12 @@ struct LinkedProgram {
     // post-tessellation vertex function for triangle or quad patches
     // (shader::postTessellationVertexMsl), without [[point_size]], with
     // clamp-to-border emulation variant `borders`. Nil if it has none.
-    id<MTLFunction> postTessellationVertex(bool quads, uint16_t borders);
+    id<MTLFunction> postTessellationVertex(bool quads, uint16_t borders, bool positionOnly = false);
+    // The vertex function writing only the position (and clip distances,
+    // layer, viewport) for depth-only passes: the other outputs become
+    // locals, which the compiler removes with what computes them. Nil when
+    // the shader's shape is not one the rewrite knows.
+    id<MTLFunction> positionOnlyVertex(bool pointSize);
     // On the evaluation executable: a Metal tessellation pipeline could not
     // be built, so its patches are tessellated on the CPU.
     std::atomic<bool> metalTessellationFailed{false};
@@ -140,6 +145,8 @@ private:
     id<MTLFunction> passthrough_ = nil;
     id<MTLFunction> noPointSize_[2] = {};
     bool noPointSizeFailed_[2] = {};
+    id<MTLFunction> positionOnly_[2] = {};
+    bool positionOnlyFailed_[2] = {};
     id<MTLComputePipelineState> kernel_ = nil;
     bool passthroughFailed_ = false, kernelFailed_ = false;
     id<MTLComputePipelineState> compute_ = nil;

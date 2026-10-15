@@ -7,6 +7,8 @@
 #include <future>
 #include <list>
 #include <mutex>
+#include <regex>
+#include <sstream>
 #include <string>
 #include <unordered_map>
 
@@ -150,6 +152,46 @@ std::string withoutPointSize(std::string msl) {
     return msl;
 }
 
+
+// The MSL of a vertex function with only its position outputs (see
+// LinkedProgram::positionOnlyVertex), or "" when `msl` has another shape.
+std::string positionOnlyMsl(const std::string& msl) {
+    const size_t start = msl.find("struct main0_out\n{\n");
+    if (start == std::string::npos) return "";
+    const size_t end = msl.find("\n};\n", start);
+    if (end == std::string::npos) return "";
+    const std::string body = msl.substr(start + 19, end - start - 19);
+    std::string full, kept, copy;
+    std::istringstream lines(body);
+    static const std::regex member("^\\s*(.+?)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*(\\[\\[.*\\]\\])?\\s*;\\s*$");
+    for (std::string line; std::getline(lines, line);) {
+        std::smatch m;
+        if (!std::regex_match(line, m, member)) return "";
+        const std::string attrs = m[3];
+        full += "    " + m[1].str() + " " + m[2].str() + ";\n";
+        const bool position = attrs.find("[[position") != std::string::npos || attrs.find("clip_distance") != std::string::npos ||
+                              attrs.find("render_target_array_index") != std::string::npos ||
+                              attrs.find("viewport_array_index") != std::string::npos ||
+                              attrs.find("point_size") != std::string::npos;
+        if (!position) continue;
+        if (m[1].str().find('[') != std::string::npos) return "";  // arrays: not copied below
+        kept += line + "\n";
+        copy += " wmgl_ret." + m[2].str() + " = out." + m[2].str() + ";";
+    }
+    if (kept.empty()) return "";
+    std::string out = msl.substr(0, start) + "struct main0_out_full\n{\n" + full + "};\n\nstruct main0_out\n{\n" + kept + "};\n" +
+                      msl.substr(end + 4);
+    // The function's own struct is the full one; it returns the position part.
+    const size_t declared = out.find("main0_out out = {};");
+    if (declared == std::string::npos || out.find("main0_out out = {};", declared + 1) != std::string::npos) return "";
+    out.replace(declared, 9, "main0_out_full");
+    for (size_t at = out.find("return out;"); at != std::string::npos; at = out.find("return out;", at + 1)) {
+        const std::string ret = "{ main0_out wmgl_ret;" + copy + " return wmgl_ret; }";
+        out.replace(at, 11, ret);
+        at += ret.size();
+    }
+    return out;
+}
 }  // namespace
 
 id<MTLFunction> LinkedProgram::function(shader::Stage stage) {
@@ -304,6 +346,19 @@ id<MTLFunction> LinkedProgram::vertexWithoutPointSize(bool geometryPass) {
     return noPointSize_[v];
 }
 
+id<MTLFunction> LinkedProgram::positionOnlyVertex(bool pointSize) {
+    const int vs = static_cast<int>(shader::Stage::Vertex);
+    if (pipeline) return stageExecutable[vs] ? stageExecutable[vs]->positionOnlyVertex(pointSize) : nil;
+    std::lock_guard<std::mutex> lock(mutex_);
+    const int v = pointSize ? 1 : 0;
+    if (positionOnly_[v] || positionOnlyFailed_[v]) return positionOnly_[v];
+    const shader::StageOutput& output = link.stages[vs];
+    std::string msl = output.present ? positionOnlyMsl(pointSize ? output.msl : withoutPointSize(output.msl)) : "";
+    positionOnly_[v] = msl.empty() ? nil : compileFunction(msl, output.entryPoint, vs);
+    positionOnlyFailed_[v] = positionOnly_[v] == nil;
+    return positionOnly_[v];
+}
+
 id<MTLFunction> LinkedProgram::vertexWithBorders(bool rasterization, bool pointSize, uint16_t borders) {
     const int vs = static_cast<int>(shader::Stage::Vertex);
     if (pipeline) return stageExecutable[vs] ? stageExecutable[vs]->vertexWithBorders(rasterization, pointSize, borders) : nil;
@@ -389,16 +444,17 @@ id<MTLComputePipelineState> LinkedProgram::kernelWithBorders(const shader::Stage
     return state;
 }
 
-id<MTLFunction> LinkedProgram::postTessellationVertex(bool quads, uint16_t borders) {
+id<MTLFunction> LinkedProgram::postTessellationVertex(bool quads, uint16_t borders, bool positionOnly) {
     const int vs = static_cast<int>(shader::Stage::Vertex);
-    if (pipeline) return stageExecutable[vs] ? stageExecutable[vs]->postTessellationVertex(quads, borders) : nil;
-    const std::string key = std::string(quads ? "q" : "t") + std::to_string(borders);
+    if (pipeline) return stageExecutable[vs] ? stageExecutable[vs]->postTessellationVertex(quads, borders, positionOnly) : nil;
+    const std::string key = std::string(quads ? "q" : "t") + (positionOnly ? "p" : "") + std::to_string(borders);
     std::lock_guard<std::mutex> lock(mutex_);
     if (auto it = postTessellation_.find(key); it != postTessellation_.end()) return it->second;
     const shader::StageOutput& output = link.stages[vs];
     std::string msl = output.present ? shader::postTessellationVertexMsl(output.msl, output.entryPoint, quads) : "";
     if (!msl.empty()) msl = withoutPointSize(msl);
     if (!msl.empty() && borders) msl = shader::mslWithBorders(msl, shader::borderVariantDefinitions(borders));
+    if (!msl.empty() && positionOnly) msl = positionOnlyMsl(msl);
     id<MTLFunction> function = msl.empty() ? nil : compileFunction(msl, output.entryPoint, vs);
     postTessellation_[key] = function;
     return function;

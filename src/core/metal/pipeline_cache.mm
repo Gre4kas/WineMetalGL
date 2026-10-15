@@ -76,7 +76,24 @@ id<MTLRenderPipelineState> PipelineCache::render(const PipelineKey& key, LinkedP
                       m.find("access::read_write") != std::string::npos || m.find("discard_fragment") != std::string::npos;
             program.fragmentDepthOnlyRemovable.store(writes ? 0 : 1);
         }
-        if (enabled && program.fragmentDepthOnlyRemovable.load() == 1) desc.fragmentFunction = nil;
+        if (enabled && program.fragmentDepthOnlyRemovable.load() == 1) {
+            desc.fragmentFunction = nil;
+            // Nothing reads the other outputs either: a vertex function that
+            // writes only the position, for depth textures never drawn with
+            // colour (DrawState sets positionOnly; WINEMETALGL_POSITION_ONLY=0 keeps it).
+            static const bool positionOnly = [] {
+                const char* v = std::getenv("WINEMETALGL_POSITION_ONLY");
+                return !v || v[0] != '0';
+            }();
+            if (positionOnly && key.positionOnly && !key.borders[0] && !key.geometryPass) {
+                id<MTLFunction> reduced = key.tessellation ? program.postTessellationVertex(key.tessellation & 2, 0, true)
+                                                           : program.positionOnlyVertex(pointSizeAllowed);
+                if (reduced) {
+                    desc.vertexFunction = reduced;
+                    stats::count(&stats::Frame::positionOnlyPipelines);
+                }
+            }
+        }
     }
     MTLVertexDescriptor* vd = [MTLVertexDescriptor vertexDescriptor];
     for (uint32_t i = 0; i < std::size(key.attributes); ++i) {

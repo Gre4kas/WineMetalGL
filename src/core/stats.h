@@ -62,6 +62,8 @@ struct Frame {
     // Multi-draws of patches drawn from GPU-written commands without reading
     // them (DrawState::drawPatchesIndirectGpu), and their commands.
     uint64_t tessMdiGpu = 0, tessMdiGpuCommands = 0;
+    // Render pipelines built with a position-only vertex function (depth-only passes).
+    uint64_t positionOnlyPipelines = 0;
     // Indirect draw commands read by the GPU, and read on the CPU (after
     // waiting for GPU writes to the command buffer); multi-draws whose
     // commands the GPU read with the draw state bound once for several.

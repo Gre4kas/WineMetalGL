@@ -7,6 +7,7 @@
 #include <memory>
 #include <cstdint>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "core/format/formats.h"
@@ -333,6 +334,8 @@ private:
         uint32_t next = 0;
     };
     std::unordered_map<uint64_t, MdiSite> mdiSites_;
+    // Depth textures (MTLTexture) a pass drew to with colour attachments (prepare).
+    std::unordered_set<const void*> depthWithColor_;
     // Image bindings with a shadow texture (core::ImageShadow) for the draw
     // in progress: copied in by prepareSamplerStorage, back when the draw ends.
     struct PendingShadow {

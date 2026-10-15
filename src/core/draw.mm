@@ -1620,6 +1620,18 @@ id<MTLRenderCommandEncoder> DrawState::prepare(GLenum mode, MTLPrimitiveType& pr
     }
     key.depthFormat = static_cast<uint16_t>(formats.depth);
     key.stencilFormat = static_cast<uint16_t>(formats.stencil);
+    // Depth textures drawn with colour attachments (depth pre-passes, the
+    // main view's depth) keep the full vertex function in their depth-only
+    // passes too: the same geometry's depth must match exactly there. Others
+    // (shadow maps) may take one that writes only the position.
+    key.positionOnly = 0;
+    if (target.depth.texture) {
+        const void* depth = (__bridge const void*)target.depth.texture;
+        bool color = false;
+        for (int i = 0; i < 8; ++i) color |= formats.color[i] != 0;
+        if (color) depthWithColor_.insert(depth);
+        else key.positionOnly = key.rasterization && !depthWithColor_.count(depth);
+    }
     (void)primitive;
     lastKey_ = key;
     lastFormats_ = formats;
