@@ -720,6 +720,16 @@ void copyRegion(Context& ctx, Texture& tex, int face, int level, int dx, int dy,
         imageChanged(ctx, tex);
         return;
     }
+    // Other colour formats convert on the GPU. Per texel on the CPU, under
+    // Rosetta, a full-screen copy at 3840x2160 took ~115 ms: DOOM (2016)
+    // makes one every loading-screen frame (issue #28).
+    if (tex.target != GL_TEXTURE_1D_ARRAY &&
+        copyRegionGpu(ctx, {src.texture, src.level, src3D ? srcZ : srcSlice}, *src.info,
+                        {tex.mtl, static_cast<uint32_t>(level), static_cast<uint32_t>(tex.target == GL_TEXTURE_3D ? destZ : destSlice)},
+                        dstInfo, x0, y0, mx, my, cw, ch)) {
+        imageChanged(ctx, tex);
+        return;
+    }
     // Format conversion through the canonical texel.
     std::vector<uint8_t> texels = readImageTexels(ctx, src.texture, src.info->storage, src.level, srcSlice, x0, y0,
                                                   static_cast<int>(srcZ), cw, ch, 1);

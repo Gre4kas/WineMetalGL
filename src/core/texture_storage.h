@@ -3,6 +3,7 @@
 
 #import <Metal/Metal.h>
 
+#include "core/metal/command_stream.h"
 #include "core/metal/transient.h"
 #include "core/objects.h"
 #include "core/shader/border.h"
@@ -84,6 +85,18 @@ void uploadStaged(Context& ctx, Texture& tex, int face, int level, int x, int y,
 namespace api {
 // glGenerateMipmap of a depth or depth/stencil texture (api/blit.mm).
 void generateDepthMipmaps(Context& ctx, Texture& tex, int base, int last);
+// glCopyTex(Sub)Image's copy of the w x h rectangle at (sx, sy) of `src` to
+// (dx, dy) of `dst` between different formats, on the GPU (api/blit.mm): a
+// blit when the stored layouts match but for sRGB, else a render pass
+// (colour, or depth into a depth-only image). Stored values copy as the CPU
+// conversion copies them: sRGB encodings are kept, channels the source lacks
+// read (0, 0, 0, 1), and an RGB destination keeps its stored alpha. False
+// when the formats need the CPU conversion (alpha, luminance and intensity
+// formats, integer formats, a destination with stencil, 1D images, a
+// destination Metal cannot render to).
+bool copyRegionGpu(Context& ctx, const RenderTargetDesc::Target& src, const FormatInfo& srcInfo,
+                     const RenderTargetDesc::Target& dst, const FormatInfo& dstInfo, int sx, int sy, int dx, int dy, int w,
+                     int h);
 // Whether a compressed format is exposed in this context (api/texture.mm).
 bool compressedFormatSupported(Context& ctx, const FormatInfo* info);
 }  // namespace api

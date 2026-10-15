@@ -18,6 +18,7 @@
 #include "core/draw.h"
 #include "core/metal/device.h"
 #include "core/query.h"
+#include "core/texture_storage.h"
 #include "core/util/log.h"
 #include "gl_api.gen.h"
 
@@ -435,6 +436,84 @@ void BlitFramebuffer(Context& ctx, GLint srcX0, GLint srcY0, GLint srcX1, GLint 
     // Draws after the blit start a fresh pass with their own state.
     ctx.stream().endEncoder();
     ctx.markDirty(kDirtyAll);
+}
+
+namespace {
+
+MTLPixelFormat withoutSrgb(MTLPixelFormat f) {
+    switch (f) {
+    case MTLPixelFormatRGBA8Unorm_sRGB: return MTLPixelFormatRGBA8Unorm;
+    case MTLPixelFormatBGRA8Unorm_sRGB: return MTLPixelFormatBGRA8Unorm;
+    default: return f;
+    }
+}
+
+// The texture with its sRGB encoding read and written as stored values (a
+// view of the same format without sRGB, which needs no format-view usage).
+id<MTLTexture> storedValues(id<MTLTexture> t) {
+    const MTLPixelFormat f = withoutSrgb(t.pixelFormat);
+    return f == t.pixelFormat ? t : [t newTextureViewWithPixelFormat:f];
+}
+
+bool plainColor(const FormatInfo& info) {
+    const GLenum b = info.baseFormat;
+    if (b != GL_RED && b != GL_RG && b != GL_RGB && b != GL_RGBA) return false;
+    if (info.isInteger() || info.isDepthOrStencil() || info.compressed) return false;
+    // RGB stored as RGBA reads alpha one, which is also the stored alpha.
+    for (int c = 0; c < 4; ++c)
+        if (info.swizzle[c] != static_cast<Swizzle>(c) && !(c == 3 && info.swizzle[c] == SwzOne && info.storedAlphaIsOne))
+            return false;
+    return true;
+}
+
+bool flat2D(id<MTLTexture> t) {
+    const MTLTextureType type = t.textureType;
+    return t.sampleCount == 1 && type != MTLTextureType1D && type != MTLTextureType1DArray;
+}
+
+}  // namespace
+
+bool copyRegionGpu(Context& ctx, const RenderTargetDesc::Target& src, const FormatInfo& srcInfo,
+                     const RenderTargetDesc::Target& dst, const FormatInfo& dstInfo, int sx, int sy, int dx, int dy, int w,
+                     int h) {
+    if (!flat2D(src.texture) || !flat2D(dst.texture) || !(dst.texture.usage & MTLTextureUsageRenderTarget)) return false;
+    // Depth into a depth-only image of another format, drawn as depth (a
+    // destination with stencil would need its stencil copied too).
+    const bool depth = srcInfo.isDepth() && dstInfo.isDepth() && !dstInfo.isStencil();
+    if (!depth && (!plainColor(srcInfo) || !plainColor(dstInfo))) return false;
+    id<MTLTexture> from = storedValues(src.texture), to = storedValues(dst.texture);
+    if (!from || !to) return false;
+    const bool src3D = from.textureType == MTLTextureType3D, dst3D = to.textureType == MTLTextureType3D;
+    // An RGB destination's stored alpha is one; a raw copy from a format with alpha would change it.
+    const bool keepAlpha = dstInfo.storedAlphaIsOne && !srcInfo.storedAlphaIsOne;
+    if (from.pixelFormat == to.pixelFormat && !keepAlpha && !depth) {
+        [ctx.stream().blit() copyFromTexture:from sourceSlice:src3D ? 0 : src.slice sourceLevel:src.level
+                                sourceOrigin:MTLOriginMake(sx, sy, src3D ? src.slice : 0) sourceSize:MTLSizeMake(w, h, 1)
+                                   toTexture:to destinationSlice:dst3D ? 0 : dst.slice destinationLevel:dst.level
+                           destinationOrigin:MTLOriginMake(dx, dy, dst3D ? dst.slice : 0)];
+        return true;
+    }
+    const uint32_t srcW = std::max<uint32_t>(1, static_cast<uint32_t>(from.width) >> src.level);
+    const uint32_t srcH = std::max<uint32_t>(1, static_cast<uint32_t>(from.height) >> src.level);
+    id<MTLRenderPipelineState> pipeline =
+        depth ? blitPipeline(@"wmgl_blit_depth_fs", MTLPixelFormatInvalid, to.pixelFormat, MTLPixelFormatInvalid, 1)
+              : blitPipeline(@"wmgl_blit_float_fs", to.pixelFormat, MTLPixelFormatInvalid, MTLPixelFormatInvalid, 1,
+                             !dstInfo.storedAlphaIsOne);
+    if (!pipeline) return false;
+    id<MTLTexture> view = sourceView(ctx, {from, src.level, src.slice}, srcW, srcH);
+    RenderTargetDesc target;
+    (depth ? target.depth : target.color[0]) = {to, dst.level, dst.slice};
+    target.width = std::max<uint32_t>(1, static_cast<uint32_t>(to.width) >> dst.level);
+    target.height = std::max<uint32_t>(1, static_cast<uint32_t>(to.height) >> dst.level);
+    const BlitParams params = {
+        {static_cast<float>(dx), static_cast<float>(dy), static_cast<float>(dx + w), static_cast<float>(dy + h)},
+        {static_cast<float>(sx), static_cast<float>(sy), static_cast<float>(sx + w), static_cast<float>(sy + h)},
+        {static_cast<float>(srcW), static_cast<float>(srcH), 0, 0}};
+    drawBlit(ctx, target, pipeline, view, params, {dx, dy, dx + w, dy + h}, depth, false);
+    // Draws after the copy start a fresh pass with their own state.
+    ctx.stream().endEncoder();
+    ctx.markDirty(kDirtyAll);
+    return true;
 }
 
 // glGenerateMipmap of a depth (or depth/stencil) texture: each level is

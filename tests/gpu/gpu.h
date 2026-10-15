@@ -26,7 +26,7 @@
     X(glUniform1f) X(glUniform4f) X(glBindAttribLocation) X(glBindFragDataLocation)                        \
     X(glGenTextures) X(glDeleteTextures) X(glBindTexture) X(glActiveTexture) X(glTexImage1D)                \
     X(glTexImage2D) X(glTexImage3D) X(glTexSubImage2D) X(glTexSubImage3D) X(glCompressedTexImage2D)       \
-    X(glGetCompressedTexImage) X(glCopyTexImage2D) X(glCopyTexSubImage2D) X(glGetTexImage)                \
+    X(glGetCompressedTexImage) X(glCopyTexImage2D) X(glCopyTexSubImage2D) X(glCopyTexSubImage3D) X(glGetTexImage)                \
     X(glGetTexLevelParameteriv) X(glTexParameteri) X(glTexParameterfv) X(glGetTexParameteriv)              \
     X(glGenerateMipmap) X(glTexBuffer) X(glTexImage2DMultisample) X(glIsTexture)                           \
     X(glGenSamplers) X(glDeleteSamplers) X(glBindSampler) X(glSamplerParameteri)                           \

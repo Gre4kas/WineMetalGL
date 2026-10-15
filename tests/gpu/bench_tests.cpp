@@ -277,3 +277,48 @@ TEST(bench_small_passes) {
     glDeleteVertexArrays(1, &vao);
     glDeleteProgram(p);
 }
+
+// glCopyTexSubImage2D of a 3840x2160 framebuffer into a texture of another
+// format, as DOOM (2016)'s loading screen copies every frame (issue #28).
+// Runs only with WMGL_BENCH set (copies, default 300); prints milliseconds
+// per copy, the GPU's work included (glFinish after each).
+TEST(bench_copy_tex_sub_image_4k) {
+    const char* env = std::getenv("WMGL_BENCH");
+    if (!env) return;
+    const int copies = std::max(1, std::atoi(env) / 10);
+    gpu::Fixture fixture(64, 64, true, 46);
+    CHECK(fixture.ok);
+    if (!fixture.ok) return;
+    constexpr int kW = 3840, kH = 2160;
+    struct Case {
+        const char* name;
+        GLenum src, dst;
+    } cases[] = {{"sRGB8_A8 -> RGBA8", GL_SRGB8_ALPHA8, GL_RGBA8}, {"RGBA16F -> RGBA8", GL_RGBA16F, GL_RGBA8},
+                 {"RGBA8 -> RGB10_A2", GL_RGBA8, GL_RGB10_A2}};
+    for (const Case& c : cases) {
+        GLuint tex[2] = {}, fb = 0;
+        glGenTextures(2, tex);
+        glBindTexture(GL_TEXTURE_2D, tex[0]);
+        glTexStorage2D(GL_TEXTURE_2D, 1, c.src, kW, kH);
+        glBindTexture(GL_TEXTURE_2D, tex[1]);
+        glTexStorage2D(GL_TEXTURE_2D, 1, c.dst, kW, kH);
+        glGenFramebuffers(1, &fb);
+        glBindFramebuffer(GL_FRAMEBUFFER, fb);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex[0], 0);
+        glClearColor(0.25f, 0.5f, 0.75f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, kW, kH);  // warm-up: pipelines are built on first use
+        glFinish();
+        const auto start = std::chrono::steady_clock::now();
+        for (int i = 0; i < copies; ++i) {
+            glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, kW, kH);
+            glFinish();
+        }
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count() / copies;
+        std::printf("  copy %dx%d %s: %.2f ms\n", kW, kH, c.name, ms);
+        CHECK_GL();
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glDeleteFramebuffers(1, &fb);
+        glDeleteTextures(2, tex);
+    }
+}
