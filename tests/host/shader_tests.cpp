@@ -770,3 +770,42 @@ TEST(shader_block_struct_member_location) {
         if (v.name == "TargetInterface.after") CHECK_EQ(v.location, 5);
     }
 }
+
+TEST(shader_line_continuation_before_420) {
+    // Godot 3's GLES3 canvas shader (Cassette Beasts, issue #31): multi-line
+    // macros in "#version 330", which desktop drivers accept.
+    const char* fs =
+        "#version 330\n"
+        "uniform sampler2D shadow_texture;\n"
+        "in vec2 uv;\n"
+        "out vec4 color;\n"
+        "#define SHADOW_TEST(m_ofs)                                     \\\n"
+        "\t{                                                          \\\n"
+        "\t\thighp float sd = texture(shadow_texture, vec2(m_ofs, uv.y)).r; \\\n"
+        "\t\tattenuation += step(0.5, sd);                            \\\n"
+        "\t}\n"
+        "void main() {\n"
+        "    float attenuation = 0.0;\n"
+        "    SHADOW_TEST(uv.x);\n"
+        "    SHADOW_TEST(uv.x + 0.25);\n"
+        "    color = vec4(attenuation);\n"
+        "}\n";
+    CompileResult r = compile(Stage::Fragment, fs);
+    CHECK(r.ok);
+    if (!r.ok) std::fprintf(stderr, "%s\n", r.log.c_str());
+    LinkInput in;
+    in.shaders.push_back({Stage::Vertex, "#version 330\nin vec4 p; out vec2 uv; void main() { uv = p.xy; gl_Position = p; }\n"});
+    in.shaders.push_back({Stage::Fragment, fs});
+    LinkResult l = link(in);
+    CHECK(l.ok);
+    if (!l.ok) std::fprintf(stderr, "%s\n", l.log.c_str());
+    // Lines after a continued one keep their numbers in the log.
+    CompileResult bad = compile(Stage::Fragment,
+                                "#version 330\nout vec4 c;\n#define A(x) \\\n  (x)\nvoid main() {\n  c = undefined_thing;\n}\n");
+    CHECK(!bad.ok);
+    CHECK(bad.log.find("0:6:") != std::string::npos);
+    if (bad.log.find("0:6:") == std::string::npos) std::fprintf(stderr, "%s\n", bad.log.c_str());
+    // Without a backslash at the end of the line nothing changes; CRLF continuations join too.
+    CHECK_EQ(spliceLineContinuations("a\\b\nc"), std::string("a\\b\nc"));
+    CHECK_EQ(spliceLineContinuations("a \\\r\nb\nc"), std::string("a b\n\nc"));
+}

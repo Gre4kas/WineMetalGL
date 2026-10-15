@@ -1006,7 +1006,7 @@ std::string checkComputeLimits(glslang::TShader& shader) {
 bool parseForCodegen(Stage stage, const std::string& original, ParsedShader& out, std::string& log,
                      const CaptureCode* capture = nullptr, const UpgradeOptions& upgrade = {}) {
     const EShLanguage lang = language(stage);
-    const SubroutineLowering subroutines = lowerSubroutines(stage, original);
+    const SubroutineLowering subroutines = lowerSubroutines(stage, spliceLineContinuations(original));
     if (!subroutines.ok) {
         log += subroutines.log;
         return false;
@@ -1792,7 +1792,7 @@ CompileResult compileUncached(Stage stage, const std::string& original) {
     initGlslang();
     CompileResult result;
     // Subroutines are lowered first: glslang does not implement them.
-    const SubroutineLowering subroutines = lowerSubroutines(stage, original);
+    const SubroutineLowering subroutines = lowerSubroutines(stage, spliceLineContinuations(original));
     if (!subroutines.ok) {
         result.log = subroutines.log;
         return result;
@@ -2600,7 +2600,7 @@ std::map<std::string, UniformInitializer> uniformInitializers(const std::vector<
     std::map<std::string, UniformInitializer> out;
     for (const ShaderSource& shader : shaders) {
         if (shader.source.find('=') == std::string::npos) continue;
-        const SubroutineLowering lowered = lowerSubroutines(shader.stage, shader.source);
+        const SubroutineLowering lowered = lowerSubroutines(shader.stage, spliceLineContinuations(shader.source));
         const std::string source = raiseComputeVersion(shader.stage, lowered.source);
         const EShLanguage lang = language(shader.stage);
         glslang::TShader parsed(lang);
@@ -3571,7 +3571,7 @@ static LinkResult linkImplCore(const LinkInput& input, const CaptureCode* captur
     // subroutine uniforms, whose selections live in hidden default-block
     // uniforms that are not part of the GL interface.
     for (const ShaderSource& shader : input.shaders) {
-        const SubroutineLowering lowered = lowerSubroutines(shader.stage, shader.source);
+        const SubroutineLowering lowered = lowerSubroutines(shader.stage, spliceLineContinuations(shader.source));
         SubroutineStageInfo& info = result.subroutines[static_cast<int>(shader.stage)];
         for (const std::string& type : lowered.info.types)
             if (std::find(info.types.begin(), info.types.end(), type) == info.types.end()) info.types.push_back(type);
