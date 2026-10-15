@@ -1573,6 +1573,82 @@ CompileResult compileUncached(Stage stage, const std::string& original) {
 
 }  // namespace
 
+namespace {
+
+// The #version of a GLSL ES shader: 100 without one, 0 for versions OpenGL
+// ES does not have (desktop ones).
+int esVersionOf(const std::string& source) {
+    const GlslVersion v = parseGlslVersion(source);
+    if (!v.declared) return 100;
+    if (!v.es) return v.number == 100 ? 100 : 0;
+    return v.number == 300 || v.number == 310 || v.number == 320 ? v.number : 0;
+}
+
+void configureNoClient(glslang::TShader& shader, EShLanguage lang) {
+    shader.setEnvInput(glslang::EShSourceGlsl, lang, glslang::EShClientNone, 0);
+    shader.setEnvClient(glslang::EShClientNone, glslang::EShTargetClientVersion(0));
+    shader.setEnvTarget(glslang::EShTargetNone, glslang::EShTargetLanguageVersion(0));
+}
+
+}  // namespace
+
+EsCompileResult compileEs(Stage stage, const std::string& source) {
+    initGlslang();
+    EsCompileResult result;
+    const EShLanguage lang = language(stage);
+    const int version = esVersionOf(source);
+    if (!version) {
+        result.log = "ERROR: 0:1: '#version' : OpenGL ES shaders are GLSL ES 1.00, 3.00 es, 3.10 es or 3.20 es\n";
+        return result;
+    }
+    // EXT_clip_cull_distance, which glslang has no GLSL ES form of: the
+    // shader is checked and compiled as GLSL 4.50 (its clip and cull
+    // distance built-ins), the extension's macro defined.
+    if (version >= 300 && source.find("GL_EXT_clip_cull_distance") != std::string::npos) {
+        std::string desktop = source;
+        const size_t at = desktop.find("#version");
+        const size_t end = desktop.find('\n', at);
+        desktop.replace(at, end - at, "#version 450 core\n#define GL_ES 1\n#define GL_EXT_clip_cull_distance 1");
+        for (size_t e = desktop.find("#extension"); e != std::string::npos; e = desktop.find("#extension", e + 1)) {
+            const size_t lineEnd = desktop.find('\n', e);
+            const std::string line = desktop.substr(e, lineEnd == std::string::npos ? std::string::npos : lineEnd - e);
+            if (line.find("GL_EXT_clip_cull_distance") != std::string::npos) desktop.replace(e, line.size(), "");
+        }
+        const CompileResult desktopResult = compile(stage, desktop);
+        result.ok = desktopResult.ok;
+        result.log = desktopResult.log;
+        result.desktop = desktop;
+        return result;
+    }
+    glslang::TShader shader(lang);
+    const char* text = source.c_str();
+    shader.setStrings(&text, 1);
+    configureNoClient(shader, lang);
+    result.ok = shader.parse(resources(), 100, EEsProfile, false, false, EShMsgDefault);
+    result.log = cleanLog(shader.getInfoLog(), shader.getInfoDebugLog());
+    if (!result.ok) return result;
+    // The preprocessed shader, its macros expanded with GLSL ES's values.
+    glslang::TShader pre(lang);
+    pre.setStrings(&text, 1);
+    configureNoClient(pre, lang);
+    std::string preprocessed;
+    glslang::TShader::ForbidIncluder includer;
+    if (!pre.preprocess(resources(), 100, EEsProfile, false, false, EShMsgOnlyPreprocessor, &preprocessed, includer)) {
+        result.ok = false;
+        result.log += cleanLog(pre.getInfoLog(), pre.getInfoDebugLog());
+        return result;
+    }
+    result.desktop = esToDesktopGlsl(preprocessed, version);
+    // Make sure the shader translates (as compile() does).
+    ParsedShader parsed;
+    std::string log;
+    if (!parseForCodegen(stage, result.desktop, parsed, log)) {
+        result.ok = false;
+        result.log += log;
+    }
+    return result;
+}
+
 // ---------------------------------------------------------------- link
 
 namespace {

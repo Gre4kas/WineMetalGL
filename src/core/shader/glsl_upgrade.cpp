@@ -87,6 +87,7 @@ GlslVersion parseGlslVersion(const std::string& source) {
         size_t j = i + 1;
         while (j < n && (source[j] == ' ' || source[j] == '\t')) ++j;
         if (source.compare(j, 7, "version") == 0) {
+            v.declared = true;
             j += 7;
             const size_t lineEnd = source.find('\n', j);
             std::istringstream line(source.substr(j, lineEnd == std::string::npos ? std::string::npos : lineEnd - j));
@@ -100,6 +101,60 @@ GlslVersion parseGlslVersion(const std::string& source) {
     }
     if (v.number <= 130 && !v.es) v.compatibility = true;
     return v;
+}
+
+std::string esToDesktopGlsl(const std::string& preprocessed, int version) {
+    if (version != 100) return preprocessed;
+    // GLSL ES 1.00 extensions' names for desktop GLSL 1.20 functions and
+    // variables, and its built-in constants in vectors (desktop GLSL 1.20
+    // counts components).
+    static const std::map<std::string, std::string> kRename = {
+        {"texture2DLodEXT", "texture2DLod"},         {"texture2DProjLodEXT", "texture2DProjLod"},
+        {"textureCubeLodEXT", "textureCubeLod"},     {"texture2DGradEXT", "texture2DGradARB"},
+        {"textureCubeGradEXT", "textureCubeGradARB"}, {"texture2DProjGradEXT", "textureProjGrad"},
+        {"shadow2DEXT", "shadow2D"},                 {"shadow2DProjEXT", "shadow2DProj"},
+        {"gl_FragDepthEXT", "gl_FragDepth"},         {"gl_MaxDrawBuffersEXT", "gl_MaxDrawBuffers"},
+        {"gl_MaxVaryingVectors", "(gl_MaxVaryingFloats / 4)"},
+        {"gl_MaxVertexUniformVectors", "(gl_MaxVertexUniformComponents / 4)"},
+        {"gl_MaxFragmentUniformVectors", "(gl_MaxFragmentUniformComponents / 4)"},
+    };
+    std::string out = "#version 120\n";
+    size_t lineStart = 0;
+    while (lineStart < preprocessed.size()) {
+        size_t lineEnd = preprocessed.find('\n', lineStart);
+        if (lineEnd == std::string::npos) lineEnd = preprocessed.size();
+        std::string line = preprocessed.substr(lineStart, lineEnd - lineStart);
+        lineStart = lineEnd + 1;
+        const size_t first = line.find_first_not_of(" \t");
+        if (first != std::string::npos && line[first] == '#') {
+            // #version and #extension lines go (blank: line numbers stay).
+            const size_t word = line.find_first_not_of(" \t", first + 1);
+            if (word != std::string::npos && (line.compare(word, 7, "version") == 0 || line.compare(word, 9, "extension") == 0)) {
+                out += '\n';
+                continue;
+            }
+            out += line + '\n';
+            continue;
+        }
+        for (size_t i = 0; i < line.size();) {
+            if (std::isalpha(static_cast<unsigned char>(line[i])) || line[i] == '_') {
+                size_t end = i;
+                while (end < line.size() && (std::isalnum(static_cast<unsigned char>(line[end])) || line[end] == '_')) ++end;
+                const auto it = kRename.find(line.substr(i, end - i));
+                out += it == kRename.end() ? line.substr(i, end - i) : it->second;
+                i = end;
+            } else if (std::isdigit(static_cast<unsigned char>(line[i]))) {
+                size_t end = i;
+                while (end < line.size() && (std::isalnum(static_cast<unsigned char>(line[end])) || line[end] == '_' || line[end] == '.')) ++end;
+                out += line.substr(i, end - i);
+                i = end;
+            } else {
+                out += line[i++];
+            }
+        }
+        out += '\n';
+    }
+    return out;
 }
 
 UpgradeResult upgradeLegacyGlsl(Stage stage, const std::string& source, const UpgradeOptions& options) {

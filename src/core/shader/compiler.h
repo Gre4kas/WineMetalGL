@@ -71,6 +71,15 @@ struct CompileResult {
 // Parses a single shader for glCompileShader (status and info log only).
 CompileResult compile(Stage stage, const std::string& source);
 
+// glCompileShader in OpenGL ES contexts: the status and log under GLSL ES's
+// rules (no #version: GLSL ES 1.00), and `desktop`, the shader as the GLSL
+// the rest of the compiler takes (glsl_upgrade.h esToDesktopGlsl), which
+// programs link.
+struct EsCompileResult : CompileResult {
+    std::string desktop;
+};
+EsCompileResult compileEs(Stage stage, const std::string& source);
+
 struct ShaderSource {
     Stage stage;
     std::string source;

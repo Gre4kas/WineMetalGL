@@ -345,6 +345,9 @@ public:
     bool compiled = false;   // glCompileShader has been called since the last source change
     bool compileStatus = false;
     std::string infoLog;
+    // OpenGL ES contexts: the GLSL ES source as desktop GLSL, which programs
+    // link (shader::compileEs).
+    std::string desktopSource;
     // GL_ARB_gl_spirv: the module glShaderBinary gave (SPIR_V_BINARY) and the
     // GLSL glSpecializeShader made of it (shader/spirv_input.h).
     bool spirv = false, specialized = false, spirvNamed = false;

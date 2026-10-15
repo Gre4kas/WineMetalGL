@@ -359,10 +359,18 @@ void CompileShader(Context& ctx, GLuint shader) {
     const shader::Stage stage = s->stage;
     const std::string source = s->source;
     shader::CompileResult result;
+    std::string desktop;
     {
         ShareUnlock unlocked(ctx);
-        result = shader::compile(stage, source);
+        if (ctx.isEs()) {
+            shader::EsCompileResult es = shader::compileEs(stage, source);
+            desktop = std::move(es.desktop);
+            result = std::move(es);
+        } else {
+            result = shader::compile(stage, source);
+        }
     }
+    s->desktopSource = std::move(desktop);
     s->compiled = true;
     s->compileStatus = result.ok;
     s->infoLog = result.log;
@@ -664,7 +672,7 @@ void LinkProgram(Context& ctx, GLuint program) {
         }
         input.spirv |= s->spirv;
         input.spirvUnnamed |= s->spirv && !s->spirvNamed;
-        std::string source = s->spirv ? s->spirvGlsl : s->source;
+        std::string source = s->spirv ? s->spirvGlsl : !s->desktopSource.empty() ? s->desktopSource : s->source;
         if (s->spirv && s->stage != shader::Stage::Compute) {
             // Inputs match the outputs of the closest earlier stage.
             int previous = -1;
