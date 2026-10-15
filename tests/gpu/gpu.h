@@ -61,7 +61,7 @@
     X(glClearBufferData) X(glClearBufferSubData) X(glFramebufferParameteri) X(glGetFramebufferParameteriv)          \
     X(glGetInternalformativ) X(glGetInternalformati64v) X(glBlendFunc) X(glGetSubroutineIndex)              \
     X(glUniformSubroutinesuiv) X(glGetSubroutineUniformLocation) X(glGetProgramResourceIndex)             \
-    X(glGetProgramResourceiv) X(glTexParameterIiv) X(glTexParameterIuiv) WMGL_GPU_FUNCS_GL44(X)
+    X(glGetProgramResourceiv) X(glTexParameterIiv) X(glTexParameterIuiv) X(glBlendEquation) WMGL_GPU_FUNCS_GL44(X)
 
 // GL 4.4-4.6 entry points (gl44_tests.cpp and later).
 #define WMGL_GPU_FUNCS_GL44(X)                                                                        \
@@ -89,8 +89,9 @@ namespace gpu {
 // A context current on a pbuffer for the lifetime of the fixture, requesting
 // `version` (10 * major + minor); versions above 4.6 go through the
 // development override (WINEMETALGL_DEV_MAX_VERSION).
+// `es`: an OpenGL ES context (WGL_CONTEXT_ES_PROFILE_BIT_EXT) of `version`.
 struct Fixture {
-    explicit Fixture(int width = 64, int height = 64, bool core = true, int version = 33);
+    explicit Fixture(int width = 64, int height = 64, bool core = true, int version = 33, bool es = false);
     ~Fixture();
     bool ok = false;
     wmgl_context* context = nullptr;
@@ -134,6 +135,15 @@ struct Counters {
         CHECK(fixture_.ok);                        \
         if (fixture_.ok) name##_body();            \
     }                                              \
+    static void name##_body()
+// A test with an OpenGL ES context (`version` = 10 * major + minor).
+#define GPU_TEST_ES(name, version)                          \
+    static void name##_body();                              \
+    TEST(name) {                                            \
+        gpu::Fixture fixture_(64, 64, true, version, true); \
+        CHECK(fixture_.ok);                                 \
+        if (fixture_.ok) name##_body();                     \
+    }                                                       \
     static void name##_body()
 #define GPU_TEST(name)                     \
     static void name##_body();             \

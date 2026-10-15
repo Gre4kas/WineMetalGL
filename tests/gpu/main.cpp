@@ -45,14 +45,14 @@ bool loadFunctions() {
 
 }  // namespace
 
-Fixture::Fixture(int width, int height, bool core, int version) {
+Fixture::Fixture(int width, int height, bool core, int version, bool es) {
     static const bool initialized = wmgl_initialize(WMGL_DRIVER_ABI_VERSION) == 0 && loadFunctions();
     if (!initialized) return;
     format = pickFormat();
     if (!format) return;
     surface = wmgl_surface_create_pbuffer(format, width, height);
     const int attribs[] = {0x2091 /* MAJOR */, version / 10, 0x2092 /* MINOR */, version % 10, 0x9126 /* PROFILE_MASK */,
-                           core ? 1 : 2, 0};
+                           es ? 4 : core ? 1 : 2, 0};
     int error = 0;
     if (version > 46) {
         char value[8];
