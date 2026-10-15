@@ -397,3 +397,44 @@ GPU_TEST_ES(gpu_es_copy_luminance_alpha_vertex_sampled, 30) {
     glDeleteTextures(1, &src);
     glDeleteTextures(1, &dst);
 }
+
+// The same copy from an RGBA4 source uploaded as UNSIGNED_SHORT_4_4_4_4.
+GPU_TEST_ES(gpu_es_copy_rgba4_to_luminance_alpha, 30) {
+    // (r, g, b, a) nibbles: (4, 0, 15, 15), (0, 15, 9, 15), (15, 9, 4, 15), (2, 3, 4, 6).
+    const uint16_t texels[4] = {0x40ff, 0x0f9f, 0xf94f, 0x2346};
+    GLuint src = 0, dst = 0, fb = 0;
+    glGenTextures(1, &src);
+    glGenTextures(1, &dst);
+    glGenFramebuffers(1, &fb);
+    glBindTexture(GL_TEXTURE_2D, src);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA4, 2, 2, 0, GL_RGBA, GL_UNSIGNED_SHORT_4_4_4_4, texels);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, fb);
+    glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, src, 0);
+    CHECK_EQ(glCheckFramebufferStatus(GL_READ_FRAMEBUFFER), static_cast<GLenum>(GL_FRAMEBUFFER_COMPLETE));
+    glBindTexture(GL_TEXTURE_2D, dst);
+    glCopyTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE_ALPHA, 0, 0, 2, 2, 0);
+    CHECK_GL();
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+    GLuint p = program("#version 300 es\nin vec2 position; void main() { gl_Position = vec4(position, 0.0, 1.0); }\n",
+                       "#version 300 es\nprecision mediump float; uniform sampler2D t; out vec4 o;\n"
+                       "void main() { o = texelFetch(t, ivec2(gl_FragCoord.xy) / 32, 0); }\n");
+    GLuint vao = quad();
+    glUseProgram(p);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    CHECK_GL();
+    const uint8_t want[4][4] = {{68, 68, 68, 255}, {0, 0, 0, 255}, {255, 255, 255, 255}, {34, 34, 34, 102}};
+    const int at[4][2] = {{10, 10}, {40, 10}, {10, 40}, {40, 40}};
+    for (int i = 0; i < 4; ++i) {
+        const std::vector<uint8_t> got = readRGBA8(at[i][0], at[i][1], 1, 1);
+        CHECK(near(got.data(), want[i], 2));
+        if (!near(got.data(), want[i], 2)) std::fprintf(stderr, "  texel %d: got %u %u %u %u\n", i, got[0], got[1], got[2], got[3]);
+    }
+    glDeleteProgram(p);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteFramebuffers(1, &fb);
+    glDeleteTextures(1, &src);
+    glDeleteTextures(1, &dst);
+}

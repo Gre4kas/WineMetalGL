@@ -7,7 +7,7 @@ namespace wmgl::limits {
 
 constexpr GLint kMaxTextureSize = 16384, kMax3DTextureSize = 2048, kMaxArrayLayers = 2048;
 // Combined limits cover the five graphics stages of GL 4.0 (5 x per stage).
-constexpr GLint kMaxDrawBuffers = 8, kMaxVertexAttribs = 16, kMaxTextureUnitsPerStage = 16, kMaxCombinedTextureUnits = 80;
+constexpr GLint kMaxDrawBuffers = 8, kMaxVertexAttribs = 16, kMaxTextureUnitsPerStage = 16, kMaxCombinedTextureUnits = 96;
 // Varying components per stage interface (GL_MAX_*_INPUT/OUTPUT_COMPONENTS;
 // four per location): the vertex outputs and geometry inputs at GL's
 // minimum, the rest at 128.

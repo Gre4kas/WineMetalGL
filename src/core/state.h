@@ -216,7 +216,7 @@ struct ContextState {
     std::array<IndexedBufferBinding, kMaxShaderStorageBufferBindings> shaderStorageBufferBindings;
     static constexpr int kMaxImageUnits = 16;  // = limits::kMaxImageUnits
     std::array<ImageUnit, kMaxImageUnits> imageUnits;
-    static constexpr int kMaxTextureUnits = 80;
+    static constexpr int kMaxTextureUnits = 96;  // limits::kMaxCombinedTextureUnits (OpenGL ES 3.2: 96)
     std::array<TextureUnit, kMaxTextureUnits> textureUnits;
     GLuint activeTexture = 0;
     RefPtr<VertexArray> vertexArray;      // never null (default VAO in compatibility profile)

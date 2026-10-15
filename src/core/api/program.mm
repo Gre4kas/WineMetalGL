@@ -693,6 +693,7 @@ void LinkProgram(Context& ctx, GLuint program) {
     input.transformFeedbackVaryings = p->transformFeedbackVaryings;
     input.transformFeedbackMode = p->transformFeedbackMode;
     input.separable = p->separable;
+    input.es = ctx.isEs();
     if (ctx.isEs() && ok && !input.spirv) {
         // OpenGL ES 3.2 section 7.3: a program needs a vertex and a fragment
         // shader (or only a compute shader), unless it is separable.

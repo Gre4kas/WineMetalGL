@@ -101,6 +101,9 @@ struct LinkInput {
     std::vector<std::string> transformFeedbackVaryings;
     GLenum transformFeedbackMode = GL_INTERLEAVED_ATTRIBS;
     bool separable = false;
+    // An OpenGL ES program: its resource limits are enforced (desktop
+    // programs may use more image uniforms than MAX_*_IMAGE_UNIFORMS).
+    bool es = false;
     bool internal = false;  // a generated stage (geometry emulation): no separable-varying renumbering
     // transformFeedbackVaryings list the outputs an emulation captures: no
     // MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS limit.

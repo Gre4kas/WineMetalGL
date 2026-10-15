@@ -3790,9 +3790,10 @@ static LinkResult linkImplCore(const LinkInput& input, const CaptureCode* captur
         }
     }
 
-    // Resource limits glslang does not check: image uniforms per stage and
-    // storage blocks over all stages (GL 4.6 sections 7.11.1 and 7.8).
-    {
+    // Resource limits glslang does not check, in OpenGL ES programs: image
+    // uniforms per stage and storage blocks over all stages (OpenGL ES 3.2
+    // sections 7.11.1 and 7.8).
+    if (input.es) {
         int images[kStageCount] = {}, blocks = 0;
         for (const UniformInfo& u : result.uniforms)
             if (u.imageSlot >= 0)
@@ -4122,6 +4123,7 @@ std::string linkKey(const LinkInput& input) {
     addNumber(input.transformFeedbackVaryings.size());
     for (const std::string& varying : input.transformFeedbackVaryings) add(varying);
     addNumber(input.transformFeedbackMode);
+    addNumber(uint64_t{input.es});
     addNumber(uint64_t{input.separable} | uint64_t{input.internal} << 1 | uint64_t{input.captureLayout} << 2 |
               uint64_t{input.spirv} << 3 | uint64_t{input.spirvUnnamed} << 4);
     return key;

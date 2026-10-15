@@ -422,11 +422,7 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
     case GL_MAX_TEXTURE_IMAGE_UNITS: case GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS: case GL_MAX_GEOMETRY_TEXTURE_IMAGE_UNITS:
         out = ints({kMaxTextureUnitsPerStage});
         return true;
-    // OpenGL ES 3.2 requires 96 (16 for each of six stages); no draw can use
-    // more than its five stages' 16 each anyway.
-    case GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS:
-        out = ints({ctx.isEs() ? std::max<int64_t>(96, kMaxCombinedTextureUnits) : kMaxCombinedTextureUnits});
-        return true;
+    case GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS: out = ints({kMaxCombinedTextureUnits}); return true;
     case GL_MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS: out = ints({64}); return true;
     case GL_MAX_TRANSFORM_FEEDBACK_SEPARATE_ATTRIBS: out = ints({4}); return true;
     case GL_MAX_TRANSFORM_FEEDBACK_SEPARATE_COMPONENTS: out = ints({4}); return true;
