@@ -696,16 +696,23 @@ void LinkProgram(Context& ctx, GLuint program) {
     if (ctx.isEs() && ok && !input.spirv) {
         // OpenGL ES 3.2 section 7.3: a program needs a vertex and a fragment
         // shader (or only a compute shader), unless it is separable.
-        bool vertex = false, fragment = false, compute = false;
+        bool vertex = false, fragment = false, compute = false, control = false, evaluation = false;
         std::vector<shader::ShaderSource> es;
         for (const RefPtr<Shader>& s : p->attached) {
             vertex |= s->stage == shader::Stage::Vertex;
             fragment |= s->stage == shader::Stage::Fragment;
             compute |= s->stage == shader::Stage::Compute;
+            control |= s->stage == shader::Stage::TessControl;
+            evaluation |= s->stage == shader::Stage::TessEval;
             es.push_back({s->stage, s->source});
         }
         if (!input.separable && !compute && !(vertex && fragment)) {
             log += "error: an OpenGL ES program needs a vertex and a fragment shader\n";
+            ok = false;
+        }
+        // ... and its tessellation stages come together (section 7.3).
+        if (control != evaluation) {
+            log += "error: an OpenGL ES program needs tessellation control and evaluation shaders together\n";
             ok = false;
         }
         const std::string errors = shader::checkEsLink(es);

@@ -742,6 +742,47 @@ int captureVersion(const std::string& source) {
     return v.es ? 430 : v.number;
 }
 
+// Compute limits glslang does not check: MAX_COMPUTE_WORK_GROUP_INVOCATIONS
+// and MAX_COMPUTE_SHARED_MEMORY_SIZE (shared variables at 4 bytes per
+// scalar component, booleans included; no padding counted).
+std::string checkComputeLimits(glslang::TShader& shader) {
+    const glslang::TIntermediate* intermediate = shader.getIntermediate();
+    if (!intermediate) return {};
+    const int64_t invocations = static_cast<int64_t>(intermediate->getLocalSize(0)) * intermediate->getLocalSize(1) *
+                                intermediate->getLocalSize(2);
+    if (invocations > limits::kMaxComputeWorkGroupInvocations)
+        return "ERROR: local work group size exceeds GL_MAX_COMPUTE_WORK_GROUP_INVOCATIONS\n";
+    std::function<int64_t(const glslang::TType&)> bytes = [&](const glslang::TType& t) -> int64_t {
+        int64_t n = 1;
+        if (t.isArray() && t.isSizedArray()) n = t.getArraySizes()->getCumulativeSize();
+        if (t.isStruct()) {
+            int64_t sum = 0;
+            for (const glslang::TTypeLoc& m : *t.getStruct()) sum += bytes(*m.type);
+            return n * sum;
+        }
+        const int64_t scalar = t.getBasicType() == glslang::EbtDouble || t.getBasicType() == glslang::EbtInt64 ||
+                                       t.getBasicType() == glslang::EbtUint64
+                                   ? 8
+                                   : 4;
+        const int64_t components = t.isMatrix() ? t.getMatrixCols() * t.getMatrixRows() : std::max(1, t.getVectorSize());
+        return n * components * scalar;
+    };
+    int64_t shared = 0;
+    glslang::TIntermAggregate* root = intermediate->getTreeRoot() ? intermediate->getTreeRoot()->getAsAggregate() : nullptr;
+    if (root)
+        for (TIntermNode* node : root->getSequence()) {
+            glslang::TIntermAggregate* objects = node->getAsAggregate();
+            if (!objects || objects->getOp() != glslang::EOpLinkerObjects) continue;
+            for (TIntermNode* object : objects->getSequence())
+                if (glslang::TIntermSymbol* symbol = object->getAsSymbolNode();
+                    symbol && symbol->getQualifier().storage == glslang::EvqShared)
+                    shared += bytes(symbol->getType());
+        }
+    if (shared > limits::kMaxComputeSharedMemorySize)
+        return "ERROR: shared variables exceed GL_MAX_COMPUTE_SHARED_MEMORY_SIZE\n";
+    return {};
+}
+
 bool parseForCodegen(Stage stage, const std::string& original, ParsedShader& out, std::string& log,
                      const CaptureCode* capture = nullptr, const UpgradeOptions& upgrade = {}) {
     const EShLanguage lang = language(stage);
@@ -791,6 +832,13 @@ bool parseForCodegen(Stage stage, const std::string& original, ParsedShader& out
                            static_cast<EShMessages>(kMessages | EShMsgRelaxedErrors))) {
         log += unescapeName(cleanLog(out.shader->getInfoLog(), out.shader->getInfoDebugLog()));
         return false;
+    }
+    if (stage == Stage::Compute) {
+        const std::string limitErrors = checkComputeLimits(*out.shader);
+        if (!limitErrors.empty()) {
+            log += limitErrors;
+            return false;
+        }
     }
     return true;
 }
@@ -1607,6 +1655,38 @@ void configureNoClient(glslang::TShader& shader, EShLanguage lang) {
     shader.setEnvTarget(glslang::EShTargetNone, glslang::EShTargetLanguageVersion(0));
 }
 
+// The uniform and storage blocks of a parsed shader: each member's type,
+// qualifiers and name, and the block's own layout.
+std::map<std::string, std::string> blockSignaturesOf(glslang::TShader& shader) {
+    std::map<std::string, std::string> out;
+    const glslang::TIntermediate* intermediate = shader.getIntermediate();
+    glslang::TIntermAggregate* root =
+        intermediate && intermediate->getTreeRoot() ? intermediate->getTreeRoot()->getAsAggregate() : nullptr;
+    if (!root) return out;
+    for (TIntermNode* node : root->getSequence()) {
+        glslang::TIntermAggregate* objects = node->getAsAggregate();
+        if (!objects || objects->getOp() != glslang::EOpLinkerObjects) continue;
+        for (TIntermNode* object : objects->getSequence()) {
+            glslang::TIntermSymbol* symbol = object->getAsSymbolNode();
+            if (!symbol) continue;
+            const glslang::TType& type = symbol->getType();
+            const glslang::TQualifier& q = type.getQualifier();
+            if (type.getBasicType() != glslang::EbtBlock || (q.storage != glslang::EvqUniform && q.storage != glslang::EvqBuffer))
+                continue;
+            const std::string name = type.getTypeName().c_str();
+            if (name.rfind("gl_", 0) == 0) continue;
+            std::string signature = q.storage == glslang::EvqBuffer ? "buffer" : "uniform";
+            signature += " packing " + std::to_string(q.layoutPacking) + " binding " +
+                         std::to_string(q.hasBinding() ? static_cast<int>(q.layoutBinding) : -1) + " {";
+            for (const glslang::TTypeLoc& member : *type.getStruct())
+                signature += std::string(member.type->getCompleteString(true, true, true, true).c_str()) + " " +
+                             member.type->getFieldName().c_str() + ";";
+            out[(q.storage == glslang::EvqBuffer ? "buffer " : "uniform ") + name] = signature + "}";
+        }
+    }
+    return out;
+}
+
 // The default-block uniforms of a parsed shader and their precisions.
 std::map<std::string, int> uniformPrecisionsOf(glslang::TShader& shader) {
     std::map<std::string, int> out;
@@ -1713,6 +1793,7 @@ EsCompileResult compileEsUncached(Stage stage, const std::string& source) {
         result.log = cleanLog(shader.getInfoLog(), shader.getInfoDebugLog());
         if (result.ok) {
             result.uniformPrecisions = uniformPrecisionsOf(shader);
+            result.blockSignatures = blockSignaturesOf(shader);
             // compile()'s checks: block bindings within the limits, interface
             // locations, reserved words.
             std::string errors = checkBlockBindings(shader);
@@ -1758,6 +1839,7 @@ std::string checkEsLink(const std::vector<ShaderSource>& esShaders) {
     // The precisions compileEs recorded (its results are cached: linking
     // parses nothing again).
     std::map<std::string, std::pair<int, Stage>> precisions;
+    std::map<std::string, std::pair<std::string, Stage>> blocks;
     std::string errors;
     for (const ShaderSource& s : esShaders) {
         const EsCompileResult compiled = compileEs(s.stage, s.source);
@@ -1765,6 +1847,12 @@ std::string checkEsLink(const std::vector<ShaderSource>& esShaders) {
             auto [it, added] = precisions.emplace(name, std::make_pair(precision, s.stage));
             if (!added && it->second.second != s.stage && it->second.first != precision)
                 errors += "error: uniform '" + name + "' has different precisions in its stages\n";
+        }
+        // A block of one name is declared alike in every stage (GLSL ES 3.10 section 4.3.9).
+        for (const auto& [name, signature] : compiled.blockSignatures) {
+            auto [it, added] = blocks.emplace(name, std::make_pair(signature, s.stage));
+            if (!added && it->second.second != s.stage && it->second.first != signature)
+                errors += "error: " + name + " block is declared differently in its stages\n";
         }
     }
     return errors;
@@ -3702,6 +3790,26 @@ static LinkResult linkImplCore(const LinkInput& input, const CaptureCode* captur
         }
     }
 
+    // Resource limits glslang does not check: image uniforms per stage and
+    // storage blocks over all stages (GL 4.6 sections 7.11.1 and 7.8).
+    {
+        int images[kStageCount] = {}, blocks = 0;
+        for (const UniformInfo& u : result.uniforms)
+            if (u.imageSlot >= 0)
+                for (int s = 0; s < kStageCount; ++s)
+                    if (u.stageMask & (1u << s)) images[s] += std::max(1, static_cast<int>(u.size));
+        for (int s = 0; s < kStageCount; ++s)
+            if (images[s] > limits::kMaxImageUniformsPerStage) {
+                result.log += "error: too many image uniforms in one stage\n";
+                return result;
+            }
+        for (const StorageBlockInfo& b : result.storageBlocks)
+            for (int s = 0; s < kStageCount; ++s) blocks += (b.stageMask >> s) & 1;
+        if (blocks > limits::kMaxCombinedStorageBlocks) {
+            result.log += "error: too many shader storage blocks in the program\n";
+            return result;
+        }
+    }
     hideFixedFunctionBlock(result);
     applyUniformInitializers(input.shaders, result);
     result.ok = true;
