@@ -44,6 +44,42 @@ STATUSES = ["Pass", "Fail", "NotSupported", "InternalError", "Crash", "Timeout",
 SUITES = [("gl30", "KHR-GL30"), ("gl31", "KHR-GL31"), ("gl32", "KHR-GL32"), ("gl33", "KHR-GL33"),
           ("gl40", "KHR-GL40"), ("gl41", "KHR-GL41"), ("gl42", "KHR-GL42"), ("gl43", "KHR-GL43"),
           ("gl46", "KHR-GL46")]
+# OpenGL ES mustpass lists (Khronos's gles*-khr-* and dEQP's aosp_mustpass lists), each run in
+# configuration 1 of its mustpass.xml under Wine: (list, what the list runs, OpenGL ES version).
+ES_SUITES = [
+    ("gles2-khr-main", "KHR-GLES2", "2.0"),
+    ("gles2-khr-noctx-main", "KHR-NoContext.es2", "2.0"),
+    ("gles2-main", "dEQP-GLES2", "2.0"),
+    ("gles3-khr-main", "KHR-GLES3", "3.0"),
+    ("gles3-main", "dEQP-GLES3", "3.0"),
+    ("gles3-rotate-portrait", "dEQP-GLES3, screen rotation 0", "3.0"),
+    ("gles3-rotate-landscape", "dEQP-GLES3, screen rotation 90", "3.0"),
+    ("gles3-rotate-reverse-portrait", "dEQP-GLES3, screen rotation 180", "3.0"),
+    ("gles3-rotate-reverse-landscape", "dEQP-GLES3, screen rotation 270", "3.0"),
+    ("gles3-multisample", "dEQP-GLES3, 4 samples", "3.0"),
+    ("gles3-565-no-depth-no-stencil", "dEQP-GLES3, RGB565 without depth and stencil", "3.0"),
+    ("gles31-khr-main", "KHR-GLES31", "3.1"),
+    ("gles31-khr-single", "KHR-Single-GLES31", "3.1"),
+    ("gles31-main", "dEQP-GLES31", "3.1"),
+    ("gles31-rotate-portrait", "dEQP-GLES31, screen rotation 0", "3.1"),
+    ("gles31-rotate-landscape", "dEQP-GLES31, screen rotation 90", "3.1"),
+    ("gles31-rotate-reverse-portrait", "dEQP-GLES31, screen rotation 180", "3.1"),
+    ("gles31-rotate-reverse-landscape", "dEQP-GLES31, screen rotation 270", "3.1"),
+    ("gles31-multisample", "dEQP-GLES31, 4 samples", "3.1"),
+    ("gles31-565-no-depth-no-stencil", "dEQP-GLES31, RGB565 without depth and stencil", "3.1"),
+    ("gles32-khr-main", "KHR-GLES32", "3.2"),
+    ("gles32-khr-noctx-main", "KHR-NoContext.es32", "3.2"),
+    ("gles32-khr-single", "KHR-Single-GLES32", "3.2"),
+    ("gles32-khr-glesext", "KHR-GLESEXT", "3.2"),
+]
+ES_VERSIONS = [
+    ("2.0", "GLSL ES 1.00, framebuffer objects, the ES 2.0 extensions (float and depth textures, ...)"),
+    ("3.0", "GLSL ES 3.00, transform feedback, instancing, integer and sRGB formats, multisample renderbuffers"),
+    ("3.1", "Compute shaders, images, storage buffers, indirect draws, separate programs, multisample textures"),
+    ("3.2", "Geometry and tessellation shaders, advanced blending, ASTC, texture buffers, debug output"),
+]
+# The summary of the last cts-runner run over every OpenGL ES configuration (tests/cts/es/).
+ES_RUNNER_SUMMARY = "tests/cts/es/cts-runner-es3.txt"
 # The highest version contexts get (src/core/driver.mm).
 MAX_VERSION = "4.6"
 # mustpass.xml configurations that are run. Configurations 5 and 6 repeat the command
@@ -55,6 +91,7 @@ CONFIGS_NOTE = ("configurations 1 to 4 of `mustpass.xml` (5 and 6 repeat the com
 # largest list, runs configuration 1 natively and configurations 1 and 3 (an FBO
 # surface) under Wine.
 SUITE_RUNS = {"gl46": {(1, "native"), (1, "wine"), (3, "wine")}}
+SUITE_RUNS.update({suite: {(1, "wine")} for suite, _, _ in ES_SUITES})
 # A list that also measures earlier versions: their rows say so.
 COVERED_BY = "gl46"
 # Conformance totals rows: (version, what the version adds, mustpass list that measures it).
@@ -338,12 +375,31 @@ def games():
     return manifest["entries"], by_name, record
 
 
-def render(suites):
-    entries, per_entry, unexplained = classify_not_supported(suites)
+def es_runner_summary():
+    """The last cts-runner run over every OpenGL ES configuration (ES_RUNNER_SUMMARY): its header
+    dict and one (log file, {status: count}) per run, or None without one."""
+    path = rel(ES_RUNNER_SUMMARY)
+    if not os.path.exists(path):
+        return None
+    meta, runs = {}, []
+    for line in open(path):
+        line = line.rstrip("\n")
+        if line.startswith("# "):
+            key, _, value = line[2:].partition(" ")
+            meta[key] = value
+        elif line.strip():
+            name, *counts = line.split()
+            runs.append((name, {k: int(v) for k, v in (c.split("=") for c in counts)}))
+    return meta, runs
+
+
+def render(suites, es_suites):
+    every = dict(suites, **es_suites)
+    entries, per_entry, unexplained = classify_not_supported(every)
     if unexplained:
         raise SystemExit("NotSupported cases without a reason in tests/cts/notsupported.json:\n  " +
                          "\n  ".join(sorted(unexplained)[:50]))
-    failures = classify_failures(suites)
+    failures = classify_failures(every)
     old = cts.load(rel("tests", "cts", "baseline", "gl33-cfg1-oldcore.txt"))[1]
     core = core_commands()
     implemented = implemented_commands()
@@ -406,6 +462,56 @@ def render(suites):
             md += ["", "Against the legacy implementation: `tests/cts/baseline/gl33-cfg1-oldcore.txt` is the last "
                    "result of the legacy (removed) implementation, configuration 1: %d Pass. The core passes %d "
                    "cases it failed and fails %d cases it passed." % (totals(old)["Pass"], gained, lost)]
+        md.append("")
+    if any(es_suites.values()):
+        md += ["## OpenGL ES", "",
+               "OpenGL ES contexts (`WGL_EXT_create_context_es2_profile`; OpenGL ES 3.2) run the OpenGL ES mustpass "
+               "lists, Khronos's (`gles*-khr-*`) and dEQP's (`aosp_mustpass`), each in configuration 1 of its "
+               "`mustpass.xml` under Wine: `scripts/cts/run.py --mustpass LIST.txt --config 1`.", ""]
+        summary = es_runner_summary()
+        if summary:
+            meta, runs = summary
+            # cts-runner's Failed counts every result that is not Pass, NotSupported or a warning.
+            failed = [name for name, counts in runs if counts.get("Failed")]
+            cases = sum(counts.get("Executed", 0) for _, counts in runs)
+            md += ["`cts-runner --type=es3`, which runs every OpenGL ES 2.0 and 3.0 list in each configuration it "
+                   "selects (%s), at commit %s: %d runs, %s cases, %s. The runs are listed in `%s`." % (
+                       meta.get("configs", "?"), meta.get("commit", "?"), len(runs), "{:,}".format(cases),
+                       "no failing case (Fail, Crash, Timeout, InternalError) in any run" if not failed else
+                       "failing cases in %s" % ", ".join("`%s`" % f for f in failed), ES_RUNNER_SUMMARY), ""]
+        md += ["| List | Runs | OpenGL ES | Pass | Fail | NotSupported | InternalError | Crash | Timeout | Missing | Other | Cases | Applicable passing | Time | Commit | File |",
+               "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|"]
+        for suite, what, version in ES_SUITES:
+            for (config, runner), (meta, results) in sorted(es_suites[suite].items()):
+                t = totals(results)
+                other = sum(n for status, n in t.items() if status not in STATUSES)
+                md.append("| `%s` | %s | %s | %d | %d | %d | %d | %d | %d | %d | %d | %d | %s | %s | %s | `%s` |" % (
+                    suite, what, version, t["Pass"], t["Fail"], t["NotSupported"], t["InternalError"], t["Crash"],
+                    t["Timeout"], t["Missing"], other, len(results), percent(*applicable(results)),
+                    duration(meta["seconds"]) if "seconds" in meta else "?", meta.get("commit", "?"), meta["file"]))
+        revisions = sorted({meta.get("cts", "not recorded") for b in es_suites.values() for meta, _ in b.values()})
+        md += ["", "CTS build: %s." % ", ".join(revisions)]
+        for suite, what, version in ES_SUITES:
+            failing = failures.get(suite, {})
+            if not failing:
+                continue
+            md += ["", "### `%s`: cases that neither pass nor are NotSupported" % suite, ""]
+            if len(failing) <= 40:
+                md += ["| Case | Result | Reason |", "|---|---|---|"]
+                for case, f in sorted(failing.items()):
+                    md.append("| `%s` | %s | %s |" % (case, "/".join(sorted({st for _, _, st in f["runs"]})),
+                                                      f["reason"] or "Not yet explained."))
+            else:
+                # Long lists by test group: the case path without its last two components.
+                groups = {}
+                for case, f in sorted(failing.items()):
+                    group = ".".join(case.split(".")[:-2]) if case.count(".") > 2 else case
+                    g = groups.setdefault(group, {"cases": 0, "reasons": set()})
+                    g["cases"] += 1
+                    g["reasons"].add(f["reason"] or "Not yet explained.")
+                md += ["%d cases, by test group:" % len(failing), "", "| Group | Cases | Reason |", "|---|---:|---|"]
+                for group, g in sorted(groups.items()):
+                    md.append("| `%s` | %d | %s |" % (group, g["cases"], " ".join(sorted(g["reasons"]))))
         md.append("")
     md += ["NotSupported cases, and the reason for each: [Unsupported](unsupported.md#cts-cases-reported-notsupported).",
            "", "## API", "",
@@ -511,7 +617,23 @@ def render(suites):
         for suite, _ in SUITES:
             prefix = dict(SUITES)[suite] + "."
             counts.append(str(sum(1 for c in per_entry[e["pattern"]] if c.startswith(prefix))))
-        n.append("| `%s` | %s | %s | %s |" % (e["pattern"], e["kind"], " | ".join(counts), e["reason"]))
+        # Entries only OpenGL ES cases match are in the table below.
+        if any(c != "0" for c in counts) or not per_entry[e["pattern"]]:
+            n.append("| `%s` | %s | %s | %s |" % (e["pattern"], e["kind"], " | ".join(counts), e["reason"]))
+    if any(es_suites.values()):
+        # OpenGL ES: cases NotSupported in any list of a version, by version.
+        es_cases = {version: set() for version, _ in ES_VERSIONS}
+        for suite, _, version in ES_SUITES:
+            for _, results in es_suites[suite].values():
+                es_cases[version].update(c for c, st in results.items() if st == "NotSupported")
+        n += ["", "OpenGL ES lists (cases NotSupported in any list of the version):", "",
+              "| Pattern | Kind | %s | Reason |" % " | ".join("ES %s" % v for v, _ in ES_VERSIONS),
+              "|---|---|%s|---|" % "|".join("---:" for _ in ES_VERSIONS)]
+        for e in entries:
+            counts = [sum(1 for c in es_cases[v] if fnmatch.fnmatchcase(c, e["pattern"])) for v, _ in ES_VERSIONS]
+            if any(counts):
+                n.append("| `%s` | %s | %s | %s |" % (e["pattern"], e["kind"], " | ".join(str(c) for c in counts),
+                                                       e["reason"]))
     blocks[("docs/unsupported.md", "notsupported")] = "\n".join(n)
 
     # ---- docs/testing.md: CTS run times from the result headers.
@@ -534,6 +656,12 @@ def render(suites):
         total = sum(times["wine"]) + sum(times["native"])
         t.append("| `%s` | %s | %s | %s | %s |" % (package, "{:,}".format(cases), span(times["wine"]),
                                                   span(times["native"]), duration(total) if total else "-"))
+    for suite, _, _ in ES_SUITES:
+        for (config, runner), (meta, results) in sorted(es_suites[suite].items()):
+            seconds = meta.get("seconds")
+            t.append("| `%s` | %s | %s | - | %s |" % (suite, "{:,}".format(len(results)),
+                                                    duration(seconds) if seconds else "?",
+                                                    duration(seconds) if seconds else "?"))
     blocks[("docs/testing.md", "cts-times")] = "\n".join(t)
 
     # ---- README.md: conformance totals.
@@ -574,6 +702,28 @@ def render(suites):
         lines += ["The cases that were not Pass in %s were run again at commit %s, in the same configurations "
                   "under Wine and natively (`tests/cts/recheck/`); those results replace the baselines' for "
                   "those cases." % (", ".join("`%s`" % p for p in packages), ", ".join(recheck_commits)), ""]
+    if any(es_suites.values()):
+        lines += ["| OpenGL ES | Conformance % | Features | Unsupported % |", "|---|---:|---|---:|"]
+        es_commits = set()
+        for version, adds in ES_VERSIONS:
+            runs = [results for suite, _, v in ES_SUITES if v == version for _, results in es_suites[suite].values()]
+            es_commits.update(meta.get("commit", "?") for suite, _, v in ES_SUITES if v == version
+                              for meta, _ in es_suites[suite].values())
+            if not runs:
+                lines.append("| %s | not measured | %s | not measured |" % (version, adds))
+                continue
+            rates = [applicable(r) for r in runs]
+            worst = min(rates, key=lambda x: x[0] / max(x[1], 1))
+            most = max((lacking(r, kind_of) for r in runs), key=lambda x: x[0] / max(x[1], 1))
+            lines.append("| %s | %s | %s | %s |" % (version, percent(*worst), adds, share(*most)))
+        summary = es_runner_summary()
+        lines += ["",
+                  "**OpenGL ES**: the same measure over each version's OpenGL ES mustpass lists, Khronos's "
+                  "(`KHR-GLES2` to `KHR-GLES32`, `KHR-GLESEXT`) and dEQP's (`dEQP-GLES2` to `dEQP-GLES31`, with "
+                  "their rotation, multisample and RGB565 lists), in configuration 1 under Wine at commit %s." % (
+                      ", ".join(sorted(es_commits))) +
+                  (" `cts-runner --type=es3` runs the OpenGL ES 2.0 and 3.0 lists in every configuration it "
+                   "selects: [Conformance results](docs/conformance.md#opengl-es)." if summary else ""), ""]
     lines += ["What Unsupported % counts, and why each failing case fails: "
               "[Unsupported](docs/unsupported.md#conformance-notes)."]
     lines += ["",
@@ -607,11 +757,16 @@ def main():
                         help="fail if any evidence file was recorded from a tree with uncommitted changes")
     args = parser.parse_args()
     suites = {suite: load_baselines(suite) for suite, _ in SUITES}
+    es_suites = {suite: load_baselines(suite) for suite, _, _ in ES_SUITES}
     if args.check_provenance:
         # Evidence recorded from a tree with uncommitted changes does not describe a commit.
-        recorded = [(meta["file"], meta.get("commit", "")) for b in suites.values() for meta, _ in b.values()]
-        recorded += [(meta["recheck"]["file"], meta["recheck"].get("commit", "")) for b in suites.values()
+        every = list(suites.values()) + list(es_suites.values())
+        recorded = [(meta["file"], meta.get("commit", "")) for b in every for meta, _ in b.values()]
+        recorded += [(meta["recheck"]["file"], meta["recheck"].get("commit", "")) for b in every
                      for meta, _ in b.values() if "recheck" in meta]
+        summary = es_runner_summary()
+        if summary:
+            recorded.append((ES_RUNNER_SUMMARY, summary[0].get("commit", "")))
         for name in ("results.json", "perf.json"):
             path = rel("tests", "games", name)
             if os.path.exists(path):
@@ -622,7 +777,7 @@ def main():
         dirty = ["%s (%s)" % (f, c) for f, c in recorded if c.endswith("-dirty") or "uncommitted" in c]
         if dirty:
             raise SystemExit("evidence recorded from uncommitted trees:\n  " + "\n  ".join(dirty))
-    outputs, blocks = render(suites)
+    outputs, blocks = render(suites, es_suites)
     for (path, name), content in sorted(blocks.items()):
         text = outputs.get(path) or open(rel(path)).read()
         begin, end = BEGIN % name, END % name
