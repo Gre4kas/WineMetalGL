@@ -1607,6 +1607,29 @@ void configureNoClient(glslang::TShader& shader, EShLanguage lang) {
     shader.setEnvTarget(glslang::EShTargetNone, glslang::EShTargetLanguageVersion(0));
 }
 
+// The default-block uniforms of a parsed shader and their precisions.
+std::map<std::string, int> uniformPrecisionsOf(glslang::TShader& shader) {
+    std::map<std::string, int> out;
+    const glslang::TIntermediate* intermediate = shader.getIntermediate();
+    glslang::TIntermAggregate* root =
+        intermediate && intermediate->getTreeRoot() ? intermediate->getTreeRoot()->getAsAggregate() : nullptr;
+    if (!root) return out;
+    for (TIntermNode* node : root->getSequence()) {
+        glslang::TIntermAggregate* objects = node->getAsAggregate();
+        if (!objects || objects->getOp() != glslang::EOpLinkerObjects) continue;
+        for (TIntermNode* object : objects->getSequence()) {
+            glslang::TIntermSymbol* symbol = object->getAsSymbolNode();
+            if (!symbol) continue;
+            const glslang::TType& type = symbol->getType();
+            if (type.getQualifier().storage != glslang::EvqUniform || type.getBasicType() == glslang::EbtBlock) continue;
+            const std::string name = symbol->getName().c_str();
+            if (name.rfind("gl_", 0) == 0) continue;
+            out[name] = static_cast<int>(type.getQualifier().precision);
+        }
+    }
+    return out;
+}
+
 }  // namespace
 
 namespace {
@@ -1688,6 +1711,7 @@ EsCompileResult compileEsUncached(Stage stage, const std::string& source) {
         configureNoClient(shader, lang);
         result.ok = shader.parse(resources(), 100, EEsProfile, false, false, messages);
         result.log = cleanLog(shader.getInfoLog(), shader.getInfoDebugLog());
+        if (result.ok) result.uniformPrecisions = uniformPrecisionsOf(shader);
         if (result.ok || attempt ||
             result.log.find("cannot use in preprocessor expression when expanded from macros") == std::string::npos)
             break;
@@ -1720,35 +1744,16 @@ EsCompileResult compileEsUncached(Stage stage, const std::string& source) {
 }  // namespace
 
 std::string checkEsLink(const std::vector<ShaderSource>& esShaders) {
-    initGlslang();
-    std::map<std::string, std::pair<glslang::TPrecisionQualifier, Stage>> precisions;
+    // The precisions compileEs recorded (its results are cached: linking
+    // parses nothing again).
+    std::map<std::string, std::pair<int, Stage>> precisions;
     std::string errors;
     for (const ShaderSource& s : esShaders) {
-        const EShLanguage lang = language(s.stage);
-        glslang::TShader shader(lang);
-        const char* text = s.source.c_str();
-        shader.setStrings(&text, 1);
-        configureNoClient(shader, lang);
-        if (!shader.parse(resources(), 100, EEsProfile, false, false, EShMsgRelaxedErrors)) continue;
-        const glslang::TIntermediate* intermediate = shader.getIntermediate();
-        glslang::TIntermAggregate* root =
-            intermediate && intermediate->getTreeRoot() ? intermediate->getTreeRoot()->getAsAggregate() : nullptr;
-        if (!root) continue;
-        for (TIntermNode* node : root->getSequence()) {
-            glslang::TIntermAggregate* objects = node->getAsAggregate();
-            if (!objects || objects->getOp() != glslang::EOpLinkerObjects) continue;
-            for (TIntermNode* object : objects->getSequence()) {
-                glslang::TIntermSymbol* symbol = object->getAsSymbolNode();
-                if (!symbol) continue;
-                const glslang::TType& type = symbol->getType();
-                if (type.getQualifier().storage != glslang::EvqUniform || type.getBasicType() == glslang::EbtBlock) continue;
-                const std::string name = symbol->getName().c_str();
-                if (name.rfind("gl_", 0) == 0) continue;
-                const glslang::TPrecisionQualifier precision = type.getQualifier().precision;
-                auto [it, added] = precisions.emplace(name, std::make_pair(precision, s.stage));
-                if (!added && it->second.second != s.stage && it->second.first != precision)
-                    errors += "error: uniform '" + name + "' has different precisions in its stages\n";
-            }
+        const EsCompileResult compiled = compileEs(s.stage, s.source);
+        for (const auto& [name, precision] : compiled.uniformPrecisions) {
+            auto [it, added] = precisions.emplace(name, std::make_pair(precision, s.stage));
+            if (!added && it->second.second != s.stage && it->second.first != precision)
+                errors += "error: uniform '" + name + "' has different precisions in its stages\n";
         }
     }
     return errors;

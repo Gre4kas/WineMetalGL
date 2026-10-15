@@ -77,6 +77,8 @@ CompileResult compile(Stage stage, const std::string& source);
 // programs link.
 struct EsCompileResult : CompileResult {
     std::string desktop;
+    // Default-block uniforms' precision qualifiers (glslang's), for checkEsLink.
+    std::map<std::string, int> uniformPrecisions;
 };
 EsCompileResult compileEs(Stage stage, const std::string& source);
 
