@@ -184,6 +184,14 @@ void TIntermediate::checkStageIO(TInfoSink& infoSink, TIntermediate& unit) {
                     found = true;
                     break;
                 }
+                // WineMetalGL: interfaces also match by explicit location
+                // (GLSL 4.10+, GLSL ES 3.10), whatever the names.
+                const TQualifier& out = curStageInterm->getAsSymbolNode()->getQualifier();
+                const TQualifier& in = nextStageSymbol->getQualifier();
+                if (out.hasLocation() && in.hasLocation() && out.layoutLocation == in.layoutLocation) {
+                    found = true;
+                    break;
+                }
             }
             if (!found) {
                 TString errmsg;

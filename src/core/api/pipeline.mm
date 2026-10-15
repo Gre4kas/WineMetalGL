@@ -55,8 +55,40 @@ bool hasStage(const Program& p, Stage stage) {
     return p.linked && p.linked->link.stages[static_cast<int>(stage)].present;
 }
 
+// OpenGL ES 3.2 section 7.4.1: each stage's inputs match the outputs of the
+// stage before it (by location, else by name; type and size). Arrayed
+// inputs (tessellation and geometry stages) compare their element type only.
+std::string esInterfaceMismatch(const ProgramPipeline& pp) {
+    const Stage order[] = {Stage::Vertex, Stage::TessControl, Stage::TessEval, Stage::Geometry, Stage::Fragment};
+    const Program* producer = nullptr;
+    Stage producerStage = Stage::Vertex;
+    for (Stage s : order) {
+        const Program* p = pp.stages[static_cast<int>(s)].get();
+        if (!p || !p->linked) continue;
+        if (producer && producer != p) {
+            const bool arrayed = s == Stage::TessControl || s == Stage::TessEval || s == Stage::Geometry;
+            for (const shader::InterfaceVariableInfo& in : p->linked->link.programInputs) {
+                if (in.name.rfind("gl_", 0) == 0 || in.perPatch) continue;
+                const shader::InterfaceVariableInfo* match = nullptr;
+                for (const shader::InterfaceVariableInfo& out : producer->linked->link.programOutputs) {
+                    if (out.name.rfind("gl_", 0) == 0) continue;
+                    if (in.location >= 0 && out.location >= 0 ? in.location == out.location : in.name == out.name) {
+                        match = &out;
+                        break;
+                    }
+                }
+                if (!match || match->type != in.type || (!arrayed && producerStage != Stage::TessControl && match->size != in.size))
+                    return "error: input '" + in.name + "' does not match an output of the previous stage\n";
+            }
+        }
+        producer = p;
+        producerStage = s;
+    }
+    return std::string();
+}
+
 // GL 4.1 section 11.1.3.11 checks for drawing with the pipeline.
-bool validate(ProgramPipeline& pp, std::string& log) {
+bool validate(ProgramPipeline& pp, std::string& log, bool es) {
     log.clear();
     bool any = false;
     for (const StageBit& s : kStageBits) any |= pp.stages[static_cast<int>(s.stage)] != nullptr;
@@ -83,6 +115,7 @@ bool validate(ProgramPipeline& pp, std::string& log) {
             }
         if (!log.empty()) break;
     }
+    if (log.empty() && es) log += esInterfaceMismatch(pp);
     // Stages from several programs are assembled when the pipeline draws
     // (shader::linkPipeline); report what cannot be.
     if (log.empty()) {
@@ -102,8 +135,8 @@ bool validate(ProgramPipeline& pp, std::string& log) {
 
 }  // namespace
 
-bool validateProgramPipeline(ProgramPipeline& pp) {
-    pp.validateStatus = validate(pp, pp.infoLog);
+bool validateProgramPipeline(ProgramPipeline& pp, bool es) {
+    pp.validateStatus = validate(pp, pp.infoLog, es);
     return pp.validateStatus;
 }
 
@@ -210,7 +243,7 @@ void GetProgramPipelineiv(Context& ctx, GLuint pipeline, GLenum pname, GLint* pa
 }
 
 void ValidateProgramPipeline(Context& ctx, GLuint pipeline) {
-    if (ProgramPipeline* pp = pipelineOrError(ctx, pipeline)) validateProgramPipeline(*pp);
+    if (ProgramPipeline* pp = pipelineOrError(ctx, pipeline)) validateProgramPipeline(*pp, ctx.isEs());
 }
 
 void GetProgramPipelineInfoLog(Context& ctx, GLuint pipeline, GLsizei bufSize, GLsizei* length, GLchar* infoLog) {

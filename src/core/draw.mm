@@ -353,7 +353,7 @@ bool DrawState::validateDraw(GLenum mode) {
     Program* program = ctx_.state.program.get();
     if (!program && ctx_.state.programPipeline) {
         // GL_ARB_separate_shader_objects: an invalid pipeline cannot draw.
-        if (!api::validateProgramPipeline(*ctx_.state.programPipeline)) {
+        if (!api::validateProgramPipeline(*ctx_.state.programPipeline, ctx_.isEs())) {
             ctx_.setError(GL_INVALID_OPERATION);
             return false;
         }

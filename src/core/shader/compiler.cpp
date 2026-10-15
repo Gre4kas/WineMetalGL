@@ -1917,6 +1917,38 @@ std::vector<StageOutputVar> captureableOutputs(glslang::TIntermediate* intermedi
                 static const char* const kLegacy[] = {"wmgl_FrontColor", "wmgl_BackColor", "wmgl_FrontSecondaryColor",
                                                       "wmgl_BackSecondaryColor", "wmgl_TexCoord", "wmgl_FogFragCoord"};
                 const bool legacy = std::find(std::begin(kLegacy), std::end(kLegacy), name) != std::end(kLegacy);
+                // A struct (GLSL ES 3.00 allows them as outputs): its members, by
+                // "s.member" ("s[k].member" for an array of structs), recursively.
+                if (type.isStruct()) {
+                    std::function<void(const glslang::TType&, const std::string&, const std::string&)> members =
+                        [&](const glslang::TType& t, const std::string& glName, const std::string& expr) {
+                            for (const glslang::TTypeLoc& member : *t.getStruct()) {
+                                const glslang::TType& m = *member.type;
+                                const std::string field = unescapeName(m.getFieldName().c_str());
+                                const std::string n = glName + "." + field, e = expr + "." + m.getFieldName().c_str();
+                                if (m.isStruct()) {
+                                    if (m.isSizedArray())
+                                        for (int k = 0; k < m.getOuterArraySize(); ++k) {
+                                            glslang::TType element(m, 0);
+                                            members(element, n + "[" + std::to_string(k) + "]", e + "[" + std::to_string(k) + "]");
+                                        }
+                                    else
+                                        members(m, n, e);
+                                    continue;
+                                }
+                                outputs.push_back({n, glTypeOfAst(m), m.isSizedArray() ? m.getOuterArraySize() : 0, e});
+                            }
+                        };
+                    if (type.isSizedArray()) {
+                        for (int k = 0; k < type.getOuterArraySize(); ++k) {
+                            glslang::TType element(type, 0);
+                            members(element, name + "[" + std::to_string(k) + "]", codegenName + "[" + std::to_string(k) + "]");
+                        }
+                    } else {
+                        members(type, name, codegenName);
+                    }
+                    continue;
+                }
                 // The capture code reads the codegen name (escaped keywords keep their prefix there).
                 outputs.push_back({legacy ? "gl_" + name.substr(5) : name, glTypeOfAst(type),
                                    type.isSizedArray() ? type.getOuterArraySize() : 0,
@@ -3237,7 +3269,10 @@ static LinkResult linkImplCore(const LinkInput& input, const CaptureCode* captur
     // locations assigned above for vertex inputs and fragment outputs.
     auto interfaceVariable = [](const PipeVar& v) {
         InterfaceVariableInfo info;
-        info.name = v.array && v.name.find('.') == std::string::npos ? v.name + "[0]" : v.name;
+        // An array, block members' too, is named with "[0]" (GL 4.3 section
+        // 7.3.1.1: "TargetInterface.target[0]"); built-in block members keep their names.
+        const bool builtinMember = v.name.rfind("gl_", 0) == 0 && v.name.find('.') != std::string::npos;
+        info.name = v.array && !builtinMember && v.name.back() != ']' ? v.name + "[0]" : v.name;
         // The Vulkan rules rename these built-ins; GL reports its own names.
         if (info.name == "gl_VertexIndex") info.name = "gl_VertexID";
         if (info.name == "gl_InstanceIndex") info.name = "gl_InstanceID";

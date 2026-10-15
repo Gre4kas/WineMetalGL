@@ -708,3 +708,23 @@ TEST(shader_struct_sampler_array_elements) {
         CHECK(r.samplers[m3->samplerSlot + 2].stageTexture[fs] >= 0);
     }
 }
+
+// Transform feedback of a struct output's member ("s.member"), and stage
+// interfaces matched by location under different names (GLSL ES 3.10).
+TEST(shader_es_struct_feedback_and_location_matching) {
+    LinkInput in;
+    in.shaders.push_back({Stage::Vertex, compileEs(Stage::Vertex,
+                                                   "#version 310 es\nstruct S { highp float a; highp vec2 b; };\n"
+                                                   "out S target; layout(location = 3) out highp vec4 shaderOutput;\n"
+                                                   "void main() { target.a = 1.0; target.b = vec2(2.0); shaderOutput = vec4(3.0);"
+                                                   " gl_Position = vec4(0.0); }\n").desktop});
+    in.shaders.push_back({Stage::Fragment, compileEs(Stage::Fragment,
+                                                     "#version 310 es\nprecision mediump float;\n"
+                                                     "layout(location = 3) in highp vec4 shaderInput; out vec4 o;\n"
+                                                     "void main() { o = shaderInput; }\n").desktop});
+    in.transformFeedbackVaryings = {"target.a", "target.b"};
+    LinkResult r = link(in);
+    CHECK(r.ok);
+    if (!r.ok) std::fprintf(stderr, "%s\n", r.log.c_str());
+    CHECK_EQ(r.transformFeedback.size(), size_t(2));
+}

@@ -182,7 +182,9 @@ void resetSubroutineSelections(Context& ctx);
 void applySubroutineSelections(Context& ctx, Program& program);
 namespace api {
 // Updates the pipeline's VALIDATE_STATUS and info log; true if it can draw.
-bool validateProgramPipeline(ProgramPipeline& pipeline);
+// `es`: OpenGL ES's rules too (section 7.4.1: separable programs' stage
+// interfaces must match).
+bool validateProgramPipeline(ProgramPipeline& pipeline, bool es = false);
 // Drops a destroyed context's use of its current program (which may then be
 // deleted, if deletion was pending).
 void releaseCurrentProgram(Context& ctx);
