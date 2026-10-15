@@ -535,7 +535,8 @@ void AttachShader(Context& ctx, GLuint program, GLuint shader) {
     Shader* s = shaderOrError(ctx, shader);
     if (!s) return;
     for (const RefPtr<Shader>& a : p->attached)
-        if (a.get() == s) return ctx.setError(GL_INVALID_OPERATION);
+        // OpenGL ES: one shader of each stage.
+        if (a.get() == s || (ctx.isEs() && a->stage == s->stage)) return ctx.setError(GL_INVALID_OPERATION);
     p->attached.push_back(RefPtr<Shader>(s));
     ++s->attachCount;
 }
@@ -692,6 +693,27 @@ void LinkProgram(Context& ctx, GLuint program) {
     input.transformFeedbackVaryings = p->transformFeedbackVaryings;
     input.transformFeedbackMode = p->transformFeedbackMode;
     input.separable = p->separable;
+    if (ctx.isEs() && ok && !input.spirv) {
+        // OpenGL ES 3.2 section 7.3: a program needs a vertex and a fragment
+        // shader (or only a compute shader), unless it is separable.
+        bool vertex = false, fragment = false, compute = false;
+        std::vector<shader::ShaderSource> es;
+        for (const RefPtr<Shader>& s : p->attached) {
+            vertex |= s->stage == shader::Stage::Vertex;
+            fragment |= s->stage == shader::Stage::Fragment;
+            compute |= s->stage == shader::Stage::Compute;
+            es.push_back({s->stage, s->source});
+        }
+        if (!input.separable && !compute && !(vertex && fragment)) {
+            log += "error: an OpenGL ES program needs a vertex and a fragment shader\n";
+            ok = false;
+        }
+        const std::string errors = shader::checkEsLink(es);
+        if (!errors.empty()) {
+            log += errors;
+            ok = false;
+        }
+    }
     // Compatibility profile: a program without a vertex shader uses
     // fixed-function vertex processing (transform, colours, texture
     // coordinates and fog coordinate; lighting and texgen need the

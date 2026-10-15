@@ -583,3 +583,63 @@ TEST(shader_bitcast_global_constants) {
     CHECK(compile(Stage::Fragment, "#version 440\nconst int n = 2;\nuniform vec4 v[n];\nout vec4 o;\n"
                                    "void main() { o = v[1]; }\n").ok);
 }
+
+// A sampler array inside a struct is one uniform of the array's size
+// (dEQP uniform_api.info_query.array_in_struct.sampler2D_samplerCube_both).
+TEST(shader_struct_sampler_array_size) {
+    LinkInput in;
+    in.shaders.push_back({Stage::Vertex, "#version 300 es\nin vec4 p; void main() { gl_Position = p; }\n"});
+    in.shaders.push_back({Stage::Fragment,
+                          "#version 300 es\nprecision mediump float;\n"
+                          "struct S { sampler2D m0; samplerCube m1; sampler2D m2[3]; };\n"
+                          "uniform S u_var; out vec4 color;\n"
+                          "void main() { color = texture(u_var.m0, vec2(0)) + texture(u_var.m1, vec3(0)) +\n"
+                          "  texture(u_var.m2[0], vec2(0)) + texture(u_var.m2[1], vec2(0)) + texture(u_var.m2[2], vec2(0)); }\n"});
+    LinkResult r = link(in);
+    CHECK(r.ok);
+    if (!r.ok) std::fprintf(stderr, "%s\n", r.log.c_str());
+    const UniformInfo* m2 = findUniform(r, "u_var.m2[0]");
+    CHECK(m2 && m2->size == 3);
+}
+
+// OpenGL ES contexts: GLSL ES 1.00 (no #version) compiles and links as the
+// desktop GLSL compileEs makes of it, with its extensions' names.
+TEST(shader_glsl_es_100) {
+    const char* vs = "attribute vec4 a_pos; attribute vec2 a_uv; varying mediump vec2 v_uv;\n"
+                     "void main() { v_uv = a_uv; gl_Position = a_pos; gl_PointSize = 1.0; }\n";
+    const char* fs = "#extension GL_EXT_shader_texture_lod : enable\n#extension GL_OES_standard_derivatives : enable\n"
+                     "precision mediump float; uniform sampler2D u_tex; varying vec2 v_uv;\n"
+                     "void main() { gl_FragColor = texture2DLodEXT(u_tex, v_uv, 0.0) + vec4(dFdx(v_uv.x));\n"
+                     "#if __VERSION__ == 100 && defined(GL_ES)\n gl_FragColor.a = 1.0;\n#endif\n}\n";
+    EsCompileResult v = compileEs(Stage::Vertex, vs);
+    EsCompileResult f = compileEs(Stage::Fragment, fs);
+    CHECK(v.ok);
+    CHECK(f.ok);
+    if (!f.ok) std::fprintf(stderr, "%s\n", f.log.c_str());
+    CHECK(f.desktop.find("gl_FragColor.a = 1.0") != std::string::npos);  // ES macros were expanded
+    LinkInput in;
+    in.shaders.push_back({Stage::Vertex, v.desktop});
+    in.shaders.push_back({Stage::Fragment, f.desktop});
+    LinkResult r = link(in);
+    CHECK(r.ok);
+    if (!r.ok) std::fprintf(stderr, "%s\n", r.log.c_str());
+    CHECK(findUniform(r, "u_tex") != nullptr);
+}
+
+// GLSL ES's own rules: no implicit int to float conversion, a default
+// float precision in fragment shaders, and no desktop #version.
+TEST(shader_glsl_es_rules) {
+    CHECK(!compileEs(Stage::Vertex, "void main() { float x = 1; gl_Position = vec4(x); }\n").ok);
+    CHECK(!compileEs(Stage::Fragment, "void main() { float x = 1.0; gl_FragColor = vec4(x); }\n").ok);
+    CHECK(!compileEs(Stage::Vertex, "#version 330\nvoid main() { gl_Position = vec4(0); }\n").ok);
+    CHECK(compileEs(Stage::Vertex, "#version 300 es\nin vec4 p; void main() { gl_Position = p; }\n").ok);
+}
+
+// Uniforms in several stages have one precision (GLSL ES 1.00 section 4.5.3).
+TEST(shader_glsl_es_uniform_precision) {
+    const char* vs = "uniform highp float u; void main() { gl_Position = vec4(u); }\n";
+    const char* fsSame = "precision mediump float; uniform highp float u; void main() { gl_FragColor = vec4(u); }\n";
+    const char* fsOther = "precision mediump float; uniform mediump float u; void main() { gl_FragColor = vec4(u); }\n";
+    CHECK(checkEsLink({{Stage::Vertex, vs}, {Stage::Fragment, fsSame}}).empty());
+    CHECK(!checkEsLink({{Stage::Vertex, vs}, {Stage::Fragment, fsOther}}).empty());
+}

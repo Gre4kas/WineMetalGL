@@ -734,6 +734,14 @@ bool definesMain(const std::string& source) {
     return false;
 }
 
+// The GLSL version capture code is written for: GLSL ES shaders have
+// storage buffers (as GLSL 4.30's) from GLSL ES 3.10, which parseForCodegen
+// raises GLSL ES 3.00 to.
+int captureVersion(const std::string& source) {
+    const GlslVersion v = parseGlslVersion(source);
+    return v.es ? 430 : v.number;
+}
+
 bool parseForCodegen(Stage stage, const std::string& original, ParsedShader& out, std::string& log,
                      const CaptureCode* capture = nullptr, const UpgradeOptions& upgrade = {}) {
     const EShLanguage lang = language(stage);
@@ -752,8 +760,17 @@ bool parseForCodegen(Stage stage, const std::string& original, ParsedShader& out
     out.source = escapeVulkanKeywords(upgraded.source);
     if (capture) {
         // Buffer blocks need a profile (GLSL 1.50+). Upgraded 1.40 code has no legacy built-ins left, so 1.50 core takes it.
-        int version = parseGlslVersion(out.source).number;
-        if (version < 150) {
+        // GLSL ES has them from 3.10, a superset of 3.00.
+        const GlslVersion parsedVersion = parseGlslVersion(out.source);
+        int version = parsedVersion.number;
+        if (parsedVersion.es) {
+            if (version < 310) {
+                const size_t at = out.source.find("#version");
+                const size_t end = out.source.find('\n', at);
+                out.source.replace(at, end == std::string::npos ? std::string::npos : end - at, "#version 310 es");
+            }
+            version = 430;
+        } else if (version < 150) {
             const size_t at = out.source.find("#version");
             if (at != std::string::npos) {
                 const size_t end = out.source.find('\n', at);
@@ -1592,7 +1609,44 @@ void configureNoClient(glslang::TShader& shader, EShLanguage lang) {
 
 }  // namespace
 
+namespace {
+
+EsCompileResult compileEsUncached(Stage stage, const std::string& source);
+
+}  // namespace
+
 EsCompileResult compileEs(Stage stage, const std::string& source) {
+    // Recent results by stage and source, as compile() keeps.
+    static std::mutex mutex;
+    static std::list<std::string> order;  // most recently used first
+    static std::unordered_map<std::string, std::pair<EsCompileResult, std::list<std::string>::iterator>> cache;
+    constexpr size_t kEntries = 512;
+    std::string key(1, static_cast<char>(stage));
+    key += source;
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        auto it = cache.find(key);
+        if (it != cache.end()) {
+            order.splice(order.begin(), order, it->second.second);
+            return it->second.first;
+        }
+    }
+    EsCompileResult result = compileEsUncached(stage, source);
+    std::lock_guard<std::mutex> lock(mutex);
+    if (!cache.count(key)) {
+        order.push_front(key);
+        cache.emplace(std::move(key), std::make_pair(result, order.begin()));
+        while (cache.size() > kEntries) {
+            cache.erase(order.back());
+            order.pop_back();
+        }
+    }
+    return result;
+}
+
+namespace {
+
+EsCompileResult compileEsUncached(Stage stage, const std::string& source) {
     initGlslang();
     EsCompileResult result;
     const EShLanguage lang = language(stage);
@@ -1620,12 +1674,22 @@ EsCompileResult compileEs(Stage stage, const std::string& source) {
         result.desktop = desktop;
         return result;
     }
-    glslang::TShader shader(lang);
     const char* text = source.c_str();
-    shader.setStrings(&text, 1);
-    configureNoClient(shader, lang);
-    result.ok = shader.parse(resources(), 100, EEsProfile, false, false, EShMsgDefault);
-    result.log = cleanLog(shader.getInfoLog(), shader.getInfoDebugLog());
+    // 'defined' produced by macro expansion is undefined behaviour, which
+    // drivers (and dEQP) evaluate: as compile() does, a shader whose only
+    // errors are that is accepted.
+    EShMessages messages = EShMsgDefault;
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        glslang::TShader shader(lang);
+        shader.setStrings(&text, 1);
+        configureNoClient(shader, lang);
+        result.ok = shader.parse(resources(), 100, EEsProfile, false, false, messages);
+        result.log = cleanLog(shader.getInfoLog(), shader.getInfoDebugLog());
+        if (result.ok || attempt ||
+            result.log.find("cannot use in preprocessor expression when expanded from macros") == std::string::npos)
+            break;
+        messages = EShMsgRelaxedErrors;
+    }
     if (!result.ok) return result;
     // The preprocessed shader, its macros expanded with GLSL ES's values.
     glslang::TShader pre(lang);
@@ -1633,7 +1697,8 @@ EsCompileResult compileEs(Stage stage, const std::string& source) {
     configureNoClient(pre, lang);
     std::string preprocessed;
     glslang::TShader::ForbidIncluder includer;
-    if (!pre.preprocess(resources(), 100, EEsProfile, false, false, EShMsgOnlyPreprocessor, &preprocessed, includer)) {
+    if (!pre.preprocess(resources(), 100, EEsProfile, false, false,
+                        static_cast<EShMessages>(EShMsgOnlyPreprocessor | messages), &preprocessed, includer)) {
         result.ok = false;
         result.log += cleanLog(pre.getInfoLog(), pre.getInfoDebugLog());
         return result;
@@ -1647,6 +1712,43 @@ EsCompileResult compileEs(Stage stage, const std::string& source) {
         result.log += log;
     }
     return result;
+}
+
+}  // namespace
+
+std::string checkEsLink(const std::vector<ShaderSource>& esShaders) {
+    initGlslang();
+    std::map<std::string, std::pair<glslang::TPrecisionQualifier, Stage>> precisions;
+    std::string errors;
+    for (const ShaderSource& s : esShaders) {
+        const EShLanguage lang = language(s.stage);
+        glslang::TShader shader(lang);
+        const char* text = s.source.c_str();
+        shader.setStrings(&text, 1);
+        configureNoClient(shader, lang);
+        if (!shader.parse(resources(), 100, EEsProfile, false, false, EShMsgRelaxedErrors)) continue;
+        const glslang::TIntermediate* intermediate = shader.getIntermediate();
+        glslang::TIntermAggregate* root =
+            intermediate && intermediate->getTreeRoot() ? intermediate->getTreeRoot()->getAsAggregate() : nullptr;
+        if (!root) continue;
+        for (TIntermNode* node : root->getSequence()) {
+            glslang::TIntermAggregate* objects = node->getAsAggregate();
+            if (!objects || objects->getOp() != glslang::EOpLinkerObjects) continue;
+            for (TIntermNode* object : objects->getSequence()) {
+                glslang::TIntermSymbol* symbol = object->getAsSymbolNode();
+                if (!symbol) continue;
+                const glslang::TType& type = symbol->getType();
+                if (type.getQualifier().storage != glslang::EvqUniform || type.getBasicType() == glslang::EbtBlock) continue;
+                const std::string name = symbol->getName().c_str();
+                if (name.rfind("gl_", 0) == 0) continue;
+                const glslang::TPrecisionQualifier precision = type.getQualifier().precision;
+                auto [it, added] = precisions.emplace(name, std::make_pair(precision, s.stage));
+                if (!added && it->second.second != s.stage && it->second.first != precision)
+                    errors += "error: uniform '" + name + "' has different precisions in its stages\n";
+            }
+        }
+    }
+    return errors;
 }
 
 // ---------------------------------------------------------------- link
@@ -2509,6 +2611,30 @@ static LinkResult linkImplCore(const LinkInput& input, const CaptureCode* captur
             uint32_t outer = 1;
             for (size_t d = 0; d + 1 < dims.size(); ++d) outer *= dims[d];
             auto it = samplerUniformByName.find(name);
+            // glslang moves a sampler array out of a struct as a variable
+            // per element ("s.a[1]"): those after the first extend its
+            // uniform ("s.a[0]", one of the array's size).
+            if (it == samplerUniformByName.end() && type.array.empty() && name.size() > 3 && name.back() == ']') {
+                const size_t open = name.rfind('[');
+                const std::string digits = name.substr(open + 1, name.size() - open - 2);
+                const bool number = !digits.empty() && digits.find_first_not_of("0123456789") == std::string::npos;
+                auto head = number ? samplerUniformByName.find(name.substr(0, open) + "[0]") : samplerUniformByName.end();
+                if (head != samplerUniformByName.end() && samplerUniformCount[head->first] == 1) {
+                    UniformInfo& u = result.uniforms[static_cast<size_t>(head->second)];
+                    if (u.type == glType && std::to_string(u.size) == digits &&
+                        u.samplerSlot + u.size == static_cast<int>(result.samplers.size())) {
+                        ++u.size;
+                        SamplerSlotInfo slot;
+                        slot.type = glType;
+                        slot.textureTarget = textureTargetForSampler(glType);
+                        slot.shadow = isShadowSampler(glType);
+                        result.samplers.push_back(slot);
+                        samplerUniformByName[name] = head->second;
+                        samplerUniformCount[name] = 1;
+                        continue;
+                    }
+                }
+            }
             if (it == samplerUniformByName.end()) {
                 samplerUniformByName[name] = static_cast<int>(result.uniforms.size());
                 samplerUniformCount[name] = static_cast<int>(outer);
@@ -3441,7 +3567,7 @@ namespace {
 bool useVertexCapture(const LinkInput& input, const LinkResult& layout, LinkResult& result) {
     int version = 140;
     for (const ShaderSource& shader : input.shaders)
-        if (shader.stage == Stage::Vertex) version = std::max(version, parseGlslVersion(shader.source).number);
+        if (shader.stage == Stage::Vertex) version = std::max(version, captureVersion(shader.source));
     const CaptureCode code = vertexCaptureCode(layout, version);
     LinkInput again = input;
     again.transformFeedbackVaryings.clear();
@@ -3807,7 +3933,7 @@ bool vertexCaptureLayout(const LinkInput& input, const std::vector<std::string>&
 bool relinkVertexCapture(const LinkInput& input, const LinkResult& layout, LinkResult& captured, std::string& log) {
     int version = 140;
     for (const ShaderSource& shader : input.shaders)
-        if (shader.stage == Stage::Vertex) version = std::max(version, parseGlslVersion(shader.source).number);
+        if (shader.stage == Stage::Vertex) version = std::max(version, captureVersion(shader.source));
     const CaptureCode code = vertexCaptureCode(layout, version);
     LinkInput again = input;
     again.transformFeedbackVaryings.clear();

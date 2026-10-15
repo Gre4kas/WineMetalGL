@@ -104,6 +104,18 @@ GlslVersion parseGlslVersion(const std::string& source) {
 }
 
 std::string esToDesktopGlsl(const std::string& preprocessed, int version) {
+    if (version >= 310) {
+        // glslang's lowering of atomic counters (relaxed Vulkan rules)
+        // subtracts int constants from uints, which GLSL ES allows only with
+        // EXT_shader_implicit_conversions. The shader has passed GLSL ES's
+        // checks already: codegen may convert.
+        const size_t at = preprocessed.find("#version");
+        if (at == std::string::npos) return preprocessed;
+        const size_t end = preprocessed.find('\n', at);
+        if (end == std::string::npos) return preprocessed;
+        return preprocessed.substr(0, end + 1) + "#extension GL_EXT_shader_implicit_conversions : enable\n" +
+               preprocessed.substr(end + 1);
+    }
     if (version != 100) return preprocessed;
     // GLSL ES 1.00 extensions' names for desktop GLSL 1.20 functions and
     // variables, and its built-in constants in vectors (desktop GLSL 1.20

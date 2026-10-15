@@ -85,6 +85,11 @@ struct ShaderSource {
     std::string source;
 };
 
+// OpenGL ES link rules the desktop GLSL the shaders became no longer shows:
+// a uniform declared in several stages has the same precision in each.
+// Returns the link errors ("" when there are none).
+std::string checkEsLink(const std::vector<ShaderSource>& esShaders);
+
 struct LinkInput {
     std::vector<ShaderSource> shaders;
     std::map<std::string, GLuint> attribBindings;

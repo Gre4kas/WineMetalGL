@@ -30,7 +30,8 @@ GlslVersion parseGlslVersion(const std::string& source);
 //  - GLSL ES 1.00 becomes GLSL 1.20 (upgradeLegacyGlsl then makes it 1.40,
 //    whose rules take its precision qualifiers): its extensions' functions
 //    and variables become the desktop ones and its #extension lines go.
-//  - GLSL ES 3.x stays as it is (glslang compiles ES 3.x for codegen).
+//  - GLSL ES 3.x stays as it is (glslang compiles ES 3.x for codegen); 3.10
+//    and 3.20 enable implicit conversions, which glslang's own lowering needs.
 std::string esToDesktopGlsl(const std::string& preprocessed, int version);
 
 struct UpgradeResult {
