@@ -99,6 +99,18 @@ public:
     // same number of whole patches, so gl_PrimitiveID starts again at 0 for
     // each (canBatchPatchCommands); base instances may differ.
     void drawPatchCommands(GLenum type, const uint32_t (*commands)[5], size_t count);
+    // A multi-draw indirect of patches (validated by the caller) whose
+    // commands the GPU wrote in an earlier command buffer (Foundation's culled
+    // terrain, issue #12), drawn without reading them on the CPU: prelude
+    // kernels list the patch vertices in command order, as drawPatchCommands
+    // does on the CPU, and the vertex capture, the control and factor kernels
+    // and the tessellation draw take their counts from the GPU. Patches are
+    // numbered over the whole multi-draw, so programs reading gl_PrimitiveID
+    // (or gl_InstanceID, gl_DrawID, gl_BaseVertex, gl_BaseInstance) take the
+    // CPU path. True when it drew (or reported the state's error, as the CPU
+    // path's first command would); false, having drawn nothing, for the CPU
+    // path (always with WINEMETALGL_TESS_MDI_GPU=0).
+    bool drawPatchesIndirectGpu(GLenum type, Buffer& commands, uintptr_t offset, GLsizei drawcount, uintptr_t stride);
 
     // glDispatchCompute / glDispatchComputeIndirect (validated by the caller);
     // `indirect` is the DISPATCH_INDIRECT_BUFFER, or null.
@@ -224,9 +236,10 @@ private:
     // tessellator, the levels' factors at `factors` (wmgl_tess_factors).
     // False, having drawn nothing, when its pipeline cannot be built: the
     // caller tessellates on the CPU, as later draws of the program do.
+    // `indirect`: the patch count is the GPU's (MTLDrawPatchIndirectArguments there), not `patches`.
     bool drawMetalPatches(LinkedProgram& program, LinkedProgram& evaluation, id<MTLBuffer> records, NSUInteger recordsOffset,
                           id<MTLBuffer> factors, NSUInteger factorsOffset, uint64_t patches, uint32_t patchesPerInstance,
-                          uint32_t patchVertices);
+                          uint32_t patchVertices, id<MTLBuffer> indirect = nil, NSUInteger indirectOffset = 0);
     // Uniforms, uniform blocks and samplers of a compute function (the
     // `stage` slots: Stage::Compute for a compute program or the geometry
     // kernel, Stage::TessControl for the tessellation control kernel).
@@ -301,6 +314,25 @@ private:
     // per-instance attributes from (batched indirect commands with their own
     // base instances, drawPatches), or null for the draw's instances.
     const std::vector<uint32_t>* instanceGather_ = nullptr;
+    // drawPatchesIndirectGpu's vertex capture: the direct attribute groups
+    // are fetched per vertex from streams the GPU gathered in list order
+    // (group g's at offsets[g], strides[g] bytes apart) instead of their buffers.
+    struct GpuGather {
+        id<MTLBuffer> buffer = nil;
+        NSUInteger offsets[13] = {};
+        uint32_t strides[13] = {};
+    };
+    const GpuGather* gpuGather_ = nullptr;
+    // drawPatchesIndirectGpu's call sites (program, command buffer, offset,
+    // count): list positions its buffers hold, learned from the totals the
+    // scan kernel reports (report[i] for the use with serials[i]).
+    struct MdiSite {
+        uint32_t capacity = 0;
+        id<MTLBuffer> report = nil;
+        uint64_t serials[8] = {};
+        uint32_t next = 0;
+    };
+    std::unordered_map<uint64_t, MdiSite> mdiSites_;
     // Image bindings with a shadow texture (core::ImageShadow) for the draw
     // in progress: copied in by prepareSamplerStorage, back when the draw ends.
     struct PendingShadow {

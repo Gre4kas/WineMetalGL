@@ -855,6 +855,161 @@ void main() { result = vec3(v[0], v[1], primitive); gl_Position = vec4(0.0); })"
     glDeleteProgram(p);
 }
 
+GPU_TEST_VERSION(gpu_tess_multi_draw_gpu_written_commands, 46) {
+    // Commands a compute shader writes (Foundation's culled terrain, issue
+    // #12) draw without the CPU reading them (DrawState::drawPatchesIndirectGpu,
+    // after a first draw that sizes its buffers): the image is the one of
+    // drawing each command on its own. Empty commands, one with no
+    // instances, two patches, two instances (instance attributes), a base
+    // vertex, a count that is not a whole number of patches and an
+    // out-of-range command; 32- and 16-bit indices.
+    const char* vs = R"(#version 460 core
+layout(location = 0) in vec2 position;
+layout(location = 1) in vec4 instance;  // xy offset, z shade
+out vec2 pos;
+out float shadeIn;
+void main() { pos = position + instance.xy; shadeIn = instance.z; })";
+    const char* tcs = R"(#version 460 core
+layout(vertices = 4) out;
+in vec2 pos[];
+in float shadeIn[];
+out vec2 cp[];
+patch out float shade;
+void main() {
+    cp[gl_InvocationID] = pos[gl_InvocationID];
+    shade = shadeIn[0];
+    for (int i = 0; i < 4; ++i) gl_TessLevelOuter[i] = 2.0 + shadeIn[0] * 4.0;
+    gl_TessLevelInner[0] = 3.0; gl_TessLevelInner[1] = 3.0;
+})";
+    const char* tes = R"(#version 460 core
+layout(quads, fractional_odd_spacing, ccw) in;
+in vec2 cp[];
+patch in float shade;
+out vec4 color;
+void main() {
+    vec2 p = mix(mix(cp[0], cp[1], gl_TessCoord.x), mix(cp[3], cp[2], gl_TessCoord.x), gl_TessCoord.y);
+    gl_Position = vec4(p, 0.0, 1.0);
+    color = vec4(shade, gl_TessCoord.x, gl_TessCoord.y, 1.0);
+})";
+    const char* fs = "#version 460 core\nin vec4 color; out vec4 o; void main() { o = color; }\n";
+    const char* cs = R"(#version 460 core
+layout(local_size_x = 64) in;
+layout(std430, binding = 0) readonly buffer Source { uint source[]; };
+layout(std430, binding = 1) writeonly buffer Commands { uint commands[]; };
+uniform uint words;
+void main() { if (gl_GlobalInvocationID.x < words) commands[gl_GlobalInvocationID.x] = source[gl_GlobalInvocationID.x]; })";
+    // Five small quads (4 vertices each); eight instances place and shade them.
+    std::vector<float> v;
+    for (int q = 0; q < 5; ++q) {
+        const float d = 0.02f * static_cast<float>(q), s = 0.4f;
+        const float quad[8] = {d, 0, s + d, 0, s + d, s, d, s};
+        v.insert(v.end(), quad, quad + 8);
+    }
+    float instances[8][4];
+    for (int i = 0; i < 8; ++i) {
+        instances[i][0] = -0.95f + 0.45f * static_cast<float>(i % 4);
+        instances[i][1] = -0.9f + 0.85f * static_cast<float>(i / 4);
+        instances[i][2] = 0.1f + 0.1f * static_cast<float>(i);
+        instances[i][3] = 1.0f;
+    }
+    // count, instances, first index, base vertex, base instance
+    const GLuint commands[9][5] = {
+        {4, 1, 0, 0, 0},     // quad 0
+        {0, 1, 0, 0, 1},     // empty
+        {8, 1, 4, 0, 1},     // quads 1 and 2: two patches
+        {4, 2, 12, 0, 2},    // quad 3, two instances (2 and 3)
+        {4, 1, 0, 16, 4},    // quad 4 through a base vertex
+        {6, 1, 16, 0, 5},    // quad 4 again: the last two indices make no patch
+        {4, 1, 1000, 0, 6},  // out of range: nothing
+        {4, 0, 0, 0, 7},     // no instances
+        {4, 1, 8, 0, 7},     // quad 2
+    };
+    GLuint vao = 0, buffers[5] = {};
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(5, buffers);
+    glBindBuffer(GL_ARRAY_BUFFER, buffers[0]);
+    glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(v.size() * sizeof(float)), v.data(), GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
+    glEnableVertexAttribArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, buffers[1]);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(instances), instances, GL_STATIC_DRAW);
+    glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, 0, nullptr);
+    glVertexAttribDivisor(1, 1);
+    glEnableVertexAttribArray(1);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, buffers[3]);  // the commands, as the GPU will copy them
+    glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(commands), commands, GL_STATIC_DRAW);
+    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, buffers[4]);
+    glBufferData(GL_DRAW_INDIRECT_BUFFER, sizeof(commands), nullptr, GL_DYNAMIC_DRAW);
+    glPatchParameteri(GL_PATCH_VERTICES, 4);
+    GLuint copy = glCreateProgram();
+    {
+        GLuint shader = glCreateShader(GL_COMPUTE_SHADER);
+        glShaderSource(shader, 1, &cs, nullptr);
+        glCompileShader(shader);
+        glAttachShader(copy, shader);
+        glLinkProgram(copy);
+        glDeleteShader(shader);
+    }
+    GLuint p = link({vs, tcs, tes, nullptr, fs});
+    for (GLenum type : {GL_UNSIGNED_INT, GL_UNSIGNED_SHORT}) {
+        std::vector<GLuint> indices(20);
+        for (GLuint i = 0; i < 20; ++i) indices[i] = i;
+        std::vector<GLushort> shorts(indices.begin(), indices.end());
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, buffers[2]);
+        if (type == GL_UNSIGNED_INT)
+            glBufferData(GL_ELEMENT_ARRAY_BUFFER, static_cast<GLsizeiptr>(indices.size() * 4), indices.data(), GL_STATIC_DRAW);
+        else
+            glBufferData(GL_ELEMENT_ARRAY_BUFFER, static_cast<GLsizeiptr>(shorts.size() * 2), shorts.data(), GL_STATIC_DRAW);
+        // Reference: each command on its own, read on the CPU.
+        GLuint reference = 0;
+        glGenBuffers(1, &reference);
+        glBindBuffer(GL_DRAW_INDIRECT_BUFFER, reference);
+        glBufferData(GL_DRAW_INDIRECT_BUFFER, sizeof(commands), commands, GL_STATIC_DRAW);
+        glUseProgram(p);
+        glClearColor(0, 0, 0, 0);
+        glClear(GL_COLOR_BUFFER_BIT);
+        for (size_t i = 0; i < 9; ++i)
+            glDrawElementsIndirect(GL_PATCHES, type, reinterpret_cast<const void*>(i * sizeof(commands[0])));
+        const std::vector<uint8_t> expected = gpu::readRGBA8(0, 0, 64, 64);
+        glDeleteBuffers(1, &reference);
+        glBindBuffer(GL_DRAW_INDIRECT_BUFFER, buffers[4]);
+        // Three frames of: copy the commands on the GPU, then draw them; the
+        // first draw of the multi-draw sizes its buffers on the CPU path.
+        std::vector<uint8_t> image;
+        unsigned long long gpuDraws = 0;
+        for (int frame = 0; frame < 3; ++frame) {
+            glClear(GL_COLOR_BUFFER_BIT);
+            glUseProgram(copy);
+            glUniform1ui(glGetUniformLocation(copy, "words"), 45u);
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, buffers[3]);
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, buffers[4]);
+            glDispatchCompute(1, 1, 1);
+            glMemoryBarrier(GL_COMMAND_BARRIER_BIT);
+            glUseProgram(p);
+            gpu::Counters counters;
+            glMultiDrawElementsIndirect(GL_PATCHES, type, nullptr, 9, 0);
+            gpuDraws = counters["tessMdiGpu"];
+            image = gpu::readRGBA8(0, 0, 64, 64);
+        }
+        CHECK_GL();
+        CHECK_EQ(gpuDraws, 1ull);
+        int drawn = 0, different = 0;
+        for (size_t i = 0; i < expected.size(); i += 4) {
+            drawn += expected[i + 3] != 0;
+            different += !gpu::near(&expected[i], &image[i], 1);
+        }
+        if (different) std::fprintf(stderr, "  %s indices: %d of 4096 pixels differ\n", type == GL_UNSIGNED_INT ? "32-bit" : "16-bit", different);
+        CHECK_EQ(different, 0);
+        if (drawn <= 600) std::fprintf(stderr, "  %d pixels drawn\n", drawn);
+        CHECK(drawn > 600);
+    }
+    glDeleteProgram(p);
+    glDeleteProgram(copy);
+    glDeleteBuffers(5, buffers);
+    glDeleteVertexArrays(1, &vao);
+}
+
 GPU_TEST_VERSION(gpu_tess_image_atomics_every_stage, 42) {
     // Each stage of a tessellation + geometry pipeline adds its own amount
     // to one texel of a 20-byte buffer image: 1 vertex, 1 control

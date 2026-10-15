@@ -3459,6 +3459,20 @@ bool buildTessellationEmulation(const LinkInput& input, const TessellationLink& 
     if (!useVertexCapture(input, t.capture, result)) return false;
     TessellationEmulation& e = result.tess;
     e.inputStride = t.capture.xfbStride[0];
+    // Whole identifiers only (as usesIdentifier below).
+    const auto uses = [](const std::string& source, const std::string& name) {
+        for (size_t at = source.find(name); at != std::string::npos; at = source.find(name, at + 1)) {
+            const auto part = [&](size_t i) { return std::isalnum(static_cast<unsigned char>(source[i])) || source[i] == '_'; };
+            if ((at == 0 || !part(at - 1)) && (at + name.size() >= source.size() || !part(at + name.size()))) return true;
+        }
+        return false;
+    };
+    for (const ShaderSource& shader : input.shaders)
+        if (shader.stage == Stage::TessControl || shader.stage == Stage::TessEval || shader.stage == Stage::Fragment ||
+            shader.stage == Stage::Geometry)
+            e.readsPrimitiveId |= uses(shader.source, "gl_PrimitiveID");
+        else if (shader.stage == Stage::Vertex)
+            e.readsInstanceId |= uses(shader.source, "gl_InstanceID") || uses(shader.source, "gl_InstanceIndex");
     static const bool dump = [] {
         const char* v = std::getenv("WINEMETALGL_DUMP_SHADERS");
         return v && v[0] == '1';

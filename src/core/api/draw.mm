@@ -279,6 +279,11 @@ void multiDrawArraysIndirect(Context& ctx, GLenum mode, const void* indirect, GL
 }
 
 void multiDrawElementsIndirect(Context& ctx, GLenum mode, GLenum type, const void* indirect, GLsizei drawcount, uintptr_t step) {
+    // Patches from commands a shader wrote: drawn without reading them.
+    if (mode == GL_PATCHES)
+        if (Buffer* buffer = ctx.state.drawIndirectBuffer.get();
+            buffer && ctx.draw().drawPatchesIndirectGpu(type, *buffer, reinterpret_cast<uintptr_t>(indirect), drawcount, step))
+            return;
     bool cpu = false;
     // Patches on the CPU path: commands that draw one instance of the same
     // whole number of patches are drawn as one batch (one control dispatch

@@ -254,17 +254,31 @@ id<MTLComputeCommandEncoder> CommandStream::preludeCompute() {
     return preludeCompute_;
 }
 
+id<MTLComputeCommandEncoder> CommandStream::preludeSetup() {
+    if (preludeSetup_) return preludeSetup_;
+    if (!preludeSetupBuffer_) {
+        preludeSetupBuffer_ = [queue_.mtl() commandBuffer];
+        preludeSetupBuffer_.label = @"WineMetalGL prelude (multi-draw setup)";
+    }
+    preludeSetup_ = [preludeSetupBuffer_ computeCommandEncoder];
+    return preludeSetup_;
+}
+
 void CommandStream::commitPrelude() {
     // In queue order ahead of the command buffer being committed: the
     // capture pass, then the kernels that read it (tracked resources order
     // the kernels after the captures and the draws after the kernels).
+    if (preludeSetup_) [preludeSetup_ endEncoding];
     if (preludeRender_) [preludeRender_ endEncoding];
     if (preludeCompute_) [preludeCompute_ endEncoding];
+    if (preludeSetupBuffer_) [preludeSetupBuffer_ commit];
     if (preludeRenderBuffer_) [preludeRenderBuffer_ commit];
     if (preludeComputeBuffer_) [preludeComputeBuffer_ commit];
     if (preludeComputeBuffer_ || preludeRenderBuffer_) lastPrelude_ = preludeComputeBuffer_ ?: preludeRenderBuffer_;
+    preludeSetup_ = nil;
     preludeRender_ = nil;
     preludeCompute_ = nil;
+    preludeSetupBuffer_ = nil;
     preludeRenderBuffer_ = nil;
     preludeComputeBuffer_ = nil;
 }

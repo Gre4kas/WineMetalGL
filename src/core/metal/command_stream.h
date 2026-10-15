@@ -92,6 +92,10 @@ public:
     // attachments; preludeCompute: one compute pass, run after it.
     id<MTLRenderCommandEncoder> preludeRender();
     id<MTLComputeCommandEncoder> preludeCompute();
+    // preludeSetup: one compute pass committed ahead of both, for the
+    // kernels that turn GPU-written multi-draw commands into what the
+    // capture and the control kernels read (DrawState::drawPatchesIndirectGpu).
+    id<MTLComputeCommandEncoder> preludeSetup();
     // Commits the prelude and the command buffer being recorded, and waits
     // for the prelude's kernels (the CPU reads their results).
     void waitForPrelude();
@@ -174,7 +178,8 @@ private:
     id<MTLRenderCommandEncoder> render_ = nil;
     id<MTLBlitCommandEncoder> blit_ = nil;
     id<MTLComputeCommandEncoder> compute_ = nil;
-    id<MTLCommandBuffer> preludeRenderBuffer_ = nil, preludeComputeBuffer_ = nil;
+    id<MTLCommandBuffer> preludeRenderBuffer_ = nil, preludeComputeBuffer_ = nil, preludeSetupBuffer_ = nil;
+    id<MTLComputeCommandEncoder> preludeSetup_ = nil;
     id<MTLRenderCommandEncoder> preludeRender_ = nil;
     id<MTLComputeCommandEncoder> preludeCompute_ = nil;
     id<MTLCommandBuffer> lastPrelude_ = nil;  // the last prelude committed (waitForPrelude)

@@ -59,6 +59,9 @@ struct Frame {
     // that is as conforming as the CPU path's last vertex; a game that relies
     // on one shows here.
     uint64_t tessCpu = 0, tessMetal = 0, tessMetalFlat = 0, tessPrelude = 0;
+    // Multi-draws of patches drawn from GPU-written commands without reading
+    // them (DrawState::drawPatchesIndirectGpu), and their commands.
+    uint64_t tessMdiGpu = 0, tessMdiGpuCommands = 0;
     // Indirect draw commands read by the GPU, and read on the CPU (after
     // waiting for GPU writes to the command buffer); multi-draws whose
     // commands the GPU read with the draw state bound once for several.

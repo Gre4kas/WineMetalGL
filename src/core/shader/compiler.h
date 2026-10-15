@@ -310,6 +310,12 @@ struct TessellationEmulation {
     uint32_t inputStride = 0;       // 32-bit words per captured vertex
     uint32_t vertexWords = 0;       // control: words per output vertex record
     uint32_t patchWords = 0;        // control: words of the patch section (levels first)
+    // A control, evaluation or fragment shader reads gl_PrimitiveID (the
+    // GPU-driven multi-draw of patches numbers patches over the whole draw).
+    bool readsPrimitiveId = false;
+    // The vertex shader reads gl_InstanceID (the GPU-driven multi-draw
+    // captures each command's instances as one draw's vertices).
+    bool readsInstanceId = false;
     StageOutput control;            // compute: one threadgroup per patch
     // The evaluation stage as a vertex shader, linked with the geometry
     // shader (if any) and the transform feedback varyings.
