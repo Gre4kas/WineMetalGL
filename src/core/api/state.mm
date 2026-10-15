@@ -530,7 +530,9 @@ void blendFunc(Context& ctx, int buffer, GLenum srcRGB, GLenum dstRGB, GLenum sr
 
 void blendEquation(Context& ctx, int buffer, GLenum modeRGB, GLenum modeAlpha) {
     if (buffer >= ContextState::kMaxDrawBuffers) return ctx.setError(GL_INVALID_VALUE);
-    if (!validBlendEquation(modeRGB) || !validBlendEquation(modeAlpha)) return ctx.setError(GL_INVALID_ENUM);
+    // KHR_blend_equation_advanced: glBlendEquation(i) only (both parts).
+    const bool advanced = modeRGB == modeAlpha && advancedBlendIndex(modeRGB) >= 0 && ctx.advertises("GL_KHR_blend_equation_advanced");
+    if (!advanced && (!validBlendEquation(modeRGB) || !validBlendEquation(modeAlpha))) return ctx.setError(GL_INVALID_ENUM);
     for (int i = 0; i < ContextState::kMaxDrawBuffers; ++i) {
         if (buffer >= 0 && i != buffer) continue;
         ctx.state.blend[i].equationRGB = modeRGB;
@@ -547,7 +549,10 @@ void BlendFuncSeparate(Context& ctx, GLenum srcRGB, GLenum dstRGB, GLenum srcAlp
 
 void BlendFunc(Context& ctx, GLenum sfactor, GLenum dfactor) { blendFunc(ctx, -1, sfactor, dfactor, sfactor, dfactor); }
 
-void BlendEquationSeparate(Context& ctx, GLenum modeRGB, GLenum modeAlpha) { blendEquation(ctx, -1, modeRGB, modeAlpha); }
+void BlendEquationSeparate(Context& ctx, GLenum modeRGB, GLenum modeAlpha) {
+    if (advancedBlendIndex(modeRGB) >= 0 || advancedBlendIndex(modeAlpha) >= 0) return ctx.setError(GL_INVALID_ENUM);
+    blendEquation(ctx, -1, modeRGB, modeAlpha);
+}
 
 void BlendEquation(Context& ctx, GLenum mode) { blendEquation(ctx, -1, mode, mode); }
 
@@ -565,6 +570,7 @@ void BlendEquationi(Context& ctx, GLuint buf, GLenum mode) {
 }
 
 void BlendEquationSeparatei(Context& ctx, GLuint buf, GLenum modeRGB, GLenum modeAlpha) {
+    if (advancedBlendIndex(modeRGB) >= 0 || advancedBlendIndex(modeAlpha) >= 0) return ctx.setError(GL_INVALID_ENUM);
     blendEquation(ctx, static_cast<int>(std::min<GLuint>(buf, 1024)), modeRGB, modeAlpha);
 }
 

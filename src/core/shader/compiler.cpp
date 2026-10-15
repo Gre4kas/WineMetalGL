@@ -1753,6 +1753,81 @@ std::string checkEsLink(const std::vector<ShaderSource>& esShaders) {
 
 // ---------------------------------------------------------------- link
 
+std::string fragmentWithAdvancedBlend(const std::string& msl, unsigned equation) {
+    const std::string signature = "fragment main0_out main0(", member = "struct main0_out\n{\n";
+    const size_t structAt = msl.find(member);
+    const size_t fnAt = msl.find(signature);
+    if (structAt == std::string::npos || fnAt == std::string::npos || structAt > fnAt) return std::string();
+    // Color output 0: "    float4 <name> [[color(0)]];"
+    std::string name;
+    {
+        const size_t end = msl.find("};", structAt);
+        std::istringstream lines(msl.substr(structAt, end - structAt));
+        std::string line;
+        while (std::getline(lines, line)) {
+            if (line.find(" [[color(0)]]") == std::string::npos || line.find("float4") == std::string::npos) continue;
+            std::istringstream words(line);
+            std::string type;
+            words >> type >> name;
+        }
+    }
+    if (name.empty()) return msl;
+    // The KHR_blend_equation_advanced equations on unpremultiplied colors
+    // (section 3.8.5 table X.1 and X.2); the result is premultiplied.
+    static const char* const kSeparable[11] = {
+        "cs * cd",
+        "cs + cd - cs * cd",
+        "select(1.0 - 2.0 * (1.0 - cs) * (1.0 - cd), 2.0 * cs * cd, cd <= 0.5)",
+        "min(cs, cd)",
+        "max(cs, cd)",
+        "select(select(min(float3(1.0), cd / max(1.0 - cs, float3(1e-30))), float3(1.0), cs >= 1.0), float3(0.0), cd <= 0.0)",
+        "select(select(1.0 - min(float3(1.0), (1.0 - cd) / max(cs, float3(1e-30))), float3(0.0), cs <= 0.0), float3(1.0), cd >= 1.0)",
+        "select(1.0 - 2.0 * (1.0 - cs) * (1.0 - cd), 2.0 * cs * cd, cs <= 0.5)",
+        "select(select(cd + (2.0 * cs - 1.0) * (sqrt(cd) - cd), cd + (2.0 * cs - 1.0) * cd * ((16.0 * cd - 12.0) * cd + 3.0), "
+        "cd <= 0.25), cd - (1.0 - 2.0 * cs) * cd * (1.0 - cd), cs <= 0.5)",
+        "abs(cd - cs)",
+        "cs + cd - 2.0 * cs * cd",
+    };
+    static const char* const kNonSeparable[4] = {
+        "wmgl_set_lum_sat(cs, cd, cd)",  // HSL_HUE
+        "wmgl_set_lum_sat(cd, cs, cd)",  // HSL_SATURATION
+        "wmgl_set_lum(cs, cd)",          // HSL_COLOR
+        "wmgl_set_lum(cd, cs)",          // HSL_LUMINOSITY
+    };
+    if (equation > 14) return msl;
+    std::string helpers =
+        "static inline float wmgl_lum(float3 c) { return dot(c, float3(0.30, 0.59, 0.11)); }\n"
+        "static inline float3 wmgl_clip_color(float3 c) {\n"
+        "    float l = wmgl_lum(c), n = min(min(c.r, c.g), c.b), x = max(max(c.r, c.g), c.b);\n"
+        "    if (n < 0.0) c = l + (c - l) * l / (l - n);\n"
+        "    if (x > 1.0) c = l + (c - l) * (1.0 - l) / (x - l);\n"
+        "    return c;\n}\n"
+        "static inline float3 wmgl_set_lum(float3 cbase, float3 clum) { return wmgl_clip_color(cbase + (wmgl_lum(clum) - wmgl_lum(cbase))); }\n"
+        "static inline float3 wmgl_set_lum_sat(float3 cbase, float3 csat, float3 clum) {\n"
+        "    float mn = min(min(cbase.r, cbase.g), cbase.b), mx = max(max(cbase.r, cbase.g), cbase.b);\n"
+        "    float s = max(max(csat.r, csat.g), csat.b) - min(min(csat.r, csat.g), csat.b);\n"
+        "    float3 c = mx > mn ? (cbase - mn) * s / (mx - mn) : float3(0.0);\n"
+        "    return wmgl_set_lum(c, clum);\n}\n"
+        "static inline float4 wmgl_advanced_blend(float4 s, float4 d) {\n"
+        "    float3 cs = s.a > 0.0 ? s.rgb / s.a : float3(0.0);\n"
+        "    float3 cd = d.a > 0.0 ? d.rgb / d.a : float3(0.0);\n"
+        "    cs = clamp(cs, 0.0, 1.0); cd = clamp(cd, 0.0, 1.0);\n"
+        "    float3 f = " + std::string(equation < 11 ? kSeparable[equation] : kNonSeparable[equation - 11]) + ";\n"
+        "    float p0 = s.a * d.a, p1 = s.a * (1.0 - d.a), p2 = d.a * (1.0 - s.a);\n"
+        "    return float4(f * p0 + cs * p1 + cd * p2, p0 + p1 + p2);\n}\n\n";
+    std::string out = msl;
+    out.insert(fnAt, helpers);
+    const size_t fn = out.find(signature);
+    const size_t open = fn + signature.size() - 1;
+    std::string param = "float4 wmgl_dst0 [[color(0)]]";
+    if (out[open + 1] != ')') param += ", ";
+    out.insert(open + 1, param);
+    const std::string assign = "out." + name + " = wmgl_advanced_blend(out." + name + ", wmgl_dst0); ";
+    for (size_t at = out.find("return out;", fn); at != std::string::npos; at = out.find("return out;", at + assign.size() + 11))
+        out.insert(at, assign);
+    return out;
+}
+
 namespace {
 
 GLenum glTypeOfAst(const glslang::TType& t) {
@@ -2149,6 +2224,8 @@ static LinkResult linkImplCore(const LinkInput& input, const CaptureCode* captur
                              input.shaders[i].stage == Stage::Vertex ? vertexUpgrade : UpgradeOptions()))
             return result;
         stagePresent[static_cast<int>(input.shaders[i].stage)] = true;
+        if (input.shaders[i].stage == Stage::Fragment && parsed[i].shader->getIntermediate())
+            result.blendSupport |= parsed[i].shader->getIntermediate()->getBlendEquations();
     }
     if (stagePresent[static_cast<int>(Stage::Compute)]) {
         for (int s = 0; s < kStageCount; ++s)

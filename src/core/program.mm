@@ -303,7 +303,9 @@ id<MTLFunction> LinkedProgram::fragmentVariant(bool sampleMask, unsigned logicOp
     // Counted before the cull test is added, which then runs first: culled primitives have no fragments.
     if (!msl.empty() && countInvocations) msl = shader::fragmentCountingInvocations(msl);
     if (!msl.empty() && cull) msl = shader::fragmentWithCullDistances(msl, static_cast<int>(cull));
-    if (!msl.empty() && logicOp) {
+    if (!msl.empty() && logicOp > 16) {
+        msl = shader::fragmentWithAdvancedBlend(msl, logicOp - 17);
+    } else if (!msl.empty() && logicOp) {
         shader::LogicOpTarget targets[8];
         for (int i = 0; i < 8; ++i) targets[i] = logicOpTarget(static_cast<MTLPixelFormat>(colorFormats[i]));
         msl = shader::fragmentWithLogicOp(msl, logicOp - 1, targets);

@@ -40,7 +40,9 @@ struct LinkedProgram {
     // Fragment function variants: writing GL_SAMPLE_MASK / GL_SAMPLE_COVERAGE's
     // mask (shader::fragmentWithSampleMask), and applying logical operation
     // `logicOp` - 1 (0: none; shader::fragmentWithLogicOp) to attachments of
-    // `colorFormats` (MTLPixelFormat). Nil if the stage cannot have it.
+    // `colorFormats` (MTLPixelFormat), or above 16 advanced blend equation
+    // `logicOp` - 17 (shader::fragmentWithAdvancedBlend). Nil if the stage
+    // cannot have it.
     // `cull`: the drawing vertex function's cull distance count, 0 for none
     // (shader::fragmentWithCullDistances).
     // `borders`: the clamp-to-border emulation variant (shader::borderVariantId; 0: none).

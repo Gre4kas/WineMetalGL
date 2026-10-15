@@ -64,6 +64,12 @@ void DepthRangeArrayfvOES(Context& ctx, GLuint first, GLsizei count, const GLflo
 
 void DepthRangeIndexedfOES(Context& ctx, GLuint index, GLfloat n, GLfloat f) { DepthRangeIndexed(ctx, index, n, f); }
 
+// OpenGL ES 3.2 / KHR_blend_equation_advanced: framebuffer fetch on Apple
+// GPUs reads every earlier fragment's result, so there is nothing to wait for.
+void BlendBarrier(Context& ctx) {
+    if (!ctx.advertises("GL_KHR_blend_equation_advanced")) return ctx.unimplemented("glBlendBarrier");
+}
+
 // OpenGL ES 3.2 / EXT_primitive_bounding_box: where tessellation and
 // geometry shaders' output lies, a hint that is only kept for queries.
 void PrimitiveBoundingBox(Context& ctx, GLfloat minX, GLfloat minY, GLfloat minZ, GLfloat minW, GLfloat maxX, GLfloat maxY,

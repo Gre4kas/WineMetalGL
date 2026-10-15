@@ -643,3 +643,27 @@ TEST(shader_glsl_es_uniform_precision) {
     CHECK(checkEsLink({{Stage::Vertex, vs}, {Stage::Fragment, fsSame}}).empty());
     CHECK(!checkEsLink({{Stage::Vertex, vs}, {Stage::Fragment, fsOther}}).empty());
 }
+
+// KHR_blend_equation_advanced: the fragment shader's blend_support layouts
+// are reflected, and the blend variant reads color 0 by framebuffer fetch.
+TEST(shader_advanced_blend_support) {
+    EsCompileResult v = compileEs(Stage::Vertex, "#version 320 es\nin vec4 p; void main() { gl_Position = p; }\n");
+    EsCompileResult f = compileEs(Stage::Fragment, "#version 320 es\nprecision mediump float;\n"
+                                                   "layout(blend_support_multiply, blend_support_hsl_hue) out;\n"
+                                                   "layout(location = 0) out vec4 o; void main() { o = vec4(1.0); }\n");
+    CHECK(v.ok);
+    CHECK(f.ok);
+    if (!f.ok) std::fprintf(stderr, "%s\n", f.log.c_str());
+    LinkInput in;
+    in.shaders.push_back({Stage::Vertex, v.desktop});
+    in.shaders.push_back({Stage::Fragment, f.desktop});
+    LinkResult r = link(in);
+    CHECK(r.ok);
+    if (!r.ok) std::fprintf(stderr, "%s\n", r.log.c_str());
+    CHECK(r.blendSupport & 1u);          // MULTIPLY
+    CHECK(r.blendSupport & (1u << 11));  // HSL_HUE
+    CHECK(!(r.blendSupport & (1u << 1)));
+    const std::string msl = fragmentWithAdvancedBlend(r.stages[4].msl, 0);
+    CHECK(msl.find("[[color(0)]]") != std::string::npos);
+    CHECK(msl.find("wmgl_advanced_blend(out.") != std::string::npos);
+}

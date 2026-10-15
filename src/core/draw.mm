@@ -376,6 +376,25 @@ bool DrawState::validateDraw(GLenum mode) {
         ctx_.setError(GL_INVALID_OPERATION);
         return false;
     }
+    // KHR_blend_equation_advanced section 3.8.5: an advanced equation draws
+    // one buffer, with a fragment shader declaring support for it.
+    for (int i = 0; i < ContextState::kMaxDrawBuffers && ctx_.state.blendEnable; ++i) {
+        const int advanced = (ctx_.state.blendEnable >> i) & 1 ? advancedBlendIndex(ctx_.state.blend[i].equationRGB) : -1;
+        if (advanced < 0) continue;
+        const Framebuffer* fb = ctx_.state.drawFramebuffer.get();
+        int drawn = 0;
+        if (fb)
+            for (GLenum b : fb->drawBuffers) drawn += b != GL_NONE;
+        else
+            drawn = ctx_.state.defaultDrawBuffer == GL_FRONT_AND_BACK ? 2 : 1;
+        LinkedProgram* lp = executable();
+        const uint32_t support = lp ? lp->link.blendSupport : 0;
+        if (drawn > 1 || !(support & ((1u << advanced) | (1u << 15)))) {
+            ctx_.setError(GL_INVALID_OPERATION);
+            return false;
+        }
+        break;
+    }
     // Mapped buffers may not be used by draws.
     for (const VertexAttrib& a : ctx_.state.vertexArray->attribs)
         if (a.enabled && a.buffer && a.buffer->mappedNonPersistent()) {
@@ -1640,6 +1659,13 @@ id<MTLRenderCommandEncoder> DrawState::prepare(GLenum mode, MTLPrimitiveType& pr
     // fetch). GL_COPY needs no variant.
     if (st.colorLogicOp && st.logicOp != GL_COPY && program->fragmentVariant(false, st.logicOp - GL_CLEAR + 1, key.colorFormats))
         key.logicOp = static_cast<uint8_t>(st.logicOp - GL_CLEAR + 1);
+    // KHR_blend_equation_advanced: the fragment function blends draw buffer
+    // 0 (the only one drawn: validate()) with the attachment's value.
+    const int advanced = (st.blendEnable & 1) && formats.color[0] && !formats.integer[0]
+                             ? advancedBlendIndex(st.blend[0].equationRGB)
+                             : -1;
+    if (advanced >= 0 && program->fragmentVariant(false, static_cast<unsigned>(advanced + 17), key.colorFormats))
+        key.logicOp = static_cast<uint8_t>(advanced + 17);
     for (int i = 0; i < 8; ++i) {
         if (!formats.color[i]) continue;
         PipelineKey::Blend& b = key.blend[i];
@@ -1647,7 +1673,8 @@ id<MTLRenderCommandEncoder> DrawState::prepare(GLenum mode, MTLPrimitiveType& pr
         b.writeMask = static_cast<uint8_t>((mask[0] ? MTLColorWriteMaskRed : 0) | (mask[1] ? MTLColorWriteMaskGreen : 0) |
                                            (mask[2] ? MTLColorWriteMaskBlue : 0) |
                                            (mask[3] && !formats.alphaIsOne[i] ? MTLColorWriteMaskAlpha : 0));
-        b.enabled = (st.blendEnable >> i) & 1 && !formats.integer[i] && !(st.colorLogicOp && logicOpApplies(formats.color[i]));
+        b.enabled = (st.blendEnable >> i) & 1 && !formats.integer[i] && !(st.colorLogicOp && logicOpApplies(formats.color[i])) &&
+                    !(i == 0 && advanced >= 0);
         if (b.enabled) {
             b.srcRGB = static_cast<uint8_t>(mtlBlendFactor(st.blend[i].srcRGB));
             b.dstRGB = static_cast<uint8_t>(mtlBlendFactor(st.blend[i].dstRGB));

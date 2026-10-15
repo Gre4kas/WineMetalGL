@@ -96,6 +96,16 @@ enum TextureTarget : uint8_t {
     kTex2DMultisample, kTex2DMultisampleArray, kTexCubeMapArray, kTexTargetCount
 };
 int textureTargetIndex(GLenum target);  // -1 if not a texture target
+
+// KHR_blend_equation_advanced: an advanced equation's index (MULTIPLY_KHR 0
+// ... HSL_LUMINOSITY_KHR 14, shader::fragmentWithAdvancedBlend), or -1.
+inline int advancedBlendIndex(GLenum mode) {
+    static const GLenum kModes[15] = {0x9294, 0x9295, 0x9296, 0x9297, 0x9298, 0x9299, 0x929A, 0x929B,
+                                      0x929C, 0x929E, 0x92A0, 0x92AD, 0x92AE, 0x92AF, 0x92B0};
+    for (int i = 0; i < 15; ++i)
+        if (kModes[i] == mode) return i;
+    return -1;
+}
 GLenum textureTargetEnum(int index);
 
 struct ContextState {

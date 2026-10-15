@@ -44,6 +44,8 @@ void Context::initEsStrings() {
          "GL_EXT_render_snorm", "GL_EXT_texture_mirror_clamp_to_edge",
          "GL_EXT_depth_clamp", "GL_EXT_texture_shadow_lod"});
     if (Device::get().caps().astcTextures) add({"GL_KHR_texture_compression_astc_ldr"});
+    // Advanced blending in the fragment function (framebuffer fetch).
+    if (Device::get().caps().framebufferFetch) add({"GL_KHR_blend_equation_advanced"});
     if (es >= 30) {
         add({"GL_EXT_color_buffer_float", "GL_EXT_float_blend", "GL_OES_texture_stencil8", "GL_EXT_copy_image",
              "GL_OES_copy_image", "GL_EXT_draw_buffers_indexed", "GL_OES_draw_buffers_indexed",

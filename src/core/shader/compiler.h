@@ -370,6 +370,9 @@ struct SubroutineStageInfo {
 struct LinkResult {
     bool ok = false;
     std::string log;
+    // KHR_blend_equation_advanced: the fragment shader's layout(blend_support_*)
+    // equations (bit i: equation i of fragmentWithAdvancedBlend; bit 15: all).
+    uint32_t blendSupport = 0;
     std::vector<UniformInfo> uniforms;
     // location -> (uniform index, array element)
     std::vector<std::pair<int, int>> locations;
@@ -444,6 +447,13 @@ struct LogicOpTarget {
 // between every colour output and the attachment's current value, read with
 // framebuffer fetch (empty if the stage has no output struct).
 std::string fragmentWithLogicOp(const std::string& msl, unsigned op, const LogicOpTarget targets[8]);
+
+// KHR_blend_equation_advanced (OpenGL ES 3.2): the fragment function
+// blending its color output 0 with the attachment's value (framebuffer
+// fetch) by advanced equation `equation` (0..14: MULTIPLY_KHR ...
+// HSL_LUMINOSITY_KHR, glslang's TBlendEquationShift order). Empty if the
+// stage has no output struct.
+std::string fragmentWithAdvancedBlend(const std::string& msl, unsigned equation);
 
 // GL_SAMPLE_MASK / GL_SAMPLE_COVERAGE: the fragment function with a
 // [[sample_mask]] output, word 1 of buffer kSlotDriverUniforms (empty if the
