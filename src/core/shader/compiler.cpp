@@ -1657,12 +1657,13 @@ EsCompileResult compileEsUncached(Stage stage, const std::string& source) {
     }
     // EXT_clip_cull_distance, which glslang has no GLSL ES form of: the
     // shader is checked and compiled as GLSL 4.50 (its clip and cull
-    // distance built-ins), the extension's macro defined.
+    // distance built-ins). (GLSL reserves GL_ macros: GL_ES and the
+    // extension's are not defined.)
     if (version >= 300 && source.find("GL_EXT_clip_cull_distance") != std::string::npos) {
         std::string desktop = source;
         const size_t at = desktop.find("#version");
         const size_t end = desktop.find('\n', at);
-        desktop.replace(at, end - at, "#version 450 core\n#define GL_ES 1\n#define GL_EXT_clip_cull_distance 1");
+        desktop.replace(at, end - at, "#version 450 core");
         for (size_t e = desktop.find("#extension"); e != std::string::npos; e = desktop.find("#extension", e + 1)) {
             const size_t lineEnd = desktop.find('\n', e);
             const std::string line = desktop.substr(e, lineEnd == std::string::npos ? std::string::npos : lineEnd - e);

@@ -667,3 +667,18 @@ TEST(shader_advanced_blend_support) {
     CHECK(msl.find("[[color(0)]]") != std::string::npos);
     CHECK(msl.find("wmgl_advanced_blend(out.") != std::string::npos);
 }
+
+// EXT_clip_cull_distance (no GLSL ES form in glslang): compiled as GLSL 4.50.
+TEST(shader_glsl_es_clip_cull_distance) {
+    EsCompileResult f = compileEs(Stage::Fragment,
+                                  "#version 310 es\n\n#extension GL_EXT_clip_cull_distance : enable\n\nprecision highp float;\n\n"
+                                  "flat in  int out_gs;\nout int out_fs;\n\nvoid main()\n{\n    if (out_gs == gl_MaxCullDistances)\n"
+                                  "    {\n        out_fs = gl_MaxCullDistances;\n    }\n    else\n    {\n        out_fs = -1;\n    }\n}\n");
+    CHECK(f.ok);
+    if (!f.ok) std::fprintf(stderr, "%s\n", f.log.c_str());
+    EsCompileResult v = compileEs(Stage::Vertex, "#version 300 es\n#extension GL_EXT_clip_cull_distance : require\n"
+                                                 "in vec4 p; void main() { gl_Position = p; gl_ClipDistance[0] = p.x;"
+                                                 " gl_CullDistance[0] = p.y; }\n");
+    CHECK(v.ok);
+    if (!v.ok) std::fprintf(stderr, "%s\n", v.log.c_str());
+}
