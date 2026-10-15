@@ -21,6 +21,7 @@
 #include <thread>
 #include <vector>
 
+#include "core/gl/types.h"
 #include "core/util/ref.h"
 #include "winemetalgl/driver.h"
 
@@ -59,6 +60,11 @@ public:
     bool hasDepth() const { return pixelFormat().depth_bits > 0; }
     bool hasStencil() const { return pixelFormat().stencil_bits > 0; }
     bool srgbCapable() const { return pixelFormat().srgb_capable; }
+    // The GL format of the color buffer: RGB565 pixel formats (stored as
+    // RGBA8, alpha reading one) for OpenGL ES's rgb565 configurations.
+    GLenum colorFormat() const {
+        return srgbCapable() ? GL_SRGB8_ALPHA8 : pixelFormat().red_bits == 5 ? GL_RGB565 : GL_RGBA8;
+    }
     void describe(RenderTargetDesc& target) const;
 
     // Resolves (if multisampled) and presents the back buffer. The stream's

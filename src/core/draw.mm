@@ -159,6 +159,7 @@ bool DrawState::drawTarget(RenderTargetDesc& target, TargetFormats& formats, boo
         if (!ctx_.state.framebufferSRGB) target.color[0].texture = surface->linearColor();
         formats.color[0] = target.color[0].texture.pixelFormat;
         formats.srgb[0] = surface->srgbCapable() && ctx_.state.framebufferSRGB;
+        formats.alphaIsOne[0] = surface->pixelFormat().alpha_bits == 0;
         if (target.depth.texture) formats.depth = target.depth.texture.pixelFormat;
         if (target.stencil.texture) formats.stencil = target.stencil.texture.pixelFormat;
         formats.depthAttached = surface->hasDepth();
@@ -263,7 +264,7 @@ id<MTLTexture> DrawState::readColorTexture(uint32_t& level, uint32_t& slice, GLe
         Surface* surface = ctx_.readSurface();
         if (!surface || ctx_.state.defaultReadBuffer == GL_NONE) return nil;
         surface->resolveForRead(ctx_.stream());
-        internalFormat = surface->srgbCapable() ? GL_SRGB8_ALPHA8 : GL_RGBA8;
+        internalFormat = surface->colorFormat();
         width = surface->width();
         height = surface->height();
         return surface->resolvedColor();
@@ -301,7 +302,7 @@ bool DrawState::readTarget(GLenum buffer, RenderTargetDesc::Target& out, const F
             out.texture = surface->resolvedColor();
             if (!ctx_.state.framebufferSRGB && linearFormat(out.texture.pixelFormat))
                 out.texture = [out.texture newTextureViewWithPixelFormat:linearFormat(out.texture.pixelFormat)];
-            info = formatInfo(surface->srgbCapable() ? GL_SRGB8_ALPHA8 : GL_RGBA8);
+            info = formatInfo(surface->colorFormat());
             return true;
         }
         if ((buffer == GL_DEPTH && !surface->hasDepth()) || (buffer == GL_STENCIL && !surface->hasStencil())) return false;

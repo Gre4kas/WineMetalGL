@@ -73,7 +73,7 @@ const std::vector<wmgl_pixel_format>& pixelFormats() {
         const DepthStencil depthStencil[] = {{24, 8}, {24, 0}, {32, 8}, {0, 0}, {16, 0}};
         const int samples[] = {0, 2, 4};
         // Window formats first (win32u requires on-screen formats to precede the rest).
-        for (int pbuffer = 0; pbuffer < 2; ++pbuffer)
+        for (int pbuffer = 0; pbuffer < 2; ++pbuffer) {
             for (int srgb = 0; srgb < 2; ++srgb)
                 for (int ms : samples)
                     for (const DepthStencil& ds : depthStencil)
@@ -95,6 +95,24 @@ const std::vector<wmgl_pixel_format>& pixelFormats() {
                             f.max_pbuffer_pixels = 16384 * 16384;
                             list.push_back(f);
                         }
+            // RGB565 without depth, stencil or samples (OpenGL ES's
+            // rgb565d0s0ms0 configuration): RGBA8 storage, alpha one.
+            for (int doubleBuffer = 1; doubleBuffer >= 0; --doubleBuffer) {
+                if (pbuffer && doubleBuffer) continue;
+                wmgl_pixel_format f = {};
+                f.draw_to_window = !pbuffer;
+                f.draw_to_pbuffer = pbuffer;
+                f.double_buffer = doubleBuffer;
+                f.color_bits = 16;
+                f.red_bits = 5;
+                f.green_bits = 6;
+                f.blue_bits = 5;
+                f.red_shift = 11; f.green_shift = 5; f.blue_shift = 0;
+                f.max_pbuffer_width = f.max_pbuffer_height = 16384;
+                f.max_pbuffer_pixels = 16384 * 16384;
+                list.push_back(f);
+            }
+        }
         return list;
     }();
     return formats;
