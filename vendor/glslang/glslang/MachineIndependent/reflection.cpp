@@ -141,11 +141,14 @@ public:
                     baseName = anonymous ? TString() : name;
                 }
 
+                // WineMetalGL: members take locations from the block or
+                // struct declaring one (blowUpIOAggregate's `location`).
+                const int location = type.getQualifier().hasLocation() ? static_cast<int>(type.getQualifier().layoutLocation) : -1;
                 // by convention if this is an arrayed block we ignore the array in the reflection
                 if (type.isArray() && type.getBasicType() == EbtBlock) {
-                    blowUpIOAggregate(input, baseName, TType(type, 0));
+                    blowUpIOAggregate(input, baseName, TType(type, 0), location);
                 } else {               
-                    blowUpIOAggregate(input, baseName, type);
+                    blowUpIOAggregate(input, baseName, type, location);
                 }
             } else {
                 TReflection::TNameToIndex::const_iterator it = ioMapper.find(name.c_str());
@@ -479,7 +482,10 @@ public:
     }
     
     // similar to blowUpActiveAggregate, but with simpler rules and no dereferences to follow.
-    void blowUpIOAggregate(bool input, const TString &baseName, const TType &type)
+    // WineMetalGL: `location` is the location of `type`'s first component
+    // (-1: none declared), which members and elements without their own
+    // location follow (GLSL 4.40 section 4.4.1, GLSL ES 3.10 section 4.4.2).
+    void blowUpIOAggregate(bool input, const TString &baseName, const TType &type, int location = -1)
     {
         TString name = baseName;
 
@@ -493,13 +499,16 @@ public:
                     newBaseName.append(TString("[") + String(i) + "]");
                     TType derefType(type, 0);
 
-                    blowUpIOAggregate(input, newBaseName, derefType);
+                    const int element = location >= 0
+                        ? location + i * TIntermediate::computeTypeLocationSize(derefType, intermediate.getStage()) : -1;
+                    blowUpIOAggregate(input, newBaseName, derefType, element);
                 }
             } else {
                 // Visit all members of this aggregate, and for each one,
                 // fully explode the remaining aggregate to dereference
                 const TTypeList& typeList = *type.getStruct();
 
+                int next = location;
                 for (int i = 0; i < (int)typeList.size(); ++i) {
                     TString newBaseName = name;
                     if (newBaseName.size() > 0)
@@ -507,7 +516,10 @@ public:
                     newBaseName.append(typeList[i].type->getFieldName());
                     TType derefType(type, i);
 
-                    blowUpIOAggregate(input, newBaseName, derefType);
+                    const int member = derefType.getQualifier().hasLocation() ? static_cast<int>(derefType.getQualifier().layoutLocation)
+                                                                              : next;
+                    blowUpIOAggregate(input, newBaseName, derefType, member);
+                    next = member >= 0 ? member + TIntermediate::computeTypeLocationSize(derefType, intermediate.getStage()) : -1;
                 }
             }
 
@@ -528,8 +540,12 @@ public:
         TReflection::TNameToIndex::const_iterator it = reflection.nameToIndex.find(namespacedName);
         if (it == reflection.nameToIndex.end()) {
             reflection.nameToIndex[namespacedName] = (int)ioItems.size();
+            TType located;
+            located.shallowCopy(type);
+            if (location >= 0 && !type.getQualifier().hasLocation())
+                located.getQualifier().layoutLocation = static_cast<unsigned int>(location);
             ioItems.push_back(
-                TObjectReflection(name.c_str(), type, 0, mapToGlType(type), mapToGlArraySize(type), 0));
+                TObjectReflection(name.c_str(), located, 0, mapToGlType(type), mapToGlArraySize(type), 0));
 
             EShLanguageMask& stages = ioItems.back().stages;
             stages = static_cast<EShLanguageMask>(stages | 1 << intermediate.getStage());

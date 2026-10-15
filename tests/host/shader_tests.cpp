@@ -746,3 +746,27 @@ TEST(shader_struct_sampler_array_interleaved) {
     CHECK(m3 && m3->size == 3);
     CHECK(findUniform(r, "u_var.m3[2]") == nullptr);
 }
+
+// A struct member of an interface block with an explicit location takes it
+// (dEQP-GLES31 program_input.location.interface_blocks.in.named_block.var_struct_explicit_location).
+TEST(shader_block_struct_member_location) {
+    LinkInput in;
+    in.separable = true;
+    const EsCompileResult f = compileEs(Stage::Fragment,
+                                        "#version 320 es\nprecision highp float;\n"
+                                        "struct S { highp vec4 target; highp vec2 more; };\n"
+                                        "in TargetInterface { layout(location = 2) S target; layout(location = 5) highp vec4 after; } inst;\n"
+                                        "layout(location = 0) out vec4 o;\n"
+                                        "void main() { o = inst.target.target + inst.after + inst.target.more.xyxy; }\n");
+    CHECK(f.ok);
+    if (!f.ok) std::fprintf(stderr, "%s\n", f.log.c_str());
+    in.shaders.push_back({Stage::Fragment, f.desktop});
+    LinkResult r = link(in);
+    CHECK(r.ok);
+    if (!r.ok) std::fprintf(stderr, "%s\n", r.log.c_str());
+    for (const InterfaceVariableInfo& v : r.programInputs) {
+        if (v.name == "TargetInterface.target.target") CHECK_EQ(v.location, 2);
+        if (v.name == "TargetInterface.target.more") CHECK_EQ(v.location, 3);
+        if (v.name == "TargetInterface.after") CHECK_EQ(v.location, 5);
+    }
+}
