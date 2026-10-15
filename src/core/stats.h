@@ -78,6 +78,10 @@ struct Frame {
     uint64_t passEnds[8] = {};
     // glReadPixels copied by the GPU into a pack buffer, and reads that wait for the GPU.
     uint64_t readsAsync = 0, readsWaiting = 0;
+    // glClientWaitSync calls, those that found the fence signalled, and the
+    // time spent waiting in them (a game pacing frames on a fence of the last
+    // one waits for the GPU here, not in `waits`).
+    uint64_t clientWaits = 0, clientWaitsSignaled = 0, clientWaitNanos = 0;
     // Where draws spend CPU time (DrawState::issue and drawElements).
     uint64_t drawSamplersNanos = 0, drawVertexNanos = 0, drawPrepareNanos = 0, drawPipelineNanos = 0,
              drawBindNanos = 0, drawEncodeNanos = 0, drawIndexNanos = 0;
