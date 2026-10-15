@@ -2870,6 +2870,7 @@ void DrawState::drawGeometry(GLenum mode, const std::vector<uint32_t>& vertices,
     // Kernel threads: one per input primitive and invocation (GS instancing).
     const uint64_t threads = total * static_cast<uint64_t>(std::max(1, g.invocations));
     queriesCountStatistic(ctx_, kStatGeometryShaderInvocations, threads);
+    if (g.maxVertices == 0) return;  // layout(max_vertices = 0): nothing is emitted
     const uint32_t maxV = static_cast<uint32_t>(g.maxVertices);
     const uint16_t borders = borderVariant(lp, static_cast<int>(Stage::Compute));  // the kernel's samplers
     id<MTLComputePipelineState> kernel =

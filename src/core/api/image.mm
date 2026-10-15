@@ -39,6 +39,16 @@ void BindImageTexture(Context& ctx, GLuint unit, GLuint texture, GLint level, GL
     if (level < 0 || layer < 0) return ctx.setError(GL_INVALID_VALUE);
     if (access != GL_READ_ONLY && access != GL_WRITE_ONLY && access != GL_READ_WRITE) return ctx.setError(GL_INVALID_ENUM);
     if (!isImageFormat(format)) return ctx.setError(GL_INVALID_VALUE);
+    if (ctx.isEs()) {
+        // OpenGL ES 3.1 section 8.22: its image formats, of immutable textures.
+        switch (format) {
+        case GL_RGBA32F: case GL_RGBA16F: case GL_R32F: case GL_RGBA32UI: case GL_RGBA16UI: case GL_RGBA8UI:
+        case GL_R32UI: case GL_RGBA32I: case GL_RGBA16I: case GL_RGBA8I: case GL_R32I: case GL_RGBA8: case GL_RGBA8_SNORM:
+            break;
+        default: return ctx.setError(GL_INVALID_VALUE);
+        }
+        if (tex && !tex->immutable) return ctx.setError(GL_INVALID_OPERATION);
+    }
     ImageUnit& u = ctx.state.imageUnits[unit];
     u.texture = tex;
     u.level = level;

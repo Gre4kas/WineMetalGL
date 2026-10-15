@@ -84,6 +84,8 @@ Context::Context(RefPtr<ShareGroup> share, const ContextConfig& config, int pixe
         state.programPointSize = true;
         state.textureCubeMapSeamless = true;
         state.framebufferSRGB = true;
+        // Image units start with format R32UI in OpenGL ES 3.1 (R8 on desktop).
+        for (auto& unit : state.imageUnits) unit.format = GL_R32UI;
     }
     initStrings();
 }

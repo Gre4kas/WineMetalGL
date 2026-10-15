@@ -50,7 +50,7 @@ struct GeometryShaderInfo {
     GLenum inputType = 0;     // GL_POINTS, GL_LINES, GL_LINES_ADJACENCY, GL_TRIANGLES, GL_TRIANGLES_ADJACENCY
     GLenum outputType = 0;    // GL_POINTS, GL_LINE_STRIP, GL_TRIANGLE_STRIP
     int verticesIn = 0;
-    int maxVertices = 0;
+    int maxVertices = -1;  // -1: not declared (0 is valid: nothing is emitted)
     int invocations = 1;      // GL 4.0 instancing: layout(invocations = N)
     std::vector<GeometryVar> inputs;   // user inputs (each an array of verticesIn elements)
     std::vector<GeometryVar> outputs;  // user outputs

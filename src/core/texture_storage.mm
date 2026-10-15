@@ -663,6 +663,11 @@ id<MTLSamplerState> samplerState(Context& ctx, Texture& tex, const SamplerParams
         key.lodMax = 0;
         return ctx.share().pipelines().sampler(key);
     }
+    // OpenGL ES samples cube maps seamlessly, ignoring their wrap modes
+    // (section 8.13.1); Metal's repeat would still pick texels at face edges
+    // differently for cube map arrays.
+    if (ctx.isEs() && (tex.target == GL_TEXTURE_CUBE_MAP || tex.target == GL_TEXTURE_CUBE_MAP_ARRAY))
+        p.wrapS = p.wrapT = p.wrapR = GL_CLAMP_TO_EDGE;
     return samplerState(ctx, p, shadow);
 }
 

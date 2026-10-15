@@ -2057,6 +2057,9 @@ void TexStorage2DMultisample(Context& ctx, GLenum target, GLsizei samples, GLenu
         return ctx.setError(GL_INVALID_ENUM);
     const FormatInfo* info = formatInfo(internalformat);
     if (!info || info->internalFormat != internalformat) return ctx.setError(GL_INVALID_ENUM);
+    // OpenGL ES: color-, depth- or stencil-renderable formats only.
+    if (ctx.isEs() && !es::colorRenderable(internalformat) && !es::depthOrStencilRenderable(internalformat))
+        return ctx.setError(GL_INVALID_ENUM);
     if (width < 1 || height < 1) return ctx.setError(GL_INVALID_VALUE);
     texImageMultisample(ctx, GL_TEXTURE_2D_MULTISAMPLE, target == GL_PROXY_TEXTURE_2D_MULTISAMPLE, samples,
                         internalformat, width, height, 1, fixedsamplelocations);
@@ -2073,6 +2076,8 @@ void TexStorage3DMultisample(Context& ctx, GLenum target, GLsizei samples, GLenu
         return ctx.setError(GL_INVALID_ENUM);
     const FormatInfo* info = formatInfo(internalformat);
     if (!info || info->internalFormat != internalformat) return ctx.setError(GL_INVALID_ENUM);
+    if (ctx.isEs() && !es::colorRenderable(internalformat) && !es::depthOrStencilRenderable(internalformat))
+        return ctx.setError(GL_INVALID_ENUM);
     if (width < 1 || height < 1 || depth < 1) return ctx.setError(GL_INVALID_VALUE);
     texImageMultisample(ctx, GL_TEXTURE_2D_MULTISAMPLE_ARRAY, target == GL_PROXY_TEXTURE_2D_MULTISAMPLE_ARRAY, samples,
                         internalformat, width, height, depth, fixedsamplelocations);

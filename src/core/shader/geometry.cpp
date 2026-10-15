@@ -382,7 +382,7 @@ bool parseGeometryGlsl(const std::string& glsl, GeometryShaderInfo& info, std::s
         }
     }
     info.verticesIn = verticesForInput(info.inputType);
-    if (!inputTyped || !outputTyped || info.maxVertices <= 0) {
+    if (!inputTyped || !outputTyped || info.maxVertices < 0) {
         log += "error: geometry shader layout is incomplete\n";
         return false;
     }
@@ -435,7 +435,8 @@ std::vector<std::string> geometryCaptureVaryings(const GeometryShaderInfo& info)
 
 GeometrySources geometrySources(const GeometryShaderInfo& info, const LinkResult& capture) {
     GeometrySources out;
-    const int n = info.verticesIn, maxV = info.maxVertices;
+    // max_vertices = 0 emits nothing (the draw is skipped); the code keeps one-vertex arrays.
+    const int n = info.verticesIn, maxV = std::max(1, info.maxVertices);
     const bool strips = info.outputType != GL_POINTS;
     const std::string inStride = std::to_string(capture.xfbStride[0]);
     auto captured = [&](const std::string& varying) -> const TransformFeedbackVarying* {

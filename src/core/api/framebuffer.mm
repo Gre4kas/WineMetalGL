@@ -74,6 +74,33 @@ bool cubeComplete(const Texture& tex, int level) {
     return true;
 }
 
+// Mipmap complete (OpenGL ES 3.2 section 8.17): the levels from the base to
+// the last of the base's chain (or MAX_LEVEL) are defined, each half the
+// one before, all of one format; for cube maps, every face.
+bool mipmapComplete(const Texture& tex) {
+    const int faces = tex.target == GL_TEXTURE_CUBE_MAP ? 6 : 1;
+    const int base = tex.baseLevel;
+    if (base < 0 || base >= Texture::kMaxLevels) return false;
+    const TextureImage& first = tex.image(0, base);
+    if (!first.defined()) return false;
+    const bool threeD = tex.target == GL_TEXTURE_3D;
+    int size = std::max(first.width, first.height);
+    if (threeD) size = std::max(size, first.depth);
+    int last = base;
+    while ((size >> (last - base)) > 1) ++last;
+    last = std::min({last, tex.maxLevel, Texture::kMaxLevels - 1});
+    for (int level = base; level <= last; ++level)
+        for (int face = 0; face < faces; ++face) {
+            const TextureImage& image = tex.image(face, level);
+            const int shift = level - base;
+            if (!image.defined() || image.internalFormat != first.internalFormat ||
+                image.width != std::max(1, first.width >> shift) || image.height != std::max(1, first.height >> shift) ||
+                (threeD && image.depth != std::max(1, first.depth >> shift)) || (!threeD && image.depth != first.depth))
+                return false;
+        }
+    return true;
+}
+
 GLenum completeness(Context& ctx, Framebuffer* fb) {
     if (!fb) return ctx.drawSurface() ? GL_FRAMEBUFFER_COMPLETE : GL_FRAMEBUFFER_UNDEFINED;
     bool any = false;
@@ -105,6 +132,11 @@ GLenum completeness(Context& ctx, Framebuffer* fb) {
         // level other than a mutable texture's base level, is cube complete.
         if (ctx.isEs() && a.type == GL_TEXTURE && a.texture && a.texture->target == GL_TEXTURE_CUBE_MAP &&
             (a.layered || (!a.texture->immutable && a.level != a.texture->baseLevel)) && !cubeComplete(*a.texture, a.level))
+            return GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT;
+        // ... and any level other than a mutable texture's base level needs
+        // the texture mipmap complete.
+        if (ctx.isEs() && a.type == GL_TEXTURE && a.texture && !a.texture->immutable && a.level != a.texture->baseLevel &&
+            !mipmapComplete(*a.texture))
             return GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT;
         if (a.type == GL_TEXTURE && a.texture) {
             const GLenum t = a.texture->target;
@@ -991,12 +1023,13 @@ void GetMultisamplefv(Context& ctx, GLenum pname, GLuint index, GLfloat* val) {
     RenderTargetDesc target;
     TargetFormats formats;
     if (!ctx.draw().drawTarget(target, formats, false)) {
-        if (index >= 1) return ctx.setError(GL_INVALID_VALUE);
+        if (index >= 1 || ctx.isEs()) return ctx.setError(GL_INVALID_VALUE);
         val[0] = val[1] = 0.5f;
         return;
     }
     const uint32_t samples = std::max(1u, target.samples);
-    if (index >= samples) return ctx.setError(GL_INVALID_VALUE);
+    // OpenGL ES: index must be below SAMPLES, which is 0 without multisampling.
+    if (index >= samples || (ctx.isEs() && target.samples <= 1)) return ctx.setError(GL_INVALID_VALUE);
     if (samples == 1) {
         val[0] = val[1] = 0.5f;
         return;
