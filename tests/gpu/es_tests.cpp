@@ -138,3 +138,42 @@ GPU_TEST_ES(gpu_es_astc_void_extent, 32) {
     glDeleteTextures(1, &tex);
     (void)fb;
 }
+
+// glCopyTexImage2D into LUMINANCE_ALPHA (red to luminance, alpha to alpha),
+// read back by sampling (it is not color-renderable).
+GPU_TEST_ES(gpu_es_copy_tex_image_luminance_alpha, 30) {
+    const uint8_t texels[2 * 2 * 4] = {255, 0, 0, 51, 0, 255, 0, 102, 0, 0, 255, 153, 128, 128, 128, 204};
+    GLuint src = 0, dst = 0, fb = 0;
+    glGenTextures(1, &src);
+    glGenTextures(1, &dst);
+    glGenFramebuffers(1, &fb);
+    glBindTexture(GL_TEXTURE_2D, src);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 2, 2, 0, GL_RGBA, GL_UNSIGNED_BYTE, texels);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, fb);
+    glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, src, 0);
+    glBindTexture(GL_TEXTURE_2D, dst);
+    glCopyTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE_ALPHA, 0, 0, 2, 2, 0);
+    CHECK_GL();
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+    GLuint p = program("#version 300 es\nin vec2 position; void main() { gl_Position = vec4(position, 0.0, 1.0); }\n",
+                       "#version 300 es\nprecision mediump float; uniform sampler2D t; out vec4 o;\n"
+                       "void main() { o = texelFetch(t, ivec2(gl_FragCoord.xy) / 32, 0); }\n");
+    GLuint vao = quad();
+    glUseProgram(p);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    CHECK_GL();
+    const uint8_t want[4][4] = {{255, 255, 255, 51}, {0, 0, 0, 102}, {0, 0, 0, 153}, {128, 128, 128, 204}};
+    const int at[4][2] = {{10, 10}, {40, 10}, {10, 40}, {40, 40}};
+    for (int i = 0; i < 4; ++i) {
+        const std::vector<uint8_t> got = readRGBA8(at[i][0], at[i][1], 1, 1);
+        CHECK(near(got.data(), want[i], 2));
+        if (!near(got.data(), want[i], 2)) std::fprintf(stderr, "  texel %d: got %u %u %u %u\n", i, got[0], got[1], got[2], got[3]);
+    }
+    glDeleteProgram(p);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteFramebuffers(1, &fb);
+    glDeleteTextures(1, &src);
+    glDeleteTextures(1, &dst);
+}
