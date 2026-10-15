@@ -728,3 +728,21 @@ TEST(shader_es_struct_feedback_and_location_matching) {
     if (!r.ok) std::fprintf(stderr, "%s\n", r.log.c_str());
     CHECK_EQ(r.transformFeedback.size(), size_t(2));
 }
+
+// Struct sampler array elements seen out of order (another sampler between
+// them) still make one uniform of the array's size.
+TEST(shader_struct_sampler_array_interleaved) {
+    LinkInput in;
+    in.shaders.push_back({Stage::Vertex, "#version 300 es\nin vec4 p; void main() { gl_Position = p; }\n"});
+    in.shaders.push_back({Stage::Fragment,
+                          "#version 300 es\nprecision mediump float;\n"
+                          "struct S { sampler2D m0; samplerCube m3[3]; samplerCube m1; };\n"
+                          "uniform S u_var; out vec4 color;\n"
+                          "void main() { color = texture(u_var.m3[0], vec3(0)) + texture(u_var.m1, vec3(0)) +\n"
+                          "  texture(u_var.m3[2], vec3(0)) + texture(u_var.m0, vec2(0)); }\n"});
+    LinkResult r = link(in);
+    CHECK(r.ok);
+    const UniformInfo* m3 = findUniform(r, "u_var.m3[0]");
+    CHECK(m3 && m3->size == 3);
+    CHECK(findUniform(r, "u_var.m3[2]") == nullptr);
+}

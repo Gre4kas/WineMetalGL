@@ -2714,6 +2714,18 @@ static LinkResult linkImplCore(const LinkInput& input, const CaptureCode* captur
                 for (int u : result.blocks[index].activeUniforms) result.uniforms[u].stageMask |= 1u << s;
             }
         }
+        // Struct sampler arrays moved out per element ("s.a[2]", below): how
+        // many elements each has in this stage (its highest element + 1).
+        std::map<std::string, int> elementCounts;
+        for (const auto& image : resources.sampled_images) {
+            const std::string n = unescapeName(compiler.get_name(image.id));
+            if (!compiler.get_type(image.type_id).array.empty() || n.size() < 4 || n.back() != ']') continue;
+            const size_t open = n.rfind('[');
+            const std::string digits = n.substr(open + 1, n.size() - open - 2);
+            if (digits.empty() || digits.size() > 4 || digits.find_first_not_of("0123456789") != std::string::npos) continue;
+            int& count = elementCounts[n.substr(0, open) + "[0]"];
+            count = std::max(count, std::stoi(digits) + 1);
+        }
         for (const auto& image : resources.sampled_images) {
             const spirv_cross::SPIRType& type = compiler.get_type(image.type_id);
             const spirv_cross::SPIRType& base = compiler.get_type(image.base_type_id);
@@ -2751,15 +2763,17 @@ static LinkResult linkImplCore(const LinkInput& input, const CaptureCode* captur
                             result.samplers.push_back(slot);
                         }
                     };
-                    if (head == samplerUniformByName.end() && element > 0) {
-                        // Earlier elements unused: the uniform starts at element 0 anyway.
+                    if (head == samplerUniformByName.end()) {
+                        // The first element seen: the uniform takes every
+                        // element's slot (earlier ones even if unused).
+                        const int count = std::max(element + 1, elementCounts[headName]);
                         UniformInfo u;
                         u.name = headName;
                         u.type = glType;
-                        u.size = element + 1;
+                        u.size = count;
                         u.samplerSlot = static_cast<int>(result.samplers.size());
                         u.stageMask = 1u << s;
-                        addSlots(element + 1);
+                        addSlots(count);
                         samplerUniformByName[headName] = static_cast<int>(result.uniforms.size());
                         samplerUniformCount[headName] = 1;
                         samplerElement[headName] = 0;
