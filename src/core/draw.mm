@@ -1914,7 +1914,14 @@ bool DrawState::issue(GLenum mode, GLint first, GLsizei count, GLsizei instances
         lastPipeline_ = pipeline;
     }
     if (!pipeline) return false;
-    [encoder setRenderPipelineState:pipeline];
+    {
+        // The pipeline the encoder has (encoderState_ is valid while only
+        // this path drew since: bindDrawState's rule) is not set again.
+        const uint64_t pass = ctx_.stream().passGeneration(), calls = ctx_.stream().renderCalls();
+        const bool valid = encoderState_.pass == pass && (calls == encoderState_.calls || calls == encoderState_.calls + 1);
+        if (!valid || encoderState_.pipeline != pipeline) [encoder setRenderPipelineState:pipeline];
+        encoderState_.pipeline = pipeline;
+    }
     phase.switchTo(&stats::Frame::drawBindNanos);
     bindDrawState(encoder, program);
     if (program.link.xfbVertexCapture) bindCaptureDefaults(encoder, program);
@@ -2495,6 +2502,7 @@ bool DrawState::runVertexCapture(LinkedProgram& lp, const std::vector<uint32_t>&
     id<MTLRenderPipelineState> pipeline = ctx_.share().pipelines().render(key, lp);
     if (!pipeline) return false;
     [encoder setRenderPipelineState:pipeline];
+    encoderState_.pipeline = nil;  // issue() sets its own again
     if (drawMode != GL_NONE) {
         bindDrawState(encoder, lp);
     } else {
@@ -2750,6 +2758,7 @@ void DrawState::drawWideLines(GLenum mode, const std::vector<uint32_t>& vertices
         if (id<MTLRenderPipelineState> pipeline = bound ? ctx_.share().pipelines().render(key, *current) : nil) {
             stats::count(&stats::Frame::draws);
             [encoder setRenderPipelineState:pipeline];
+            encoderState_.pipeline = nil;  // issue() sets its own again
             bindDrawState(encoder, *current);
             [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:list.size()
                       instanceCount:static_cast<NSUInteger>(std::max(1, instances)) baseInstance:baseInstance_];
@@ -2851,6 +2860,7 @@ void DrawState::drawGeometry(GLenum mode, const std::vector<uint32_t>& vertices,
             id<MTLRenderPipelineState> pipeline = ctx_.share().pipelines().render(key, lp);
             if (pipeline) {
                 [encoder setRenderPipelineState:pipeline];
+                encoderState_.pipeline = nil;  // issue() sets its own again
                 bindDrawState(encoder, lp);
                 [encoder setVertexBuffer:output.buffer offset:output.offset atIndex:shader::kSlotFirstXfbBuffer];
                 if (g.outputType == GL_POINTS)
@@ -3319,6 +3329,7 @@ bool DrawState::drawMetalPatches(LinkedProgram& program, LinkedProgram& evaluati
             stats::count(&stats::Frame::tessMetal);
             stats::count(&stats::Frame::draws);
             [encoder setRenderPipelineState:pipeline];
+            encoderState_.pipeline = nil;  // issue() sets its own again
             bindDrawState(encoder, evaluation);
             if (evaluation.link.xfbVertexCapture) bindCaptureDefaults(encoder, evaluation);
             [encoder setTessellationFactorBuffer:factors offset:factorsOffset instanceStride:0];
@@ -3608,6 +3619,7 @@ bool DrawState::drawPatchesIndirectGpu(GLenum type, Buffer& commands, uintptr_t 
         encoderState_.pass = 0;  // the prelude's encoder, not the pass in progress
         if (!pipeline) return true;
         [encoder setRenderPipelineState:pipeline];
+        encoderState_.pipeline = nil;  // issue() sets its own again
         bindUniforms(encoder, lp, false);
         bindTextures(encoder, lp, false);
         [encoder setVertexBuffer:captured.buffer offset:0 atIndex:shader::kSlotFirstXfbBuffer];
@@ -4129,6 +4141,7 @@ void DrawState::clearWithDraw(const RenderTargetDesc& target, const TargetFormat
         }
     }
     [encoder setRenderPipelineState:pipeline];
+    encoderState_.pipeline = nil;  // issue() sets its own again
     [encoder setDepthStencilState:ctx_.share().pipelines().depthStencil(ds)];
     MTLViewport viewport = {0, 0, static_cast<double>(target.width), static_cast<double>(target.height), 0, 1};
     [encoder setViewport:viewport];

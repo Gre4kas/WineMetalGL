@@ -972,6 +972,11 @@ id<MTLTexture> imageView(Context& ctx, const ImageUnit& unit, GLenum imageType, 
         const uint64_t key = viewTag | (static_cast<uint64_t>(pixelFormat) << 40) | (reinterpret_cast<uint64_t>((__bridge void*)buffer->mtl) & 0xffffffffffull);
         for (const Texture::View& v : tex->views)
             if (v.key == key) return v.view;
+        // Views of the buffer's earlier storage (replaced by glBufferData or
+        // an orphaning write) are never used again: dropped, with the
+        // storage they keep alive.
+        const uint64_t storage = key & 0xffffffffffull;
+        std::erase_if(tex->views, [&](const Texture::View& v) { return (v.key & viewTag) && (v.key & 0xffffffffffull) != storage; });
         const size_t texel = storageBytes(format->storage);
         const size_t offset = static_cast<size_t>(tex->bufferOffset);
         const size_t available = buffer->mtl.length > offset ? buffer->mtl.length - offset : 0;

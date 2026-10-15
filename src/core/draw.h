@@ -444,6 +444,8 @@ private:
         uint32_t stencil[2];
         float blend[4];
         id<MTLDepthStencilState> depthStencil = nil;
+        // The pipeline issue() set (nil: another draw path set one since).
+        id<MTLRenderPipelineState> pipeline = nil;
         // Driver uniforms and each stage's (vertex, fragment) default uniforms
         // set by bindUniforms: the owner program, its link, uniformVersion and size.
         uint8_t driver[16];
