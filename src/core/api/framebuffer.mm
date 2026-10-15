@@ -653,7 +653,10 @@ void GetRenderbufferParameteriv(Context& ctx, GLenum target, GLenum pname, GLint
     switch (pname) {
     case GL_RENDERBUFFER_WIDTH: *params = rb->width; return;
     case GL_RENDERBUFFER_HEIGHT: *params = rb->height; return;
-    case GL_RENDERBUFFER_INTERNAL_FORMAT: *params = static_cast<GLint>(rb->internalFormat); return;
+    case GL_RENDERBUFFER_INTERNAL_FORMAT:
+        // A renderbuffer without storage: GL_RGBA, OpenGL ES's GL_RGBA4.
+        *params = static_cast<GLint>(ctx.isEs() && !rb->format ? GL_RGBA4 : rb->internalFormat);
+        return;
     case GL_RENDERBUFFER_SAMPLES: *params = rb->samples > 1 ? rb->samples : 0; return;
     case GL_RENDERBUFFER_RED_SIZE: *params = f ? f->redBits : 0; return;
     case GL_RENDERBUFFER_GREEN_SIZE: *params = f ? f->greenBits : 0; return;

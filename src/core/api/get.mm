@@ -43,7 +43,7 @@ struct Value {
     // UInt: 32-bit unsigned state, returned bit-for-bit by GetIntegerv.
     enum Kind { Int, UInt, Int64, Bool, Float, Double, NormFloat } kind = Int;
     int count = 0;
-    double v[16] = {};
+    double v[64] = {};  // (COMPRESSED_TEXTURE_FORMATS lists ASTC's 28 in ES contexts)
 };
 
 Value ints(std::initializer_list<int64_t> list) {
@@ -455,6 +455,10 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
     case GL_SMOOTH_LINE_WIDTH_RANGE: out = floats({1.0, 1.0}); return true;
     case GL_SMOOTH_LINE_WIDTH_GRANULARITY: out = floats({0.125}); return true;
     case GL_POINT_SIZE_RANGE: out = floats({1.0, 511.0}); return true;
+    case GL_ALIASED_POINT_SIZE_RANGE:  // OpenGL ES's name for it (the compatibility profile's: compat/fixed_get.mm)
+        if (!ctx.isEs()) break;
+        out = floats({1.0, 511.0});
+        return true;
     case GL_POINT_SIZE_GRANULARITY: out = floats({0.125}); return true;
     case GL_NUM_COMPRESSED_TEXTURE_FORMATS: case GL_COMPRESSED_TEXTURE_FORMATS: {
         // Generic/RGTC formats are not listed (GL 3.3 excludes formats with restrictions); ETC2/EAC from GL 4.3.
@@ -468,6 +472,14 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
                               GL_COMPRESSED_SRGB8_ALPHA8_ETC2_EAC, GL_COMPRESSED_R11_EAC, GL_COMPRESSED_SIGNED_R11_EAC,
                               GL_COMPRESSED_RG11_EAC, GL_COMPRESSED_SIGNED_RG11_EAC})
                 formats.push_back(f);
+        if (ctx.isEs()) {
+            formats.push_back(0x8D64);  // GL_ETC1_RGB8_OES
+            if (caps.astcTextures)
+                for (int64_t i = 0; i < 14; ++i) {
+                    formats.push_back(0x93B0 + i);  // GL_COMPRESSED_RGBA_ASTC_*_KHR
+                    formats.push_back(0x93D0 + i);  // GL_COMPRESSED_SRGB8_ALPHA8_ASTC_*_KHR
+                }
+        }
         if (pname == GL_NUM_COMPRESSED_TEXTURE_FORMATS) out = ints({static_cast<int64_t>(formats.size())});
         else {
             out.kind = Value::Int;

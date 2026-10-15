@@ -86,6 +86,7 @@ const Row kSized[] = {
     {GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, GL_DEPTH_COMPONENT24},
     {GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, GL_DEPTH_COMPONENT16},
     {GL_DEPTH_COMPONENT, GL_FLOAT, GL_DEPTH_COMPONENT32F},
+    {GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, GL_DEPTH_COMPONENT32},  // OES_depth32, OES_required_internalformat
     {GL_DEPTH_STENCIL, GL_UNSIGNED_INT_24_8, GL_DEPTH24_STENCIL8},
     {GL_DEPTH_STENCIL, GL_FLOAT_32_UNSIGNED_INT_24_8_REV, GL_DEPTH32F_STENCIL8},
     {GL_STENCIL_INDEX, GL_UNSIGNED_BYTE, GL_STENCIL_INDEX8},  // OpenGL ES 3.2, OES_texture_stencil8
@@ -133,9 +134,9 @@ const Row kUnsized[] = {
     {GL_DEPTH_STENCIL, GL_UNSIGNED_INT_24_8, GL_DEPTH24_STENCIL8},
     // EXT_texture_format_BGRA8888
     {kBgra, GL_UNSIGNED_BYTE, kBgra8},
-    // EXT_texture_type_2_10_10_10_REV
+    // EXT_texture_type_2_10_10_10_REV (its RGB images are not color-renderable)
     {GL_RGBA, GL_UNSIGNED_INT_2_10_10_10_REV, GL_RGB10_A2},
-    {GL_RGB, GL_UNSIGNED_INT_2_10_10_10_REV, GL_RGB10_A2},
+    {GL_RGB, GL_UNSIGNED_INT_2_10_10_10_REV, GL_RGB10},
 };
 
 // Sized formats glTexImage takes without a table 8.2 row of their own:
@@ -143,7 +144,7 @@ const Row kUnsized[] = {
 // unsized table's format and type apply.
 bool sizedLegacy(GLenum internal) {
     switch (internal) {
-    case GL_ALPHA8: case GL_LUMINANCE8: case GL_LUMINANCE8_ALPHA8: case GL_ALPHA32F_ARB: case GL_LUMINANCE32F_ARB:
+    case GL_RGB10: case GL_ALPHA8: case GL_LUMINANCE8: case GL_LUMINANCE8_ALPHA8: case GL_ALPHA32F_ARB: case GL_LUMINANCE32F_ARB:
     case GL_LUMINANCE_ALPHA32F_ARB: case GL_ALPHA16F_ARB: case GL_LUMINANCE16F_ARB: case GL_LUMINANCE_ALPHA16F_ARB:
     case kBgra8:
         return true;
@@ -267,7 +268,7 @@ bool depthOrStencilRenderable(GLenum f) {
 bool renderbufferFormat(GLenum f) {
     // Every color-renderable format but the texture-only RGB16F, and the
     // depth and stencil formats (DEPTH_COMPONENT32: OES_depth32).
-    return (colorRenderable(f) && f != GL_RGB16F && f != kBgra8) || depthOrStencilRenderable(f);
+    return (colorRenderable(f) && f != GL_RGB16F) || depthOrStencilRenderable(f);
 }
 
 bool readPixelsCompatible(GLenum internalformat, GLenum format, GLenum type) {
