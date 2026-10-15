@@ -228,6 +228,8 @@ struct MdiPatchParams {
     uint indexSize;  // 2 or 4
     uint groups;
     uint reportSlot;  // scan: the word of `report` that gets the unclamped total
+    uint controlGroupPatches;  // patches per control kernel threadgroup
+    uint pad[3];
 };
 // A vertex attribute group (a buffer, stride and divisor whose attributes
 // fit one element window): its window of each listed vertex (or instance)
@@ -289,7 +291,7 @@ kernel void wmgl_mdi_patch_scan(device const uint* commands [[buffer(0)]], devic
         const uint kept = min(total, p.capacity) / p.patchVertices * p.patchVertices;
         const uint patches = kept / p.patchVertices;
         args[0] = kept; args[1] = 1u; args[2] = 0u; args[3] = 0u;
-        args[4] = patches; args[5] = 1u; args[6] = 1u;
+        args[4] = (patches + p.controlGroupPatches - 1u) / p.controlGroupPatches; args[5] = 1u; args[6] = 1u;
         args[8] = (patches + 63u) / 64u; args[9] = 1u; args[10] = 1u;
         args[12] = (kept + 63u) / 64u; args[13] = 1u; args[14] = 1u;
         args[16] = patches; args[17] = 1u; args[18] = 0u; args[19] = 0u;

@@ -310,6 +310,7 @@ struct TessellationEmulation {
     uint32_t inputStride = 0;       // 32-bit words per captured vertex
     uint32_t vertexWords = 0;       // control: words per output vertex record
     uint32_t patchWords = 0;        // control: words of the patch section (levels first)
+    uint32_t patchesPerGroup = 1;   // control: patches per kernel threadgroup (local size verticesOut x this)
     // A control, evaluation or fragment shader reads gl_PrimitiveID (the
     // GPU-driven multi-draw of patches numbers patches over the whole draw).
     bool readsPrimitiveId = false;

@@ -3116,8 +3116,9 @@ void DrawState::drawPatches(const std::vector<uint32_t>& vertices, GLsizei insta
         [compute setBuffer:output.buffer offset:output.offset atIndex:shader::kSlotFirstXfbBuffer + 1];
         std::memcpy(params.data, control, sizeof(control));
         [compute setBuffer:params.buffer offset:params.offset atIndex:shader::kSlotFirstXfbBuffer + 2];
-        [compute dispatchThreadgroups:MTLSizeMake(total, 1, 1)
-                threadsPerThreadgroup:MTLSizeMake(static_cast<NSUInteger>(t.verticesOut), 1, 1)];
+        const uint64_t groupPatches = std::max(1u, t.patchesPerGroup);
+        [compute dispatchThreadgroups:MTLSizeMake((total + groupPatches - 1) / groupPatches, 1, 1)
+                threadsPerThreadgroup:MTLSizeMake(static_cast<NSUInteger>(t.verticesOut * groupPatches), 1, 1)];
         if (metal) {
             // Metal's tessellator reads the levels on the GPU: no read-back.
             const uint32_t levelsAt = static_cast<uint32_t>(t.verticesOut) * t.vertexWords;
@@ -3548,9 +3549,10 @@ bool DrawState::drawPatchesIndirectGpu(GLenum type, Buffer& commands, uintptr_t 
     }
     struct {
         uint32_t drawCount, strideWords, elementCount, patchVertices, capacity, indexSize, groups, reportSlot;
+        uint32_t controlGroupPatches, pad[3];
     } params = {static_cast<uint32_t>(drawcount), static_cast<uint32_t>(stride / 4),
                 static_cast<uint32_t>(std::min<uint64_t>(elementCount, UINT32_MAX)), patchVertices, capacity, indexSize,
-                static_cast<uint32_t>(plan.groups.size()), site.next};
+                static_cast<uint32_t>(plan.groups.size()), site.next, std::max(1u, t.patchesPerGroup), {0, 0, 0}};
     struct Group {
         uint32_t srcBase, srcStride, divisor, windowWords, dstWords, srcLength, pad0, pad1;
     } groups[8] = {};
@@ -3643,7 +3645,7 @@ bool DrawState::drawPatchesIndirectGpu(GLenum type, Buffer& commands, uintptr_t 
         [compute setBuffer:records.buffer offset:records.offset atIndex:shader::kSlotFirstXfbBuffer + 1];
         [compute setBuffer:controlParams.buffer offset:controlParams.offset atIndex:shader::kSlotFirstXfbBuffer + 2];
         [compute dispatchThreadgroupsWithIndirectBuffer:args.buffer indirectBufferOffset:args.offset + 16
-                                  threadsPerThreadgroup:MTLSizeMake(static_cast<NSUInteger>(t.verticesOut), 1, 1)];
+                                  threadsPerThreadgroup:MTLSizeMake(static_cast<NSUInteger>(t.verticesOut) * std::max(1u, t.patchesPerGroup), 1, 1)];
         compute = stream.preludeStep(CommandStream::PreludeStep::Factors);
         [compute setComputePipelineState:tessFactorsKernel()];
         [compute setBuffer:records.buffer offset:records.offset atIndex:0];

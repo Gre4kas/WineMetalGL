@@ -489,6 +489,78 @@ std::string callInsteadOfIndex(const std::string& code, const std::string& name,
     return out + code.substr(from);
 }
 
+// Several patches per threadgroup (TessControlSources::patchesPerGroup): the
+// kernel's shared variables get a leading patch dimension, indexed by the
+// thread's patch in the group (wmgl_lp) wherever the code uses them, and
+// threads of patches past the count load the last patch and store nothing
+// (they still reach every barrier).
+void packPatches(TessControlSources& out, int n, uint32_t record) {
+    static const int wanted = [] {
+        const char* v = std::getenv("WINEMETALGL_TCS_PATCHES_PER_GROUP");
+        return v && *v ? std::max(1, std::atoi(v)) : 0;
+    }();
+    int patches = wanted ? wanted : std::max(1, 32 / std::max(n, 1));
+    // Within threadgroup memory: the records' size bounds what the patch
+    // shares (outputs, levels and patch outputs), and 1024 threads.
+    patches = std::min({patches, std::max(1, 16384 / static_cast<int>(std::max(1u, record) * 4)), std::max(1, 1024 / std::max(n, 1))});
+    std::string& c = out.kernel;
+    const size_t bodyAt = c.find("uint wmgl_patch_g;\n");
+    if (patches <= 1 || bodyAt == std::string::npos) return;
+    // The threads of patches past the count run the code too: a shader that
+    // writes memory (images, atomics, storage blocks) keeps a patch a group.
+    for (const char* write : {"imageStore", "imageAtomic", "atomic"})
+        if (c.find(write) != std::string::npos) return;
+    for (size_t at = c.find("buffer "); at != std::string::npos; at = c.find("buffer ", at + 1)) {
+        const size_t line = c.rfind('\n', at) + 1;
+        const std::string decl = c.substr(line, at - line);
+        if (decl.find("readonly") == std::string::npos && c.compare(at, 18, "buffer wmgl_TcsOut") != 0) return;
+    }
+    static const std::regex declaration("^shared\\s+(\\S+)\\s+([A-Za-z_][A-Za-z0-9_]*)((?:\\[[0-9]+\\])*)\\s*;$");
+    std::vector<std::string> names;
+    std::string head = c.substr(0, bodyAt), body = c.substr(bodyAt), packed;
+    std::istringstream lines(head);
+    for (std::string line; std::getline(lines, line);) {
+        std::smatch m;
+        if (std::regex_match(line, m, declaration)) {
+            names.push_back(m[2]);
+            line = "shared " + m[1].str() + " " + m[2].str() + "[" + std::to_string(patches) + "]" + m[3].str() + ";";
+        }
+        packed += line + "\n";
+    }
+    for (const std::string& name : names) {
+        std::string rewritten;
+        size_t from = 0;
+        for (size_t at = body.find(name); at != std::string::npos; at = body.find(name, at + 1)) {
+            if ((at && (identifierChar(body[at - 1]) || body[at - 1] == '.')) ||
+                (at + name.size() < body.size() && identifierChar(body[at + name.size()])))
+                continue;
+            rewritten += body.substr(from, at + name.size() - from) + "[wmgl_lp]";
+            from = at + name.size();
+        }
+        body = rewritten + body.substr(from);
+    }
+    const std::string ns = std::to_string(n), ps = std::to_string(patches);
+    const auto replace = [&](std::string& text, const std::string& what, const std::string& with) {
+        const size_t at = text.find(what);
+        if (at == std::string::npos) return false;
+        text.replace(at, what.size(), with);
+        return true;
+    };
+    bool ok = replace(packed, "layout(local_size_x = " + ns + ") in;", "layout(local_size_x = " + std::to_string(n * patches) + ") in;");
+    ok = ok && replace(body, "uint wmgl_patch_g;\n", "uint wmgl_patch_g, wmgl_lp;\n");
+    ok = ok && replace(body, "    uint wmgl_patch = gl_WorkGroupID.x;\n",
+                       "    wmgl_lp = gl_LocalInvocationID.x / " + ns + "u;\n"
+                       "    uint wmgl_patch = gl_WorkGroupID.x * " + ps + "u + wmgl_lp;\n"
+                       "    bool wmgl_active = wmgl_patch < wmgl_tcs_patch_count;\n"
+                       "    if (!wmgl_active) wmgl_patch = max(wmgl_tcs_patch_count, 1u) - 1u;\n");
+    ok = ok && replace(body, "    wmgl_invocation_id = int(gl_LocalInvocationID.x);\n",
+                       "    wmgl_invocation_id = int(gl_LocalInvocationID.x % " + ns + "u);\n");
+    ok = ok && replace(body, "    barrier();\n    uint wmgl_o = ", "    barrier();\n    if (!wmgl_active) return;\n    uint wmgl_o = ");
+    if (!ok) return;  // an unexpected shape: one patch per group
+    c = packed + body;
+    out.patchesPerGroup = static_cast<uint32_t>(patches);
+}
+
 }  // namespace
 
 TessControlSources tessControlSources(const TessStageInfo& info, const LinkResult& capture) {
@@ -536,9 +608,9 @@ TessControlSources tessControlSources(const TessStageInfo& info, const LinkResul
     auto makeLazy = [&](const std::string& name, const std::string& glslType, GLenum type, const TransformFeedbackVarying* p) {
         if (!lazyInputs || !p || !alwaysIndexed(functions, name)) return;
         const std::string fn = "wmgl_lazy_" + name;
-        lazyLoads += glslType + " " + fn + "(int v) {\n    uint b = (wmgl_patch_g * wmgl_tcs_patch_vertices + min(uint(v), "
-                     "wmgl_tcs_patch_vertices - 1u)) * " + stride + "u;\n    return " +
-                     glslLoadValue(glslType, type, "wmgl_tcs_in", "b + " + std::to_string(p->offset) + "u") + ";\n}\n";
+        lazyLoads += glslType + " " + fn + "(int wmgl_v) {\n    uint wmgl_lb = (wmgl_patch_g * wmgl_tcs_patch_vertices + "
+                     "min(uint(wmgl_v), wmgl_tcs_patch_vertices - 1u)) * " + stride + "u;\n    return " +
+                     glslLoadValue(glslType, type, "wmgl_tcs_in", "wmgl_lb + " + std::to_string(p->offset) + "u") + ";\n}\n";
         functions = callInsteadOfIndex(functions, name, fn);
         lazy.insert(name);
     };
@@ -646,6 +718,7 @@ TessControlSources tessControlSources(const TessStageInfo& info, const LinkResul
             c += store("wmgl_p", f.offset + static_cast<uint32_t>(e * words(v.type)), access(v, "", e), v.type);
     }
     c += "    }\n}\n";
+    packPatches(out, n, record);
     return out;
 }
 

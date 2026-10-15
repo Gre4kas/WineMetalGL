@@ -3482,6 +3482,7 @@ bool buildTessellationEmulation(const LinkInput& input, const TessellationLink& 
         control = tessControlSources(t.control, t.capture);
         e.vertexWords = control.vertexWords;
         e.patchWords = control.patchWords;
+        e.patchesPerGroup = control.patchesPerGroup;
         if (dump) std::fprintf(stderr, "winemetalgl: tessellation control kernel GLSL:\n%s\n", control.kernel.c_str());
         LinkInput kernelInput;
         kernelInput.shaders = {{Stage::Compute, control.kernel}};

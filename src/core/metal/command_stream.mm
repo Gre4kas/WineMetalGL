@@ -144,6 +144,15 @@ void CommandStream::startRender(const RenderTargetDesc& target) {
     }
     if (clearsApply) pending_ = PendingClear();
     render_ = [commandBuffer() renderCommandEncoderWithDescriptor:pass];
+    if (stats::g_enabled) {
+        // Pass names in Metal System Trace: target size, colour attachments,
+        // depth, and the pass number in the frame.
+        int colors = 0;
+        for (const auto& t : target.color) colors += t.texture != nil;
+        render_.label = [NSString stringWithFormat:@"WMGL pass %llu %ux%u c%d%s%s", static_cast<unsigned long long>(stats::frame().passes),
+                                                   target.width, target.height, colors, target.depth.texture ? " d" : "",
+                                                   clearsApply ? " clear" : ""];
+    }
     waitForShaderWrites(render_, true);
     stats::passStarted(target.width, target.height);
     target_ = target;
