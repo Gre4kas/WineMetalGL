@@ -152,6 +152,9 @@ GPU_TEST_ES(gpu_es_copy_tex_image_luminance_alpha, 30) {
     glBindFramebuffer(GL_READ_FRAMEBUFFER, fb);
     glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, src, 0);
     glBindTexture(GL_TEXTURE_2D, dst);
+    // First as RGBA, then again as LUMINANCE_ALPHA (the CTS reuses its
+    // destination texture across formats).
+    glCopyTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 0, 0, 2, 2, 0);
     glCopyTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE_ALPHA, 0, 0, 2, 2, 0);
     CHECK_GL();
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
@@ -208,4 +211,189 @@ GPU_TEST_ES(gpu_es_cube_extra_level_complete, 20) {
     glDeleteProgram(p);
     glDeleteVertexArrays(1, &vao);
     glDeleteTextures(1, &tex);
+}
+
+// Vertex-stage sampling captured by transform feedback, separate buffers
+// (KHR-GLES3.copy_tex_image_conversions reads non-renderable copies so).
+GPU_TEST_ES(gpu_es_vertex_texture_feedback, 30) {
+    const uint8_t texels[4] = {64, 128, 192, 32};
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, texels);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    const char* vs = "#version 300 es\n"
+                     "uniform highp sampler2D a; uniform highp samplerCube b; uniform highp sampler2D src;\n"
+                     "uniform int which;\n"
+                     "layout(location = 0) in vec4 coord;\n"
+                     "out vec4 dstValue; out vec4 srcValue; flat out int result;\n"
+                     "void main() { vec4 s; vec4 d;\n"
+                     "  if (which == 0) s = texture(src, coord.xy); else s = texture(b, coord.xyz);\n"
+                     "  d = texture(a, coord.xy);\n"
+                     "  result = s.w > 0.5 ? 1 : 0; srcValue = s; dstValue = d; gl_Position = vec4(0.0); }\n";
+    const char* fs = "#version 300 es\nvoid main() {}\n";
+    GLuint p = glCreateProgram();
+    GLuint v = glCreateShader(GL_VERTEX_SHADER), f = glCreateShader(GL_FRAGMENT_SHADER);
+    glShaderSource(v, 1, &vs, nullptr);
+    glShaderSource(f, 1, &fs, nullptr);
+    glCompileShader(v);
+    glCompileShader(f);
+    glAttachShader(p, v);
+    glAttachShader(p, f);
+    const char* names[] = {"result", "srcValue", "dstValue"};
+    glTransformFeedbackVaryings(p, 3, names, GL_SEPARATE_ATTRIBS);
+    glLinkProgram(p);
+    GLint linked = 0;
+    glGetProgramiv(p, GL_LINK_STATUS, &linked);
+    CHECK(linked);
+    if (!linked) {
+        char log[2048] = {};
+        glGetProgramInfoLog(p, sizeof(log), nullptr, log);
+        std::fprintf(stderr, "%s\n", log);
+        return;
+    }
+    glUseProgram(p);
+    glUniform1i(glGetUniformLocation(p, "src"), 0);
+    glUniform1i(glGetUniformLocation(p, "a"), 0);
+    glUniform1i(glGetUniformLocation(p, "b"), 1);
+    glUniform1i(glGetUniformLocation(p, "which"), 0);
+    GLuint buffers[4];
+    glGenBuffers(4, buffers);
+    static const float coord[4] = {0.5f, 0.5f, 0.0f, 0.0f};
+    glBindBuffer(GL_ARRAY_BUFFER, buffers[3]);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(coord), coord, GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, 0, nullptr);
+    glEnableVertexAttribArray(0);
+    const GLsizeiptr sizes[3] = {4, 16, 16};
+    for (int i = 0; i < 3; ++i) {
+        glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, buffers[i]);
+        glBufferData(GL_TRANSFORM_FEEDBACK_BUFFER, sizes[i], nullptr, GL_STATIC_DRAW);
+        glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, static_cast<GLuint>(i), buffers[i]);
+    }
+    glEnable(GL_RASTERIZER_DISCARD);
+    glBeginTransformFeedback(GL_POINTS);
+    glDrawArrays(GL_POINTS, 0, 1);
+    glEndTransformFeedback();
+    glDisable(GL_RASTERIZER_DISCARD);
+    CHECK_GL();
+    float src[4] = {}, dst[4] = {};
+    GLint result = -1;
+    glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, buffers[0]);
+    glGetBufferSubData(GL_TRANSFORM_FEEDBACK_BUFFER, 0, 4, &result);
+    glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, buffers[1]);
+    glGetBufferSubData(GL_TRANSFORM_FEEDBACK_BUFFER, 0, 16, src);
+    glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, buffers[2]);
+    glGetBufferSubData(GL_TRANSFORM_FEEDBACK_BUFFER, 0, 16, dst);
+    CHECK_GL();
+    std::fprintf(stderr, "  src %.3f %.3f %.3f %.3f dst %.3f %.3f %.3f %.3f result %d\n", src[0], src[1], src[2], src[3], dst[0],
+                 dst[1], dst[2], dst[3], result);
+    CHECK(std::abs(src[3] - 32.0f / 255.0f) < 0.01f);
+    CHECK(std::abs(src[0] - 64.0f / 255.0f) < 0.01f);
+    CHECK(result == 0);
+    glDeleteBuffers(4, buffers);
+    glDeleteProgram(p);
+    glDeleteShader(v);
+    glDeleteShader(f);
+    glDeleteTextures(1, &tex);
+}
+
+// The CTS form of the copy check: source (RGBA8) and the LUMINANCE_ALPHA
+// copy sampled together in a vertex shader, captured by transform feedback.
+GPU_TEST_ES(gpu_es_copy_luminance_alpha_vertex_sampled, 30) {
+    const uint8_t texels[2 * 2 * 4] = {255, 0, 0, 51, 0, 255, 0, 102, 0, 0, 255, 153, 128, 128, 128, 204};
+    GLuint src = 0, dst = 0, fb = 0;
+    glGenTextures(1, &src);
+    glGenTextures(1, &dst);
+    glGenFramebuffers(1, &fb);
+    glBindTexture(GL_TEXTURE_2D, src);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 2, 2, 0, GL_RGBA, GL_UNSIGNED_BYTE, texels);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, fb);
+    glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, src, 0);
+    glBindTexture(GL_TEXTURE_2D, dst);
+    glCopyTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE_ALPHA, 0, 0, 2, 2, 0);
+    glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+    CHECK_GL();
+    const char* vs = "#version 300 es\n"
+                     "uniform highp sampler2D dst_texture2D; uniform highp samplerCube dst_textureCube;\n"
+                     "uniform highp sampler2D src_texture2D; uniform highp sampler3D src_texture3D;\n"
+                     "uniform int samplers_to_use;\n"
+                     "layout(location = 0) in vec4 dst_texture_coord; layout(location = 1) in vec4 src_texture_coord;\n"
+                     "out vec4 dst_values; out vec4 src_values; flat out int compare_result;\n"
+                     "void main() { vec4 s; vec4 d; int src_sampler = samplers_to_use & 0xff; int dst_sampler = samplers_to_use >> 8;\n"
+                     "  if (src_sampler == 0) s = texture(src_texture2D, src_texture_coord.xy); else s = texture(src_texture3D, src_texture_coord.xyz);\n"
+                     "  if (dst_sampler == 0) d = texture(dst_texture2D, dst_texture_coord.xy); else d = texture(dst_textureCube, dst_texture_coord.xyz);\n"
+                     "  compare_result = abs(s.w - d.w) > 0.01 ? 0 : 1; dst_values = d; src_values = s; gl_Position = vec4(0.0); }\n";
+    const char* fs = "#version 300 es\nvoid main() {}\n";
+    GLuint p = glCreateProgram();
+    GLuint v = glCreateShader(GL_VERTEX_SHADER), f = glCreateShader(GL_FRAGMENT_SHADER);
+    glShaderSource(v, 1, &vs, nullptr);
+    glShaderSource(f, 1, &fs, nullptr);
+    glCompileShader(v);
+    glCompileShader(f);
+    glAttachShader(p, v);
+    glAttachShader(p, f);
+    const char* names[] = {"compare_result", "src_values", "dst_values"};
+    glTransformFeedbackVaryings(p, 3, names, GL_SEPARATE_ATTRIBS);
+    glLinkProgram(p);
+    GLint linked = 0;
+    glGetProgramiv(p, GL_LINK_STATUS, &linked);
+    CHECK(linked);
+    if (!linked) return;
+    glUseProgram(p);
+    glUniform1i(glGetUniformLocation(p, "src_texture2D"), 0);
+    glUniform1i(glGetUniformLocation(p, "dst_texture2D"), 1);
+    glUniform1i(glGetUniformLocation(p, "samplers_to_use"), 0);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, src);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, dst);
+    glActiveTexture(GL_TEXTURE0);
+    // The four texel centres.
+    static const float coords[4 * 4] = {0.25f, 0.25f, 0, 0, 0.75f, 0.25f, 0, 0, 0.25f, 0.75f, 0, 0, 0.75f, 0.75f, 0, 0};
+    GLuint buffers[4];
+    glGenBuffers(4, buffers);
+    glBindBuffer(GL_ARRAY_BUFFER, buffers[3]);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(coords), coords, GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, 0, nullptr);
+    glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, 0, nullptr);
+    glEnableVertexAttribArray(0);
+    glEnableVertexAttribArray(1);
+    const GLsizeiptr sizes[3] = {16, 64, 64};
+    for (int i = 0; i < 3; ++i) {
+        glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, buffers[i]);
+        glBufferData(GL_TRANSFORM_FEEDBACK_BUFFER, sizes[i], nullptr, GL_STATIC_DRAW);
+        glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, static_cast<GLuint>(i), buffers[i]);
+    }
+    glEnable(GL_RASTERIZER_DISCARD);
+    glBeginTransformFeedback(GL_POINTS);
+    glDrawArrays(GL_POINTS, 0, 4);
+    glEndTransformFeedback();
+    glDisable(GL_RASTERIZER_DISCARD);
+    CHECK_GL();
+    float s[16] = {}, d[16] = {};
+    GLint result[4] = {};
+    glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, buffers[0]);
+    glGetBufferSubData(GL_TRANSFORM_FEEDBACK_BUFFER, 0, 16, result);
+    glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, buffers[1]);
+    glGetBufferSubData(GL_TRANSFORM_FEEDBACK_BUFFER, 0, 64, s);
+    glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, buffers[2]);
+    glGetBufferSubData(GL_TRANSFORM_FEEDBACK_BUFFER, 0, 64, d);
+    for (int i = 0; i < 4; ++i) {
+        CHECK(result[i] == 1);
+        if (result[i] != 1)
+            std::fprintf(stderr, "  texel %d src %.3f %.3f %.3f %.3f dst %.3f %.3f %.3f %.3f\n", i, s[i * 4], s[i * 4 + 1],
+                         s[i * 4 + 2], s[i * 4 + 3], d[i * 4], d[i * 4 + 1], d[i * 4 + 2], d[i * 4 + 3]);
+    }
+    glDeleteBuffers(4, buffers);
+    glDeleteProgram(p);
+    glDeleteShader(v);
+    glDeleteShader(f);
+    glDeleteFramebuffers(1, &fb);
+    glDeleteTextures(1, &src);
+    glDeleteTextures(1, &dst);
 }
