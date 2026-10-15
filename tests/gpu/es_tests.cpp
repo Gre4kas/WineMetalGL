@@ -177,3 +177,35 @@ GPU_TEST_ES(gpu_es_copy_tex_image_luminance_alpha, 30) {
     glDeleteTextures(1, &src);
     glDeleteTextures(1, &dst);
 }
+
+// A cube map with an extra level past its last (1x1) one is complete: the
+// extra level is beyond q (dEQP-GLES2.functional.texture.completeness.cube.extra_level).
+GPU_TEST_ES(gpu_es_cube_extra_level_complete, 20) {
+    std::vector<uint8_t> blue(64 * 64 * 4);
+    for (size_t i = 0; i < blue.size(); i += 4) blue[i + 2] = blue[i + 3] = 255;
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, tex);
+    for (int level = 0; level < 7; ++level)
+        for (int face = 0; face < 6; ++face)
+            glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, level, GL_RGBA, 64 >> level, 64 >> level, 0, GL_RGBA,
+                         GL_UNSIGNED_BYTE, blue.data());
+    for (int face = 0; face < 6; ++face)
+        glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, 8, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, blue.data());
+    CHECK_GL();
+    GLuint p = program("attribute vec2 position; varying vec3 dir;\n"
+                       "void main() { dir = vec3(1.0, position); gl_Position = vec4(position, 0.0, 1.0); }\n",
+                       "precision mediump float; varying vec3 dir; uniform samplerCube t;\n"
+                       "void main() { gl_FragColor = textureCube(t, dir); }\n");
+    GLuint vao = quad();
+    glUseProgram(p);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    CHECK_GL();
+    const uint8_t want[4] = {0, 0, 255, 255};
+    const std::vector<uint8_t> got = readRGBA8(32, 32, 1, 1);
+    CHECK(near(got.data(), want, 2));
+    if (!near(got.data(), want, 2)) std::fprintf(stderr, "  got %u %u %u %u\n", got[0], got[1], got[2], got[3]);
+    glDeleteProgram(p);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteTextures(1, &tex);
+}

@@ -91,6 +91,14 @@ GLenum completeness(Context& ctx, Framebuffer* fb) {
         // OpenGL ES's color-renderable formats are fewer (no RGB32F, RGB9_E5,
         // luminance or RGB8_SNORM).
         if (kind == 0 && ctx.isEs() && !es::colorRenderable(f->internalFormat)) return GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT;
+        // OES_texture_float's unsized float images are not color-renderable
+        // (EXT_color_buffer_float makes the sized formats renderable).
+        if (kind == 0 && ctx.isEs() && a.type == GL_TEXTURE && a.texture && f->isFloat() && f->redBits == 32) {
+            const int face = a.cubeFace ? static_cast<int>(a.cubeFace - GL_TEXTURE_CUBE_MAP_POSITIVE_X) : 0;
+            const GLenum requested = a.texture->image(face, a.level).requestedFormat;
+            if (requested == GL_RGBA || requested == GL_RGB || requested == GL_RED || requested == GL_RG)
+                return GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT;
+        }
         if (kind == 1 && !f->depthRenderable) return GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT;
         if (kind == 2 && !f->stencilRenderable) return GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT;
         // OpenGL ES 3.2 section 9.4.1: a cube map attached layered, or at a
