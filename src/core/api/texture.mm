@@ -14,6 +14,7 @@
 #include "core/context.h"
 #include "core/draw.h"
 #include "core/format/block_encode.h"
+#include "core/format/es_formats.h"
 #include "core/format/pixel_transfer.h"
 #include "core/limits.h"
 #include "core/metal/device.h"
@@ -59,14 +60,28 @@ using namespace wmgl::limits;
 
 // ------------------------------------------------------------ targets
 
+// OpenGL ES has no 1D or rectangle textures (nor proxies); the others come
+// with its versions (and the extensions ES 3.1 contexts advertise).
+bool esTargetSupported(Context& ctx, GLenum target) {
+    switch (target) {
+    case GL_TEXTURE_2D: case GL_TEXTURE_CUBE_MAP: case GL_TEXTURE_3D: return true;  // 3D: OES_texture_3D
+    case GL_TEXTURE_2D_ARRAY: return ctx.esVersion() >= 30;
+    case GL_TEXTURE_2D_MULTISAMPLE: case GL_TEXTURE_2D_MULTISAMPLE_ARRAY: case GL_TEXTURE_CUBE_MAP_ARRAY:
+    case GL_TEXTURE_BUFFER:
+        return ctx.esVersion() >= 31;
+    default: return false;
+    }
+}
+
 bool targetSupported(Context& ctx, GLenum target) {
+    if (ctx.isEs()) return esTargetSupported(ctx, target);
     if (target == GL_TEXTURE_CUBE_MAP_ARRAY) return ctx.version() >= 40;
     return textureTargetIndex(target) >= 0;
 }
 
 Texture* boundTexture(Context& ctx, GLenum target) {
     const int index = textureTargetIndex(target);
-    if (index < 0) return nullptr;
+    if (index < 0 || (ctx.isEs() && !esTargetSupported(ctx, target))) return nullptr;
     return ctx.state.textureUnits[ctx.state.activeTexture].bound[index].get();
 }
 
@@ -101,6 +116,7 @@ struct ImageTarget {
 // that the call does not accept.
 bool imageTarget(Context& ctx, GLenum target, int dims, bool allowProxy, ImageTarget& out) {
     GLenum base = target;
+    if (ctx.isEs() && !isCubeFace(target) && !esTargetSupported(ctx, target)) return ctx.setError(GL_INVALID_ENUM), false;
     if (allowProxy && proxyBase(target)) {
         base = proxyBase(target);
         out.proxy = true;
@@ -450,20 +466,40 @@ bool formatAllowedOnTarget(const FormatInfo& info, GLenum target) {
     return true;
 }
 
+// OpenGL ES client formats as the transfer code knows them: EXT_sRGB's
+// SRGB(_ALPHA) data is RGB(A) data.
+GLenum esTransferFormat(GLenum format) {
+    return format == GL_SRGB ? GL_RGB : format == GL_SRGB_ALPHA ? GL_RGBA : format;
+}
+
 void texImage(Context& ctx, int dims, GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height,
               GLsizei depth, GLint border, GLenum format, GLenum type, const void* pixels) {
     ImageTarget t;
     if (!imageTarget(ctx, target, dims, true, t)) return;
-    if (!checkFormatType(ctx, format, type)) return;
     const GLenum requested = static_cast<GLenum>(internalformat);
-    if (!isValidTextureInternalFormat(requested, ctx.isCompat(), stencilTextures(ctx))) return ctx.setError(GL_INVALID_VALUE);
+    const FormatInfo* info = nullptr;
     bool tooLarge;
-    if (!sizeAllowed(ctx, t, level, width, height, depth, border, tooLarge)) return;
-    const FormatInfo* info = formatInfo(resolveInternalFormat(requested, format, type));
-    if (!info) return ctx.setError(GL_INVALID_VALUE);
-    if (!formatAllowedOnTarget(*info, t.target)) return ctx.setError(GL_INVALID_OPERATION);
-    if (info->compressed && !compressedFormatSupported(ctx, info)) return ctx.setError(GL_INVALID_ENUM);
-    if (!textureTransferCompatible(format, type, *info)) return ctx.setError(GL_INVALID_OPERATION);
+    if (ctx.isEs()) {
+        // OpenGL ES 3.2 tables 8.2 and 8.3: the combinations listed, and the
+        // sized format each makes.
+        GLenum error;
+        const GLenum sized = es::texImageFormat(requested, format, type, error);
+        if (!sized) return ctx.setError(error);
+        if (!sizeAllowed(ctx, t, level, width, height, depth, border, tooLarge)) return;
+        info = formatInfo(sized);
+        if (!info) return ctx.setError(GL_INVALID_VALUE);
+        if (!formatAllowedOnTarget(*info, t.target)) return ctx.setError(GL_INVALID_OPERATION);
+        format = esTransferFormat(format);
+    } else {
+        if (!checkFormatType(ctx, format, type)) return;
+        if (!isValidTextureInternalFormat(requested, ctx.isCompat(), stencilTextures(ctx))) return ctx.setError(GL_INVALID_VALUE);
+        if (!sizeAllowed(ctx, t, level, width, height, depth, border, tooLarge)) return;
+        info = formatInfo(resolveInternalFormat(requested, format, type));
+        if (!info) return ctx.setError(GL_INVALID_VALUE);
+        if (!formatAllowedOnTarget(*info, t.target)) return ctx.setError(GL_INVALID_OPERATION);
+        if (info->compressed && !compressedFormatSupported(ctx, info)) return ctx.setError(GL_INVALID_ENUM);
+        if (!textureTransferCompatible(format, type, *info)) return ctx.setError(GL_INVALID_OPERATION);
+    }
     if (!t.proxy && t.tex->immutable) return ctx.setError(GL_INVALID_OPERATION);
     if (t.proxy) {
         TextureImage& image = t.tex->image(t.face, level);
@@ -495,11 +531,19 @@ void texSubImage(Context& ctx, int dims, GLenum target, GLint level, GLint x, GL
                  GLsizei d, GLenum format, GLenum type, const void* pixels) {
     ImageTarget t;
     if (!imageTarget(ctx, target, dims, false, t)) return;
-    if (!checkFormatType(ctx, format, type)) return;
+    if (ctx.isEs() && (!es::isFormat(format) || !es::isType(type))) return ctx.setError(GL_INVALID_ENUM);
+    if (!ctx.isEs() && !checkFormatType(ctx, format, type)) return;
     if (level < 0 || level > maxLevelFor(t.target)) return ctx.setError(GL_INVALID_VALUE);
     if (w < 0 || h < 0 || d < 0) return ctx.setError(GL_INVALID_VALUE);
     const TextureImage& image = t.tex->image(t.face, level);
     if (!image.defined()) return ctx.setError(GL_INVALID_OPERATION);
+    if (ctx.isEs()) {
+        // The (format, type) must be one the image's format takes (tables 8.2, 8.3).
+        GLenum error;
+        if (!image.format->compressed && !es::texSubImageCompatible(image.format->internalFormat, format, type, error))
+            return ctx.setError(error);
+        format = esTransferFormat(format);
+    }
     if (x < 0 || y < 0 || z < 0 || w > image.width - x || h > image.height - y || d > image.depth - z)
         return ctx.setError(GL_INVALID_VALUE);
     const bool rgtc = image.format->compressed && encodable(image.format->storage);
@@ -507,7 +551,7 @@ void texSubImage(Context& ctx, int dims, GLenum target, GLint level, GLint x, GL
     // Compressed regions must be block aligned, except where they reach the image edge (GL 3.3 section 3.8.4).
     if (rgtc && ((x % 4) || (y % 4) || ((w % 4) && x + w != image.width) || ((h % 4) && y + h != image.height)))
         return ctx.setError(GL_INVALID_OPERATION);
-    if (!textureTransferCompatible(format, type, *image.format)) return ctx.setError(GL_INVALID_OPERATION);
+    if (!ctx.isEs() && !textureTransferCompatible(format, type, *image.format)) return ctx.setError(GL_INVALID_OPERATION);
     const TransferLayout layout = transferLayout(format, type, w, h, d, pixelStoreParams(ctx.state.unpack, dims == 3));
     const uint8_t* src = nullptr;
     if (!unpackSource(ctx, pixels, w && h && d ? layout.bytesNeeded : 0, typeSize(type), src)) return;
@@ -766,10 +810,29 @@ bool copyFormatsCompatible(const FormatInfo& src, const FormatInfo& dst) {
     return true;
 }
 
+// OpenGL ES 3.2 section 8.6: the new image's format comes from the
+// internal format and the read buffer's (es::copyTexImageFormat).
+void esCopyTexImage(Context& ctx, const ImageTarget& t, GLint level, GLenum internalformat, GLint x, GLint y,
+                    GLsizei width, GLsizei height, GLint border) {
+    bool tooLarge;
+    if (!sizeAllowed(ctx, t, level, width, height, 1, border, tooLarge)) return;
+    if (t.tex->immutable) return ctx.setError(GL_INVALID_OPERATION);
+    CopySource src;
+    if (!copySource(ctx, false, src)) return;
+    GLenum error;
+    const GLenum sized = es::copyTexImageFormat(*src.info, internalformat, error);
+    if (!sized) return ctx.setError(error);
+    const FormatInfo* info = formatInfo(sized);
+    if (!info) return ctx.setError(GL_INVALID_VALUE);
+    defineImage(ctx, *t.tex, t.face, level, internalformat, info, width, height, 1);
+    copyRegion(ctx, *t.tex, t.face, level, 0, 0, 0, x, y, width, height, src);
+}
+
 void copyTexImage(Context& ctx, int dims, GLenum target, GLint level, GLenum internalformat, GLint x, GLint y,
                   GLsizei width, GLsizei height, GLint border) {
     ImageTarget t;
     if (!imageTarget(ctx, target, dims, false, t)) return;
+    if (ctx.isEs()) return esCopyTexImage(ctx, t, level, internalformat, x, y, width, height, border);
     if (!isValidTextureInternalFormat(internalformat, ctx.isCompat(), stencilTextures(ctx))) return ctx.setError(GL_INVALID_VALUE);
     bool tooLarge;
     if (!sizeAllowed(ctx, t, level, width, dims == 1 ? 1 : height, 1, border, tooLarge)) return;
@@ -809,6 +872,7 @@ void copyTexSubImage(Context& ctx, int dims, GLenum target, GLint level, GLint x
     CopySource src;
     if (!copySource(ctx, image.format->isDepthOrStencil(), src)) return;
     if (!copyFormatsCompatible(*src.info, *image.format)) return ctx.setError(GL_INVALID_OPERATION);
+    if (ctx.isEs() && !es::copyTexSubImageCompatible(*src.info, *image.format)) return ctx.setError(GL_INVALID_OPERATION);
     copyRegion(ctx, *t.tex, t.face, level, xoffset, yoffset, zoffset, x, y, width, height, src);
 }
 
@@ -1271,6 +1335,7 @@ void texStorage(Context& ctx, int dims, GLenum target, GLsizei levels, GLenum in
     const FormatInfo* info = formatInfo(internalformat);
     if (!info || info->internalFormat != internalformat) return ctx.setError(GL_INVALID_ENUM);
     if (info->compressed && !compressedFormatSupported(ctx, info)) return ctx.setError(GL_INVALID_ENUM);
+    if (ctx.isEs() && !info->compressed && !es::textureStorageFormat(internalformat)) return ctx.setError(GL_INVALID_ENUM);
     if (levels < 1 || width < 1 || height < 1 || depth < 1) return ctx.setError(GL_INVALID_VALUE);
     Texture* tex = proxy ? ctx.proxyTextures[textureTargetIndex(base)].get() : boundTexture(ctx, base);
     if (!tex || (!proxy && tex->name == 0)) return ctx.setError(GL_INVALID_OPERATION);
@@ -1394,7 +1459,7 @@ void BindTexture(Context& ctx, GLenum target, GLuint name) {
         tex = ctx.share().textures.getRef(name);
         if (!tex) {
             if (!ctx.share().textures.isGenerated(name)) {
-                if (ctx.isCore()) return ctx.setError(GL_INVALID_OPERATION);
+                if (ctx.isDesktopCore()) return ctx.setError(GL_INVALID_OPERATION);  // OpenGL ES creates it
                 ctx.share().textures.reserve(name);
             }
             tex = makeRef<Texture>(name, target);

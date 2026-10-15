@@ -90,6 +90,8 @@ std::unordered_map<GLenum, FormatInfo> buildTable() {
     add(Builder(GL_RGBA4, GL_RGBA, S::RGBA8Unorm, CT::UnsignedNormalized).rgba(4, 4, 4, 4).transfer(GL_RGBA, UB));
     add(Builder(GL_RGB5_A1, GL_RGBA, S::RGBA8Unorm, CT::UnsignedNormalized).rgba(5, 5, 5, 1).transfer(GL_RGBA, UB));
     add(Builder(GL_RGBA8, GL_RGBA, S::RGBA8Unorm, CT::UnsignedNormalized).rgba(8, 8, 8, 8).transfer(GL_RGBA, UB).rb());
+    // EXT_texture_format_BGRA8888's format (OpenGL ES): RGBA8 storage, BGRA data.
+    add(Builder(0x93A1 /* GL_BGRA8_EXT */, GL_RGBA, S::RGBA8Unorm, CT::UnsignedNormalized).rgba(8, 8, 8, 8).transfer(GL_BGRA, UB));
     add(Builder(GL_RGBA8_SNORM, GL_RGBA, S::RGBA8Snorm, CT::SignedNormalized).rgba(8, 8, 8, 8).transfer(GL_RGBA, B));
     add(Builder(GL_RGB10_A2, GL_RGBA, S::RGB10A2Unorm, CT::UnsignedNormalized).rgba(10, 10, 10, 2).transfer(GL_RGBA, GL_UNSIGNED_INT_2_10_10_10_REV).rb());
     add(Builder(GL_RGB10_A2UI, GL_RGBA, S::RGB10A2Uint, CT::UnsignedInt).rgba(10, 10, 10, 2).transfer(GL_RGBA_INTEGER, GL_UNSIGNED_INT_2_10_10_10_REV).rb());
