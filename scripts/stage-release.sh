@@ -7,7 +7,7 @@
 # WINE_HEADERS is a Wine 11.x installation or source tree, for the module's
 # build (scripts/build-wine-module.sh).
 #
-# install-wine-module.sh
+# install-wine-module.sh, install-crossover.sh
 # module/
 #   x86_64-unix/     winemetalgl.so, libwinemetalgl.dylib (lib/wine/x86_64-unix)
 #   x86_64-windows/  winemetalgl.dll (lib/wine/x86_64-windows), opengl32.dll (prefix system32)
@@ -58,6 +58,7 @@ for library in "$output"/module/x86_64-unix/*; do
     fi
 done
 cp "$project_root/scripts/install-wine-module.sh" "$output/install-wine-module.sh"
+cp "$project_root/scripts/install-crossover.sh" "$output/install-crossover.sh"
 cp "$project_root/README.md" "$output/README.md"
 # The README's screenshots.
 mkdir -p "$output/docs/images"

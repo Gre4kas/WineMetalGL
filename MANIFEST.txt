@@ -45,6 +45,7 @@ scripts/cts/results.py
 scripts/cts/run.py
 scripts/cts/summary.py
 scripts/docs/generate.py
+scripts/install-crossover.sh
 scripts/install-wine-module.sh
 scripts/stage-arm64-core.sh
 scripts/stage-host-libs.sh
