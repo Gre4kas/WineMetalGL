@@ -49,6 +49,9 @@ const TBuiltInResource* resources() {
         x.maxCombinedTextureImageUnits = L::kMaxCombinedTextureUnits;
         x.maxVaryingComponents = 64;
         x.maxVaryingVectors = 16;
+        // GLSL ES 3.00's gl_MaxVertexOutputVectors / gl_MaxFragmentInputVectors.
+        x.maxVertexOutputVectors = L::kMaxVertexOutputComponents / 4;
+        x.maxFragmentInputVectors = L::kMaxInterfaceComponents / 4;
         x.maxImageUnits = L::kMaxImageUnits;
         x.maxCombinedImageUnitsAndFragmentOutputs = x.maxCombinedShaderOutputResources = L::kMaxCombinedShaderOutputResources;
         x.maxImageSamples = 0;
@@ -1678,8 +1681,10 @@ std::map<std::string, std::string> blockSignaturesOf(glslang::TShader& shader) {
             std::string signature = q.storage == glslang::EvqBuffer ? "buffer" : "uniform";
             signature += " packing " + std::to_string(q.layoutPacking) + " binding " +
                          std::to_string(q.hasBinding() ? static_cast<int>(q.layoutBinding) : -1) + " {";
+            // Members' precisions may differ between stages (KHR-GLES3
+            // uniform_block.common.precision_matching).
             for (const glslang::TTypeLoc& member : *type.getStruct())
-                signature += std::string(member.type->getCompleteString(true, true, true, true).c_str()) + " " +
+                signature += std::string(member.type->getCompleteString(true, true, false, true).c_str()) + " " +
                              member.type->getFieldName().c_str() + ";";
             out[(q.storage == glslang::EvqBuffer ? "buffer " : "uniform ") + name] = signature + "}";
         }
@@ -1704,7 +1709,17 @@ std::map<std::string, int> uniformPrecisionsOf(glslang::TShader& shader) {
             if (type.getQualifier().storage != glslang::EvqUniform || type.getBasicType() == glslang::EbtBlock) continue;
             const std::string name = symbol->getName().c_str();
             if (name.rfind("gl_", 0) == 0) continue;
-            out[name] = static_cast<int>(type.getQualifier().precision);
+            // Struct uniforms: each member's precision (GLSL ES 3.00 section 4.5.3).
+            const std::function<void(const glslang::TType&, const std::string&)> add = [&](const glslang::TType& t,
+                                                                                           const std::string& path) {
+                if (t.isStruct()) {
+                    for (const glslang::TTypeLoc& member : *t.getStruct())
+                        add(*member.type, path + "." + member.type->getFieldName().c_str());
+                } else {
+                    out[path] = static_cast<int>(t.getQualifier().precision);
+                }
+            };
+            add(type, name);
         }
     }
     return out;
@@ -1822,6 +1837,26 @@ EsCompileResult compileEsUncached(Stage stage, const std::string& source) {
         result.log += cleanLog(pre.getInfoLog(), pre.getInfoDebugLog());
         return result;
     }
+    // GLSL ES 3.00 section 3.4: #extension directives come before any
+    // non-preprocessor token (glslang only enforces that for 1.00).
+    if (version >= 300) {
+        bool tokens = false;
+        size_t at = 0;
+        while (at < preprocessed.size()) {
+            size_t end = preprocessed.find('\n', at);
+            if (end == std::string::npos) end = preprocessed.size();
+            const size_t first = preprocessed.find_first_not_of(" \t\r", at);
+            if (first < end) {
+                if (preprocessed[first] != '#') tokens = true;
+                else if (tokens && preprocessed.compare(first, 10, "#extension") == 0) {
+                    result.ok = false;
+                    result.log += "ERROR: '#extension' : must occur before any non-preprocessor tokens\n";
+                    return result;
+                }
+            }
+            at = end + 1;
+        }
+    }
     result.desktop = esToDesktopGlsl(preprocessed, version);
     // Make sure the shader translates (as compile() does).
     ParsedShader parsed;
@@ -1916,9 +1951,9 @@ std::string fragmentWithAdvancedBlend(const std::string& msl, unsigned equation)
         "    float3 c = mx > mn ? (cbase - mn) * s / (mx - mn) : float3(0.0);\n"
         "    return wmgl_set_lum(c, clum);\n}\n"
         "static inline float4 wmgl_advanced_blend(float4 s, float4 d) {\n"
+        "    s = saturate(s); d = saturate(d);  // the premultiplied colors, clamped before dividing\n"
         "    float3 cs = s.a > 0.0 ? s.rgb / s.a : float3(0.0);\n"
         "    float3 cd = d.a > 0.0 ? d.rgb / d.a : float3(0.0);\n"
-        "    cs = clamp(cs, 0.0, 1.0); cd = clamp(cd, 0.0, 1.0);\n"
         "    float3 f = " + std::string(equation < 11 ? kSeparable[equation] : kNonSeparable[equation - 11]) + ";\n"
         "    float p0 = s.a * d.a, p1 = s.a * (1.0 - d.a), p2 = d.a * (1.0 - s.a);\n"
         "    return float4(f * p0 + cs * p1 + cd * p2, p0 + p1 + p2);\n}\n\n";
@@ -3470,6 +3505,7 @@ static LinkResult linkImplCore(const LinkInput& input, const CaptureCode* captur
                     flattenArraysOfArrays(cubeStorageImagesAs2DArrays(lowerGatherOffsets(rectImagesAs2D(stage.spirv)))));
             if (!lowerFp64(spirv, result.log)) return result;
             BorderMsl msl(std::move(spirv));
+            msl.renameMetalFunctionObjects();
             spirv_cross::CompilerMSL::Options mslOptions;
             mslOptions.disable_rasterization = noRaster;
             mslOptions.platform = spirv_cross::CompilerMSL::Options::macOS;
