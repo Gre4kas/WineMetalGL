@@ -1711,7 +1711,18 @@ EsCompileResult compileEsUncached(Stage stage, const std::string& source) {
         configureNoClient(shader, lang);
         result.ok = shader.parse(resources(), 100, EEsProfile, false, false, messages);
         result.log = cleanLog(shader.getInfoLog(), shader.getInfoDebugLog());
-        if (result.ok) result.uniformPrecisions = uniformPrecisionsOf(shader);
+        if (result.ok) {
+            result.uniformPrecisions = uniformPrecisionsOf(shader);
+            // compile()'s checks: block bindings within the limits, interface
+            // locations, reserved words.
+            std::string errors = checkBlockBindings(shader);
+            if (errors.empty()) errors = checkInterfaceLocations(shader, stage);
+            if (errors.empty()) errors = checkReservedWords(source);
+            if (!errors.empty()) {
+                result.ok = false;
+                result.log += errors;
+            }
+        }
         if (result.ok || attempt ||
             result.log.find("cannot use in preprocessor expression when expanded from macros") == std::string::npos)
             break;

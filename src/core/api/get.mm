@@ -422,7 +422,11 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
     case GL_MAX_TEXTURE_IMAGE_UNITS: case GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS: case GL_MAX_GEOMETRY_TEXTURE_IMAGE_UNITS:
         out = ints({kMaxTextureUnitsPerStage});
         return true;
-    case GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS: out = ints({kMaxCombinedTextureUnits}); return true;
+    // OpenGL ES 3.2 requires 96 (16 for each of six stages); no draw can use
+    // more than its five stages' 16 each anyway.
+    case GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS:
+        out = ints({ctx.isEs() ? std::max<int64_t>(96, kMaxCombinedTextureUnits) : kMaxCombinedTextureUnits});
+        return true;
     case GL_MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS: out = ints({64}); return true;
     case GL_MAX_TRANSFORM_FEEDBACK_SEPARATE_ATTRIBS: out = ints({4}); return true;
     case GL_MAX_TRANSFORM_FEEDBACK_SEPARATE_COMPONENTS: out = ints({4}); return true;
@@ -868,6 +872,9 @@ void convert(const Value& v, T* params, bool es = false) {
                 params[i] = static_cast<T>(std::llround(x));
             } else if (v.kind == Value::UInt && sizeof(T) == 4) {
                 params[i] = static_cast<T>(static_cast<uint32_t>(x));
+            } else if (v.kind == Value::UInt && es) {
+                // OpenGL ES: 32-bit unsigned state reads as its signed value in 64 bits.
+                params[i] = static_cast<T>(static_cast<int32_t>(static_cast<uint32_t>(x)));
             } else if constexpr (sizeof(T) == 4) {
                 params[i] = static_cast<T>(std::clamp(x, -2147483648.0, 2147483647.0));
             } else {
@@ -890,7 +897,7 @@ void getIndexedT(Context& ctx, GLenum pname, GLuint index, T* params) {
     bool badIndex = false;
     if (!getIndexed(ctx, pname, index, v, badIndex)) return ctx.setError(GL_INVALID_ENUM);
     if (badIndex) return ctx.setError(GL_INVALID_VALUE);
-    if (params) convert(v, params);
+    if (params) convert(v, params, ctx.isEs());
 }
 
 }  // namespace

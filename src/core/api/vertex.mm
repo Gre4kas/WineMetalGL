@@ -221,9 +221,9 @@ bool attribBindings(Context& ctx, const char* command) {
 }
 
 // These commands change VAO state: an error on the default VAO of a core
-// context (OpenGL ES's vertex array 0 is an object like the others).
+// context, and of OpenGL ES 3.1 (its vertex attribute binding commands).
 bool bindingStateWritable(Context& ctx) {
-    if (ctx.isDesktopCore() && currentVao(ctx) == ctx.defaultVertexArray.get()) {
+    if (ctx.isCore() && currentVao(ctx) == ctx.defaultVertexArray.get()) {
         ctx.setError(GL_INVALID_OPERATION);
         return false;
     }
