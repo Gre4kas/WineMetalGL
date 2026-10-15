@@ -3,6 +3,7 @@
 // the OpenGL ES rules applied where the two differ (Context::isEs).
 
 #include "core/context.h"
+#include "core/metal/device.h"
 
 #include <cstdio>
 
@@ -39,9 +40,10 @@ void Context::initEsStrings() {
     // Formats and compression.
     add({"GL_EXT_color_buffer_half_float", "GL_EXT_texture_compression_s3tc", "GL_EXT_texture_compression_s3tc_srgb",
          "GL_EXT_texture_compression_rgtc", "GL_EXT_texture_compression_bptc", "GL_EXT_texture_filter_anisotropic",
-         "GL_OES_compressed_ETC1_RGB8_texture", "GL_EXT_texture_sRGB_decode", "GL_EXT_texture_sRGB_R8",
-         "GL_EXT_texture_sRGB_RG8", "GL_EXT_texture_norm16", "GL_EXT_render_snorm", "GL_EXT_texture_mirror_clamp_to_edge",
+         "GL_OES_compressed_ETC1_RGB8_texture", "GL_EXT_texture_sRGB_decode", "GL_EXT_texture_norm16",
+         "GL_EXT_render_snorm", "GL_EXT_texture_mirror_clamp_to_edge",
          "GL_EXT_depth_clamp", "GL_EXT_texture_shadow_lod"});
+    if (Device::get().caps().astcTextures) add({"GL_KHR_texture_compression_astc_ldr"});
     if (es >= 30) {
         add({"GL_EXT_color_buffer_float", "GL_EXT_float_blend", "GL_OES_texture_stencil8", "GL_EXT_copy_image",
              "GL_OES_copy_image", "GL_EXT_draw_buffers_indexed", "GL_OES_draw_buffers_indexed",

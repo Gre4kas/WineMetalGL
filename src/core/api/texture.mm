@@ -319,7 +319,8 @@ void uploadRegion(Context& ctx, Texture& tex, int face, int level, int x, int y,
 }
 
 size_t compressedSize(const FormatInfo& info, GLsizei w, GLsizei h, GLsizei d) {
-    const size_t blocksX = (static_cast<size_t>(w) + 3) / 4, blocksY = (static_cast<size_t>(h) + 3) / 4;
+    const size_t blocksX = storageBlocksAcross(info.storage, static_cast<size_t>(w));
+    const size_t blocksY = storageBlocksAcross(info.storage, static_cast<size_t>(h), true);
     return blocksX * blocksY * static_cast<size_t>(std::max(1, d)) * storageBytes(info.storage);
 }
 
@@ -341,19 +342,21 @@ CompressedLayout compressedLayout(const PixelStore& ps, const FormatInfo& info, 
     const size_t bytes = storageBytes(info.storage);
     // The parameters apply when set for every dimension of the call
     // (and only if they describe this format's 4x4 blocks).
+    int bw, bh;
+    storageBlockSize(info.storage, bw, bh);
     l.active = ps.blockSize > 0 && ps.blockWidth > 0 && (dims < 2 || ps.blockHeight > 0) && (dims < 3 || ps.blockDepth > 0) &&
-               static_cast<size_t>(ps.blockSize) == bytes && ps.blockWidth == 4 && (dims < 2 || ps.blockHeight == 4) &&
+               static_cast<size_t>(ps.blockSize) == bytes && ps.blockWidth == bw && (dims < 2 || ps.blockHeight == bh) &&
                (dims < 3 || ps.blockDepth == 1);
     if (!l.active) return l;
     l.blockBytes = bytes;
-    l.blocksX = (static_cast<size_t>(w) + 3) / 4;
-    l.blocksY = (static_cast<size_t>(h) + 3) / 4;
+    l.blocksX = storageBlocksAcross(info.storage, static_cast<size_t>(w));
+    l.blocksY = storageBlocksAcross(info.storage, static_cast<size_t>(h), true);
     l.depth = static_cast<size_t>(std::max(1, d));
-    const size_t rowBlocks = ps.rowLength > 0 ? (static_cast<size_t>(ps.rowLength) + 3) / 4 : l.blocksX;
-    const size_t imageRows = ps.imageHeight > 0 ? (static_cast<size_t>(ps.imageHeight) + 3) / 4 : l.blocksY;
+    const size_t rowBlocks = ps.rowLength > 0 ? storageBlocksAcross(info.storage, static_cast<size_t>(ps.rowLength)) : l.blocksX;
+    const size_t imageRows = ps.imageHeight > 0 ? storageBlocksAcross(info.storage, static_cast<size_t>(ps.imageHeight), true) : l.blocksY;
     l.rowStride = rowBlocks * bytes;
     l.imageStride = imageRows * l.rowStride;
-    l.start = static_cast<size_t>(ps.skipPixels / 4) * bytes + static_cast<size_t>(ps.skipRows / 4) * l.rowStride +
+    l.start = static_cast<size_t>(ps.skipPixels / bw) * bytes + static_cast<size_t>(ps.skipRows / bh) * l.rowStride +
               (dims == 3 ? static_cast<size_t>(ps.skipImages) * l.imageStride : 0);
     return l;
 }
@@ -372,6 +375,8 @@ std::vector<uint8_t> gatherBlocks(const CompressedLayout& l, const uint8_t* src)
 
 bool compressedFormatSupported(Context& ctx, const FormatInfo* info) {
     if (!info || !info->compressed) return false;
+    // KHR_texture_compression_astc_ldr: OpenGL ES contexts.
+    if (storageIsAstc(info->storage)) return ctx.isEs() && Device::get().caps().astcTextures;
     if (info->storage >= Storage::ETC2_RGB8 && info->storage <= Storage::EAC_RG11Snorm)
         return ctx.version() >= 43 || ctx.hasExtension("GL_ARB_ES3_compatibility");  // native on Apple GPUs
     if (!Device::get().caps().bcTextures) return false;
@@ -395,8 +400,8 @@ void uploadCompressed(Context& ctx, Texture& tex, int face, int level, int x, in
     if (!src || w <= 0 || h <= 0 || d <= 0) return;
     const TextureImage& image = tex.image(face, level);
     if (!imageHasStorage(ctx, tex, face, level)) return;
-    const size_t rowBytes = ((static_cast<size_t>(w) + 3) / 4) * storageBytes(image.format->storage);
-    const size_t imageBytes = rowBytes * ((static_cast<size_t>(h) + 3) / 4);
+    const size_t rowBytes = storageBlocksAcross(image.format->storage, static_cast<size_t>(w)) * storageBytes(image.format->storage);
+    const size_t imageBytes = rowBytes * storageBlocksAcross(image.format->storage, static_cast<size_t>(h), true);
     uploadTexels(ctx, tex, face, level, x, y, z, w, h, d, src, rowBytes, imageBytes);
     imageChanged(ctx, tex);
 }
@@ -612,7 +617,9 @@ void compressedTexSubImage(Context& ctx, int dims, GLenum target, GLint level, G
     if (x < 0 || y < 0 || z < 0 || w > image.width - x || h > image.height - y || d > image.depth - z)
         return ctx.setError(GL_INVALID_VALUE);
     // Regions must be block aligned, except where they reach the image edge.
-    if ((x % 4) || (y % 4) || ((w % 4) && x + w != image.width) || ((h % 4) && y + h != image.height))
+    int bw, bh;
+    storageBlockSize(info->storage, bw, bh);
+    if ((x % bw) || (y % bh) || ((w % bw) && x + w != image.width) || ((h % bh) && y + h != image.height))
         return ctx.setError(GL_INVALID_OPERATION);
     if (imageSize < 0 || static_cast<size_t>(imageSize) != compressedSize(*info, w, h, d))
         return ctx.setError(GL_INVALID_VALUE);
@@ -2212,8 +2219,8 @@ void GetCompressedTexImage(Context& ctx, GLenum target, GLint level, void* img) 
     if (!packDestination(ctx, img, layout.active ? layout.bytesNeeded() : size, 1, dst)) return;
     if (!dst || !imageHasStorage(ctx, *t.tex, t.face, level)) return;
     const size_t blockBytes = storageBytes(image.format->storage);
-    const size_t rowBytes = ((static_cast<size_t>(image.width) + 3) / 4) * blockBytes;
-    const size_t imageBytes = rowBytes * ((static_cast<size_t>(image.height) + 3) / 4);
+    const size_t rowBytes = storageBlocksAcross(image.format->storage, static_cast<size_t>(image.width)) * blockBytes;
+    const size_t imageBytes = rowBytes * storageBlocksAcross(image.format->storage, static_cast<size_t>(image.height), true);
     id<MTLBuffer> staging = [Device::get().mtl() newBufferWithLength:std::max<size_t>(1, size)
                                                              options:MTLResourceStorageModeShared];
     id<MTLBlitCommandEncoder> blit = ctx.stream().blit();
@@ -2378,9 +2385,11 @@ void GetCompressedTextureSubImage(Context& ctx, GLuint texture, GLint level, GLi
     Texture& tex = *sub.tex;
     const TextureImage& image = *sub.image;
     if (!image.defined() || !image.format->compressed) return ctx.setError(GL_INVALID_OPERATION);
-    // Whole 4x4 blocks, except where the region reaches the image's edge.
-    if (xoffset % 4 || yoffset % 4 || (width % 4 && xoffset + width != image.width) ||
-        (height % 4 && yoffset + height != image.height))
+    // Whole blocks, except where the region reaches the image's edge.
+    int bw, bh;
+    storageBlockSize(image.format->storage, bw, bh);
+    if (xoffset % bw || yoffset % bh || (width % bw && xoffset + width != image.width) ||
+        (height % bh && yoffset + height != image.height))
         return ctx.setError(GL_INVALID_OPERATION);
     const bool threeD = tex.target == GL_TEXTURE_3D || tex.target == GL_TEXTURE_2D_ARRAY || tex.target == GL_TEXTURE_CUBE_MAP ||
                         tex.target == GL_TEXTURE_CUBE_MAP_ARRAY;
@@ -2395,8 +2404,8 @@ void GetCompressedTextureSubImage(Context& ctx, GLuint texture, GLint level, GLi
     for (int f = 0; f < (tex.target == GL_TEXTURE_CUBE_MAP ? 6 : 1); ++f)
         if (!imageHasStorage(ctx, tex, f, level)) return;
     if (!dst) return;
-    const size_t rowBytes = ((static_cast<size_t>(width) + 3) / 4) * storageBytes(image.format->storage);
-    const size_t imageBytes = rowBytes * ((static_cast<size_t>(height) + 3) / 4);
+    const size_t rowBytes = storageBlocksAcross(image.format->storage, static_cast<size_t>(width)) * storageBytes(image.format->storage);
+    const size_t imageBytes = rowBytes * storageBlocksAcross(image.format->storage, static_cast<size_t>(height), true);
     id<MTLBuffer> staging = [Device::get().mtl() newBufferWithLength:std::max<size_t>(1, size)
                                                              options:MTLResourceStorageModeShared];
     id<MTLBlitCommandEncoder> blit = ctx.stream().blit();
