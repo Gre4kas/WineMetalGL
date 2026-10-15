@@ -3502,7 +3502,13 @@ bool DrawState::drawPatchesIndirectGpu(GLenum type, Buffer& commands, uintptr_t 
         // A site sized once keeps a capacity even when its commands drew
         // nothing (all culled): it is never sized on the CPU again.
         if (site.capacity && total <= site.capacity) return;
-        const uint64_t wanted = std::max<uint64_t>(256, total * 2);
+        // Patches past the capacity are not drawn until a later report grows
+        // it (wmgl_mdi_patch_scan), so it holds at least one patch per
+        // command: culling that keeps or drops each command's patch
+        // (Foundation's terrain, issue #12) then fits from the first frame
+        // that shows them, even for a site sized while everything was culled.
+        const uint64_t perCommand = std::min<uint64_t>(uint64_t{static_cast<uint32_t>(drawcount)} * patchVertices, 1u << 17);
+        const uint64_t wanted = std::max<uint64_t>({256, total * 2, perCommand});
         site.capacity = static_cast<uint32_t>(std::min<uint64_t>(wanted, (1u << 26)) / patchVertices * patchVertices);
     };
     for (int i = 0; i < 8; ++i)

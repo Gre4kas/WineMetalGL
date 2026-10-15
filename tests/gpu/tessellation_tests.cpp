@@ -1032,6 +1032,61 @@ void main() { if (gl_GlobalInvocationID.x < words) commands[gl_GlobalInvocationI
         for (size_t i = 0; i < image.size(); i += 4) drawn += image[i + 3] != 0;
         CHECK_EQ(drawn, 0);
     }
+    {
+        // Commands all culled when the site is sized, then all drawn at once
+        // (a view turned onto Foundation's terrain): every patch is drawn.
+        // 80 commands of one patch are 320 vertices, past the 256 such a
+        // site got; the last 16 draw where the first 64 do not.
+        constexpr int kCommands = 80;
+        std::vector<GLuint> visible(kCommands * 5, 0), culled(kCommands * 5, 0);
+        for (int c = 0; c < kCommands; ++c) {
+            const GLuint q = c < 64 ? 0 : static_cast<GLuint>(c - 64) % 5, i = c < 64 ? 0 : static_cast<GLuint>(c - 64) % 8;
+            const GLuint command[5] = {4, 1, q * 4, 0, i};
+            std::copy(command, command + 5, visible.begin() + c * 5);
+        }
+        const GLsizeiptr bytes = static_cast<GLsizeiptr>(visible.size() * 4);
+        GLuint more[3] = {};  // the commands the GPU copies, the copy, the reference's
+        glGenBuffers(3, more);
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, more[0]);
+        glBufferData(GL_SHADER_STORAGE_BUFFER, bytes, culled.data(), GL_DYNAMIC_DRAW);
+        glBindBuffer(GL_DRAW_INDIRECT_BUFFER, more[1]);
+        glBufferData(GL_DRAW_INDIRECT_BUFFER, bytes, nullptr, GL_DYNAMIC_DRAW);
+        glBindBuffer(GL_DRAW_INDIRECT_BUFFER, more[2]);
+        glBufferData(GL_DRAW_INDIRECT_BUFFER, bytes, visible.data(), GL_STATIC_DRAW);
+        glUseProgram(p);
+        glClear(GL_COLOR_BUFFER_BIT);
+        for (int c = 0; c < kCommands; ++c)
+            glDrawElementsIndirect(GL_PATCHES, GL_UNSIGNED_SHORT, reinterpret_cast<const void*>(static_cast<uintptr_t>(c) * 20));
+        const std::vector<uint8_t> expected = gpu::readRGBA8(0, 0, 64, 64);
+        glBindBuffer(GL_DRAW_INDIRECT_BUFFER, more[1]);
+        std::vector<uint8_t> image;
+        unsigned long long gpuDraws = 0;
+        for (int frame = 0; frame < 3; ++frame) {
+            if (frame == 2) {
+                glBindBuffer(GL_SHADER_STORAGE_BUFFER, more[0]);
+                glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, bytes, visible.data());
+            }
+            glClear(GL_COLOR_BUFFER_BIT);
+            glUseProgram(copy);
+            glUniform1ui(glGetUniformLocation(copy, "words"), static_cast<GLuint>(visible.size()));
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, more[0]);
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, more[1]);
+            glDispatchCompute((static_cast<GLuint>(visible.size()) + 63) / 64, 1, 1);
+            glMemoryBarrier(GL_COMMAND_BARRIER_BIT);
+            glUseProgram(p);
+            gpu::Counters counters;
+            glMultiDrawElementsIndirect(GL_PATCHES, GL_UNSIGNED_SHORT, nullptr, kCommands, 0);
+            gpuDraws = counters["tessMdiGpu"];
+            image = gpu::readRGBA8(0, 0, 64, 64);
+        }
+        CHECK_GL();
+        CHECK_EQ(gpuDraws, 1ull);
+        int different = 0;
+        for (size_t i = 0; i < expected.size(); i += 4) different += !gpu::near(&image[i], &expected[i], 1);
+        if (different) std::fprintf(stderr, "  turned onto culled commands: %d of 4096 pixels differ\n", different);
+        CHECK_EQ(different, 0);
+        glDeleteBuffers(3, more);
+    }
     glDeleteProgram(p);
     glDeleteProgram(copy);
     glDeleteBuffers(5, buffers);
