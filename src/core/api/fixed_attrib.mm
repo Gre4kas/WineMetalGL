@@ -147,6 +147,9 @@ void restore(GLbitfield mask, const ContextState& from, ContextState& to) {
         for (int u = 0; u < FixedState::kTextureUnits; ++u)
             f.texGen[static_cast<size_t>(u)].enabled = g.texGen[static_cast<size_t>(u)].enabled;
         f.colorSum = g.colorSum;
+        f.vertexProgram = g.vertexProgram;
+        f.fragmentProgram = g.fragmentProgram;
+        f.vertexProgramTwoSide = g.vertexProgramTwoSide;
         to.programPointSize = from.programPointSize;
         to.depthClamp = from.depthClamp;
         to.framebufferSRGB = from.framebufferSRGB;
@@ -218,6 +221,7 @@ void PushAttrib(Context& ctx, GLbitfield mask) {
     FixedState& f = st.fixed;
     std::vector<Mat4> modelview = std::move(f.modelview), projection = std::move(f.projection);
     std::array<std::vector<Mat4>, FixedState::kTextureUnits> texture = std::move(f.texture);
+    std::array<std::vector<Mat4>, FixedState::kProgramMatrices> programMatrix = std::move(f.programMatrix);
     std::vector<GLuint> names = std::move(f.nameStack);
     decltype(st.uniformBufferBindings) uniformBuffers = std::move(st.uniformBufferBindings);
     decltype(st.activeQueries) queries = std::move(st.activeQueries);
@@ -228,6 +232,7 @@ void PushAttrib(Context& ctx, GLbitfield mask) {
     f.modelview = std::move(modelview);
     f.projection = std::move(projection);
     f.texture = std::move(texture);
+    f.programMatrix = std::move(programMatrix);
     f.nameStack = std::move(names);
     st.uniformBufferBindings = std::move(uniformBuffers);
     st.activeQueries = std::move(queries);

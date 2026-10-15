@@ -69,7 +69,10 @@ std::vector<Mat4>& FixedState::currentStack(GLuint activeTexture) {
     case GL_PROJECTION: return projection;
     case GL_TEXTURE: return texture[std::min<GLuint>(activeTexture, kTextureUnits - 1)];
     case GL_COLOR: return color;
-    default: return modelview;
+    default:
+        if (matrixMode >= GL_MATRIX0_ARB && matrixMode < GL_MATRIX0_ARB + kProgramMatrices)
+            return programMatrix[matrixMode - GL_MATRIX0_ARB];
+        return modelview;
     }
 }
 
@@ -111,7 +114,8 @@ int depthLimit(GLenum mode) {
     case GL_MODELVIEW: return FixedState::kModelViewDepth;
     case GL_PROJECTION: return FixedState::kProjectionDepth;
     case GL_COLOR: return FixedState::kColorDepth;
-    default: return FixedState::kTextureDepth;
+    case GL_TEXTURE: return FixedState::kTextureDepth;
+    default: return FixedState::kProgramMatrixDepth;  // MATRIXi_ARB
     }
 }
 
@@ -133,7 +137,9 @@ void MatrixMode(Context& ctx, GLenum mode) {
     // Steam overlay selects it unchecked to save and restore it: rejected,
     // its matrix commands would land on the game's projection and texture
     // matrices instead.
-    if (mode != GL_MODELVIEW && mode != GL_PROJECTION && mode != GL_TEXTURE && mode != GL_COLOR)
+    // MATRIXi_ARB: the program matrices of ARB assembly programs (state.matrix.program[i]).
+    const bool programMatrix = mode >= GL_MATRIX0_ARB && mode < GL_MATRIX0_ARB + FixedState::kProgramMatrices;
+    if (mode != GL_MODELVIEW && mode != GL_PROJECTION && mode != GL_TEXTURE && mode != GL_COLOR && !programMatrix)
         return ctx.setError(GL_INVALID_ENUM);
     if (mode == GL_TEXTURE && ctx.state.activeTexture >= FixedState::kTextureUnits) return ctx.setError(GL_INVALID_OPERATION);
     fixedState(ctx).matrixMode = mode;
@@ -886,13 +892,11 @@ bool setFixedCapability(Context& ctx, GLenum cap, bool on) {
         return true;
     }
     case GL_AUTO_NORMAL: case GL_MAP1_VERTEX_3: case GL_MAP1_VERTEX_4: case GL_MAP2_VERTEX_3: case GL_MAP2_VERTEX_4:
-    case GL_INDEX_LOGIC_OP: case GL_VERTEX_PROGRAM_TWO_SIDE:
+    case GL_INDEX_LOGIC_OP:
         return true;  // accepted; evaluators and colour-index mode are not supported
-    case GL_VERTEX_PROGRAM_ARB: case GL_FRAGMENT_PROGRAM_ARB:
-        // ARB assembly programs are not supported, so these are never on:
-        // disabling them is accepted (the Steam overlay does, unchecked),
-        // enabling them is not.
-        return !on;
+    case GL_VERTEX_PROGRAM_TWO_SIDE: f.vertexProgramTwoSide = on; return true;
+    case GL_VERTEX_PROGRAM_ARB: f.vertexProgram = on; return true;
+    case GL_FRAGMENT_PROGRAM_ARB: f.fragmentProgram = on; return true;
     default: break;
     }
     if (cap >= GL_LIGHT0 && cap < GL_LIGHT0 + FixedState::kLights) {
@@ -938,9 +942,12 @@ bool getFixedCapability(Context& ctx, GLenum cap, bool& value) {
         value = f.texGen[unit].enabled & (1u << (cap - GL_TEXTURE_GEN_S));
         return true;
     case GL_AUTO_NORMAL: case GL_MAP1_VERTEX_3: case GL_MAP1_VERTEX_4: case GL_MAP2_VERTEX_3: case GL_MAP2_VERTEX_4:
-    case GL_INDEX_LOGIC_OP: case GL_VERTEX_PROGRAM_TWO_SIDE: case GL_VERTEX_PROGRAM_ARB: case GL_FRAGMENT_PROGRAM_ARB:
+    case GL_INDEX_LOGIC_OP:
         value = false;
         return true;
+    case GL_VERTEX_PROGRAM_TWO_SIDE: value = f.vertexProgramTwoSide; return true;
+    case GL_VERTEX_PROGRAM_ARB: value = f.vertexProgram; return true;
+    case GL_FRAGMENT_PROGRAM_ARB: value = f.fragmentProgram; return true;
     default: break;
     }
     if (cap >= GL_LIGHT0 && cap < GL_LIGHT0 + FixedState::kLights) {

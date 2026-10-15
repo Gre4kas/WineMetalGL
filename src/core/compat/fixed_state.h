@@ -42,6 +42,9 @@ enum InternalAttrib : int { kLinePartner = kConvEnd, kLineSide, kInternalAttribE
 struct FixedState {
     static constexpr int kTextureUnits = 8, kLights = 8, kClipPlanes = 8;
     static constexpr int kModelViewDepth = 32, kProjectionDepth = 4, kTextureDepth = 4, kColorDepth = 2;
+    // ARB program matrices (MATRIX0_ARB..): MAX_PROGRAM_MATRICES_ARB and
+    // MAX_PROGRAM_MATRIX_STACK_DEPTH_ARB.
+    static constexpr int kProgramMatrices = 8, kProgramMatrixDepth = 4;
 
     GLenum matrixMode = GL_MODELVIEW;
     std::vector<Mat4> modelview{Mat4()}, projection{Mat4()};
@@ -50,6 +53,7 @@ struct FixedState {
     // not transform pixels, as ARB_imaging is not advertised.
     std::vector<Mat4> color{Mat4()};
     std::array<std::vector<Mat4>, kTextureUnits> texture;
+    std::array<std::vector<Mat4>, kProgramMatrices> programMatrix;
 
     struct Light {
         bool enabled = false;
@@ -113,6 +117,10 @@ struct FixedState {
     float pointSizeMin = 0, pointSizeMax = 255, pointDistanceAttenuation[3] = {1, 0, 0};
     bool pointSprite = false, pointSmooth = false;
     bool lineStipple = false, polygonStipple = false;
+    // ARB assembly programs (compat/arb_programs.h): VERTEX_PROGRAM_ARB,
+    // FRAGMENT_PROGRAM_ARB and VERTEX_PROGRAM_TWO_SIDE (back colours of
+    // vertex programs and shaders).
+    bool vertexProgram = false, fragmentProgram = false, vertexProgramTwoSide = false;
     GLint lineStippleFactor = 1;
     GLushort lineStipplePattern = 0xffff;
     // Polygon stipple rows from the bottom; bit x is window column x mod 32.
@@ -142,6 +150,7 @@ struct FixedState {
     FixedState() {
         stipple.fill(~0u);
         for (auto& stack : texture) stack.assign(1, Mat4());
+        for (auto& stack : programMatrix) stack.assign(1, Mat4());
         float one[4] = {1, 1, 1, 1};
         std::copy(one, one + 4, lights[0].diffuse);
         std::copy(one, one + 4, lights[0].specular);

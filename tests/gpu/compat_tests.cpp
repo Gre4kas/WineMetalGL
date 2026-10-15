@@ -1130,12 +1130,15 @@ COMPAT_TEST(compat_steam_overlay_state_round_trip) {
     matrix(GL_MODELVIEW_MATRIX, now);
     CHECK(same(now, gameModelview));
 
-    // ARB assembly programs are never on; they cannot be turned on.
+    // ARB assembly program modes: off after the overlay's unchecked disables,
+    // and they round-trip (arb_program_tests.cpp draws with them).
     CHECK_EQ(glIsEnabled(GL_VERTEX_PROGRAM_ARB), static_cast<GLboolean>(GL_FALSE));
     CHECK_EQ(glIsEnabled(GL_FRAGMENT_PROGRAM_ARB), static_cast<GLboolean>(GL_FALSE));
     CHECK_GL();
     glEnable(GL_VERTEX_PROGRAM_ARB);
-    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_INVALID_ENUM));
+    CHECK_EQ(glIsEnabled(GL_VERTEX_PROGRAM_ARB), static_cast<GLboolean>(GL_TRUE));
+    glDisable(GL_VERTEX_PROGRAM_ARB);
+    CHECK_GL();
 
     // The colour matrix stack: loaded values read back, two deep.
     glMatrixMode(GL_COLOR);

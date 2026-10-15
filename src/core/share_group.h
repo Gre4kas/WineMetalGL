@@ -7,6 +7,7 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#include "core/compat/arb_programs.h"
 #include "core/compat/display_list.h"
 #include "core/metal/queue.h"
 #include "core/objects.h"
@@ -49,6 +50,10 @@ public:
     // (core/compat/fixed_function.h), and display lists (compat/display_list.h).
     std::unordered_map<std::string, RefPtr<Program>> fixedFunctionPrograms;
     std::map<GLuint, RefPtr<DisplayList>> displayLists;
+    // ARB assembly program objects (their own name space) and the generated
+    // programs that run them (compat/arb_programs.h).
+    std::unordered_map<GLuint, std::shared_ptr<compat::ArbProgramObject>> arbPrograms;
+    std::unordered_map<std::string, compat::ArbLinked> arbLinkedPrograms;
 
 private:
     GLuint nextShaderProgram_ = 1;

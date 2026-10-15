@@ -177,6 +177,17 @@ int getFixedState(Context& ctx, GLenum pname, double* values, char& kind) {
     case GL_PROJECTION_STACK_DEPTH: return o.ints({static_cast<double>(f.projection.size())});
     case GL_TEXTURE_STACK_DEPTH: return o.ints({static_cast<double>(f.texture[unit].size())});
     case GL_COLOR_MATRIX_STACK_DEPTH: return o.ints({static_cast<double>(f.color.size())});
+    // The current matrix mode's matrix (GL_ARB_vertex_program: any mode, MATRIXi_ARB included).
+    case GL_CURRENT_MATRIX_ARB: case GL_TRANSPOSE_CURRENT_MATRIX_ARB: case GL_CURRENT_MATRIX_STACK_DEPTH_ARB: {
+        if (f.matrixMode == GL_TEXTURE && s.activeTexture >= FixedState::kTextureUnits) {
+            ctx.setError(GL_INVALID_OPERATION);
+            return -1;
+        }
+        const std::vector<Mat4>& stack = const_cast<FixedState&>(f).currentStack(s.activeTexture);
+        if (pname == GL_CURRENT_MATRIX_STACK_DEPTH_ARB) return o.ints({static_cast<double>(stack.size())});
+        return o.matrix(stack.back(), pname == GL_TRANSPOSE_CURRENT_MATRIX_ARB);
+    }
+    case GL_PROGRAM_ERROR_POSITION_ARB: return o.ints({static_cast<double>(ctx.arb.errorPosition)});
     // --- lighting
     case GL_SHADE_MODEL: return o.ints({static_cast<double>(f.shadeModel)});
     case GL_COLOR_MATERIAL_FACE: return o.ints({static_cast<double>(f.colorMaterialFace)});
@@ -222,6 +233,8 @@ int getFixedState(Context& ctx, GLenum pname, double* values, char& kind) {
     case GL_MAX_PROJECTION_STACK_DEPTH: return o.ints({FixedState::kProjectionDepth});
     case GL_MAX_TEXTURE_STACK_DEPTH: return o.ints({FixedState::kTextureDepth});
     case GL_MAX_COLOR_MATRIX_STACK_DEPTH: return o.ints({FixedState::kColorDepth});
+    case GL_MAX_PROGRAM_MATRICES_ARB: return o.ints({FixedState::kProgramMatrices});
+    case GL_MAX_PROGRAM_MATRIX_STACK_DEPTH_ARB: return o.ints({FixedState::kProgramMatrixDepth});
     case GL_MAX_LIGHTS: return o.ints({FixedState::kLights});
     case GL_MAX_CLIP_PLANES: return o.ints({FixedState::kClipPlanes});
     case GL_MAX_TEXTURE_UNITS: case GL_MAX_TEXTURE_COORDS: return o.ints({FixedState::kTextureUnits});

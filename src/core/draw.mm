@@ -10,6 +10,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "core/compat/arb_programs.h"
 #include "core/compat/fixed_function.h"
 #include "core/format/vertex_decode.h"
 #include "core/shader/glsl_upgrade.h"
@@ -359,7 +360,12 @@ bool DrawState::validateDraw(GLenum mode) {
     } else if (!program) {
         // Without a program, core profile draws are undefined but not an
         // error; the compatibility profile draws with fixed-function
-        // processing (compat/fixed_function.h).
+        // processing (compat/fixed_function.h), or ARB assembly programs,
+        // whose enabled stages must have loaded programs.
+        if (ctx_.isCompat() && compat::arbProgramsInvalid(ctx_)) {
+            ctx_.setError(GL_INVALID_OPERATION);
+            return false;
+        }
         if (ctx_.isCore() || !executable()) return false;
     } else if (!program->linked) {
         ctx_.setError(GL_INVALID_OPERATION);
@@ -453,8 +459,35 @@ struct ConvertedAttribute {
 
 // The array feeding attribute `location`. In the compatibility profile
 // generic attribute 0 aliases the conventional vertex array (gl_Vertex).
+// ARB vertex programs alias generic attributes with conventional ones as
+// NVIDIA does (normal 2, colours 3 and 4, fog coordinate 5, texture
+// coordinates 8-15); the GL leaves it implementation-dependent, and programs
+// written against NVIDIA drivers (Doom 3's) read vertex.texcoord or
+// vertex.normal from generic arrays. A binding reads its alias's array when
+// only that one is enabled.
+static int arbAttributeAlias(int location) {
+    switch (location) {
+    case 2: return kConvNormal;
+    case 3: return kConvColor;
+    case 4: return kConvSecondaryColor;
+    case 5: return kConvFogCoord;
+    case kConvNormal: return 2;
+    case kConvColor: return 3;
+    case kConvSecondaryColor: return 4;
+    case kConvFogCoord: return 5;
+    default: break;
+    }
+    if (location >= 8 && location < 16) return kConvTexCoord0 + location - 8;
+    if (location >= kConvTexCoord0 && location < kConvTexCoord0 + 8) return 8 + location - kConvTexCoord0;
+    return -1;
+}
+
 const VertexAttrib& DrawState::attribFor(const VertexArray& vao, int location) const {
     if (location == kConvVertex && !vao.attribs[kConvVertex].enabled && vao.attribs[0].enabled) return vao.attribs[0];
+    if (arbAliases_ && !vao.attribs[static_cast<size_t>(location)].enabled) {
+        const int alias = arbAttributeAlias(location);
+        if (alias >= 0 && vao.attribs[static_cast<size_t>(alias)].enabled) return vao.attribs[static_cast<size_t>(alias)];
+    }
     return vao.attribs[static_cast<size_t>(location)];
 }
 
@@ -1020,8 +1053,12 @@ LinkedProgram* DrawState::executable() {
     // Fixed-function processing: the generated program for the state at
     // this draw (chosen once per draw, see beginDraw).
     if (!ffChosen_) {
-        ffProgram_ = compat::fixedFunctionProgram(ctx_, drawMode_);
-        ffPointSize_ = drawMode_ == GL_POINTS && compat::fixedFunctionWritesPointSize(ctx_);
+        // ARB assembly programs (compat/arb_programs.h), with fixed-function
+        // code for a stage without one.
+        const bool arb = compat::arbProgramsEnabled(ctx_);
+        arbAliases_ = arb && compat::arbVertexProgramActive(ctx_);
+        ffProgram_ = arb ? compat::arbDrawProgram(ctx_, drawMode_) : compat::fixedFunctionProgram(ctx_, drawMode_);
+        ffPointSize_ = drawMode_ == GL_POINTS && !arbAliases_ && compat::fixedFunctionWritesPointSize(ctx_);
         ffWideLines_ = compat::fixedFunctionWideLines(ctx_, drawMode_);
         ffChosen_ = true;
     }
@@ -1034,6 +1071,7 @@ void DrawState::beginDraw(GLenum mode) {
     glBaseVertex_ = 0;
     ffChosen_ = false;
     ffProgram_ = nullptr;
+    arbAliases_ = false;
     ffPointSize_ = false;
     ffWideLines_ = false;
 }

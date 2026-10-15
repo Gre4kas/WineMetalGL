@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstring>
 
+#include "core/compat/arb_programs.h"
 #include "core/compat/fixed_state.h"
 #include "core/context.h"
 #include "core/program.h"
@@ -225,6 +226,7 @@ struct UnitKey {
     uint8_t srcRGB[3] = {}, srcAlpha[3] = {}, opRGB[3] = {}, opAlpha[3] = {};
     uint8_t texgen = 0, texgenMode[4] = {};
     uint8_t coordReplace = 0;
+    uint8_t coordOut = 0;  // the vertex stage writes ff_tc for an ARB fragment program without a texture enabled
 };
 
 struct Key {
@@ -244,7 +246,7 @@ struct Key {
             put(v);
         for (const UnitKey& u : units) {
             for (uint8_t v : {u.target, u.format, u.shadow, u.mode, u.combineRGB, u.combineAlpha, u.scaleRGB, u.scaleAlpha,
-                              u.texgen, u.coordReplace})
+                              u.texgen, u.coordReplace, u.coordOut})
                 put(v);
             for (int i = 0; i < 3; ++i) {
                 put(u.srcRGB[i]);
@@ -361,6 +363,12 @@ Texture* unitTexture(Context& ctx, int unit, uint8_t& target) {
     return nullptr;
 }
 
+void unitTexGen(const FixedState& f, int u, UnitKey& uk) {
+    const FixedState::TexGen& g = f.texGen[static_cast<size_t>(u)];
+    uk.texgen = g.enabled;
+    for (int c = 0; c < 4; ++c) uk.texgenMode[c] = (g.enabled & (1u << c)) ? texgenCode(g.mode[c]) : 0;
+}
+
 Key buildKey(Context& ctx, GLenum mode) {
     const ContextState& st = ctx.state;
     const ContextState& s = st;
@@ -423,9 +431,7 @@ Key buildKey(Context& ctx, GLenum mode) {
                 uk.opAlpha[i] = operandCode(e.operandAlpha[i]);
             }
         }
-        const FixedState::TexGen& g = f.texGen[static_cast<size_t>(u)];
-        uk.texgen = g.enabled;
-        for (int c = 0; c < 4; ++c) uk.texgenMode[c] = (g.enabled & (1u << c)) ? texgenCode(g.mode[c]) : 0;
+        unitTexGen(f, u, uk);
         uk.coordReplace = mode == GL_POINTS && f.pointSprite && e.coordReplace;
     }
     return k;
@@ -515,7 +521,7 @@ std::string vertexSource(const Key& k) {
     s += interp + " vec4 ff_front;\n" + interp + " vec4 ff_frontSecondary;\n";
     if (k.twoSide && k.lighting) s += interp + " vec4 ff_back;\n" + interp + " vec4 ff_backSecondary;\n";
     for (int u = 0; u < FixedState::kTextureUnits; ++u)
-        if (k.units[u].target && !k.units[u].coordReplace) s += "out vec4 ff_tc" + str(u) + ";\n";
+        if ((k.units[u].target || k.units[u].coordOut) && !k.units[u].coordReplace) s += "out vec4 ff_tc" + str(u) + ";\n";
     if (k.fog) s += "out float ff_fogCoord;\n";
     s += "float ff_pow(float x, float y) { return y == 0.0 ? 1.0 : pow(x, y); }\n";
     if (k.wideLines) s += "in vec4 wmgl_LinePartner;\nin float wmgl_LineSide;\n";
@@ -557,7 +563,7 @@ std::string vertexSource(const Key& k) {
     static const char* const kComp = "xyzw";
     for (int u = 0; u < FixedState::kTextureUnits; ++u) {
         const UnitKey& uk = k.units[u];
-        if (!uk.target || uk.coordReplace) continue;
+        if ((!uk.target && !uk.coordOut) || uk.coordReplace) continue;
         s += "    {\n        vec4 tc = gl_MultiTexCoord" + str(u) + ";\n";
         for (int c = 0; c < 4; ++c) {
             const std::string dst = std::string("        tc.") + kComp[c] + " = ";
@@ -737,8 +743,9 @@ const std::vector<uint8_t>& fixedFunctionBlock(Context& ctx, uint64_t& generatio
 }
 
 RefPtr<Program> linkInternalProgram(const std::string& vertex, const std::string& fragment, const char* samplerPrefix,
-                                    std::string& log) {
+                                    std::string& log, const std::map<std::string, GLuint>& attribBindings) {
     shader::LinkInput input;
+    input.attribBindings = attribBindings;
     input.shaders.push_back({shader::Stage::Vertex, vertex});
     input.shaders.push_back({shader::Stage::Fragment, fragment});
     shader::LinkResult result = shader::link(input);
@@ -769,9 +776,56 @@ void fixedFunctionSources(Context& ctx, GLenum mode, std::string& vertex, std::s
     fragment = fragmentSource(key);
 }
 
+void fixedFunctionStage(Context& ctx, GLenum mode, bool vertex, const FixedStageNeeds& needs, std::string& key,
+                        std::string* source) {
+    const FixedState& f = ctx.state.fixed;
+    const Key full = buildKey(ctx, mode);
+    Key k;  // only the fields of the stage, so the other stage's state does not multiply the variants
+    if (vertex) {
+        k = full;
+        k.stipple = 0;
+        k.fogMode = 0;
+        for (int u = 0; u < FixedState::kTextureUnits; ++u) {
+            UnitKey& uk = k.units[u];
+            const UnitKey from = uk;
+            uk = UnitKey();
+            uk.target = from.target ? 1 : 0;  // the vertex stage only tests for a target
+            uk.coordReplace = from.coordReplace;
+            if (from.target || (needs.texCoords >> u & 1u)) unitTexGen(f, u, uk);
+            uk.coordOut = needs.texCoords >> u & 1u;
+        }
+        if (needs.fogCoord && !k.fog) {
+            k.fog = 1;
+            k.fogFromCoord = f.fogCoordSource == GL_FOG_COORD;
+        }
+        key = "v" + k.bytes();
+        if (source) *source = vertexSource(k);
+    } else {
+        k.flat = full.flat;
+        k.fog = full.fog;
+        k.fogMode = full.fogMode;
+        k.stipple = full.stipple;
+        k.colorSum = f.colorSum;  // a vertex program's colour sum follows COLOR_SUM alone
+        k.twoSide = k.lighting = needs.twoSide;  // fragmentSource selects back colours for twoSide && lighting
+        for (int u = 0; u < FixedState::kTextureUnits; ++u) {
+            k.units[u] = full.units[u];
+            k.units[u].texgen = 0;
+            std::fill(std::begin(k.units[u].texgenMode), std::end(k.units[u].texgenMode), 0);
+        }
+        key = "f" + k.bytes();
+        if (source) *source = fragmentSource(k);
+    }
+}
+
+bool fixedFunctionTwoSided(Context& ctx, GLenum mode) {
+    const Key k = buildKey(ctx, mode);
+    return k.twoSide && k.lighting;
+}
+
 bool fixedFunctionWideLines(Context& ctx, GLenum mode) {
     const ContextState& s = ctx.state;
     if (!ctx.isCompat() || s.program || s.programPipeline || std::clamp(s.lineWidth, 1.0f, kMaxLineWidth) <= 1.0f) return false;
+    if (arbVertexProgramActive(ctx)) return false;  // a vertex program draws lines one pixel wide
     if (mode != GL_LINES && mode != GL_LINE_STRIP && mode != GL_LINE_LOOP) return false;
     return !(s.transformFeedback && s.transformFeedback->active);  // capture records the line, not its quads
 }
