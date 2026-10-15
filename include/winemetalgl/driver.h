@@ -83,6 +83,10 @@ void *wmgl_get_proc_address(const char *name);
 const char *wmgl_renderer_string(void);
 unsigned int wmgl_video_memory_mb(void);
 void wmgl_max_versions(int *core_major, int *core_minor, int *compat_major, int *compat_minor);
+/* The highest OpenGL ES version of contexts created with
+ * WGL_CONTEXT_ES_PROFILE_BIT_EXT. Optional: cores before OpenGL ES do not
+ * export it. */
+void wmgl_max_es_version(int *major, int *minor);
 /* WineMetalGL's own version (WGL_RENDERER_VERSION_WINE). Optional: cores
  * before 2.0.0 do not export it. */
 void wmgl_version(int *major, int *minor, int *patch);

@@ -106,6 +106,8 @@ struct ContextState {
     static constexpr int kMaxViewports = 16;
     GLfloat viewports[kMaxViewports][4] = {};
     GLdouble depthRanges[kMaxViewports][2] = {};
+    // OpenGL ES 3.2 / EXT_primitive_bounding_box: a hint, kept for queries.
+    GLfloat primitiveBoundingBox[8] = {-1, -1, -1, 1, 1, 1, 1, 1};
     uint32_t scissorTests = 0;  // bit per viewport index
     GLint scissors[kMaxViewports][4] = {};
     bool cullFace = false;

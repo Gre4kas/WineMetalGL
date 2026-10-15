@@ -12,11 +12,30 @@
 #include "core/metal/device.h"
 #include "core/program.h"
 #include "core/shader/spirv_input.h"
+#include "core/api/read_format.h"
 #include "gl_api.gen.h"
 
 namespace wmgl::api {
 
 namespace limits = wmgl::limits;
+
+bool implementationReadFormat(Context& ctx, GLenum& format, GLenum& type) {
+    if (CheckFramebufferStatus(ctx, GL_READ_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) return false;
+    uint32_t level, slice;
+    GLenum internalFormat = 0;
+    int w, h;
+    if (!ctx.draw().readColorTexture(level, slice, internalFormat, w, h)) return false;
+    const FormatInfo* info = formatInfo(internalFormat);
+    if (!info) return false;
+    format = info->isInteger() ? GL_RGBA_INTEGER : GL_RGBA;
+    type = info->isSignedInteger() ? GL_INT : info->isInteger() ? GL_UNSIGNED_INT
+           : info->isFloat() ? GL_FLOAT : GL_UNSIGNED_BYTE;
+    if (info->defaultTransferFormat && info->defaultTransferType && !info->isInteger() && !info->isFloat()) {
+        format = info->defaultTransferFormat;
+        type = info->defaultTransferType;
+    }
+    return true;
+}
 
 namespace {
 
@@ -61,24 +80,6 @@ Value bools(std::initializer_list<bool> list) {
 GLuint nameOf(const RefPtr<Buffer>& b) { return b ? b->name : 0; }
 
 // The preferred (format, type) for reading the current read buffer.
-bool implementationReadFormat(Context& ctx, GLenum& format, GLenum& type) {
-    if (CheckFramebufferStatus(ctx, GL_READ_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) return false;
-    uint32_t level, slice;
-    GLenum internalFormat = 0;
-    int w, h;
-    if (!ctx.draw().readColorTexture(level, slice, internalFormat, w, h)) return false;
-    const FormatInfo* info = formatInfo(internalFormat);
-    if (!info) return false;
-    format = info->isInteger() ? GL_RGBA_INTEGER : GL_RGBA;
-    type = info->isSignedInteger() ? GL_INT : info->isInteger() ? GL_UNSIGNED_INT
-           : info->isFloat() ? GL_FLOAT : GL_UNSIGNED_BYTE;
-    if (info->defaultTransferFormat && info->defaultTransferType && !info->isInteger() && !info->isFloat()) {
-        format = info->defaultTransferFormat;
-        type = info->defaultTransferType;
-    }
-    return true;
-}
-
 GLint samples(Context& ctx) {
     Framebuffer* fb = ctx.state.drawFramebuffer.get();
     if (!fb) {
@@ -118,14 +119,39 @@ int textureBindingTarget(GLenum pname) {
     }
 }
 
+// Desktop state OpenGL ES does not have (queries of it are INVALID_ENUM).
+bool desktopOnlyState(GLenum pname) {
+    switch (pname) {
+    case GL_LINE_SMOOTH_HINT: case GL_POLYGON_SMOOTH_HINT: case GL_TEXTURE_COMPRESSION_HINT: case GL_DOUBLEBUFFER:
+    case GL_STEREO: case GL_DRAW_BUFFER: case GL_POINT_SIZE: case GL_POINT_SIZE_RANGE: case GL_POINT_SIZE_GRANULARITY:
+    case GL_SMOOTH_LINE_WIDTH_RANGE: case GL_SMOOTH_LINE_WIDTH_GRANULARITY: case GL_POLYGON_MODE:
+    case GL_PRIMITIVE_RESTART: case GL_PRIMITIVE_RESTART_INDEX: case GL_PROGRAM_POINT_SIZE: case GL_COLOR_LOGIC_OP:
+    case GL_LOGIC_OP_MODE: case GL_LINE_SMOOTH: case GL_POLYGON_SMOOTH: case GL_POLYGON_OFFSET_LINE:
+    case GL_POLYGON_OFFSET_POINT: case GL_MULTISAMPLE: case GL_SAMPLE_ALPHA_TO_ONE: case GL_PACK_SWAP_BYTES:
+    case GL_PACK_LSB_FIRST: case GL_UNPACK_SWAP_BYTES: case GL_UNPACK_LSB_FIRST: case GL_PACK_IMAGE_HEIGHT:
+    case GL_PACK_SKIP_IMAGES: case GL_TEXTURE_BINDING_1D: case GL_TEXTURE_BINDING_1D_ARRAY:
+    case GL_TEXTURE_BINDING_RECTANGLE: case GL_MAX_RECTANGLE_TEXTURE_SIZE: case GL_CLAMP_READ_COLOR:
+    case GL_TEXTURE_CUBE_MAP_SEAMLESS: case GL_FRAMEBUFFER_SRGB: case GL_MAX_DUAL_SOURCE_DRAW_BUFFERS:
+    case GL_NUM_SHADING_LANGUAGE_VERSIONS: case GL_MIN_MAP_BUFFER_ALIGNMENT: case GL_MAX_VERTEX_STREAMS:
+    case GL_MAX_SUBROUTINES: case GL_MAX_SUBROUTINE_UNIFORM_LOCATIONS: case GL_PROVOKING_VERTEX:
+    case GL_CONTEXT_PROFILE_MASK:
+        return true;
+    default: return false;
+    }
+}
+
 bool getState(Context& ctx, GLenum pname, Value& out) {
     const ContextState& s = ctx.state;
     const DeviceCaps& caps = Device::get().caps();
     using namespace limits;
+    if (ctx.isEs()) {
+        if (desktopOnlyState(pname)) return false;
+        if (pname == GL_GENERATE_MIPMAP_HINT) return out = ints({s.hintGenerateMipmap}), true;
+    }
     switch (pname) {
     // --- version and context
-    case GL_MAJOR_VERSION: out = ints({ctx.versionMajor()}); return true;
-    case GL_MINOR_VERSION: out = ints({ctx.versionMinor()}); return true;
+    case GL_MAJOR_VERSION: out = ints({ctx.isEs() ? ctx.config().esMajor : ctx.versionMajor()}); return true;
+    case GL_MINOR_VERSION: out = ints({ctx.isEs() ? ctx.config().esMinor : ctx.versionMinor()}); return true;
     case GL_CONTEXT_FLAGS:
         out = ints({(ctx.config().forwardCompatible ? GL_CONTEXT_FLAG_FORWARD_COMPATIBLE_BIT : 0) |
                     (ctx.config().debug ? GL_CONTEXT_FLAG_DEBUG_BIT : 0) |
@@ -133,7 +159,7 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
                     (ctx.config().noError ? GL_CONTEXT_FLAG_NO_ERROR_BIT : 0)});
         return true;
     case GL_CONTEXT_PROFILE_MASK:
-        if (ctx.version() < 32) return false;
+        if (ctx.version() < 32 || ctx.isEs()) return false;
         out = ints({ctx.isCore() ? GL_CONTEXT_CORE_PROFILE_BIT : GL_CONTEXT_COMPATIBILITY_PROFILE_BIT});
         return true;
     case GL_NUM_EXTENSIONS: out = ints({static_cast<int64_t>(ctx.extensions().size())}); return true;
@@ -459,6 +485,11 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
     case GL_MAX_TEXTURE_MAX_ANISOTROPY: out = floats({16.0}); return true;
     // --- rasterization and fragment state
     case GL_VIEWPORT: out = floats({s.viewports[0][0], s.viewports[0][1], s.viewports[0][2], s.viewports[0][3]}); return true;
+    case GL_PRIMITIVE_BOUNDING_BOX:
+        if (!ctx.isEs() || ctx.esVersion() < 31) return false;
+        out = floats({s.primitiveBoundingBox[0], s.primitiveBoundingBox[1], s.primitiveBoundingBox[2], s.primitiveBoundingBox[3],
+                      s.primitiveBoundingBox[4], s.primitiveBoundingBox[5], s.primitiveBoundingBox[6], s.primitiveBoundingBox[7]});
+        return true;
     // GL 4.1 viewport arrays.
     case GL_MAX_VIEWPORTS: case GL_VIEWPORT_SUBPIXEL_BITS: case GL_VIEWPORT_BOUNDS_RANGE: case GL_LAYER_PROVOKING_VERTEX:
     case GL_VIEWPORT_INDEX_PROVOKING_VERTEX:

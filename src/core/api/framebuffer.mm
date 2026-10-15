@@ -11,12 +11,14 @@
 #include "core/context.h"
 #include "core/stats.h"
 #include "core/draw.h"
+#include "core/format/es_formats.h"
 #include "core/format/pixel_transfer.h"
 #include "core/limits.h"
 #include "core/metal/device.h"
 #include "core/metal/pixel_format.h"
 #include "core/texture_storage.h"
 #include "core/util/log.h"
+#include "core/api/read_format.h"
 #include "gl_api.gen.h"
 
 namespace wmgl::api {
@@ -73,6 +75,9 @@ GLenum completeness(Context& ctx, Framebuffer* fb) {
         const FormatInfo* f = attachmentFormat(a, w, h, s, fixedLocations);
         if (!f || w <= 0 || h <= 0) return GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT;
         if (kind == 0 && !f->colorRenderable) return GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT;
+        // OpenGL ES's color-renderable formats are fewer (no RGB32F, RGB9_E5,
+        // luminance or RGB8_SNORM).
+        if (kind == 0 && ctx.isEs() && !es::colorRenderable(f->internalFormat)) return GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT;
         if (kind == 1 && !f->depthRenderable) return GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT;
         if (kind == 2 && !f->stencilRenderable) return GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT;
         if (a.type == GL_TEXTURE && a.texture) {
@@ -283,7 +288,7 @@ void bindRenderbuffer(Context& ctx, GLenum target, GLuint name, bool createUnuse
 
 }  // namespace
 
-void BindFramebuffer(Context& ctx, GLenum target, GLuint name) { bindFramebuffer(ctx, target, name, !ctx.isCore()); }
+void BindFramebuffer(Context& ctx, GLenum target, GLuint name) { bindFramebuffer(ctx, target, name, !ctx.isDesktopCore()); }
 
 void BindFramebufferEXT(Context& ctx, GLenum target, GLuint name) { bindFramebuffer(ctx, target, name, true); }
 
@@ -564,7 +569,7 @@ GLboolean IsRenderbuffer(Context& ctx, GLuint renderbuffer) {
     return ctx.share().renderbuffers.exists(renderbuffer) ? GL_TRUE : GL_FALSE;
 }
 
-void BindRenderbuffer(Context& ctx, GLenum target, GLuint name) { bindRenderbuffer(ctx, target, name, !ctx.isCore()); }
+void BindRenderbuffer(Context& ctx, GLenum target, GLuint name) { bindRenderbuffer(ctx, target, name, !ctx.isDesktopCore()); }
 
 void BindRenderbufferEXT(Context& ctx, GLenum target, GLuint name) { bindRenderbuffer(ctx, target, name, true); }
 
@@ -576,10 +581,12 @@ void RenderbufferStorageMultisample(Context& ctx, GLenum target, GLsizei samples
     const GLenum resolved = resolveInternalFormat(internalformat, 0, 0);
     const FormatInfo* f = formatInfo(resolved);
     if (!f || f->compressed || (!f->colorRenderable && !f->isDepthOrStencil())) return ctx.setError(GL_INVALID_ENUM);
+    if (ctx.isEs() && !es::renderbufferFormat(internalformat)) return ctx.setError(GL_INVALID_ENUM);
     if (width < 0 || height < 0 || samples < 0) return ctx.setError(GL_INVALID_VALUE);
     if (width > 16384 || height > 16384) return ctx.setError(GL_INVALID_VALUE);
     const auto& caps = Device::get().caps();
-    if (samples > static_cast<GLsizei>(caps.maxSamples)) return ctx.setError(GL_INVALID_VALUE);  // GL 3.3 section 4.4.2.1
+    // OpenGL ES 3.2 section 9.2.4: more samples than the format supports is INVALID_OPERATION.
+    if (samples > static_cast<GLsizei>(caps.maxSamples)) return ctx.setError(ctx.isEs() ? GL_INVALID_OPERATION : GL_INVALID_VALUE);
     if (f->isInteger() && samples > 0) {
         // GL 3.3: MAX_INTEGER_SAMPLES; Metal supports multisampled integer targets.
     }
@@ -730,8 +737,35 @@ void ReadBuffer(Context& ctx, GLenum src) {
 
 // ------------------------------------------------------------ ReadPixels
 
+namespace {
+
+// OpenGL ES 3.2 section 16.1.2: RGBA with the read buffer's component type
+// (table 16.1 and the extensions' formats), or the implementation's read
+// format and type. Returns false with the GL error set.
+bool esReadFormat(Context& ctx, GLenum format, GLenum& type) {
+    if (format == GL_DEPTH_COMPONENT || format == GL_STENCIL_INDEX || format == GL_DEPTH_STENCIL ||
+        (!es::isFormat(format) && format != GL_BGRA) || !es::isType(type))
+        return ctx.setError(GL_INVALID_ENUM), false;
+    if (type == es::kHalfFloatOes) type = GL_HALF_FLOAT;
+    if (completeness(ctx, ctx.state.readFramebuffer.get()) != GL_FRAMEBUFFER_COMPLETE)
+        return ctx.setError(GL_INVALID_FRAMEBUFFER_OPERATION), false;
+    GLenum implFormat = 0, implType = 0;
+    if (implementationReadFormat(ctx, implFormat, implType) && format == implFormat && type == implType) return true;
+    uint32_t level, slice;
+    GLenum internalFormat = 0;
+    int w, h;
+    if (!ctx.draw().readColorTexture(level, slice, internalFormat, w, h)) return true;  // no read buffer: below
+    if (es::readPixelsCompatible(internalFormat, format, type)) return true;
+    // EXT_read_format_bgra
+    if (format == GL_BGRA && type == GL_UNSIGNED_BYTE && !formatInfo(internalFormat)->isInteger()) return true;
+    return ctx.setError(GL_INVALID_OPERATION), false;
+}
+
+}  // namespace
+
 void ReadPixels(Context& ctx, GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, void* pixels) {
     if (width < 0 || height < 0) return ctx.setError(GL_INVALID_VALUE);
+    if (ctx.isEs() && !esReadFormat(ctx, format, type)) return;
     // GL 3.3 section 4.3.2: DEPTH_STENCIL takes only the packed depth/stencil types.
     if (format == GL_DEPTH_STENCIL && type != GL_UNSIGNED_INT_24_8 && type != GL_FLOAT_32_UNSIGNED_INT_24_8_REV)
         return ctx.setError(GL_INVALID_ENUM);

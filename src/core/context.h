@@ -30,6 +30,10 @@ struct ContextConfig {
     bool robustAccess = false;
     bool noError = false;
     GLenum resetNotification = GL_NO_RESET_NOTIFICATION;
+    // An OpenGL ES context (WGL_CONTEXT_ES_PROFILE_BIT_EXT): ES esMajor.esMinor
+    // on the desktop major.minor core profile underneath.
+    bool es = false;
+    int esMajor = 0, esMinor = 0;
 };
 
 class DrawState;
@@ -48,6 +52,11 @@ public:
     int versionMajor() const { return config_.major; }
     int versionMinor() const { return config_.minor; }
     int version() const { return config_.major * 10 + config_.minor; }
+    bool isEs() const { return config_.es; }
+    int esVersion() const { return config_.esMajor * 10 + config_.esMinor; }  // 0 outside ES
+    // The core profile's rules without ES's exceptions: drawing needs a
+    // vertex array object, and vertex attributes need buffers.
+    bool isDesktopCore() const { return config_.coreProfile && !config_.es; }
 
     // --- errors and diagnostics
     void setError(GLenum error);
@@ -96,7 +105,11 @@ public:
     const std::string& glslVersionString() const { return glslVersionString_; }
     const std::vector<std::string>& extensions() const { return extensions_; }
     const std::string& extensionString() const { return extensionString_; }
+    // A desktop extension whose features this context has (ES contexts
+    // have the desktop 4.6 core's, under ES names).
     bool hasExtension(const char* name) const;
+    // An extension glGetString(i) lists.
+    bool advertises(const char* name) const;
     // Compute shaders: GL 4.3 or GL_ARB_compute_shader.
     bool computeShaders() const { return version() >= 43 || hasExtension("GL_ARB_compute_shader"); }
     // Tessellation shaders: GL 4.0 or GL_ARB_tessellation_shader.
@@ -197,6 +210,7 @@ public:
 
 private:
     void initStrings();
+    void initEsStrings();  // es_context.mm
 
     ContextConfig config_;
     RefPtr<ShareGroup> share_;
@@ -205,7 +219,7 @@ private:
     std::unique_ptr<DrawState> draw_;
     GLenum error_ = GL_NO_ERROR;
     std::string versionString_, glslVersionString_, extensionString_;
-    std::vector<std::string> extensions_;
+    std::vector<std::string> extensions_, featureExtensions_;
 };
 
 Context* currentContext();

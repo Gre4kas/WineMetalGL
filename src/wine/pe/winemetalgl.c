@@ -119,7 +119,7 @@ NTSTATUS wmgl_unix_call( unsigned int code, void *args )
     /* Batched calls run first, in order. */
     flush_batch( TlsGetValue( tls_index ), TRUE );
     if (code == unix_glDebugMessageCallback || code == unix_glDebugMessageCallbackARB ||
-        code == unix_glDebugMessageCallbackAMD)
+        code == unix_glDebugMessageCallbackKHR || code == unix_glDebugMessageCallbackAMD)
         batching = FALSE;
     status = unix_call_dispatcher( unixlib, code, args );
     if (status == WMGL_STATUS_DEBUG_MESSAGES)

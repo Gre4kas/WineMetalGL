@@ -97,8 +97,11 @@ void setPointer(Context& ctx, GLuint index, GLint size, GLenum type, bool normal
     if (stride < 0) return ctx.setError(GL_INVALID_VALUE);
     if (!validFormat(ctx, size, type, normalized, integer, isDouble)) return;
     // Core profile: arrays must come from a buffer object (except offset 0 with no VAO is still an error).
-    if (ctx.isCore() && !ctx.state.arrayBuffer && pointer) return ctx.setError(GL_INVALID_OPERATION);
-    if (ctx.isCore() && currentVao(ctx) == ctx.defaultVertexArray.get()) return ctx.setError(GL_INVALID_OPERATION);
+    // OpenGL ES: client memory arrays in vertex array 0 only.
+    const bool defaultVao = currentVao(ctx) == ctx.defaultVertexArray.get();
+    if (ctx.isCore() && !ctx.state.arrayBuffer && pointer && !(ctx.isEs() && defaultVao))
+        return ctx.setError(GL_INVALID_OPERATION);
+    if (ctx.isDesktopCore() && defaultVao) return ctx.setError(GL_INVALID_OPERATION);
     // GL 4.3: the format, binding `index`, and that binding's buffer,
     // offset (the pointer) and stride (tightly packed for 0).
     VertexArray& vao = *currentVao(ctx);
@@ -176,7 +179,7 @@ void VertexAttribLPointer(Context& ctx, GLuint index, GLint size, GLenum type, G
 // Enabling an array is not checked: the CTS (get_uniform) enables one in a
 // core context without a VAO and expects no error, as drivers behave.
 static bool vaoStateWritable(Context& ctx) {
-    return !(ctx.isCore() && ctx.version() >= 45 && currentVao(ctx) == ctx.defaultVertexArray.get());
+    return !(ctx.isDesktopCore() && ctx.version() >= 45 && currentVao(ctx) == ctx.defaultVertexArray.get());
 }
 
 void EnableVertexAttribArray(Context& ctx, GLuint index) {
@@ -217,9 +220,10 @@ bool attribBindings(Context& ctx, const char* command) {
     return false;
 }
 
-// These commands change VAO state: an error on the default VAO of a core context.
+// These commands change VAO state: an error on the default VAO of a core
+// context (OpenGL ES's vertex array 0 is an object like the others).
 bool bindingStateWritable(Context& ctx) {
-    if (ctx.isCore() && currentVao(ctx) == ctx.defaultVertexArray.get()) {
+    if (ctx.isDesktopCore() && currentVao(ctx) == ctx.defaultVertexArray.get()) {
         ctx.setError(GL_INVALID_OPERATION);
         return false;
     }

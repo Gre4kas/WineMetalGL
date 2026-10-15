@@ -371,7 +371,8 @@ bool DrawState::validateDraw(GLenum mode) {
         ctx_.setError(GL_INVALID_OPERATION);
         return false;
     }
-    if (ctx_.isCore() && ctx_.state.vertexArray == ctx_.defaultVertexArray) {
+    // OpenGL ES draws from vertex array 0 (its indirect draws do not: api/draw.mm).
+    if (ctx_.isDesktopCore() && ctx_.state.vertexArray == ctx_.defaultVertexArray) {
         ctx_.setError(GL_INVALID_OPERATION);
         return false;
     }

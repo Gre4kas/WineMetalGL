@@ -346,6 +346,22 @@ NTSTATUS wow64_manual_glGetObjectPtrLabel( void *args )
     return wmgl_after_call();
 }
 
+NTSTATUS wow64_manual_glObjectPtrLabelKHR( void *args )
+{
+    struct glObjectPtrLabelKHR_params32 *params = args;
+    core.p_glObjectPtrLabelKHR( (const void *)sync_from_handle( params->ptr, FALSE ), params->length,
+                                (const GLchar *)ULongToPtr( params->label ) );
+    return wmgl_after_call();
+}
+
+NTSTATUS wow64_manual_glGetObjectPtrLabelKHR( void *args )
+{
+    struct glGetObjectPtrLabelKHR_params32 *params = args;
+    core.p_glGetObjectPtrLabelKHR( (const void *)sync_from_handle( params->ptr, FALSE ), params->bufSize,
+                                   (GLsizei *)ULongToPtr( params->length ), (GLchar *)ULongToPtr( params->label ) );
+    return wmgl_after_call();
+}
+
 /* ------------------------------------------------------- pointer arrays */
 
 /* `count` 32-bit pointers at `address`, widened (NULL for a NULL array). */
@@ -466,6 +482,15 @@ NTSTATUS wow64_manual_glCreateShaderProgramv( void *args )
     return wmgl_after_call();
 }
 
+NTSTATUS wow64_manual_glCreateShaderProgramvEXT( void *args )
+{
+    struct glCreateShaderProgramvEXT_params32 *params = args;
+    void **strings = widen_pointers( params->strings, params->count );
+    params->ret = core.p_glCreateShaderProgramvEXT( params->type, params->count, (const GLchar **)strings );
+    free( strings );
+    return wmgl_after_call();
+}
+
 NTSTATUS wow64_manual_glMultiDrawElements( void *args )
 {
     struct glMultiDrawElements_params32 *params = args;
@@ -493,6 +518,17 @@ NTSTATUS wow64_manual_glMultiDrawElementsBaseVertex( void *args )
     core.p_glMultiDrawElementsBaseVertex( params->mode, (const GLsizei *)ULongToPtr( params->count ), params->type,
                                           (const void *const *)indices, params->drawcount,
                                           (const GLint *)ULongToPtr( params->basevertex ) );
+    free( indices );
+    return wmgl_after_call();
+}
+
+NTSTATUS wow64_manual_glMultiDrawElementsBaseVertexEXT( void *args )
+{
+    struct glMultiDrawElementsBaseVertexEXT_params32 *params = args;
+    void **indices = widen_pointers( params->indices, params->drawcount );
+    core.p_glMultiDrawElementsBaseVertexEXT( params->mode, (const GLsizei *)ULongToPtr( params->count ), params->type,
+                                             (const void *const *)indices, params->drawcount,
+                                             (const GLint *)ULongToPtr( params->basevertex ) );
     free( indices );
     return wmgl_after_call();
 }
@@ -536,6 +572,15 @@ NTSTATUS wow64_manual_glGetBufferPointervARB( void *args )
     struct glGetBufferPointervARB_params32 *params = args;
     void *pointer = NULL;
     core.p_glGetBufferPointervARB( params->target, params->pname, &pointer );
+    narrow_pointer( params->params, pointer );
+    return wmgl_after_call();
+}
+
+NTSTATUS wow64_manual_glGetBufferPointervOES( void *args )
+{
+    struct glGetBufferPointervOES_params32 *params = args;
+    void *pointer = NULL;
+    core.p_glGetBufferPointervOES( params->target, params->pname, &pointer );
     narrow_pointer( params->params, pointer );
     return wmgl_after_call();
 }

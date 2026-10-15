@@ -86,24 +86,44 @@ def load(registry, extension_names):
                 if entry is not None and entry["version"] is None:
                     entry["version"] = number
 
+    # OpenGL ES commands desktop GL has no counterpart for (ES 3.2's
+    # glPrimitiveBoundingBox and glBlendBarrier).
+    for feature in root.findall("feature"):
+        if feature.get("api") != "gles2":
+            continue
+        number = tuple(int(x) for x in feature.get("number").split("."))
+        for require in feature.findall("require"):
+            for cmd in require.findall("command"):
+                if cmd.get("name") not in selected:
+                    selected[cmd.get("name")] = "GL ES %d.%d" % number
+
     wanted = set(extension_names)
     found = set()
+    es_commands = set()  # from OpenGL ES requirements only
     for ext in root.find("extensions").findall("extension"):
         name = ext.get("name")
         supported = ext.get("supported", "").split("|")
-        if "gl" not in supported and "glcore" not in supported:
+        desktop = "gl" in supported or "glcore" in supported
+        # OpenGL ES extensions listed in extensions.txt (their commands
+        # mostly alias desktop ones: glCopyImageSubDataEXT).
+        if not desktop and not (name in wanted and "gles2" in supported):
             continue
+        apis = (None, "gl", "gles2") if name in wanted else (None, "gl")
         for require in ext.findall("require"):
-            if require.get("api") not in (None, "gl"):
+            if require.get("api") not in apis:
                 continue
             for cmd in require.findall("command"):
                 cname = cmd.get("name")
                 if name in wanted:
+                    if not desktop or require.get("api") == "gles2":
+                        es_commands.add(cname)
                     selected.setdefault(cname, name)
                     found.add(name)
                 elif commands.get(cname, {}).get("alias") in selected:
                     # alias of a selected command (e.g. glBindBufferARB)
                     selected.setdefault(cname, name)
+        if name in wanted and name not in found and not any(r.findall("command") for r in ext.findall("require")):
+            found.add(name)  # no commands (enums only)
     missing = wanted - found
     # Every other desktop GL command still gets an entry point, so Wine never
     # receives a NULL from get_proc_address: unimplemented commands report
@@ -120,7 +140,40 @@ def load(registry, extension_names):
                 gl_commands.add((cmd.get("name"), ext.get("name")))
     for cname, ext_name in sorted(gl_commands):
         selected.setdefault(cname, ext_name)
+    # OpenGL ES extension commands the registry gives no alias: the desktop
+    # command of the same name without the suffix when the two take the same
+    # arguments (glGenQueriesEXT), or ES_ALIASES.
+    for cname in selected:
+        entry = commands.get(cname)
+        if entry is None or entry["alias"] or (cname not in es_commands and cname not in ES_ALIASES):
+            continue
+        if cname in ES_OWN:
+            continue
+        if cname in ES_ALIASES:
+            entry["alias"] = ES_ALIASES[cname]
+            continue
+        base = re.sub(r"(EXT|OES|KHR)$", "", cname)
+        if base != cname and base in selected and base in commands and \
+                [t for t, _ in commands[base]["params"]] == [t for t, _ in entry["params"]] and \
+                commands[base]["ret"] == entry["ret"]:
+            entry["alias"] = base
     return commands, selected, missing
+
+
+# OpenGL ES commands that take the same arguments as a desktop command,
+# by another type of the same size (GLenum internalformat for GLint).
+ES_ALIASES = {
+    "glTexImage3DOES": "glTexImage3D",
+    "glTexSubImage3DOES": "glTexSubImage3D",
+    "glCopyTexSubImage3DOES": "glCopyTexSubImage3D",
+    "glCompressedTexImage3DOES": "glCompressedTexImage3D",
+    "glCompressedTexSubImage3DOES": "glCompressedTexSubImage3D",
+    "glFramebufferTexture3DOES": "glFramebufferTexture3D",
+}
+
+# OpenGL ES commands with their own implementation although a desktop
+# command of their name without the suffix exists (other enums).
+ES_OWN = {"glGetObjectLabelEXT"}
 
 
 def enums(registry):

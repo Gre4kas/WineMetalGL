@@ -250,6 +250,13 @@ NTSTATUS manual_glDebugMessageCallbackARB( void *args )
     return wmgl_after_call();
 }
 
+NTSTATUS manual_glDebugMessageCallbackKHR( void *args )
+{
+    struct glDebugMessageCallbackKHR_params *params = args;
+    set_callback( (UINT64)(ULONG_PTR)params->callback, (UINT64)(ULONG_PTR)params->userParam, FALSE );
+    return wmgl_after_call();
+}
+
 NTSTATUS manual_glDebugMessageCallbackAMD( void *args )
 {
     struct glDebugMessageCallbackAMD_params *params = args;
@@ -289,6 +296,12 @@ NTSTATUS manual_glGetPointervEXT( void *args )
     return get_pointer( params->pname, params->params, core.p_glGetPointervEXT );
 }
 
+NTSTATUS manual_glGetPointervKHR( void *args )
+{
+    struct glGetPointervKHR_params *params = args;
+    return get_pointer( params->pname, params->params, core.p_glGetPointervKHR );
+}
+
 #ifdef _WIN64
 
 NTSTATUS wow64_manual_glDebugMessageCallback( void *args )
@@ -301,6 +314,13 @@ NTSTATUS wow64_manual_glDebugMessageCallback( void *args )
 NTSTATUS wow64_manual_glDebugMessageCallbackARB( void *args )
 {
     struct glDebugMessageCallbackARB_params32 *params = args;
+    set_callback( params->callback, params->userParam, FALSE );
+    return wmgl_after_call();
+}
+
+NTSTATUS wow64_manual_glDebugMessageCallbackKHR( void *args )
+{
+    struct glDebugMessageCallbackKHR_params32 *params = args;
     set_callback( params->callback, params->userParam, FALSE );
     return wmgl_after_call();
 }
@@ -337,6 +357,12 @@ NTSTATUS wow64_manual_glGetPointervEXT( void *args )
 {
     struct glGetPointervEXT_params32 *params = args;
     return wow64_get_pointer( params->pname, params->params, core.p_glGetPointervEXT );
+}
+
+NTSTATUS wow64_manual_glGetPointervKHR( void *args )
+{
+    struct glGetPointervKHR_params32 *params = args;
+    return wow64_get_pointer( params->pname, params->params, core.p_glGetPointervKHR );
 }
 
 #endif

@@ -121,7 +121,7 @@ RefPtr<Buffer> bufferForBind(Context& ctx, GLuint name, bool& ok) {
     RefPtr<Buffer> buffer = ctx.share().buffers.getRef(name);
     if (buffer) return buffer;
     if (!ctx.share().buffers.isGenerated(name)) {
-        if (ctx.isCore()) {
+        if (ctx.isDesktopCore()) {  // OpenGL ES creates the object, as the compatibility profile
             ctx.setError(GL_INVALID_OPERATION);
             ok = false;
             return nullptr;
