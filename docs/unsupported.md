@@ -75,6 +75,14 @@ the state itself reaches them, and GLSL 1.x shaders that read
 uniform block. Display lists record every list-compilable command of
 GL 1.0 to 2.1 with copied arguments.
 
+ARB assembly programs (`GL_ARB_vertex_program`, `GL_ARB_fragment_program`,
+`GL_ARB_fragment_program_shadow`) are translated to GLSL when they draw
+(`src/core/compat/arb_program.cpp`), and linked with the generated
+fixed-function code for a stage without a program. Generic attributes alias
+the conventional ones as on NVIDIA drivers (normal 2, colours 3 and 4, fog
+coordinate 5, texture coordinates 8 to 15) when only one of the two arrays is
+enabled.
+
 Not implemented. None of these is blocked by Metal: they were left out
 because games rarely use them, and the game corpus needs none of them.
 Commands without an implementation generate `GL_INVALID_OPERATION` and are
@@ -82,7 +90,7 @@ logged once.
 
 | Feature | Version | Behaviour now | Why it is left out | What it would take |
 |---|---|---|---|---|
-| ARB assembly programs (`GL_ARB_vertex_program`, `GL_ARB_fragment_program`) | Extensions | Not advertised; `glDisable` of `GL_VERTEX_PROGRAM_ARB` and `GL_FRAGMENT_PROGRAM_ARB` is accepted and `glIsEnabled` returns false (the Steam overlay disables them unchecked), `glEnable` is `GL_INVALID_ENUM` | Extensions, not core GL, so a 3.3 compatibility context does not need them; they are the most useful item here for games (KOTOR, Doom 3 and other 2002 to 2005 titles) | A translator from ARB assembly to SPIR-V |
+| Vertex blending in ARB vertex programs (`vertex.weight`, `vertex.matrixindex`, `state.matrix.modelview[n]` past 0, `state.matrix.palette`) | Extensions | The program fails to load (`GL_INVALID_OPERATION`, with the error position and string) | `GL_ARB_vertex_blend` and `GL_ARB_matrix_palette` are not advertised, and games blend in their programs instead | The two extensions' state and their bindings in the translator |
 | Accumulation buffer (`glAccum`) | 1.0 | `GL_INVALID_OPERATION` | Rare; a few old games use it for motion blur | An RGBA16F texture and blits |
 | Selection and feedback (`glRenderMode`) | 1.0 | Nothing is drawn outside `GL_RENDER`, and no records are returned | Mostly CAD programs and old editors' picking | Transforming vertices on the CPU and writing the records |
 | Evaluators (`glMap*`, `glEval*`) | 1.0 | `GL_INVALID_OPERATION` | Very rare in games | Generating the vertices on the CPU and drawing them as immediate mode |

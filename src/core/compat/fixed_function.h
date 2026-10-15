@@ -14,6 +14,7 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -61,7 +62,23 @@ void fixedFunctionSources(Context& ctx, GLenum mode, std::string& vertex, std::s
 // Links an internal program (not in any name table) from GLSL sources.
 // Samplers named "<prefix>N" sample texture unit N.
 RefPtr<Program> linkInternalProgram(const std::string& vertex, const std::string& fragment, const char* samplerPrefix,
-                                    std::string& log);
+                                    std::string& log, const std::map<std::string, GLuint>& attribBindings = {});
+
+// The fixed-function stage that runs with an ARB program in the other one
+// (compat/arb_programs.h): its cache key and (when `source`) its GLSL, with
+// the varyings of fixedFunctionSources. The vertex stage also writes the
+// texture coordinates and fog coordinate a fragment program reads; the
+// fragment stage, after a vertex program, sums colours when COLOR_SUM is
+// enabled and takes back colours from VERTEX_PROGRAM_TWO_SIDE.
+struct FixedStageNeeds {
+    uint32_t texCoords = 0;  // vertex: ff_tc<n> the fragment program reads
+    bool fogCoord = false;   // vertex: ff_fogCoord
+    bool twoSide = false;    // fragment: ff_back for back faces
+};
+void fixedFunctionStage(Context& ctx, GLenum mode, bool vertex, const FixedStageNeeds& needs, std::string& key,
+                        std::string* source);
+// The fixed-function vertex stage writes back colours (two-sided lighting).
+bool fixedFunctionTwoSided(Context& ctx, GLenum mode);
 
 }  // namespace compat
 }  // namespace wmgl

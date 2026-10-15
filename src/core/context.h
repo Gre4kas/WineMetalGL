@@ -8,6 +8,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "core/compat/arb_programs.h"
 #include "core/gl/types.h"
 
 extern "C" void* objc_autoreleasePoolPush(void);
@@ -190,6 +191,8 @@ public:
     std::unordered_map<uint64_t, RefPtr<Texture>> pixelRectangleCache;
     std::unique_ptr<ImmediateState> immediate;
     std::unique_ptr<ListCompiler> listCompiler;  // non-null between glNewList and glEndList
+    // ARB assembly programs: bindings, environment parameters, load errors.
+    compat::ArbContextState arb;
     int listCallDepth = 0;
 
 private:

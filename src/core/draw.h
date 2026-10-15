@@ -405,6 +405,9 @@ private:
     bool preludeCapture_ = false;
     const std::vector<float>* lineSides_ = nullptr;
     Program* ffProgram_ = nullptr;
+    // The draw's vertex stage is an ARB vertex program: its attributes alias
+    // generic and conventional arrays (attribFor).
+    bool arbAliases_ = false;
     struct {
         id<MTLBuffer> buffer = nil;
         NSUInteger offset = 0;

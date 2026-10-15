@@ -97,6 +97,7 @@ add_library(wmgl_portable STATIC
     src/core/shader/spirv_passes.cpp
     src/core/shader/spirv_validate.cpp
     src/core/shader/subroutines.cpp
+    src/core/compat/arb_program.cpp
     src/core/util/log.cpp
     src/core/util/metalfx_config.cpp
     vendor/tessellator/tessellator.cpp
@@ -159,7 +160,7 @@ install(TARGETS winemetalgl_core LIBRARY DESTINATION lib)
 
 # Host tests (no GPU, no Wine).
 add_executable(wmgl_host_tests tests/host/main.cpp tests/host/shader_tests.cpp tests/host/format_tests.cpp
-    tests/host/fp64_tests.cpp tests/host/metalfx_tests.cpp)
+    tests/host/fp64_tests.cpp tests/host/metalfx_tests.cpp tests/host/arb_program_tests.cpp)
 target_link_libraries(wmgl_host_tests PRIVATE wmgl_portable)
 
 # GPU tests: drive the core through the driver ABI on pbuffers (Metal, no Wine).

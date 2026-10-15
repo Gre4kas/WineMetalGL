@@ -702,6 +702,9 @@ const GLubyte* GetString(Context& ctx, GLenum name) {
     case GL_EXTENSIONS:
         if (ctx.isCore()) break;  // core profile: only glGetStringi
         return reinterpret_cast<const GLubyte*>(ctx.extensionString().c_str());
+    case GL_PROGRAM_ERROR_STRING_ARB:  // the last glProgramStringARB's error (empty after a load)
+        if (ctx.isCore()) break;
+        return reinterpret_cast<const GLubyte*>(ctx.arb.errorString.c_str());
     default: break;
     }
     ctx.setError(GL_INVALID_ENUM);
