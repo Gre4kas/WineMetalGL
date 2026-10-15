@@ -58,6 +58,26 @@ void levelSize(GLenum target, GLsizei w0, GLsizei h0, GLsizei d0, int level, GLs
 // Level-0-equivalent dimensions of a texture from its lowest defined level.
 bool baseDimensions(const Texture& tex, GLsizei& w0, GLsizei& h0, GLsizei& d0, const FormatInfo*& format,
                     GLsizei& samples) {
+    // The chain of TEXTURE_BASE_LEVEL's image when it has one: levels left
+    // from earlier definitions that do not fit it are never sampled
+    // (dEQP-GLES2 texture.completeness.cube.extra_level redefines the
+    // default cube map's levels over another size's).
+    auto fromLevel = [&](int level) {
+        const TextureImage* defined = nullptr;
+        for (int face = 0; face < tex.faceCount() && !defined; ++face)
+            if (tex.image(face, level).defined()) defined = &tex.image(face, level);
+        if (!defined) return false;
+        const TextureImage& image = *defined;
+        format = image.format;
+        samples = image.samples;
+        w0 = image.width << level;
+        const bool oneDArray = tex.target == GL_TEXTURE_1D_ARRAY;
+        h0 = oneDArray || tex.target == GL_TEXTURE_1D ? image.height : image.height << level;
+        d0 = tex.target == GL_TEXTURE_3D ? image.depth << level : image.depth;
+        return true;
+    };
+    if (!tex.immutable && tex.baseLevel > 0 && tex.baseLevel < Texture::kMaxLevels && fromLevel(tex.baseLevel)) return true;
+    if (!tex.immutable && tex.baseLevel == 0 && fromLevel(0)) return true;
     for (int level = 0; level < Texture::kMaxLevels; ++level) {
         // Any cube face may be specified first.
         const TextureImage* defined = nullptr;

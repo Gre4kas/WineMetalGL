@@ -438,3 +438,136 @@ GPU_TEST_ES(gpu_es_copy_rgba4_to_luminance_alpha, 30) {
     glDeleteTextures(1, &src);
     glDeleteTextures(1, &dst);
 }
+
+// dEQP-GLES2 texture.completeness.cube.extra_level binds its texture to
+// GL_TEXTURE_2D, so its cube uploads define the default cube map (name 0):
+// levels 0-6 of 64x64 and an extra level 8.
+GPU_TEST_ES(gpu_es_default_cube_extra_level, 20) {
+    std::vector<uint8_t> blue(64 * 64 * 4);
+    for (size_t i = 0; i < blue.size(); i += 4) blue[i + 2] = blue[i + 3] = 255;
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_NEAREST);
+    for (int level = 0; level < 7; ++level)
+        for (int face = 0; face < 6; ++face)
+            glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, level, GL_RGBA, 64 >> level, 64 >> level, 0, GL_RGBA,
+                         GL_UNSIGNED_BYTE, blue.data());
+    for (int face = 0; face < 6; ++face)
+        glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, 8, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, blue.data());
+    CHECK_GL();
+    GLuint p = program("attribute vec2 position; varying vec3 dir;\n"
+                       "void main() { dir = vec3(1.0, position); gl_Position = vec4(position, 0.0, 1.0); }\n",
+                       "precision mediump float; varying vec3 dir; uniform samplerCube t;\n"
+                       "void main() { gl_FragColor = textureCube(t, dir); }\n");
+    GLuint vao = quad();
+    glUseProgram(p);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    CHECK_GL();
+    const uint8_t want[4] = {0, 0, 255, 255};
+    const std::vector<uint8_t> got = readRGBA8(32, 32, 1, 1);
+    CHECK(near(got.data(), want, 2));
+    if (!near(got.data(), want, 2)) std::fprintf(stderr, "  got %u %u %u %u\n", got[0], got[1], got[2], got[3]);
+    glDeleteProgram(p);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteTextures(1, &tex);
+}
+
+// Two dEQP-style cases back to back: each creates a program and an NPOT cube
+// map (REPEAT), draws its six faces from client memory arrays in vertex array
+// 0, and deletes both. The second case's first draw used to draw nothing.
+GPU_TEST_ES(gpu_es_cube_cases_back_to_back, 20) {
+    for (int run = 0; run < 2; ++run) {
+        const int size = 63;
+        std::vector<uint8_t> blue(size * size * 4);
+        for (size_t i = 0; i < blue.size(); i += 4) blue[i + 2] = blue[i + 3] = 255;
+        GLuint p = program("attribute highp vec4 position; attribute highp vec3 a_texCoord; varying highp vec3 v_texCoord;\n"
+                           "void main() { gl_Position = position; v_texCoord = a_texCoord; }\n",
+                           "precision mediump float; uniform samplerCube u_sampler; varying highp vec3 v_texCoord;\n"
+                           "void main() { gl_FragColor = textureCube(u_sampler, v_texCoord); }\n");
+        GLuint tex = 0;
+        glGenTextures(1, &tex);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        glBindTexture(GL_TEXTURE_CUBE_MAP, tex);
+        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        for (int face = 0; face < 6; ++face)
+            glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, 0, GL_RGBA, size, size, 0, GL_RGBA, GL_UNSIGNED_BYTE, blue.data());
+        glUseProgram(p);
+        glUniform1i(glGetUniformLocation(p, "u_sampler"), 0);
+        glBindVertexArray(0);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        static const float position[] = {-1, -1, 0, 1, -1, 1, 0, 1, 1, -1, 0, 1, 1, 1, 0, 1};
+        static const float coords[] = {1, -1, -1, 1, 1, -1, 1, -1, 1, 1, 1, 1};
+        const GLint pos = glGetAttribLocation(p, "position"), tc = glGetAttribLocation(p, "a_texCoord");
+        glVertexAttribPointer(static_cast<GLuint>(pos), 4, GL_FLOAT, GL_FALSE, 0, position);
+        glVertexAttribPointer(static_cast<GLuint>(tc), 3, GL_FLOAT, GL_FALSE, 0, coords);
+        glEnableVertexAttribArray(static_cast<GLuint>(pos));
+        glEnableVertexAttribArray(static_cast<GLuint>(tc));
+        static const uint16_t indices[] = {0, 1, 2, 2, 1, 3};
+        for (int face = 0; face < 6; ++face) {
+            glClearColor(0, 0, 0, 0);
+            glClear(GL_COLOR_BUFFER_BIT);
+            glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, indices);
+            const std::vector<uint8_t> got = readRGBA8(32, 32, 1, 1);
+            const uint8_t want[4] = {0, 0, 255, 255};
+            CHECK(near(got.data(), want, 2));
+            if (!near(got.data(), want, 2))
+                std::fprintf(stderr, "  run %d face %d: got %u %u %u %u\n", run, face, got[0], got[1], got[2], got[3]);
+        }
+        CHECK_GL();
+        glDisableVertexAttribArray(static_cast<GLuint>(pos));
+        glDisableVertexAttribArray(static_cast<GLuint>(tc));
+        glDeleteTextures(1, &tex);
+        glDeleteProgram(p);
+    }
+}
+
+// The CTS clears at the start of a case, then uploads a texture and links a
+// program before its first draw: the clear must still land before the draw.
+GPU_TEST_ES(gpu_es_clear_upload_then_draw, 20) {
+    // Something drawn before (the previous case's last frame).
+    glClearColor(0, 1, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+    readRGBA8(0, 0, 1, 1);
+    glClearColor(0, 0, 0, 0);
+    glClear(GL_COLOR_BUFFER_BIT);
+    const int size = 63;
+    std::vector<uint8_t> blue(size * size * 4);
+    for (size_t i = 0; i < blue.size(); i += 4) blue[i + 2] = blue[i + 3] = 255;
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, tex);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    for (int face = 0; face < 6; ++face)
+        glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, 0, GL_RGBA, size, size, 0, GL_RGBA, GL_UNSIGNED_BYTE, blue.data());
+    glViewport(0, 0, 64, 64);
+    GLuint p = program("attribute highp vec4 position; attribute highp vec3 a_texCoord; varying highp vec3 v_texCoord;\n"
+                       "void main() { gl_Position = position; v_texCoord = a_texCoord; }\n",
+                       "precision mediump float; uniform samplerCube u_sampler; varying highp vec3 v_texCoord;\n"
+                       "void main() { gl_FragColor = textureCube(u_sampler, v_texCoord); }\n");
+    glUseProgram(p);
+    glBindVertexArray(0);
+    static const float position[] = {-1, -1, 0, 1, -1, 1, 0, 1, 1, -1, 0, 1, 1, 1, 0, 1};
+    static const float coords[] = {1, -1, -1, 1, 1, -1, 1, -1, 1, 1, 1, 1};
+    const GLint pos = glGetAttribLocation(p, "position"), tc = glGetAttribLocation(p, "a_texCoord");
+    glEnableVertexAttribArray(static_cast<GLuint>(pos));
+    glVertexAttribPointer(static_cast<GLuint>(pos), 4, GL_FLOAT, GL_FALSE, 0, position);
+    glEnableVertexAttribArray(static_cast<GLuint>(tc));
+    glVertexAttribPointer(static_cast<GLuint>(tc), 3, GL_FLOAT, GL_FALSE, 0, coords);
+    static const uint16_t indices[] = {0, 1, 2, 2, 1, 3};
+    glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, indices);
+    const std::vector<uint8_t> got = readRGBA8(32, 32, 1, 1);
+    const uint8_t want[4] = {0, 0, 255, 255};
+    CHECK(near(got.data(), want, 2));
+    if (!near(got.data(), want, 2)) std::fprintf(stderr, "  got %u %u %u %u\n", got[0], got[1], got[2], got[3]);
+    glDisableVertexAttribArray(static_cast<GLuint>(pos));
+    glDisableVertexAttribArray(static_cast<GLuint>(tc));
+    glDeleteTextures(1, &tex);
+    glDeleteProgram(p);
+    CHECK_GL();
+}
