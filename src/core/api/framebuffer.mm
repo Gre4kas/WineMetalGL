@@ -61,6 +61,19 @@ const FormatInfo* attachmentFormat(const Attachment& a, GLsizei& width, GLsizei&
     return nullptr;
 }
 
+// A cube map's six faces at `level` defined alike (square, one size and format).
+bool cubeComplete(const Texture& tex, int level) {
+    const TextureImage& first = tex.image(0, level);
+    if (!first.defined() || first.width != first.height) return false;
+    for (int face = 1; face < 6; ++face) {
+        const TextureImage& image = tex.image(face, level);
+        if (!image.defined() || image.width != first.width || image.height != first.height ||
+            image.internalFormat != first.internalFormat)
+            return false;
+    }
+    return true;
+}
+
 GLenum completeness(Context& ctx, Framebuffer* fb) {
     if (!fb) return ctx.drawSurface() ? GL_FRAMEBUFFER_COMPLETE : GL_FRAMEBUFFER_UNDEFINED;
     bool any = false;
@@ -80,6 +93,11 @@ GLenum completeness(Context& ctx, Framebuffer* fb) {
         if (kind == 0 && ctx.isEs() && !es::colorRenderable(f->internalFormat)) return GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT;
         if (kind == 1 && !f->depthRenderable) return GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT;
         if (kind == 2 && !f->stencilRenderable) return GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT;
+        // OpenGL ES 3.2 section 9.4.1: a cube map attached layered, or at a
+        // level other than a mutable texture's base level, is cube complete.
+        if (ctx.isEs() && a.type == GL_TEXTURE && a.texture && a.texture->target == GL_TEXTURE_CUBE_MAP &&
+            (a.layered || (!a.texture->immutable && a.level != a.texture->baseLevel)) && !cubeComplete(*a.texture, a.level))
+            return GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT;
         if (a.type == GL_TEXTURE && a.texture) {
             const GLenum t = a.texture->target;
             if ((t == GL_TEXTURE_3D || t == GL_TEXTURE_2D_ARRAY || t == GL_TEXTURE_1D_ARRAY ||
@@ -580,6 +598,8 @@ void RenderbufferStorageMultisample(Context& ctx, GLenum target, GLsizei samples
     if (target != GL_RENDERBUFFER) return ctx.setError(GL_INVALID_ENUM);
     Renderbuffer* rb = ctx.state.renderbuffer.get();
     if (!rb) return ctx.setError(GL_INVALID_OPERATION);
+    // EXT_texture_format_BGRA8888: GL_BGRA_EXT is BGRA8_EXT's unsized name.
+    if (ctx.isEs() && internalformat == es::kBgra) internalformat = 0x93A1;  // GL_BGRA8_EXT
     const GLenum resolved = resolveInternalFormat(internalformat, 0, 0);
     const FormatInfo* f = formatInfo(resolved);
     if (!f || f->compressed || (!f->colorRenderable && !f->isDepthOrStencil())) return ctx.setError(GL_INVALID_ENUM);
@@ -592,9 +612,11 @@ void RenderbufferStorageMultisample(Context& ctx, GLenum target, GLsizei samples
     if (f->isInteger() && samples > 0) {
         // GL 3.3: MAX_INTEGER_SAMPLES; Metal supports multisampled integer targets.
     }
-    // Round the sample count up to one Metal supports.
+    // Round the sample count up to one Metal supports. OpenGL ES rounds a
+    // request for one sample up too, as multisample textures do (Metal's
+    // have two at least): the two then match for framebuffer completeness.
     GLsizei actual = samples;
-    if (actual > 1) {
+    if (actual > 1 || (actual == 1 && ctx.isEs())) {
         actual = 2;
         while (actual < samples) actual *= 2;
         while (actual <= 8 && !caps.sampleCountSupported[actual]) actual *= 2;

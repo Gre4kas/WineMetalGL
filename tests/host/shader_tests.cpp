@@ -682,3 +682,29 @@ TEST(shader_glsl_es_clip_cull_distance) {
     CHECK(v.ok);
     if (!v.ok) std::fprintf(stderr, "%s\n", v.log.c_str());
 }
+
+// Struct sampler array elements keep their own slots (each bound to its own
+// texture), and unused leading elements still count (u_var.m3[0], size 3).
+TEST(shader_struct_sampler_array_elements) {
+    LinkInput in;
+    in.shaders.push_back({Stage::Vertex, "#version 300 es\nin vec4 p; void main() { gl_Position = p; }\n"});
+    in.shaders.push_back({Stage::Fragment,
+                          "#version 300 es\nprecision mediump float;\n"
+                          "struct S { sampler2D m2[2]; samplerCube m3[3]; };\n"
+                          "uniform S u_var; out vec4 color;\n"
+                          "void main() { color = texture(u_var.m2[0], vec2(0)) + texture(u_var.m2[1], vec2(0)) +\n"
+                          "  texture(u_var.m3[2], vec3(0)); }\n"});
+    LinkResult r = link(in);
+    CHECK(r.ok);
+    const UniformInfo* m2 = findUniform(r, "u_var.m2[0]");
+    const UniformInfo* m3 = findUniform(r, "u_var.m3[0]");
+    CHECK(m2 && m2->size == 2);
+    CHECK(m3 && m3->size == 3);
+    CHECK(findUniform(r, "u_var.m3[2]") == nullptr);
+    if (m2 && m3) {
+        const int fs = static_cast<int>(Stage::Fragment);
+        const int t0 = r.samplers[m2->samplerSlot].stageTexture[fs], t1 = r.samplers[m2->samplerSlot + 1].stageTexture[fs];
+        CHECK(t0 >= 0 && t1 >= 0 && t0 != t1);
+        CHECK(r.samplers[m3->samplerSlot + 2].stageTexture[fs] >= 0);
+    }
+}

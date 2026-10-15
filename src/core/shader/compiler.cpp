@@ -1655,11 +1655,12 @@ EsCompileResult compileEsUncached(Stage stage, const std::string& source) {
         result.log = "ERROR: 0:1: '#version' : OpenGL ES shaders are GLSL ES 1.00, 3.00 es, 3.10 es or 3.20 es\n";
         return result;
     }
-    // EXT_clip_cull_distance, which glslang has no GLSL ES form of: the
-    // shader is checked and compiled as GLSL 4.50 (its clip and cull
-    // distance built-ins). (GLSL reserves GL_ macros: GL_ES and the
-    // extension's are not defined.)
-    if (version >= 300 && source.find("GL_EXT_clip_cull_distance") != std::string::npos) {
+    // Extensions glslang has no GLSL ES form of (EXT_clip_cull_distance,
+    // OES_viewport_array): the shader is checked and compiled as GLSL 4.50,
+    // which has their built-ins, without its ES extension directives (GLSL
+    // reserves GL_ macros: GL_ES and the extensions' are not defined).
+    if (version >= 300 && (source.find("GL_EXT_clip_cull_distance") != std::string::npos ||
+                           source.find("GL_OES_viewport_array") != std::string::npos)) {
         std::string desktop = source;
         const size_t at = desktop.find("#version");
         const size_t end = desktop.find('\n', at);
@@ -1667,7 +1668,8 @@ EsCompileResult compileEsUncached(Stage stage, const std::string& source) {
         for (size_t e = desktop.find("#extension"); e != std::string::npos; e = desktop.find("#extension", e + 1)) {
             const size_t lineEnd = desktop.find('\n', e);
             const std::string line = desktop.substr(e, lineEnd == std::string::npos ? std::string::npos : lineEnd - e);
-            if (line.find("GL_EXT_clip_cull_distance") != std::string::npos) desktop.replace(e, line.size(), "");
+            if (line.find("GL_EXT_") != std::string::npos || line.find("GL_OES_") != std::string::npos)
+                desktop.replace(e, line.size(), "");
         }
         const CompileResult desktopResult = compile(stage, desktop);
         result.ok = desktopResult.ok;
@@ -2596,6 +2598,8 @@ static LinkResult linkImplCore(const LinkInput& input, const CaptureCode* captur
     // Default uniform block members.
     std::map<std::string, int> blockIndexByName;
     std::map<std::string, int> samplerUniformByName, imageUniformByName;
+    // A sampler variable's element within its uniform (struct sampler arrays, above).
+    std::map<std::string, int> samplerElement;
     std::map<std::string, int> samplerUniformCount;  // uniforms per sampler variable (arrays of arrays: several)
     std::map<std::string, int> imageUniformCount;    // likewise per image variable
     for (int s = 0; s < kStageCount; ++s) {
@@ -2690,26 +2694,58 @@ static LinkResult linkImplCore(const LinkInput& input, const CaptureCode* captur
             for (size_t d = 0; d + 1 < dims.size(); ++d) outer *= dims[d];
             auto it = samplerUniformByName.find(name);
             // glslang moves a sampler array out of a struct as a variable
-            // per element ("s.a[1]"): those after the first extend its
-            // uniform ("s.a[0]", one of the array's size).
+            // per element ("s.a[2]"): the elements make one uniform "s.a[0]"
+            // of the array's size up to the last active element, each
+            // element at its offset from the first's slot.
             if (it == samplerUniformByName.end() && type.array.empty() && name.size() > 3 && name.back() == ']') {
                 const size_t open = name.rfind('[');
                 const std::string digits = name.substr(open + 1, name.size() - open - 2);
-                const bool number = !digits.empty() && digits.find_first_not_of("0123456789") == std::string::npos;
-                auto head = number ? samplerUniformByName.find(name.substr(0, open) + "[0]") : samplerUniformByName.end();
-                if (head != samplerUniformByName.end() && samplerUniformCount[head->first] == 1) {
-                    UniformInfo& u = result.uniforms[static_cast<size_t>(head->second)];
-                    if (u.type == glType && std::to_string(u.size) == digits &&
-                        u.samplerSlot + u.size == static_cast<int>(result.samplers.size())) {
-                        ++u.size;
-                        SamplerSlotInfo slot;
-                        slot.type = glType;
-                        slot.textureTarget = textureTargetForSampler(glType);
-                        slot.shadow = isShadowSampler(glType);
-                        result.samplers.push_back(slot);
-                        samplerUniformByName[name] = head->second;
+                const bool number = !digits.empty() && digits.size() < 5 && digits.find_first_not_of("0123456789") == std::string::npos;
+                if (number) {
+                    const int element = std::stoi(digits);
+                    const std::string headName = name.substr(0, open) + "[0]";
+                    auto head = samplerUniformByName.find(headName);
+                    auto addSlots = [&](int n) {
+                        for (int e = 0; e < n; ++e) {
+                            SamplerSlotInfo slot;
+                            slot.type = glType;
+                            slot.textureTarget = textureTargetForSampler(glType);
+                            slot.shadow = isShadowSampler(glType);
+                            result.samplers.push_back(slot);
+                        }
+                    };
+                    if (head == samplerUniformByName.end() && element > 0) {
+                        // Earlier elements unused: the uniform starts at element 0 anyway.
+                        UniformInfo u;
+                        u.name = headName;
+                        u.type = glType;
+                        u.size = element + 1;
+                        u.samplerSlot = static_cast<int>(result.samplers.size());
+                        u.stageMask = 1u << s;
+                        addSlots(element + 1);
+                        samplerUniformByName[headName] = static_cast<int>(result.uniforms.size());
+                        samplerUniformCount[headName] = 1;
+                        samplerElement[headName] = 0;
+                        samplerUniformByName[name] = static_cast<int>(result.uniforms.size());
                         samplerUniformCount[name] = 1;
+                        samplerElement[name] = element;
+                        result.uniforms.push_back(u);
                         continue;
+                    }
+                    if (head != samplerUniformByName.end() && samplerUniformCount[head->first] == 1 && element > 0) {
+                        UniformInfo& u = result.uniforms[static_cast<size_t>(head->second)];
+                        const bool last = u.samplerSlot + u.size == static_cast<int>(result.samplers.size());
+                        if (u.type == glType && (element < u.size || last)) {
+                            if (element >= u.size) {
+                                addSlots(element + 1 - u.size);
+                                u.size = element + 1;
+                            }
+                            u.stageMask |= 1u << s;
+                            samplerUniformByName[name] = head->second;
+                            samplerUniformCount[name] = 1;
+                            samplerElement[name] = element;
+                            continue;
+                        }
                     }
                 }
             }
@@ -3459,7 +3495,8 @@ static LinkResult linkImplCore(const LinkInput& input, const CaptureCode* captur
                 if (type.array.empty()) msl.textureSlots[image.id] = nextTexture;
                 auto it = samplerUniformByName.find(name);
                 if (it != samplerUniformByName.end()) {
-                    const int first = result.uniforms[it->second].samplerSlot;
+                    const auto element = samplerElement.find(name);
+                    const int first = result.uniforms[it->second].samplerSlot + (element != samplerElement.end() ? element->second : 0);
                     for (uint32_t e = 0; e < count; ++e) result.samplers[first + e].stageTexture[s] = static_cast<int>(nextTexture + e);
                 }
                 nextTexture += count;

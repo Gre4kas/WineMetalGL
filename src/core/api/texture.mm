@@ -611,6 +611,9 @@ void compressedTexSubImage(Context& ctx, int dims, GLenum target, GLint level, G
     if (level < 0 || level > maxLevelFor(t.target)) return ctx.setError(GL_INVALID_VALUE);
     if (w < 0 || h < 0 || d < 0) return ctx.setError(GL_INVALID_VALUE);
     const FormatInfo* info = formatInfo(format);
+    // OpenGL ES: a known format that is not the image's compressed one is
+    // INVALID_OPERATION (KHR-GLES32.core.compressed_format.api.invalid_format).
+    if (ctx.isEs() && info && (!info->compressed || info->internalFormat != format)) return ctx.setError(GL_INVALID_OPERATION);
     if (!info || !info->compressed || info->internalFormat != format) return ctx.setError(GL_INVALID_ENUM);
     const TextureImage& image = t.tex->image(t.face, level);
     if (!image.defined() || image.format != info) return ctx.setError(GL_INVALID_OPERATION);
