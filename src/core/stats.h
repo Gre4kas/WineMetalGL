@@ -83,6 +83,10 @@ struct Frame {
 
 // GPU time of completed command buffers (any thread; reported and reset per frame).
 void addGpuNanos(uint64_t nanos);
+// A completed command buffer's GPU start and end (seconds, CFTimeInterval):
+// "gpu busy" is the union of these intervals, which overlapping command
+// buffers do not count twice (the "gpu" sum does).
+void addGpuInterval(double start, double end);
 
 Frame& frame();
 // The calling thread's counter `name` (a Frame field, "passEnds.<cause>" or

@@ -131,6 +131,26 @@ std::atomic<uint64_t> g_gpuNanos{0};
 
 void addGpuNanos(uint64_t nanos) { g_gpuNanos.fetch_add(nanos, std::memory_order_relaxed); }
 
+namespace {
+std::mutex g_busyMutex;
+double g_busyEnd = 0;
+uint64_t g_busyNanos = 0;
+}  // namespace
+
+void addGpuInterval(double start, double end) {
+    std::lock_guard<std::mutex> lock(g_busyMutex);
+    const double from = std::max(start, g_busyEnd);
+    if (end > from) g_busyNanos += static_cast<uint64_t>((end - from) * 1e9);
+    g_busyEnd = std::max(g_busyEnd, end);
+}
+
+static uint64_t takeGpuBusyNanos() {
+    std::lock_guard<std::mutex> lock(g_busyMutex);
+    const uint64_t n = g_busyNanos;
+    g_busyNanos = 0;
+    return n;
+}
+
 bool counter(const char* name, uint64_t& value) {
 #define WMGL_COUNTER(field) {#field, &Frame::field}
     static const std::pair<const char*, uint64_t Frame::*> fields[] = {
@@ -207,7 +227,7 @@ void endFrame() {
                  "stage %llu capture %llu query %llu primitive %llu parameters %llu converted %llu index type %llu "
                  "restart %llu elements mapped %llu writing %llu max index %llu) | uniforms %llu KiB | commits %llu (query %llu) | "
                  "pass ends: target %llu blit %llu compute %llu visibility %llu commit %llu barrier %llu clear %llu "
-                 "other %llu | reads async %llu waiting %llu | gpu %.2f ms | metal %.1f MiB | draw cpu: samplers %.2f vertex %.2f "
+                 "other %llu | reads async %llu waiting %llu | gpu %.2f ms busy %.2f ms | metal %.1f MiB | draw cpu: samplers %.2f vertex %.2f "
                  "prepare %.2f pipeline %.2f bind %.2f encode %.2f index %.2f ms\n",
                  static_cast<unsigned long long>(t.index), t.lastPresent ? ms(now - t.lastPresent) : 0.0, ms(f.glNanos),
                  static_cast<unsigned long long>(f.calls), ms(f.presentNanos), ms(f.drawableNanos),
@@ -242,7 +262,7 @@ void endFrame() {
                  static_cast<unsigned long long>(f.passEnds[4]), static_cast<unsigned long long>(f.passEnds[5]),
                  static_cast<unsigned long long>(f.passEnds[6]), static_cast<unsigned long long>(f.passEnds[7]),
                  static_cast<unsigned long long>(f.passEnds[0]), static_cast<unsigned long long>(f.readsAsync),
-                 static_cast<unsigned long long>(f.readsWaiting), ms(g_gpuNanos.exchange(0, std::memory_order_relaxed)),
+                 static_cast<unsigned long long>(f.readsWaiting), ms(g_gpuNanos.exchange(0, std::memory_order_relaxed)), ms(takeGpuBusyNanos()),
                  static_cast<double>(Device::get().mtl().currentAllocatedSize) / 1048576.0,
                  ms(f.drawSamplersNanos), ms(f.drawVertexNanos), ms(f.drawPrepareNanos), ms(f.drawPipelineNanos),
                  ms(f.drawBindNanos), ms(f.drawEncodeNanos), ms(f.drawIndexNanos));

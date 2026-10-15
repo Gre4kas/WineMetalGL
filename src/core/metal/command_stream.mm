@@ -4,6 +4,7 @@
 
 #import <QuartzCore/CAMetalLayer.h>
 
+#include <cstdlib>
 #include <cstring>
 
 #include "core/metal/device.h"
@@ -48,6 +49,7 @@ void CommandStream::endEncoder(PassEnd cause) {
         if (render_) [render_ updateFence:writesFence_ afterStages:MTLRenderStageVertex | MTLRenderStageFragment];
         else [compute_ updateFence:writesFence_];
         fenced_ = true;
+        fenceSerial_ = serial();
     }
     shaderWrites_ = false;
     if (render_) {
@@ -66,6 +68,11 @@ void CommandStream::endEncoder(PassEnd cause) {
 
 void CommandStream::waitForShaderWrites(id<MTLCommandEncoder> encoder, bool render) {
     if (!fenced_) return;
+    // Writes of a completed command buffer are visible to every later one.
+    if (fenceSerial_ != serial_ && queue_.isComplete(fenceSerial_)) {
+        fenced_ = false;
+        return;
+    }
     if (render)
         [static_cast<id<MTLRenderCommandEncoder>>(encoder) waitForFence:writesFence_
                                                            beforeStages:MTLRenderStageVertex | MTLRenderStageFragment];
@@ -183,19 +190,19 @@ void CommandStream::resolvePendingClear() {
     endEncoder();
 }
 
-id<MTLBlitCommandEncoder> CommandStream::blit() {
+id<MTLBlitCommandEncoder> CommandStream::blit(bool keepPendingClear) {
     // A clear recorded after this encoder opened must run before new commands.
-    if (blit_ && !pending_.any()) return blit_;
-    resolvePendingClear();
+    if (blit_ && (keepPendingClear || !pending_.any())) return blit_;
+    if (!keepPendingClear) resolvePendingClear();
     endEncoder(PassEnd::Blit);
     blit_ = [commandBuffer() blitCommandEncoder];
     waitForShaderWrites(blit_, false);
     return blit_;
 }
 
-id<MTLComputeCommandEncoder> CommandStream::compute() {
-    if (compute_ && !pending_.any()) return compute_;
-    resolvePendingClear();
+id<MTLComputeCommandEncoder> CommandStream::compute(bool keepPendingClear) {
+    if (compute_ && (keepPendingClear || !pending_.any())) return compute_;
+    if (!keepPendingClear) resolvePendingClear();
     endEncoder(PassEnd::Compute);
     compute_ = [commandBuffer() computeCommandEncoder];
     waitForShaderWrites(compute_, false);
@@ -271,12 +278,13 @@ void CommandStream::waitForPrelude() {
     lastPrelude_ = nil;
 }
 
-uint64_t CommandStream::flush() {
-    resolvePendingClear();
+uint64_t CommandStream::flush(bool keepPendingClear) {
+    if (!keepPendingClear) resolvePendingClear();
     endEncoder(PassEnd::Commit);
     commitPrelude();
     if (!buffer_) return lastCommitted_;
     stats::count(&stats::Frame::commits);
+    lastCommitNanos_ = stats::nowNanos();
     drawsSinceCommit_ = 0;
     queue_.commit(buffer_, serial_);
     lastCommitted_ = serial_;
@@ -303,7 +311,19 @@ void CommandStream::waitFor(uint64_t serial) {
     queue_.wait(serial);
 }
 
-void CommandStream::memoryBarrier(bool attachments) {
+void CommandStream::memoryBarrier(bool attachments, bool commands) {
+    if (commands && compute_ && !render_) {
+        static const bool early = [] {
+            const char* v = std::getenv("WINEMETALGL_BARRIER_COMMIT");
+            return !v || v[0] != '0';
+        }();
+        if (early) {
+            // Committing orders the dispatch's writes before every later
+            // command buffer on the queue: no barrier needed.
+            flush(true);
+            return;
+        }
+    }
     // A render pass whose draws wrote nothing through shaders has nothing to
     // order (earlier encoders' writes are fenced): it stays open, unless
     // attachment writes are ordered (glTextureBarrier).

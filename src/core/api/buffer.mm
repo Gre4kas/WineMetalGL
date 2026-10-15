@@ -143,6 +143,17 @@ void unmapBuffer(Buffer& buffer) {
 
 }  // namespace
 
+// glInvalidateBuffer(Sub)Data: storage the GPU still uses is replaced by fresh
+// storage (the contents become undefined), so the writes that typically
+// follow need neither an ordered GPU copy nor a wait. A mapped or
+// client-memory buffer keeps its storage. Called by robustness.mm.
+void orphanBuffer(Context& ctx, Buffer& buffer);
+void orphanBuffer(Context& ctx, Buffer& buffer) {
+    if (!buffer.mtl || buffer.mapped || buffer.pinned || !gpuBusy(ctx, buffer)) return;
+    rename(ctx, buffer, false);
+    ctx.markDirty(kDirtyVertexInput | kDirtyUniformBuffers);
+}
+
 void GenBuffers(Context& ctx, GLsizei n, GLuint* buffers) {
     if (n < 0) return ctx.setError(GL_INVALID_VALUE);
     if (!buffers) return;
@@ -424,7 +435,7 @@ void BufferSubData(Context& ctx, GLenum target, GLintptr offset, GLsizeiptr size
             // Large partial update: ordered GPU copy from staging memory.
             TransientAllocation staging = ctx.draw().transient().allocate(static_cast<size_t>(size), ctx.stream().serial(), 16);
             std::memcpy(staging.data, data, static_cast<size_t>(size));
-            [ctx.stream().blit() copyFromBuffer:staging.buffer sourceOffset:staging.offset toBuffer:buffer->mtl
+            [ctx.stream().blit(true) copyFromBuffer:staging.buffer sourceOffset:staging.offset toBuffer:buffer->mtl
                                 destinationOffset:static_cast<NSUInteger>(offset) size:static_cast<NSUInteger>(size)];
             buffer->lastUseSerial = buffer->lastWriteSerial = ctx.stream().serial();
             ++buffer->version;
@@ -473,7 +484,7 @@ void ClearBufferSubData(Context& ctx, GLenum target, GLenum internalformat, GLin
     TransientAllocation staging = ctx.draw().transient().allocate(static_cast<size_t>(size), ctx.stream().serial(), 16);
     for (size_t at = 0; at < static_cast<size_t>(size); at += element)
         std::memcpy(static_cast<uint8_t*>(staging.data) + at, texel, element);
-    [ctx.stream().blit() copyFromBuffer:staging.buffer sourceOffset:staging.offset toBuffer:buffer->mtl
+    [ctx.stream().blit(true) copyFromBuffer:staging.buffer sourceOffset:staging.offset toBuffer:buffer->mtl
                         destinationOffset:static_cast<NSUInteger>(offset) size:static_cast<NSUInteger>(size)];
     buffer->lastUseSerial = buffer->lastWriteSerial = ctx.stream().serial();
     ++buffer->version;
@@ -609,7 +620,7 @@ void CopyBufferSubData(Context& ctx, GLenum readTarget, GLenum writeTarget, GLin
     // Any non-persistent mapping of either buffer (GL 4.6 section 6.7).
     if (src->mappedNonPersistent() || dst->mappedNonPersistent()) return ctx.setError(GL_INVALID_OPERATION);
     if (!size) return;
-    [ctx.stream().blit() copyFromBuffer:src->mtl sourceOffset:static_cast<NSUInteger>(readOffset) toBuffer:dst->mtl
+    [ctx.stream().blit(true) copyFromBuffer:src->mtl sourceOffset:static_cast<NSUInteger>(readOffset) toBuffer:dst->mtl
                         destinationOffset:static_cast<NSUInteger>(writeOffset) size:static_cast<NSUInteger>(size)];
     src->lastUseSerial = dst->lastUseSerial = dst->lastWriteSerial = ctx.stream().serial();
     ++dst->version;
@@ -669,7 +680,7 @@ void TextureBarrier(Context& ctx) {
 void MemoryBarrier(Context& ctx, GLbitfield barriers) {
     if (ctx.version() < 42 && !ctx.hasExtension("GL_ARB_shader_image_load_store")) return ctx.unimplemented("glMemoryBarrier");
     if (barriers != GL_ALL_BARRIER_BITS && (barriers & ~0xffefu)) return ctx.setError(GL_INVALID_VALUE);
-    ctx.stream().memoryBarrier();
+    ctx.stream().memoryBarrier(false, (barriers & GL_COMMAND_BARRIER_BIT) != 0);
 }
 
 }  // namespace wmgl::api

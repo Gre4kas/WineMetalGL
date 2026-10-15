@@ -76,8 +76,13 @@ public:
     // Forces pending load-action clears to execute (empty pass).
     void resolvePendingClear();
 
-    id<MTLBlitCommandEncoder> blit();
-    id<MTLComputeCommandEncoder> compute();
+    // keepPendingClear: the encoder's commands touch no texture of a pending
+    // clear's target (buffer copies, a dispatch without textures or images),
+    // so the clear stays a load action of the target's next pass instead of
+    // running first as a pass of its own (which stores the attachments, for
+    // the next pass to load them back).
+    id<MTLBlitCommandEncoder> blit(bool keepPendingClear = false);
+    id<MTLComputeCommandEncoder> compute(bool keepPendingClear = false);
     // Prelude: two command buffers committed just ahead of the one being
     // recorded, for work that reads nothing the GPU writes in it. Draws that
     // need such work first (tessellation: vertex capture, then the control
@@ -97,7 +102,12 @@ public:
     // glMemoryBarrier: orders shader writes to buffers and textures before
     // later shader accesses: ends an open render pass, or a barrier in the
     // open compute encoder.
-    void memoryBarrier(bool attachments = false);
+    // commands: the barrier orders shader writes before the GPU reads indirect
+    // commands (GL_COMMAND_BARRIER_BIT). After a dispatch, the command buffer
+    // holding it is committed then, so the GPU runs the dispatch (GPU culling)
+    // while the CPU records what follows, and the CPU, when it reads the
+    // commands, waits for that command buffer alone.
+    void memoryBarrier(bool attachments = false, bool commands = false);
     // The open render or compute encoder writes through images or atomic
     // counters. Metal's hazard tracking does not order those writes (texture
     // atomics in particular) before later encoders, so the encoder updates a
@@ -105,7 +115,12 @@ public:
     void noteShaderWrites() { shaderWrites_ = true; }
 
     // Commits the command buffer; returns its serial (0 if nothing was recorded).
-    uint64_t flush();
+    // keepPendingClear: a pending clear stays pending (for the next command
+    // buffer's pass on its target) instead of running as a pass of its own:
+    // for commits WineMetalGL makes itself, which nothing outside sees.
+    uint64_t flush(bool keepPendingClear = false);
+    // Nanoseconds (stats::nowNanos) of the last commit.
+    uint64_t lastCommitNanos() const { return lastCommitNanos_; }
     // Commits and waits for all work from this stream to complete.
     void finish();
     // Waits for a serial, flushing first if it belongs to this stream.
@@ -155,6 +170,7 @@ private:
     id<MTLCommandBuffer> buffer_ = nil;
     uint64_t serial_ = 0;
     uint64_t lastCommitted_ = 0;
+    uint64_t lastCommitNanos_ = 0;
     id<MTLRenderCommandEncoder> render_ = nil;
     id<MTLBlitCommandEncoder> blit_ = nil;
     id<MTLComputeCommandEncoder> compute_ = nil;
@@ -175,6 +191,7 @@ private:
     // noteShaderWrites: set while the open encoder writes through images;
     // fenced once such an encoder ended (later encoders wait for writesFence_).
     bool shaderWrites_ = false, fenced_ = false;
+    uint64_t fenceSerial_ = 0;  // command buffer of the last fence update (it retires once that completes)
     id<MTLFence> writesFence_ = nil;
     void waitForShaderWrites(id<MTLCommandEncoder> encoder, bool render);
     id<MTLBuffer> visibility_ = nil;

@@ -581,7 +581,7 @@ void getQueryObject(Context& ctx, GLuint name, GLenum pname, T* params) {
     }
     TransientAllocation staging = ctx.draw().transient().allocate(sizeof(T), ctx.stream().serial(), 16);
     std::memcpy(staging.data, &result, sizeof(T));
-    [ctx.stream().blit() copyFromBuffer:staging.buffer sourceOffset:staging.offset toBuffer:queryBuffer->mtl
+    [ctx.stream().blit(true) copyFromBuffer:staging.buffer sourceOffset:staging.offset toBuffer:queryBuffer->mtl
                         destinationOffset:static_cast<NSUInteger>(offset) size:sizeof(T)];
     queryBuffer->lastUseSerial = queryBuffer->lastWriteSerial = ctx.stream().serial();
     ++queryBuffer->version;

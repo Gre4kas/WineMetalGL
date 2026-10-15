@@ -102,15 +102,16 @@ void main() { gl_Position = vec4(0.0, 0.0, 0.0, 1.0); })",
     glFinish();
     {
         // Ten passes of 64 draws, alternating between two framebuffers: the
-        // work is committed where a pass starts anyway (draws 320 and 576),
-        // so there are still ten passes.
+        // work is committed where a pass starts anyway (at least at draws 320
+        // and 576; also wherever a pass starts a millisecond or more after the
+        // last commit), so there are still ten passes.
         gpu::Counters counters;
         for (int pass = 0; pass < 10; ++pass) {
             glBindFramebuffer(GL_FRAMEBUFFER, framebuffers[pass & 1]);
             for (int i = 0; i < 64; ++i) glDrawArrays(GL_POINTS, 0, 1);
         }
         CHECK_EQ(counters["passes"], 10ull);
-        CHECK_EQ(counters["commits"], 2ull);
+        CHECK(counters["commits"] >= 2ull && counters["commits"] <= 9ull);
     }
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     CHECK_GL();

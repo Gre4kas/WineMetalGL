@@ -23,11 +23,24 @@ thread_local Context* t_current = nullptr;
 
 thread_local int ShareLock::depth = 0;
 
-void waitForGpuUnlocked(Context& ctx, uint64_t serial) {
+void waitForGpuUnlocked(Context& ctx, uint64_t serial, bool keepBusy) {
     if (!serial) return;
     CommandStream& stream = ctx.stream();
     if (stream.queue().isComplete(serial)) return;
-    if (!stream.queue().isCommitted(serial)) stream.flush();
+    // The callers read buffers: a pending clear stays pending.
+    if (!stream.queue().isCommitted(serial)) {
+        stream.flush(true);
+    } else if (keepBusy && stream.drawsSinceCommit()) {
+        // Draws recorded since the serial was committed run while the CPU
+        // waits, instead of after it (the GPU would idle meanwhile). Opt-in
+        // (WINEMETALGL_WAIT_FLUSH=1): the commit splits the render pass in
+        // progress, which cost more than it saved in the Foundation probe.
+        static const bool enabled = [] {
+            const char* v = std::getenv("WINEMETALGL_WAIT_FLUSH");
+            return v && v[0] == '1';
+        }();
+        if (enabled) stream.flush(true);
+    }
     ShareUnlock unlock(ctx);
     stream.waitFor(serial);
 }

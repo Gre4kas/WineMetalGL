@@ -437,6 +437,10 @@ bool Surface::swap(CommandStream& stream) {
     ensurePresentPipeline();
     if (interval_ == 0) return swapMailbox(stream);
     stopMailbox();
+    // The frame's work reaches the GPU before the wait for a drawable (with
+    // vsync, nextDrawable blocks until one is free), and the present is a
+    // small command buffer of its own after it.
+    stream.flush();
     id<CAMetalDrawable> drawable = nil;
     {
         stats::Timer drawableTimer(&stats::Frame::drawableNanos);

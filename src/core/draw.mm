@@ -2151,19 +2151,40 @@ void DrawState::commitLargeWork(const RenderTargetDesc* target) {
         const char* v = std::getenv("WINEMETALGL_COMMIT_DRAWS");
         return v && *v ? static_cast<uint32_t>(std::strtoul(v, nullptr, 10)) : 256u;
     }();
+    const auto micros = [](const char* name, uint64_t fallback) {
+        const char* v = std::getenv(name);
+        return (v && *v ? std::strtoull(v, nullptr, 10) : fallback) * 1000;
+    };
+    // A draw that starts a new pass commits the work recorded since the last
+    // commit when that is this long ago: the pass ends anyway (no attachment
+    // is stored and loaded for it), and the GPU starts on the work while the
+    // CPU records the rest of the frame (a frame's many small passes would
+    // otherwise reach the GPU in one command buffer at SwapBuffers).
+    static const uint64_t passNanos = micros("WINEMETALGL_PASS_COMMIT_US", 1000);
+    // After an indirect wait, how long since the last commit before an idle
+    // GPU gets the draws recorded meanwhile (0: never). Off by default: with
+    // the culling committed at its barrier (CommandStream::memoryBarrier),
+    // the GPU idles little after a wait, and every such commit splits the
+    // G-buffer pass (Foundation probe: 24.2 -> 21.1 ms a frame without).
+    static const uint64_t eagerNanos = micros("WINEMETALGL_EAGER_US", 0);
     CommandStream& stream = ctx_.stream();
     const uint64_t recorded = stream.drawsSinceCommit();
+    if (!draws || !recorded) return;
+    if (target && passNanos && !stream.continuesPass(*target) && stats::nowNanos() - stream.lastCommitNanos() >= passNanos) {
+        stream.flush(true);
+        return;
+    }
     // In frames where the CPU waited for indirect commands the GPU wrote
     // (Foundation's culling, issue #12), each wait leaves the GPU idle while
     // the CPU records the draws that follow: a few of them are worth
     // committing while it is, instead of at the next wait.
-    const bool eager = stream.indirectWaited();
-    if (!draws || recorded < (eager ? std::min(draws, kIdleCommitDraws) : draws)) return;
-    const bool idle = eager && stream.queue().idle();
+    const bool eager = eagerNanos && stream.indirectWaited();
+    if (recorded < (eager ? std::min(draws, kIdleCommitDraws) : draws)) return;
+    const bool idle = eager && stream.queue().idle() && stats::nowNanos() - stream.lastCommitNanos() >= eagerNanos;
     if (!idle && recorded < draws) return;
     // A continuing draw ends the pass early only when the GPU is idle.
     if (target && stream.continuesPass(*target) && recorded < uint64_t{draws} * 8 && !idle) return;
-    stream.flush();
+    stream.flush(true);
 }
 
 bool DrawState::pointPolygons(GLenum mode) const {
@@ -2639,7 +2660,9 @@ void DrawState::dispatch(GLuint x, GLuint y, GLuint z, Buffer* indirect, GLintpt
     const uint16_t borders = borderVariant(lp, cs);
     id<MTLComputePipelineState> pipeline = borders ? lp.kernelWithBorders(lp.stage(Stage::Compute), cs, borders) : lp.computePipeline();
     if (!pipeline) return;
-    id<MTLComputeCommandEncoder> encoder = ctx_.stream().compute();
+    // A kernel without textures or images touches no attachment of a pending
+    // clear (Foundation's culling, between its G-buffer clear and draws).
+    id<MTLComputeCommandEncoder> encoder = ctx_.stream().compute(lp.link.samplers.empty() && lp.link.images.empty());
     [encoder setComputePipelineState:pipeline];
     bindKernelResources(encoder, lp, lp.stage(Stage::Compute).usesDefaultUniforms, static_cast<int>(Stage::Compute),
                         &lp.stage(Stage::Compute));
