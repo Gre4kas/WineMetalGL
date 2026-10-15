@@ -259,7 +259,9 @@ private:
 // Waits for `serial` (this context's work is flushed first) without the
 // share-group lock, so the other contexts of the share group keep running.
 // Shared object state may change meanwhile: callers re-validate it after.
-void waitForGpuUnlocked(Context& ctx, uint64_t serial);
+// keepBusy: commit the draws recorded since `serial` before waiting, so the
+// GPU runs them during the wait (the CPU reads commands a dispatch wrote).
+void waitForGpuUnlocked(Context& ctx, uint64_t serial, bool keepBusy = false);
 // glFinish-style: flushes, then waits for everything submitted, unlocked.
 void finishUnlocked(Context& ctx);
 

@@ -59,6 +59,11 @@ struct Frame {
     // that is as conforming as the CPU path's last vertex; a game that relies
     // on one shows here.
     uint64_t tessCpu = 0, tessMetal = 0, tessMetalFlat = 0, tessPrelude = 0;
+    // Multi-draws of patches drawn from GPU-written commands without reading
+    // them (DrawState::drawPatchesIndirectGpu), and their commands.
+    uint64_t tessMdiGpu = 0, tessMdiGpuCommands = 0;
+    // Render pipelines built with a position-only vertex function (depth-only passes).
+    uint64_t positionOnlyPipelines = 0;
     // Indirect draw commands read by the GPU, and read on the CPU (after
     // waiting for GPU writes to the command buffer); multi-draws whose
     // commands the GPU read with the draw state bound once for several.
@@ -75,6 +80,10 @@ struct Frame {
     uint64_t passEnds[8] = {};
     // glReadPixels copied by the GPU into a pack buffer, and reads that wait for the GPU.
     uint64_t readsAsync = 0, readsWaiting = 0;
+    // glClientWaitSync calls, those that found the fence signalled, and the
+    // time spent waiting in them (a game pacing frames on a fence of the last
+    // one waits for the GPU here, not in `waits`).
+    uint64_t clientWaits = 0, clientWaitsSignaled = 0, clientWaitNanos = 0;
     // Where draws spend CPU time (DrawState::issue and drawElements).
     uint64_t drawSamplersNanos = 0, drawVertexNanos = 0, drawPrepareNanos = 0, drawPipelineNanos = 0,
              drawBindNanos = 0, drawEncodeNanos = 0, drawIndexNanos = 0;
@@ -83,6 +92,10 @@ struct Frame {
 
 // GPU time of completed command buffers (any thread; reported and reset per frame).
 void addGpuNanos(uint64_t nanos);
+// A completed command buffer's GPU start and end (seconds, CFTimeInterval):
+// "gpu busy" is the union of these intervals, which overlapping command
+// buffers do not count twice (the "gpu" sum does).
+void addGpuInterval(double start, double end);
 
 Frame& frame();
 // The calling thread's counter `name` (a Frame field, "passEnds.<cause>" or

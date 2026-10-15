@@ -9,7 +9,7 @@
 namespace wmgl {
 
 Queue::Queue() {
-    queue_ = [Device::get().mtl() newCommandQueueWithMaxCommandBufferCount:64];
+    queue_ = [Device::get().mtl() newCommandQueueWithMaxCommandBufferCount:256];
     queue_.label = @"WineMetalGL";
 }
 
@@ -28,8 +28,10 @@ void Queue::commit(id<MTLCommandBuffer> buffer, uint64_t serial) {
         inflight_.insert(serial);
     }
     [buffer addCompletedHandler:^(id<MTLCommandBuffer> done) {
-        if (stats::g_enabled && done.GPUEndTime > done.GPUStartTime)
+        if (stats::g_enabled && done.GPUEndTime > done.GPUStartTime) {
             stats::addGpuNanos(static_cast<uint64_t>((done.GPUEndTime - done.GPUStartTime) * 1e9));
+            stats::addGpuInterval(done.GPUStartTime, done.GPUEndTime);
+        }
         if (done.status == MTLCommandBufferStatusError)
             WMGL_ERR("command buffer %llu failed: %s", static_cast<unsigned long long>(serial),
                      done.error.localizedDescription.UTF8String);

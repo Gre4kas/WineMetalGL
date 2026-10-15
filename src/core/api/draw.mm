@@ -140,7 +140,7 @@ bool readIndirectCommand(Context& ctx, const void* indirect, uint32_t* words, si
         stats::count(&stats::Frame::indirectWaits);
         ctx.stream().noteIndirectWait();
     }
-    if (buffer->lastWriteSerial) waitForGpuUnlocked(ctx, buffer->lastWriteSerial);
+    if (buffer->lastWriteSerial) waitForGpuUnlocked(ctx, buffer->lastWriteSerial, true);
     // Another context may have specified the buffer again during the wait.
     if (!fits()) return ctx.setError(GL_INVALID_OPERATION), false;
     std::memcpy(words, buffer->contents() + offset, count * 4);
@@ -279,6 +279,11 @@ void multiDrawArraysIndirect(Context& ctx, GLenum mode, const void* indirect, GL
 }
 
 void multiDrawElementsIndirect(Context& ctx, GLenum mode, GLenum type, const void* indirect, GLsizei drawcount, uintptr_t step) {
+    // Patches from commands a shader wrote: drawn without reading them.
+    if (mode == GL_PATCHES)
+        if (Buffer* buffer = ctx.state.drawIndirectBuffer.get();
+            buffer && ctx.draw().drawPatchesIndirectGpu(type, *buffer, reinterpret_cast<uintptr_t>(indirect), drawcount, step))
+            return;
     bool cpu = false;
     // Patches on the CPU path: commands that draw one instance of the same
     // whole number of patches are drawn as one batch (one control dispatch
@@ -348,7 +353,7 @@ GLsizei parameterDrawCount(Context& ctx, GLintptr offset, GLsizei maxdrawcount) 
     Buffer* buffer = ctx.state.parameterBuffer.get();
     if (!buffer || !buffer->mtl || 4 > buffer->size - offset || buffer->mappedNonPersistent())
         return ctx.setError(GL_INVALID_OPERATION), -1;
-    if (buffer->lastWriteSerial) waitForGpuUnlocked(ctx, buffer->lastWriteSerial);
+    if (buffer->lastWriteSerial) waitForGpuUnlocked(ctx, buffer->lastWriteSerial, true);
     // Another context may have specified the buffer again during the wait.
     if (!buffer->mtl || 4 > buffer->size - offset) return ctx.setError(GL_INVALID_OPERATION), -1;
     uint32_t count = 0;

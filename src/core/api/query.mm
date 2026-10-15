@@ -581,7 +581,7 @@ void getQueryObject(Context& ctx, GLuint name, GLenum pname, T* params) {
     }
     TransientAllocation staging = ctx.draw().transient().allocate(sizeof(T), ctx.stream().serial(), 16);
     std::memcpy(staging.data, &result, sizeof(T));
-    [ctx.stream().blit() copyFromBuffer:staging.buffer sourceOffset:staging.offset toBuffer:queryBuffer->mtl
+    [ctx.stream().blit(true) copyFromBuffer:staging.buffer sourceOffset:staging.offset toBuffer:queryBuffer->mtl
                         destinationOffset:static_cast<NSUInteger>(offset) size:sizeof(T)];
     queryBuffer->lastUseSerial = queryBuffer->lastWriteSerial = ctx.stream().serial();
     ++queryBuffer->version;
@@ -670,9 +670,14 @@ GLenum ClientWaitSync(Context& ctx, GLsync handle, GLbitfield flags, GLuint64 ti
     if (flags & ~GL_SYNC_FLUSH_COMMANDS_BIT) return ctx.setError(GL_INVALID_VALUE), GL_WAIT_FAILED;
     RefPtr<Sync> hold(sync);
     Queue& queue = ctx.share().queue;
-    if (!sync->serial || queue.isComplete(sync->serial)) return GL_ALREADY_SIGNALED;
+    stats::count(&stats::Frame::clientWaits);
+    if (!sync->serial || queue.isComplete(sync->serial)) {
+        stats::count(&stats::Frame::clientWaitsSignaled);
+        return GL_ALREADY_SIGNALED;
+    }
     if (flags & GL_SYNC_FLUSH_COMMANDS_BIT) ctx.stream().flush();
     if (timeout == 0) return GL_TIMEOUT_EXPIRED;
+    stats::Timer timer(&stats::Frame::clientWaitNanos);
     ShareUnlock unlock(ctx);  // `hold` keeps the sync alive
     return queue.waitSignaled(sync->serial, timeout) ? GL_CONDITION_SATISFIED : GL_TIMEOUT_EXPIRED;
 }

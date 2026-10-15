@@ -204,29 +204,43 @@ void setUniform(Context& ctx, Program* p, GLint location, GLsizei count, char ki
             const GLint unit = static_cast<GLint>(values[i]);
             if (unit < 0 || unit >= kMaxCombinedTextureUnits) return ctx.setError(GL_INVALID_VALUE);
         }
-        for (GLsizei i = 0; i < n; ++i) p->samplerUnits[static_cast<size_t>(u->samplerSlot + element + i)] = static_cast<GLint>(values[i]);
-        ctx.markDirty(kDirtyTextures);
+        // Games set sampler units every frame to the values they have (Foundation, issue #12).
+        bool changed = false;
+        for (GLsizei i = 0; i < n; ++i) {
+            GLint& unit = p->samplerUnits[static_cast<size_t>(u->samplerSlot + element + i)];
+            changed |= unit != static_cast<GLint>(values[i]);
+            unit = static_cast<GLint>(values[i]);
+        }
+        if (changed) ctx.markDirty(kDirtyTextures);
         return;
     }
     const size_t stride = u->arrayStride ? static_cast<size_t>(u->arrayStride) : 16;
+    bool changed = false;
+    const auto store = [&](uint8_t* dst, const void* value, size_t bytes) {
+        if (std::memcmp(dst, value, bytes) == 0) return;
+        std::memcpy(dst, value, bytes);
+        changed = true;
+    };
     for (GLsizei i = 0; i < n; ++i) {
         uint8_t* dst = p->uniformData.data() + u->offset + (element + i) * stride;
         for (int c = 0; c < components; ++c) {
             const T v = values[i * components + c];
             if (info.base == 'd') {
                 const double d = static_cast<double>(v);
-                std::memcpy(dst + c * 8, &d, 8);
+                store(dst + c * 8, &d, 8);
             } else if (info.base == 'b') {
                 const uint32_t b = v != T(0) ? 1u : 0u;
-                std::memcpy(dst + c * 4, &b, 4);
+                store(dst + c * 4, &b, 4);
             } else if (info.base == 'f') {
                 const float f = static_cast<float>(v);
-                std::memcpy(dst + c * 4, &f, 4);
+                store(dst + c * 4, &f, 4);
             } else {
-                std::memcpy(dst + c * 4, &v, 4);
+                store(dst + c * 4, &v, 4);
             }
         }
     }
+    // An unchanged value leaves the uniforms bound as they are.
+    if (!changed) return;
     ++p->uniformVersion;
     ctx.markDirty(kDirtyUniforms);
 }
@@ -250,16 +264,20 @@ void setUniformMatrix(Context& ctx, Program* p, GLint location, GLsizei count, G
     const GLsizei n = std::min<GLsizei>(count, u->size - element);
     const size_t matrixStride = u->matrixStride ? static_cast<size_t>(u->matrixStride) : 16;
     const size_t arrayStride = u->arrayStride ? static_cast<size_t>(u->arrayStride) : matrixStride * static_cast<size_t>(columns);
+    bool changed = false;
     for (GLsizei i = 0; i < n; ++i) {
         const T* m = values + i * columns * rows;
         uint8_t* dst = p->uniformData.data() + u->offset + (element + i) * arrayStride;
         for (int c = 0; c < columns; ++c)
             for (int r = 0; r < rows; ++r) {
                 const T v = transpose ? m[r * columns + c] : m[c * rows + r];
-                if (u->rowMajor) std::memcpy(dst + r * matrixStride + c * size, &v, size);
-                else std::memcpy(dst + c * matrixStride + r * size, &v, size);
+                uint8_t* at = dst + (u->rowMajor ? r * matrixStride + c * size : c * matrixStride + r * size);
+                if (std::memcmp(at, &v, size) == 0) continue;
+                std::memcpy(at, &v, size);
+                changed = true;
             }
     }
+    if (!changed) return;  // the uniforms bound stay valid
     ++p->uniformVersion;
     ctx.markDirty(kDirtyUniforms);
 }

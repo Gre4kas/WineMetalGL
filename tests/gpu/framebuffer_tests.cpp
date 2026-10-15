@@ -235,3 +235,79 @@ GPU_TEST(gpu_depth_only_fbo_read) {
     glClearDepth(1.0);
     CHECK_GL();
 }
+
+GPU_TEST(gpu_depth_only_position_only_vertex) {
+    // A depth-only pass to a depth texture never drawn with colour (a shadow
+    // map) draws with a vertex function that writes only the position: its
+    // depth is the full vertex function's (drawn with colour into another
+    // depth texture), texel for texel.
+    GLuint p = gpu::program("#version 330 core\nlayout(location = 0) in vec2 pos;\nout vec3 normal;\nout vec4 tint;\n"
+                            "uniform float tilt;\n"
+                            "void main() {\n"
+                            "    normal = normalize(vec3(pos, 1.0 + tilt));\n"
+                            "    tint = vec4(sin(pos.x * 7.0), cos(pos.y * 5.0), tilt, 1.0);\n"
+                            "    gl_Position = vec4(pos, 0.25 + 0.5 * (pos.x + 1.0) * 0.5 + tilt * pos.y, 1.0);\n"
+                            "}\n",
+                            "#version 330 core\nin vec3 normal;\nin vec4 tint;\nout vec4 o;\n"
+                            "void main() { o = vec4(normal * 0.5 + 0.5, 1.0) * tint; }\n");
+    const float tri[6] = {-1, -1, 3, -1, -1, 3};
+    GLuint vao = 0, vbo = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(tri), tri, GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
+    glEnableVertexAttribArray(0);
+    glUseProgram(p);
+    glUniform1f(glGetUniformLocation(p, "tilt"), 0.125f);
+    GLuint depth[2] = {}, color = 0, fb[2] = {};
+    glGenTextures(2, depth);
+    glGenTextures(1, &color);
+    glGenFramebuffers(2, fb);
+    for (int i = 0; i < 2; ++i) {
+        glBindTexture(GL_TEXTURE_2D, depth[i]);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32F, 32, 32, 0, GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
+        glBindFramebuffer(GL_FRAMEBUFFER, fb[i]);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, depth[i], 0);
+    }
+    glBindTexture(GL_TEXTURE_2D, color);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 32, 32, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glBindFramebuffer(GL_FRAMEBUFFER, fb[1]);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, color, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, fb[0]);
+    const GLenum none = GL_NONE;
+    glDrawBuffers(1, &none);
+    glReadBuffer(GL_NONE);
+    CHECK_EQ(glCheckFramebufferStatus(GL_FRAMEBUFFER), static_cast<GLenum>(GL_FRAMEBUFFER_COMPLETE));
+    glViewport(0, 0, 32, 32);
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_ALWAYS);
+    std::vector<float> values[2];
+    unsigned long long reduced = 0;
+    for (int i = 0; i < 2; ++i) {
+        glBindFramebuffer(GL_FRAMEBUFFER, fb[i]);
+        glClear(GL_DEPTH_BUFFER_BIT | (i ? GL_COLOR_BUFFER_BIT : 0));
+        gpu::Counters counters;
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        if (!i) reduced = counters["positionOnlyPipelines"];
+        values[i].resize(32 * 32);
+        glReadPixels(0, 0, 32, 32, GL_DEPTH_COMPONENT, GL_FLOAT, values[i].data());
+    }
+    CHECK_GL();
+    CHECK_EQ(reduced, 1ull);
+    int different = 0;
+    for (size_t t = 0; t < values[0].size(); ++t) different += values[0][t] != values[1][t];
+    if (different) std::fprintf(stderr, "  %d of 1024 depth texels differ\n", different);
+    CHECK_EQ(different, 0);
+    CHECK(values[0][16 * 32 + 16] > 0.2f && values[0][16 * 32 + 16] < 0.9f);
+    glDisable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LESS);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(2, fb);
+    glDeleteTextures(2, depth);
+    glDeleteTextures(1, &color);
+    glDeleteBuffers(1, &vbo);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
+}

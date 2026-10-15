@@ -656,9 +656,15 @@ bool DrawState::bindVertexInputs(id<MTLRenderCommandEncoder> encoder, PipelineKe
     };
     // Direct groups first: layout g is group g. Renumbered vertices (issue())
     // read from the draw's first vertex on.
-    for (const Plan::DirectGroup& g : plan.groups) {
-        const NSUInteger base = g.base + (g.divisor ? 0 : static_cast<NSUInteger>(vertexRebase_) * g.stride);
-        if (addLayout(g.buffer->mtl, base, g.stride, g.divisor, false) < 0) return false;
+    for (size_t gi = 0; gi < plan.groups.size(); ++gi) {
+        const Plan::DirectGroup& g = plan.groups[gi];
+        if (gpuGather_) {
+            // The group's windows, gathered per vertex (drawPatchesIndirectGpu).
+            if (addLayout(gpuGather_->buffer, gpuGather_->offsets[gi], gpuGather_->strides[gi], 0, false) < 0) return false;
+        } else {
+            const NSUInteger base = g.base + (g.divisor ? 0 : static_cast<NSUInteger>(vertexRebase_) * g.stride);
+            if (addLayout(g.buffer->mtl, base, g.stride, g.divisor, false) < 0) return false;
+        }
         g.buffer->lastUseSerial = serial;
     }
     struct Converted {
@@ -1266,10 +1272,24 @@ void DrawState::uncompressFeedbackTextures(LinkedProgram& program) {
         const auto [owner, ownIndex] = samplerSource(program, index);
         const GLint unit = owner && ownIndex < owner->samplerUnits.size() ? owner->samplerUnits[ownIndex] : 0;
         if (unit < 0 || unit >= ContextState::kMaxTextureUnits || slot.textureTarget < 0) continue;
-        Texture* sampled = root(ctx_.state.textureUnits[unit].bound[slot.textureTarget].get());
+        Texture* bound = ctx_.state.textureUnits[unit].bound[slot.textureTarget].get();
+        Texture* sampled = root(bound);
         if (!sampled || sampled->formatViews) continue;
-        bool attached = root(fb->depth.texture.get()) == sampled || root(fb->stencil.texture.get()) == sampled;
-        for (const Attachment& a : fb->color) attached = attached || root(a.texture.get()) == sampled;
+        // The levels the draw samples (texture views: all of the root's); an
+        // attachment of another level (a mip chain built a level at a time
+        // from the one above) is no feedback.
+        int first = 0, last = INT32_MAX;
+        if (bound == sampled && sampled->mtlLevels > 0) {
+            first = std::clamp(sampled->baseLevel, 0, sampled->mtlLevels - 1);
+            last = std::max(first, std::min(sampled->maxLevel, sampled->mtlLevels - 1));
+        }
+        const auto feeds = [&](const Attachment& a) {
+            Texture* t = a.texture.get();
+            if (root(t) != sampled) return false;
+            return t != sampled || (a.level >= first && a.level <= last);
+        };
+        bool attached = feeds(fb->depth) || feeds(fb->stencil);
+        for (const Attachment& a : fb->color) attached = attached || feeds(a);
         if (!attached) continue;
         sampled->formatViews = sampled->storageDirty = true;
         if (sampled->mtl) ensureTextureStorage(ctx_, *sampled);
@@ -1600,6 +1620,18 @@ id<MTLRenderCommandEncoder> DrawState::prepare(GLenum mode, MTLPrimitiveType& pr
     }
     key.depthFormat = static_cast<uint16_t>(formats.depth);
     key.stencilFormat = static_cast<uint16_t>(formats.stencil);
+    // Depth textures drawn with colour attachments (depth pre-passes, the
+    // main view's depth) keep the full vertex function in their depth-only
+    // passes too: the same geometry's depth must match exactly there. Others
+    // (shadow maps) may take one that writes only the position.
+    key.positionOnly = 0;
+    if (target.depth.texture) {
+        const void* depth = (__bridge const void*)target.depth.texture;
+        bool color = false;
+        for (int i = 0; i < 8; ++i) color |= formats.color[i] != 0;
+        if (color) depthWithColor_.insert(depth);
+        else key.positionOnly = key.rasterization && !depthWithColor_.count(depth);
+    }
     (void)primitive;
     lastKey_ = key;
     lastFormats_ = formats;
@@ -1894,7 +1926,14 @@ bool DrawState::issue(GLenum mode, GLint first, GLsizei count, GLsizei instances
         lastPipeline_ = pipeline;
     }
     if (!pipeline) return false;
-    [encoder setRenderPipelineState:pipeline];
+    {
+        // The pipeline the encoder has (encoderState_ is valid while only
+        // this path drew since: bindDrawState's rule) is not set again.
+        const uint64_t pass = ctx_.stream().passGeneration(), calls = ctx_.stream().renderCalls();
+        const bool valid = encoderState_.pass == pass && (calls == encoderState_.calls || calls == encoderState_.calls + 1);
+        if (!valid || encoderState_.pipeline != pipeline) [encoder setRenderPipelineState:pipeline];
+        encoderState_.pipeline = pipeline;
+    }
     phase.switchTo(&stats::Frame::drawBindNanos);
     bindDrawState(encoder, program);
     if (program.link.xfbVertexCapture) bindCaptureDefaults(encoder, program);
@@ -2151,19 +2190,40 @@ void DrawState::commitLargeWork(const RenderTargetDesc* target) {
         const char* v = std::getenv("WINEMETALGL_COMMIT_DRAWS");
         return v && *v ? static_cast<uint32_t>(std::strtoul(v, nullptr, 10)) : 256u;
     }();
+    const auto micros = [](const char* name, uint64_t fallback) {
+        const char* v = std::getenv(name);
+        return (v && *v ? std::strtoull(v, nullptr, 10) : fallback) * 1000;
+    };
+    // A draw that starts a new pass commits the work recorded since the last
+    // commit when that is this long ago: the pass ends anyway (no attachment
+    // is stored and loaded for it), and the GPU starts on the work while the
+    // CPU records the rest of the frame (a frame's many small passes would
+    // otherwise reach the GPU in one command buffer at SwapBuffers).
+    static const uint64_t passNanos = micros("WINEMETALGL_PASS_COMMIT_US", 1000);
+    // After an indirect wait, how long since the last commit before an idle
+    // GPU gets the draws recorded meanwhile (0: never). Off by default: with
+    // the culling committed at its barrier (CommandStream::memoryBarrier),
+    // the GPU idles little after a wait, and every such commit splits the
+    // G-buffer pass (Foundation probe: 24.2 -> 21.1 ms a frame without).
+    static const uint64_t eagerNanos = micros("WINEMETALGL_EAGER_US", 0);
     CommandStream& stream = ctx_.stream();
     const uint64_t recorded = stream.drawsSinceCommit();
+    if (!draws || !recorded) return;
+    if (target && passNanos && !stream.continuesPass(*target) && stats::nowNanos() - stream.lastCommitNanos() >= passNanos) {
+        stream.flush(true);
+        return;
+    }
     // In frames where the CPU waited for indirect commands the GPU wrote
     // (Foundation's culling, issue #12), each wait leaves the GPU idle while
     // the CPU records the draws that follow: a few of them are worth
     // committing while it is, instead of at the next wait.
-    const bool eager = stream.indirectWaited();
-    if (!draws || recorded < (eager ? std::min(draws, kIdleCommitDraws) : draws)) return;
-    const bool idle = eager && stream.queue().idle();
+    const bool eager = eagerNanos && stream.indirectWaited();
+    if (recorded < (eager ? std::min(draws, kIdleCommitDraws) : draws)) return;
+    const bool idle = eager && stream.queue().idle() && stats::nowNanos() - stream.lastCommitNanos() >= eagerNanos;
     if (!idle && recorded < draws) return;
     // A continuing draw ends the pass early only when the GPU is idle.
     if (target && stream.continuesPass(*target) && recorded < uint64_t{draws} * 8 && !idle) return;
-    stream.flush();
+    stream.flush(true);
 }
 
 bool DrawState::pointPolygons(GLenum mode) const {
@@ -2454,6 +2514,7 @@ bool DrawState::runVertexCapture(LinkedProgram& lp, const std::vector<uint32_t>&
     id<MTLRenderPipelineState> pipeline = ctx_.share().pipelines().render(key, lp);
     if (!pipeline) return false;
     [encoder setRenderPipelineState:pipeline];
+    encoderState_.pipeline = nil;  // issue() sets its own again
     if (drawMode != GL_NONE) {
         bindDrawState(encoder, lp);
     } else {
@@ -2639,7 +2700,9 @@ void DrawState::dispatch(GLuint x, GLuint y, GLuint z, Buffer* indirect, GLintpt
     const uint16_t borders = borderVariant(lp, cs);
     id<MTLComputePipelineState> pipeline = borders ? lp.kernelWithBorders(lp.stage(Stage::Compute), cs, borders) : lp.computePipeline();
     if (!pipeline) return;
-    id<MTLComputeCommandEncoder> encoder = ctx_.stream().compute();
+    // A kernel without textures or images touches no attachment of a pending
+    // clear (Foundation's culling, between its G-buffer clear and draws).
+    id<MTLComputeCommandEncoder> encoder = ctx_.stream().compute(lp.link.samplers.empty() && lp.link.images.empty());
     [encoder setComputePipelineState:pipeline];
     bindKernelResources(encoder, lp, lp.stage(Stage::Compute).usesDefaultUniforms, static_cast<int>(Stage::Compute),
                         &lp.stage(Stage::Compute));
@@ -2707,6 +2770,7 @@ void DrawState::drawWideLines(GLenum mode, const std::vector<uint32_t>& vertices
         if (id<MTLRenderPipelineState> pipeline = bound ? ctx_.share().pipelines().render(key, *current) : nil) {
             stats::count(&stats::Frame::draws);
             [encoder setRenderPipelineState:pipeline];
+            encoderState_.pipeline = nil;  // issue() sets its own again
             bindDrawState(encoder, *current);
             [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:list.size()
                       instanceCount:static_cast<NSUInteger>(std::max(1, instances)) baseInstance:baseInstance_];
@@ -2808,6 +2872,7 @@ void DrawState::drawGeometry(GLenum mode, const std::vector<uint32_t>& vertices,
             id<MTLRenderPipelineState> pipeline = ctx_.share().pipelines().render(key, lp);
             if (pipeline) {
                 [encoder setRenderPipelineState:pipeline];
+                encoderState_.pipeline = nil;  // issue() sets its own again
                 bindDrawState(encoder, lp);
                 [encoder setVertexBuffer:output.buffer offset:output.offset atIndex:shader::kSlotFirstXfbBuffer];
                 if (g.outputType == GL_POINTS)
@@ -3063,8 +3128,9 @@ void DrawState::drawPatches(const std::vector<uint32_t>& vertices, GLsizei insta
         [compute setBuffer:output.buffer offset:output.offset atIndex:shader::kSlotFirstXfbBuffer + 1];
         std::memcpy(params.data, control, sizeof(control));
         [compute setBuffer:params.buffer offset:params.offset atIndex:shader::kSlotFirstXfbBuffer + 2];
-        [compute dispatchThreadgroups:MTLSizeMake(total, 1, 1)
-                threadsPerThreadgroup:MTLSizeMake(static_cast<NSUInteger>(t.verticesOut), 1, 1)];
+        const uint64_t groupPatches = std::max(1u, t.patchesPerGroup);
+        [compute dispatchThreadgroups:MTLSizeMake((total + groupPatches - 1) / groupPatches, 1, 1)
+                threadsPerThreadgroup:MTLSizeMake(static_cast<NSUInteger>(t.verticesOut * groupPatches), 1, 1)];
         if (metal) {
             // Metal's tessellator reads the levels on the GPU: no read-back.
             const uint32_t levelsAt = static_cast<uint32_t>(t.verticesOut) * t.vertexWords;
@@ -3227,7 +3293,8 @@ bool DrawState::metalTessellation(LinkedProgram& program, LinkedProgram& evaluat
 
 bool DrawState::drawMetalPatches(LinkedProgram& program, LinkedProgram& evaluation, id<MTLBuffer> records,
                                  NSUInteger recordsOffset, id<MTLBuffer> factors, NSUInteger factorsOffset, uint64_t patches,
-                                 uint32_t patchesPerInstance, uint32_t patchVertices) {
+                                 uint32_t patchesPerInstance, uint32_t patchVertices, id<MTLBuffer> indirect,
+                                 NSUInteger indirectOffset) {
     const shader::TessellationEmulation& t = program.link.tess;
     const uint64_t serial = ctx_.stream().serial();
     struct {
@@ -3275,16 +3342,22 @@ bool DrawState::drawMetalPatches(LinkedProgram& program, LinkedProgram& evaluati
             stats::count(&stats::Frame::tessMetal);
             stats::count(&stats::Frame::draws);
             [encoder setRenderPipelineState:pipeline];
+            encoderState_.pipeline = nil;  // issue() sets its own again
             bindDrawState(encoder, evaluation);
             if (evaluation.link.xfbVertexCapture) bindCaptureDefaults(encoder, evaluation);
             [encoder setTessellationFactorBuffer:factors offset:factorsOffset instanceStride:0];
-            [encoder drawPatches:static_cast<NSUInteger>(t.hasControl ? t.verticesOut : static_cast<GLint>(patchVertices))
-                       patchStart:0
-                       patchCount:static_cast<NSUInteger>(patches)
-                 patchIndexBuffer:nil
-           patchIndexBufferOffset:0
-                    instanceCount:1
-                     baseInstance:0];
+            const NSUInteger controlPoints = static_cast<NSUInteger>(t.hasControl ? t.verticesOut : static_cast<GLint>(patchVertices));
+            if (indirect)
+                [encoder drawPatches:controlPoints patchIndexBuffer:nil patchIndexBufferOffset:0 indirectBuffer:indirect
+                    indirectBufferOffset:indirectOffset];
+            else
+                [encoder drawPatches:controlPoints
+                           patchStart:0
+                           patchCount:static_cast<NSUInteger>(patches)
+                     patchIndexBuffer:nil
+               patchIndexBufferOffset:0
+                        instanceCount:1
+                         baseInstance:0];
             ctx_.stream().noteDraw();
         }
     }
@@ -3338,6 +3411,266 @@ void DrawState::drawPatchCommands(GLenum type, const uint32_t (*commands)[5], si
     BaseInstanceScope scope(*this, commands[0][4]);
     if (!bases.empty() && bases.size() > 1) drawPatches(vertices, 1, commands[0][0] / patchVertices, &bases);
     else drawPatches(vertices, 1, commands[0][0] / patchVertices);
+}
+
+namespace {
+
+id<MTLComputePipelineState> utilityKernel(const char* name) {
+    id<MTLFunction> function = [Device::get().utilityLibrary() newFunctionWithName:@(name)];
+    NSError* error = nil;
+    id<MTLComputePipelineState> state = function ? [Device::get().mtl() newComputePipelineStateWithFunction:function error:&error] : nil;
+    if (!state) WMGL_ERR("%s kernel: %s", name, error ? error.localizedDescription.UTF8String : "missing");
+    return state;
+}
+
+id<MTLComputePipelineState> mdiPatchScanKernel() {
+    static id<MTLComputePipelineState> state = utilityKernel("wmgl_mdi_patch_scan");
+    return state;
+}
+
+id<MTLComputePipelineState> mdiPatchExpandKernel() {
+    static id<MTLComputePipelineState> state = utilityKernel("wmgl_mdi_patch_expand");
+    return state;
+}
+
+// The vertices a DrawElementsIndirectCommand lists for patches of
+// `patchVertices` (whole patches of each instance), 0 if out of range.
+uint64_t mdiPatchVertices(const uint32_t* c, uint64_t elementCount, uint32_t patchVertices) {
+    const uint64_t count = c[0], instances = c[1], first = c[2];
+    if (!count || !instances || first > elementCount || count > elementCount - first) return 0;
+    return count / patchVertices * patchVertices * instances;
+}
+
+}  // namespace
+
+bool DrawState::drawPatchesIndirectGpu(GLenum type, Buffer& commands, uintptr_t offset, GLsizei drawcount, uintptr_t stride) {
+    static const bool enabled = [] {
+        const char* v = std::getenv("WINEMETALGL_TESS_MDI_GPU");
+        return !v || v[0] != '0';
+    }();
+    if (!enabled || drawcount <= 0 || (type != GL_UNSIGNED_INT && type != GL_UNSIGNED_SHORT)) return false;
+    if (!commands.mtl || offset % 4 || stride % 4 || commands.mappedNonPersistent()) return false;
+    if (!mdiPatchScanKernel() || !mdiPatchExpandKernel() || !tessFactorsKernel()) return false;
+    ImageShadowScope shadows(*this);
+    beginDraw(GL_PATCHES);
+    LinkedProgram* current = executable();
+    if (!current || !canBatchPatchCommands()) return false;
+    LinkedProgram& lp = *current;
+    const shader::TessellationEmulation& t = lp.link.tess;
+    if (!t.hasControl || t.verticesOut <= 0 || t.pointMode || t.readsPrimitiveId || t.readsInstanceId) return false;
+    std::shared_ptr<LinkedProgram> evaluation = lp.tessEvaluation();
+    if (!evaluation || !lp.tessControlKernel() || !metalTessellation(lp, *evaluation)) return false;
+    CommandStream& stream = ctx_.stream();
+    Buffer* elements = ctx_.state.vertexArray->elementBuffer.get();
+    if (!elements || !elements->mtl || elements->mappedNonPersistent()) return false;
+    // The prelude runs ahead of the command buffer being recorded: nothing it
+    // reads may be written in it (Foundation's culling ends at a barrier,
+    // which commits it: CommandStream::memoryBarrier).
+    const uint64_t serial = stream.serial();
+    if (commands.lastWriteSerial == serial || elements->lastWriteSerial == serial || !tessPrelude(lp)) return false;
+    VertexInputPlan plan;
+    planVertexInputs(lp, false, plan);
+    const VertexArray& vao = *ctx_.state.vertexArray;
+    uint32_t windowEnd[13] = {};
+    for (const shader::StageOutput::VertexInput& input : lp.stage(Stage::Vertex).vertexInputs) {
+        if (input.location < 0 || input.location >= VertexArray::kAttribSlots) continue;
+        const VertexInputPlan::How how = plan.how[static_cast<size_t>(input.location)];
+        if (how == VertexInputPlan::Direct) {
+            const size_t g = static_cast<size_t>(plan.group[static_cast<size_t>(input.location)]);
+            const VertexFetch fetch = vertexFetch(input, attribFor(vao, input.source()));
+            windowEnd[g] = std::max<uint32_t>(windowEnd[g], static_cast<uint32_t>(fetch.offset - plan.groups[g].base + fetch.bytes));
+        } else if (how != VertexInputPlan::Constant && how != VertexInputPlan::None) {
+            return false;  // converted on the CPU
+        }
+    }
+    if (plan.groups.size() > 8) return false;
+    // Errors (and a draw conditional rendering discards) as the CPU path's first command reports them.
+    if (!validateDraw(GL_PATCHES) || !conditionalRenderAllows(ctx_)) return true;
+
+    const uint32_t patchVertices = static_cast<uint32_t>(std::max(1, ctx_.state.patchVertices));
+    const uint32_t indexSize = type == GL_UNSIGNED_SHORT ? 2 : 4;
+    const uint64_t elementCount = static_cast<uint64_t>(std::max<GLsizeiptr>(0, elements->size)) / indexSize;
+    const uint64_t siteKey = (lp.uid * 0x9e3779b97f4a7c15ull) ^ (uint64_t{commands.name} << 40) ^ (uint64_t{offset} << 8) ^
+                             static_cast<uint64_t>(drawcount) ^ (uint64_t{patchVertices} << 60);
+    if (mdiSites_.size() > 1024) mdiSites_.clear();
+    MdiSite& site = mdiSites_[siteKey];
+    if (!site.report) {
+        site.report = [Device::get().mtl() newBufferWithLength:8 * 4 options:MTLResourceStorageModeShared];
+        if (!site.report) return false;
+    }
+    const auto grow = [&](uint64_t total) {
+        // A site sized once keeps a capacity even when its commands drew
+        // nothing (all culled): it is never sized on the CPU again.
+        if (site.capacity && total <= site.capacity) return;
+        const uint64_t wanted = std::max<uint64_t>(256, total * 2);
+        site.capacity = static_cast<uint32_t>(std::min<uint64_t>(wanted, (1u << 26)) / patchVertices * patchVertices);
+    };
+    for (int i = 0; i < 8; ++i)
+        if (site.serials[i] && stream.queue().isComplete(site.serials[i])) {
+            grow(static_cast<const uint32_t*>(site.report.contents)[i]);
+            site.serials[i] = 0;
+        }
+    if (!site.capacity) {
+        // The first draw of the site sizes the buffers from the commands
+        // (read once on the CPU, as the CPU path that draws it now does).
+        if (commands.lastWriteSerial) waitForGpuUnlocked(ctx_, commands.lastWriteSerial);
+        if (!commands.mtl || offset + uint64_t{static_cast<uint64_t>(drawcount - 1)} * stride + 20 > static_cast<uint64_t>(commands.size))
+            return false;
+        uint64_t total = 0;
+        for (GLsizei c = 0; c < drawcount; ++c)
+            total += mdiPatchVertices(reinterpret_cast<const uint32_t*>(commands.contents() + offset + uint64_t{static_cast<uint64_t>(c)} * stride),
+                                      elementCount, patchVertices);
+        grow(total);
+        return false;
+    }
+    const uint32_t capacity = site.capacity, patchCapacity = capacity / patchVertices;
+    if (!patchCapacity) return false;
+
+    // Buffers, all in this command buffer's transient memory.
+    uint32_t windowWords[8] = {}, dstWords[8] = {}, gatheredWords = 0;
+    for (size_t g = 0; g < plan.groups.size(); ++g) {
+        windowWords[g] = (windowEnd[g] + 3) / 4;
+        dstWords[g] = gatheredWords;
+        gatheredWords += capacity * windowWords[g];
+    }
+    const uint32_t recordWords = t.recordWords();
+    const bool quads = t.mode == GL_QUADS;
+    TransientAllocation starts = transient_.allocate((static_cast<size_t>(drawcount) + 1) * 4, serial, 16);
+    TransientAllocation args = transient_.allocate(96, serial, 16);
+    TransientAllocation capture = transient_.allocate((12 + size_t{capacity}) * 4, serial, 16);
+    TransientAllocation controlParams = transient_.allocate(16, serial, 16);
+    TransientAllocation factorParams = transient_.allocate(16, serial, 16);
+    TransientAllocation gathered = transient_.allocate(std::max<size_t>(4, size_t{gatheredWords} * 4), serial, 16);
+    TransientAllocation captured = transient_.allocate(size_t{capacity} * t.inputStride * 4, serial, 16);
+    TransientAllocation records = transient_.allocate(size_t{patchCapacity} * recordWords * 4, serial, 16);
+    TransientAllocation factors = transient_.allocate(size_t{patchCapacity} * (quads ? 12 : 8), serial, 16);
+    if (!starts.buffer || !args.buffer || !capture.buffer || !controlParams.buffer || !factorParams.buffer || !gathered.buffer ||
+        !captured.buffer || !records.buffer || !factors.buffer)
+        return false;
+    {
+        auto* w = static_cast<uint32_t*>(capture.data);  // active, vertex count, limit (GPU), pad, base[4], stride[4]
+        std::memset(w, 0, 12 * 4);
+        w[0] = 1;
+        w[4] = static_cast<uint32_t>(captured.offset / 4);
+        w[8] = t.inputStride;
+        const uint32_t control[4] = {patchVertices, 0, UINT32_MAX, 0};  // patch count from the GPU
+        std::memcpy(controlParams.data, control, sizeof(control));
+        const uint32_t levelsAt = static_cast<uint32_t>(t.verticesOut) * t.vertexWords;
+        const uint32_t factor[4] = {recordWords, levelsAt, 0, (quads ? 1u : 0u) | (t.spacing == GL_EQUAL ? 2u : 0u)};
+        std::memcpy(factorParams.data, factor, sizeof(factor));
+    }
+    struct {
+        uint32_t drawCount, strideWords, elementCount, patchVertices, capacity, indexSize, groups, reportSlot;
+        uint32_t controlGroupPatches, pad[3];
+    } params = {static_cast<uint32_t>(drawcount), static_cast<uint32_t>(stride / 4),
+                static_cast<uint32_t>(std::min<uint64_t>(elementCount, UINT32_MAX)), patchVertices, capacity, indexSize,
+                static_cast<uint32_t>(plan.groups.size()), site.next, std::max(1u, t.patchesPerGroup), {0, 0, 0}};
+    struct Group {
+        uint32_t srcBase, srcStride, divisor, windowWords, dstWords, srcLength, pad0, pad1;
+    } groups[8] = {};
+    for (size_t g = 0; g < plan.groups.size(); ++g) {
+        const VertexInputPlan::DirectGroup& d = plan.groups[g];
+        groups[g] = {static_cast<uint32_t>(d.base), d.stride, d.divisor, windowWords[g], dstWords[g],
+                     static_cast<uint32_t>(std::min<NSUInteger>(d.buffer->mtl.length, UINT32_MAX)), 0, 0};
+    }
+    site.serials[site.next] = serial;
+    site.next = (site.next + 1) % 8;
+
+    // 1. List the patch vertices and gather their attributes.
+    id<MTLComputeCommandEncoder> setup = stream.preludeStep(CommandStream::PreludeStep::Scan);
+    id<MTLComputePipelineState> scan = mdiPatchScanKernel();
+    [setup setComputePipelineState:scan];
+    [setup setBuffer:commands.mtl offset:offset atIndex:0];
+    [setup setBuffer:starts.buffer offset:starts.offset atIndex:1];
+    [setup setBuffer:args.buffer offset:args.offset atIndex:2];
+    [setup setBuffer:capture.buffer offset:capture.offset atIndex:3];
+    [setup setBuffer:controlParams.buffer offset:controlParams.offset atIndex:4];
+    [setup setBuffer:factorParams.buffer offset:factorParams.offset atIndex:5];
+    [setup setBytes:&params length:sizeof(params) atIndex:6];
+    [setup setBuffer:site.report offset:0 atIndex:7];
+    const NSUInteger scanThreads = std::min<NSUInteger>(1024, scan.maxTotalThreadsPerThreadgroup) / 32 * 32;
+    [setup dispatchThreadgroups:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(scanThreads, 1, 1)];
+    setup = stream.preludeStep(CommandStream::PreludeStep::Expand);
+    [setup setComputePipelineState:mdiPatchExpandKernel()];
+    [setup setBuffer:commands.mtl offset:offset atIndex:0];
+    [setup setBuffer:starts.buffer offset:starts.offset atIndex:1];
+    [setup setBuffer:capture.buffer offset:capture.offset atIndex:3];
+    [setup setBuffer:elements->mtl offset:0 atIndex:2];
+    [setup setBuffer:gathered.buffer offset:gathered.offset atIndex:4];
+    [setup setBytes:&params length:sizeof(params) atIndex:5];
+    [setup setBytes:groups length:sizeof(groups) atIndex:6];
+    for (size_t g = 0; g < 8; ++g)
+        [setup setBuffer:g < plan.groups.size() ? plan.groups[g].buffer->mtl : elements->mtl offset:0 atIndex:7 + g];
+    [setup dispatchThreadgroupsWithIndirectBuffer:args.buffer indirectBufferOffset:args.offset + 48
+                            threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
+    commands.lastUseSerial = elements->lastUseSerial = serial;
+    for (const VertexInputPlan::DirectGroup& g : plan.groups) g.buffer->lastUseSerial = serial;
+    stats::count(&stats::Frame::tessMdiGpu);
+    stats::count(&stats::Frame::tessMdiGpuCommands, static_cast<uint64_t>(drawcount));
+    stats::count(&stats::Frame::tessPrelude);
+    queriesPrepareVisibility(ctx_);
+    prepareSamplerStorage(lp);
+
+    // 2. The vertex capture, over the listed vertices.
+    {
+        PipelineKey key;
+        std::memset(&key, 0, sizeof(key));
+        key.programId = lp.uid;
+        key.borders[0] = borderVariant(lp, static_cast<int>(Stage::Vertex));
+        key.rasterization = 0;
+        key.topologyClass = static_cast<uint8_t>(MTLPrimitiveTopologyClassPoint);
+        key.sampleCount = 1;
+        id<MTLRenderCommandEncoder> encoder = stream.preludeRender();
+        GpuGather gather;
+        gather.buffer = gathered.buffer;
+        for (size_t g = 0; g < plan.groups.size(); ++g) {
+            gather.offsets[g] = gathered.offset + NSUInteger{dstWords[g]} * 4;
+            gather.strides[g] = windowWords[g] * 4;
+        }
+        plannedFor_ = 0;
+        gpuGather_ = &gather;
+        const bool bound = bindVertexInputs(encoder, key, lp, 0, 0, 1, nullptr);
+        gpuGather_ = nullptr;
+        id<MTLRenderPipelineState> pipeline = bound ? ctx_.share().pipelines().render(key, lp) : nil;
+        encoderState_.pass = 0;  // the prelude's encoder, not the pass in progress
+        if (!pipeline) return true;
+        [encoder setRenderPipelineState:pipeline];
+        encoderState_.pipeline = nil;  // issue() sets its own again
+        bindUniforms(encoder, lp, false);
+        bindTextures(encoder, lp, false);
+        [encoder setVertexBuffer:captured.buffer offset:0 atIndex:shader::kSlotFirstXfbBuffer];
+        [encoder setVertexBuffer:capture.buffer offset:capture.offset atIndex:shader::kSlotXfbControl];
+        [encoder drawPrimitives:MTLPrimitiveTypePoint indirectBuffer:args.buffer indirectBufferOffset:args.offset];
+        encoderState_.pass = 0;
+    }
+
+    // 3. The control kernel (one threadgroup per patch) and the factors.
+    {
+        const uint16_t borders = borderVariant(lp, static_cast<int>(Stage::TessControl));
+        id<MTLComputePipelineState> kernel =
+            borders ? lp.kernelWithBorders(t.control, static_cast<int>(Stage::TessControl), borders) : lp.tessControlKernel();
+        if (!kernel) return true;
+        id<MTLComputeCommandEncoder> compute = stream.preludeStep(CommandStream::PreludeStep::Control);
+        [compute setComputePipelineState:kernel];
+        bindKernelResources(compute, lp, t.control.usesDefaultUniforms, static_cast<int>(Stage::TessControl), &t.control);
+        [compute setBuffer:captured.buffer offset:captured.offset atIndex:shader::kSlotFirstXfbBuffer];
+        [compute setBuffer:records.buffer offset:records.offset atIndex:shader::kSlotFirstXfbBuffer + 1];
+        [compute setBuffer:controlParams.buffer offset:controlParams.offset atIndex:shader::kSlotFirstXfbBuffer + 2];
+        [compute dispatchThreadgroupsWithIndirectBuffer:args.buffer indirectBufferOffset:args.offset + 16
+                                  threadsPerThreadgroup:MTLSizeMake(static_cast<NSUInteger>(t.verticesOut) * std::max(1u, t.patchesPerGroup), 1, 1)];
+        compute = stream.preludeStep(CommandStream::PreludeStep::Factors);
+        [compute setComputePipelineState:tessFactorsKernel()];
+        [compute setBuffer:records.buffer offset:records.offset atIndex:0];
+        [compute setBuffer:factors.buffer offset:factors.offset atIndex:1];
+        [compute setBuffer:factorParams.buffer offset:factorParams.offset atIndex:2];
+        [compute dispatchThreadgroupsWithIndirectBuffer:args.buffer indirectBufferOffset:args.offset + 32
+                                  threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
+    }
+
+    // 4. The tessellation draw, in the pass in progress.
+    drawMetalPatches(lp, *evaluation, records.buffer, records.offset, factors.buffer, factors.offset, patchCapacity, UINT32_MAX,
+                     patchVertices, args.buffer, args.offset + 64);
+    return true;
 }
 
 void DrawState::drawArrays(GLenum mode, GLint first, GLsizei count, GLsizei instances) {
@@ -3824,6 +4157,7 @@ void DrawState::clearWithDraw(const RenderTargetDesc& target, const TargetFormat
         }
     }
     [encoder setRenderPipelineState:pipeline];
+    encoderState_.pipeline = nil;  // issue() sets its own again
     [encoder setDepthStencilState:ctx_.share().pipelines().depthStencil(ds)];
     MTLViewport viewport = {0, 0, static_cast<double>(target.width), static_cast<double>(target.height), 0, 1};
     [encoder setViewport:viewport];

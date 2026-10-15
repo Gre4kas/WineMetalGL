@@ -1,5 +1,9 @@
 #include "core/metal/pipeline_cache.h"
 
+#include <algorithm>
+#include <cstdlib>
+#include <iterator>
+
 #import <objc/message.h>
 
 #include "core/metal/device.h"
@@ -53,6 +57,44 @@ id<MTLRenderPipelineState> PipelineCache::render(const PipelineKey& key, LinkedP
     MTLRenderPipelineDescriptor* desc = [MTLRenderPipelineDescriptor new];
     desc.vertexFunction = vertex;
     desc.fragmentFunction = key.rasterization ? fragment : nil;
+    if (fragment && key.rasterization && !key.alphaToCoverage && !key.countFragments && !key.sampleMask &&
+        std::all_of(std::begin(key.colorFormats), std::end(key.colorFormats), [](uint16_t f) { return f == 0; })) {
+        // Depth-only pass (Foundation's shadow maps, issue #12): no fragment
+        // shading for a fragment stage that can change nothing there
+        // (WINEMETALGL_DEPTH_ONLY_FRAGMENT=1 keeps it).
+        static const bool enabled = [] {
+            const char* v = std::getenv("WINEMETALGL_DEPTH_ONLY_FRAGMENT");
+            return !v || v[0] != '1';
+        }();
+        if (program.fragmentDepthOnlyRemovable.load() < 0) {
+            const shader::StageOutput& fs = program.stage(shader::Stage::Fragment);
+            bool writes = fs.discards || !program.link.images.empty() || !program.link.atomicBuffers.empty();
+            for (const shader::StageOutput::StorageArg& arg : fs.storageArgs) writes |= arg.writes || arg.counterBinding >= 0;
+            const std::string& m = fs.msl;
+            writes |= m.find("[[depth(") != std::string::npos || m.find("[[sample_mask]]") != std::string::npos ||
+                      m.find("atomic") != std::string::npos || m.find("access::write") != std::string::npos ||
+                      m.find("access::read_write") != std::string::npos || m.find("discard_fragment") != std::string::npos;
+            program.fragmentDepthOnlyRemovable.store(writes ? 0 : 1);
+        }
+        if (enabled && program.fragmentDepthOnlyRemovable.load() == 1) {
+            desc.fragmentFunction = nil;
+            // Nothing reads the other outputs either: a vertex function that
+            // writes only the position, for depth textures never drawn with
+            // colour (DrawState sets positionOnly; WINEMETALGL_POSITION_ONLY=0 keeps it).
+            static const bool positionOnly = [] {
+                const char* v = std::getenv("WINEMETALGL_POSITION_ONLY");
+                return !v || v[0] != '0';
+            }();
+            if (positionOnly && key.positionOnly && !key.borders[0] && !key.geometryPass) {
+                id<MTLFunction> reduced = key.tessellation ? program.postTessellationVertex(key.tessellation & 2, 0, true)
+                                                           : program.positionOnlyVertex(pointSizeAllowed);
+                if (reduced) {
+                    desc.vertexFunction = reduced;
+                    stats::count(&stats::Frame::positionOnlyPipelines);
+                }
+            }
+        }
+    }
     MTLVertexDescriptor* vd = [MTLVertexDescriptor vertexDescriptor];
     for (uint32_t i = 0; i < std::size(key.attributes); ++i) {
         if (!key.attributes[i].format) continue;

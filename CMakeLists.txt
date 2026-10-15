@@ -137,6 +137,15 @@ target_link_libraries(winemetalgl_core PRIVATE
 target_compile_options(winemetalgl_core PRIVATE
     $<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>
     -fvisibility=hidden -Wall -Wno-unused-parameter -Werror=missing-prototypes)
+# ThinLTO in release builds: the core's many small helpers (enum mappers,
+# Device::get, stats) inline across files, which matters more under Rosetta,
+# where every call and indirect branch is translated (issue #12).
+option(WMGL_LTO "Build the core with ThinLTO in release builds" ON)
+if(WMGL_LTO)
+    target_compile_options(winemetalgl_core PRIVATE $<$<CONFIG:Release>:-flto=thin>)
+    target_compile_options(wmgl_portable PRIVATE $<$<CONFIG:Release>:-flto=thin>)
+    target_link_options(winemetalgl_core PRIVATE $<$<CONFIG:Release>:-flto=thin>)
+endif()
 set_target_properties(winemetalgl_core PROPERTIES
     OUTPUT_NAME "winemetalgl"
     PREFIX "lib"

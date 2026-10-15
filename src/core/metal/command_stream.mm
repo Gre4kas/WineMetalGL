@@ -4,6 +4,7 @@
 
 #import <QuartzCore/CAMetalLayer.h>
 
+#include <cstdlib>
 #include <cstring>
 
 #include "core/metal/device.h"
@@ -48,6 +49,7 @@ void CommandStream::endEncoder(PassEnd cause) {
         if (render_) [render_ updateFence:writesFence_ afterStages:MTLRenderStageVertex | MTLRenderStageFragment];
         else [compute_ updateFence:writesFence_];
         fenced_ = true;
+        fenceSerial_ = serial();
     }
     shaderWrites_ = false;
     if (render_) {
@@ -66,6 +68,11 @@ void CommandStream::endEncoder(PassEnd cause) {
 
 void CommandStream::waitForShaderWrites(id<MTLCommandEncoder> encoder, bool render) {
     if (!fenced_) return;
+    // Writes of a completed command buffer are visible to every later one.
+    if (fenceSerial_ != serial_ && queue_.isComplete(fenceSerial_)) {
+        fenced_ = false;
+        return;
+    }
     if (render)
         [static_cast<id<MTLRenderCommandEncoder>>(encoder) waitForFence:writesFence_
                                                            beforeStages:MTLRenderStageVertex | MTLRenderStageFragment];
@@ -137,6 +144,15 @@ void CommandStream::startRender(const RenderTargetDesc& target) {
     }
     if (clearsApply) pending_ = PendingClear();
     render_ = [commandBuffer() renderCommandEncoderWithDescriptor:pass];
+    if (stats::g_enabled) {
+        // Pass names in Metal System Trace: target size, colour attachments,
+        // depth, and the pass number in the frame.
+        int colors = 0;
+        for (const auto& t : target.color) colors += t.texture != nil;
+        render_.label = [NSString stringWithFormat:@"WMGL pass %llu %ux%u c%d%s%s", static_cast<unsigned long long>(stats::frame().passes),
+                                                   target.width, target.height, colors, target.depth.texture ? " d" : "",
+                                                   clearsApply ? " clear" : ""];
+    }
     waitForShaderWrites(render_, true);
     stats::passStarted(target.width, target.height);
     target_ = target;
@@ -183,19 +199,19 @@ void CommandStream::resolvePendingClear() {
     endEncoder();
 }
 
-id<MTLBlitCommandEncoder> CommandStream::blit() {
+id<MTLBlitCommandEncoder> CommandStream::blit(bool keepPendingClear) {
     // A clear recorded after this encoder opened must run before new commands.
-    if (blit_ && !pending_.any()) return blit_;
-    resolvePendingClear();
+    if (blit_ && (keepPendingClear || !pending_.any())) return blit_;
+    if (!keepPendingClear) resolvePendingClear();
     endEncoder(PassEnd::Blit);
     blit_ = [commandBuffer() blitCommandEncoder];
     waitForShaderWrites(blit_, false);
     return blit_;
 }
 
-id<MTLComputeCommandEncoder> CommandStream::compute() {
-    if (compute_ && !pending_.any()) return compute_;
-    resolvePendingClear();
+id<MTLComputeCommandEncoder> CommandStream::compute(bool keepPendingClear) {
+    if (compute_ && (keepPendingClear || !pending_.any())) return compute_;
+    if (!keepPendingClear) resolvePendingClear();
     endEncoder(PassEnd::Compute);
     compute_ = [commandBuffer() computeCommandEncoder];
     waitForShaderWrites(compute_, false);
@@ -247,15 +263,40 @@ id<MTLComputeCommandEncoder> CommandStream::preludeCompute() {
     return preludeCompute_;
 }
 
+id<MTLComputeCommandEncoder> CommandStream::preludeStep(PreludeStep step) {
+    const int i = static_cast<int>(step);
+    if (stepEncoders_[i]) return stepEncoders_[i];
+    if (!stepBuffers_[i]) {
+        static NSString* const labels[] = {@"WineMetalGL prelude (multi-draw scan)", @"WineMetalGL prelude (multi-draw expand)",
+                                           @"WineMetalGL prelude (multi-draw control)", @"WineMetalGL prelude (multi-draw factors)"};
+        stepBuffers_[i] = [queue_.mtl() commandBuffer];
+        stepBuffers_[i].label = labels[i];
+    }
+    stepEncoders_[i] = [stepBuffers_[i] computeCommandEncoderWithDispatchType:MTLDispatchTypeConcurrent];
+    return stepEncoders_[i];
+}
+
 void CommandStream::commitPrelude() {
     // In queue order ahead of the command buffer being committed: the
-    // capture pass, then the kernels that read it (tracked resources order
-    // the kernels after the captures and the draws after the kernels).
+    // multi-draw scans and expansions, the capture pass, the kernels that
+    // read it, then the multi-draw control and factor kernels (tracked
+    // resources order each after what it reads, and the draws after them).
+    for (__strong id<MTLComputeCommandEncoder>& e : stepEncoders_)
+        if (e) [e endEncoding];
     if (preludeRender_) [preludeRender_ endEncoding];
     if (preludeCompute_) [preludeCompute_ endEncoding];
-    if (preludeRenderBuffer_) [preludeRenderBuffer_ commit];
-    if (preludeComputeBuffer_) [preludeComputeBuffer_ commit];
+    const auto commit = [](id<MTLCommandBuffer> b) {
+        if (b) [b commit];
+    };
+    commit(stepBuffers_[static_cast<int>(PreludeStep::Scan)]);
+    commit(stepBuffers_[static_cast<int>(PreludeStep::Expand)]);
+    commit(preludeRenderBuffer_);
+    commit(preludeComputeBuffer_);
+    commit(stepBuffers_[static_cast<int>(PreludeStep::Control)]);
+    commit(stepBuffers_[static_cast<int>(PreludeStep::Factors)]);
     if (preludeComputeBuffer_ || preludeRenderBuffer_) lastPrelude_ = preludeComputeBuffer_ ?: preludeRenderBuffer_;
+    for (__strong id<MTLComputeCommandEncoder>& e : stepEncoders_) e = nil;
+    for (__strong id<MTLCommandBuffer>& b : stepBuffers_) b = nil;
     preludeRender_ = nil;
     preludeCompute_ = nil;
     preludeRenderBuffer_ = nil;
@@ -271,12 +312,13 @@ void CommandStream::waitForPrelude() {
     lastPrelude_ = nil;
 }
 
-uint64_t CommandStream::flush() {
-    resolvePendingClear();
+uint64_t CommandStream::flush(bool keepPendingClear) {
+    if (!keepPendingClear) resolvePendingClear();
     endEncoder(PassEnd::Commit);
     commitPrelude();
     if (!buffer_) return lastCommitted_;
     stats::count(&stats::Frame::commits);
+    lastCommitNanos_ = stats::nowNanos();
     drawsSinceCommit_ = 0;
     queue_.commit(buffer_, serial_);
     lastCommitted_ = serial_;
@@ -303,7 +345,19 @@ void CommandStream::waitFor(uint64_t serial) {
     queue_.wait(serial);
 }
 
-void CommandStream::memoryBarrier(bool attachments) {
+void CommandStream::memoryBarrier(bool attachments, bool commands) {
+    if (commands && compute_ && !render_) {
+        static const bool early = [] {
+            const char* v = std::getenv("WINEMETALGL_BARRIER_COMMIT");
+            return !v || v[0] != '0';
+        }();
+        if (early) {
+            // Committing orders the dispatch's writes before every later
+            // command buffer on the queue: no barrier needed.
+            flush(true);
+            return;
+        }
+    }
     // A render pass whose draws wrote nothing through shaders has nothing to
     // order (earlier encoders' writes are fenced): it stays open, unless
     // attachment writes are ordered (glTextureBarrier).

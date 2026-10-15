@@ -538,16 +538,22 @@ void InvalidateTexSubImage(Context& ctx, GLuint texture, GLint level, GLint xoff
         return ctx.setError(GL_INVALID_VALUE);
 }
 
+// buffer.mm: replaces storage the GPU still uses (Foundation: glInvalidateBufferData,
+// then glNamedBufferSubData, issue #12).
+void orphanBuffer(Context& ctx, Buffer& buffer);
+
 void InvalidateBufferData(Context& ctx, GLuint buffer) {
     Buffer* b = ctx.buffer(buffer);
     if (!b) return ctx.setError(GL_INVALID_VALUE);
-    if (b->mappedNonPersistent()) ctx.setError(GL_INVALID_OPERATION);
+    if (b->mappedNonPersistent()) return ctx.setError(GL_INVALID_OPERATION);
+    orphanBuffer(ctx, *b);
 }
 
 void InvalidateBufferSubData(Context& ctx, GLuint buffer, GLintptr offset, GLsizeiptr length) {
     Buffer* b = ctx.buffer(buffer);
     if (!b || offset < 0 || length < 0 || length > b->size - offset) return ctx.setError(GL_INVALID_VALUE);
-    if (b->mappedNonPersistent()) ctx.setError(GL_INVALID_OPERATION);
+    if (b->mappedNonPersistent()) return ctx.setError(GL_INVALID_OPERATION);
+    if (offset == 0 && length == b->size) orphanBuffer(ctx, *b);
 }
 
 }  // namespace wmgl::api

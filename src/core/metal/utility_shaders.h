@@ -218,6 +218,129 @@ kernel void wmgl_tess_factors(device const float* records [[buffer(0)]], device 
         f[3] = half(level[4]);
     }
 }
+// GPU-driven multi-draws of patches (DrawState::drawPatchesIndirectGpu): the
+// commands a culling dispatch wrote are expanded on the GPU into the vertex
+// list a CPU read would build (drawPatchCommands), in command order, with
+// each command's vertex count rounded down to whole patches.
+struct MdiPatchParams {
+    uint drawCount, strideWords, elementCount, patchVertices;
+    uint capacity;   // list positions the buffers hold (a multiple of patchVertices)
+    uint indexSize;  // 2 or 4
+    uint groups;
+    uint reportSlot;  // scan: the word of `report` that gets the unclamped total
+    uint controlGroupPatches;  // patches per control kernel threadgroup
+    uint pad[3];
+};
+// A vertex attribute group (a buffer, stride and divisor whose attributes
+// fit one element window): its window of each listed vertex (or instance)
+// is copied to the gathered stream the capture draw fetches per vertex.
+struct MdiGroup {
+    uint srcBase, srcStride, divisor, windowWords;
+    uint dstWords, srcLength, pad0, pad1;
+};
+
+static uint wmgl_sat_add(uint a, uint b) { uint r = a + b; return r < a ? 0xffffffffu : r; }
+
+static uint wmgl_mdi_vertices(device const uint* c, constant MdiPatchParams& p) {
+    const uint count = c[0], instances = c[1], first = c[2];
+    if (count == 0u || instances == 0u || first > p.elementCount || count > p.elementCount - first) return 0u;
+    const ulong n = ulong(count / p.patchVertices * p.patchVertices) * ulong(instances);
+    return n > 0xffffffffu ? 0xffffffffu : uint(n);
+}
+
+// One threadgroup. starts[c]: the first list position of command c
+// (starts[drawCount] = the total). args (words): 0 capture draw
+// (MTLDrawPrimitivesIndirectArguments), 4 control dispatch and 8 factor
+// dispatch (MTLDispatchThreadgroupsIndirectArguments), 12 expand dispatch,
+// 16 patch draw (MTLDrawPatchIndirectArguments), 20 the total before the
+// capacity clamp (read back to grow the capacity).
+kernel void wmgl_mdi_patch_scan(device const uint* commands [[buffer(0)]], device uint* starts [[buffer(1)]],
+                                device uint* args [[buffer(2)]], device uint* capture [[buffer(3)]],
+                                device uint* control [[buffer(4)]], device uint* factors [[buffer(5)]],
+                                constant MdiPatchParams& p [[buffer(6)]], device uint* report [[buffer(7)]],
+                                uint tid [[thread_index_in_threadgroup]],
+                                uint threads [[threads_per_threadgroup]], uint lane [[thread_index_in_simdgroup]],
+                                uint simd [[simdgroup_index_in_threadgroup]], uint simds [[simdgroups_per_threadgroup]]) {
+    threadgroup uint simdBase[32];
+    threadgroup uint grandTotal;
+    const uint n = p.drawCount;
+    const uint per = (n + threads - 1u) / threads;
+    const uint begin = min(n, tid * per), end = min(n, begin + per);
+    uint local = 0u;
+    for (uint c = begin; c < end; ++c) local = wmgl_sat_add(local, wmgl_mdi_vertices(commands + c * p.strideWords, p));
+    const uint prefix = simd_prefix_exclusive_sum(local);
+    const uint sum = simd_sum(local);
+    if (lane == 0u) simdBase[simd] = sum;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (simd == 0u) {
+        const uint v = lane < simds ? simdBase[lane] : 0u;
+        const uint e = simd_prefix_exclusive_sum(v);
+        const uint t = simd_sum(v);
+        if (lane < simds) simdBase[lane] = e;
+        if (lane == 0u) grandTotal = t;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    uint running = simdBase[simd] + prefix;
+    for (uint c = begin; c < end; ++c) {
+        starts[c] = running;
+        running = wmgl_sat_add(running, wmgl_mdi_vertices(commands + c * p.strideWords, p));
+    }
+    if (tid == 0u) {
+        const uint total = grandTotal;
+        starts[n] = total;
+        const uint kept = min(total, p.capacity) / p.patchVertices * p.patchVertices;
+        const uint patches = kept / p.patchVertices;
+        args[0] = kept; args[1] = 1u; args[2] = 0u; args[3] = 0u;
+        args[4] = (patches + p.controlGroupPatches - 1u) / p.controlGroupPatches; args[5] = 1u; args[6] = 1u;
+        args[8] = (patches + 63u) / 64u; args[9] = 1u; args[10] = 1u;
+        args[12] = (kept + 63u) / 64u; args[13] = 1u; args[14] = 1u;
+        args[16] = patches; args[17] = 1u; args[18] = 0u; args[19] = 0u;
+        args[20] = total;
+        report[p.reportSlot] = total;
+        capture[1] = kept;  // the vertex capture's vertex count and slot limit
+        capture[2] = kept;
+        control[1] = patches;
+        factors[2] = patches;
+    }
+}
+
+// One thread per list position: its command, vertex index (written to the
+// capture's vertex id list, word 12 on) and the windows of its attribute
+// groups (per-instance groups: the command's base instance on).
+kernel void wmgl_mdi_patch_expand(device const uint* commands [[buffer(0)]], device const uint* starts [[buffer(1)]],
+                                  device const uchar* elements [[buffer(2)]], device uint* capture [[buffer(3)]],
+                                  device uint* gathered [[buffer(4)]], constant MdiPatchParams& p [[buffer(5)]],
+                                  constant MdiGroup* groups [[buffer(6)]], device const uchar* s0 [[buffer(7)]],
+                                  device const uchar* s1 [[buffer(8)]], device const uchar* s2 [[buffer(9)]],
+                                  device const uchar* s3 [[buffer(10)]], device const uchar* s4 [[buffer(11)]],
+                                  device const uchar* s5 [[buffer(12)]], device const uchar* s6 [[buffer(13)]],
+                                  device const uchar* s7 [[buffer(14)]], uint k [[thread_position_in_grid]]) {
+    if (k >= capture[1]) return;
+    uint lo = 0u, hi = p.drawCount;  // starts[lo] <= k < starts[hi]
+    while (hi - lo > 1u) {
+        const uint mid = (lo + hi) / 2u;
+        if (starts[mid] <= k) lo = mid;
+        else hi = mid;
+    }
+    device const uint* c = commands + lo * p.strideWords;
+    const uint perInstance = c[0] / p.patchVertices * p.patchVertices;
+    const uint local = k - starts[lo];
+    const uint instance = local / perInstance, i = c[2] + local % perInstance;
+    const uint raw = p.indexSize == 2u ? uint(((device const ushort*)elements)[i]) : ((device const uint*)elements)[i];
+    const uint index = uint(int(raw) + int(c[3]));
+    capture[12u + k] = index;
+    for (uint g = 0u; g < p.groups; ++g) {
+        constant MdiGroup& group = groups[g];
+        device const uchar* s = g == 0u ? s0 : g == 1u ? s1 : g == 2u ? s2 : g == 3u ? s3 : g == 4u ? s4 : g == 5u ? s5 : g == 6u ? s6 : s7;
+        const uint element = group.divisor ? c[4] + instance / group.divisor : index;
+        const ulong at = ulong(group.srcBase) + ulong(element) * ulong(group.srcStride);
+        device uint* d = gathered + group.dstWords + k * group.windowWords;
+        for (uint w = 0u; w < group.windowWords; ++w) {
+            const ulong b = at + ulong(w) * 4ul;
+            d[w] = b + 4ul <= ulong(group.srcLength) ? *((device const uint*)(s + b)) : 0u;
+        }
+    }
+}
 )MSL";
 
 }  // namespace wmgl

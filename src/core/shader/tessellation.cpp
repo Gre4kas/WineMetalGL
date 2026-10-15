@@ -451,6 +451,116 @@ const char* kindOf(GLenum type) {
     }
 }
 
+bool identifierChar(char ch) { return std::isalnum(static_cast<unsigned char>(ch)) || ch == '_'; }
+
+// Whether every use of identifier `name` in `code` indexes it (name[...]).
+bool alwaysIndexed(const std::string& code, const std::string& name) {
+    for (size_t at = code.find(name); at != std::string::npos; at = code.find(name, at + 1)) {
+        if ((at && (identifierChar(code[at - 1]) || code[at - 1] == '.')) ||
+            (at + name.size() < code.size() && identifierChar(code[at + name.size()])))
+            continue;
+        size_t next = at + name.size();
+        while (next < code.size() && (code[next] == ' ' || code[next] == '\t' || code[next] == '\n')) ++next;
+        if (next >= code.size() || code[next] != '[') return false;
+    }
+    return true;
+}
+
+// `code` with each name[index] as fn(int(index)) (alwaysIndexed holds).
+std::string callInsteadOfIndex(const std::string& code, const std::string& name, const std::string& fn) {
+    std::string out;
+    size_t from = 0;
+    for (size_t at = code.find(name); at != std::string::npos; at = code.find(name, at + 1)) {
+        if ((at && (identifierChar(code[at - 1]) || code[at - 1] == '.')) ||
+            (at + name.size() < code.size() && identifierChar(code[at + name.size()])))
+            continue;
+        size_t open = code.find('[', at + name.size());
+        int depth = 0;
+        size_t close = open;
+        for (; close < code.size(); ++close) {
+            if (code[close] == '[') ++depth;
+            else if (code[close] == ']' && --depth == 0) break;
+        }
+        if (close >= code.size()) return code;  // unbalanced: unchanged
+        out += code.substr(from, at - from) + fn + "(int(" + code.substr(open + 1, close - open - 1) + "))";
+        from = close + 1;
+        at = close;
+    }
+    return out + code.substr(from);
+}
+
+// Several patches per threadgroup (TessControlSources::patchesPerGroup): the
+// kernel's shared variables get a leading patch dimension, indexed by the
+// thread's patch in the group (wmgl_lp) wherever the code uses them, and
+// threads of patches past the count load the last patch and store nothing
+// (they still reach every barrier).
+void packPatches(TessControlSources& out, int n, uint32_t record) {
+    static const int wanted = [] {
+        const char* v = std::getenv("WINEMETALGL_TCS_PATCHES_PER_GROUP");
+        return v && *v ? std::max(1, std::atoi(v)) : 0;
+    }();
+    int patches = wanted ? wanted : std::max(1, 32 / std::max(n, 1));
+    // Within threadgroup memory: the records' size bounds what the patch
+    // shares (outputs, levels and patch outputs), and 1024 threads.
+    patches = std::min({patches, std::max(1, 16384 / static_cast<int>(std::max(1u, record) * 4)), std::max(1, 1024 / std::max(n, 1))});
+    std::string& c = out.kernel;
+    const size_t bodyAt = c.find("uint wmgl_patch_g;\n");
+    if (patches <= 1 || bodyAt == std::string::npos) return;
+    // The threads of patches past the count run the code too: a shader that
+    // writes memory (images, atomics, storage blocks) keeps a patch a group.
+    for (const char* write : {"imageStore", "imageAtomic", "atomic"})
+        if (c.find(write) != std::string::npos) return;
+    for (size_t at = c.find("buffer "); at != std::string::npos; at = c.find("buffer ", at + 1)) {
+        const size_t line = c.rfind('\n', at) + 1;
+        const std::string decl = c.substr(line, at - line);
+        if (decl.find("readonly") == std::string::npos && c.compare(at, 18, "buffer wmgl_TcsOut") != 0) return;
+    }
+    static const std::regex declaration("^shared\\s+(\\S+)\\s+([A-Za-z_][A-Za-z0-9_]*)((?:\\[[0-9]+\\])*)\\s*;$");
+    std::vector<std::string> names;
+    std::string head = c.substr(0, bodyAt), body = c.substr(bodyAt), packed;
+    std::istringstream lines(head);
+    for (std::string line; std::getline(lines, line);) {
+        std::smatch m;
+        if (std::regex_match(line, m, declaration)) {
+            names.push_back(m[2]);
+            line = "shared " + m[1].str() + " " + m[2].str() + "[" + std::to_string(patches) + "]" + m[3].str() + ";";
+        }
+        packed += line + "\n";
+    }
+    for (const std::string& name : names) {
+        std::string rewritten;
+        size_t from = 0;
+        for (size_t at = body.find(name); at != std::string::npos; at = body.find(name, at + 1)) {
+            if ((at && (identifierChar(body[at - 1]) || body[at - 1] == '.')) ||
+                (at + name.size() < body.size() && identifierChar(body[at + name.size()])))
+                continue;
+            rewritten += body.substr(from, at + name.size() - from) + "[wmgl_lp]";
+            from = at + name.size();
+        }
+        body = rewritten + body.substr(from);
+    }
+    const std::string ns = std::to_string(n), ps = std::to_string(patches);
+    const auto replace = [&](std::string& text, const std::string& what, const std::string& with) {
+        const size_t at = text.find(what);
+        if (at == std::string::npos) return false;
+        text.replace(at, what.size(), with);
+        return true;
+    };
+    bool ok = replace(packed, "layout(local_size_x = " + ns + ") in;", "layout(local_size_x = " + std::to_string(n * patches) + ") in;");
+    ok = ok && replace(body, "uint wmgl_patch_g;\n", "uint wmgl_patch_g, wmgl_lp;\n");
+    ok = ok && replace(body, "    uint wmgl_patch = gl_WorkGroupID.x;\n",
+                       "    wmgl_lp = gl_LocalInvocationID.x / " + ns + "u;\n"
+                       "    uint wmgl_patch = gl_WorkGroupID.x * " + ps + "u + wmgl_lp;\n"
+                       "    bool wmgl_active = wmgl_patch < wmgl_tcs_patch_count;\n"
+                       "    if (!wmgl_active) wmgl_patch = max(wmgl_tcs_patch_count, 1u) - 1u;\n");
+    ok = ok && replace(body, "    wmgl_invocation_id = int(gl_LocalInvocationID.x);\n",
+                       "    wmgl_invocation_id = int(gl_LocalInvocationID.x % " + ns + "u);\n");
+    ok = ok && replace(body, "    barrier();\n    uint wmgl_o = ", "    barrier();\n    if (!wmgl_active) return;\n    uint wmgl_o = ");
+    if (!ok) return;  // an unexpected shape: one patch per group
+    c = packed + body;
+    out.patchesPerGroup = static_cast<uint32_t>(patches);
+}
+
 }  // namespace
 
 TessControlSources tessControlSources(const TessStageInfo& info, const LinkResult& capture) {
@@ -483,13 +593,40 @@ TessControlSources tessControlSources(const TessStageInfo& info, const LinkResul
     }
     const uint32_t record = static_cast<uint32_t>(n) * out.vertexWords + out.patchWords;
 
+    // Inputs the code only ever indexes are loaded from the captured vertex
+    // records where they are read, instead of copied into 32-element arrays
+    // first: dynamically indexed arrays live on the stack (4240 bytes a
+    // thread for Foundation's terrain, issue #12), loads from the read-only
+    // records do not. WINEMETALGL_TCS_LAZY_INPUTS=0 copies them all.
+    static const bool lazyInputs = [] {
+        const char* v = std::getenv("WINEMETALGL_TCS_LAZY_INPUTS");
+        return !v || v[0] != '0';
+    }();
+    std::string functions = info.functions, lazyLoads;
+    std::set<std::string> lazy;
+    const std::string stride = std::to_string(capture.xfbStride[0]);
+    auto makeLazy = [&](const std::string& name, const std::string& glslType, GLenum type, const TransformFeedbackVarying* p) {
+        if (!lazyInputs || !p || !alwaysIndexed(functions, name)) return;
+        const std::string fn = "wmgl_lazy_" + name;
+        lazyLoads += glslType + " " + fn + "(int wmgl_v) {\n    uint wmgl_lb = (wmgl_patch_g * wmgl_tcs_patch_vertices + "
+                     "min(uint(wmgl_v), wmgl_tcs_patch_vertices - 1u)) * " + stride + "u;\n    return " +
+                     glslLoadValue(glslType, type, "wmgl_tcs_in", "wmgl_lb + " + std::to_string(p->offset) + "u") + ";\n}\n";
+        functions = callInsteadOfIndex(functions, name, fn);
+        lazy.insert(name);
+    };
+    makeLazy("wmgl_in_position", "vec4", GL_FLOAT_VEC4, captured("gl_Position"));
+    for (const TessVar& v : info.inputs)
+        if (!v.patch && v.member.empty() && !v.arraySize) makeLazy(v.name, v.glslType, v.type, captured(varKey(v)));
+    std::vector<TessVar> arrayedInputs;
+    for (const TessVar& v : info.inputs)
+        if (!lazy.count(v.name)) arrayedInputs.push_back(v);
     std::string& c = out.kernel;
     c += "#version 450\nlayout(local_size_x = " + ns + ") in;\n";
     c += info.globals;
-    c += declareVars(info.inputs, false, kMaxPatchVertices, "", "wmgl_tcs_in_");
+    c += declareVars(arrayedInputs, false, kMaxPatchVertices, "", "wmgl_tcs_in_");
     c += declareVars(info.outputs, false, n, "shared ", "wmgl_tcs_out_");
     c += declareVars(info.outputs, true, 0, "shared ", "wmgl_tcs_patch_");
-    c += "vec4 wmgl_in_position[" + maxIn + "];\n";
+    if (!lazy.count("wmgl_in_position")) c += "vec4 wmgl_in_position[" + maxIn + "];\n";
     if (info.readsPointSize) c += "float wmgl_in_pointsize[" + maxIn + "];\n";
     if (info.readsClipDistance)
         c += "float wmgl_in_clipdistance[" + maxIn + "][" + std::to_string(info.inputClipDistances) + "];\n";
@@ -505,16 +642,19 @@ TessControlSources tessControlSources(const TessStageInfo& info, const LinkResul
          "layout(std430) readonly buffer wmgl_TcsInput { uint wmgl_tcs_in[]; };\n"
          "layout(std430) writeonly buffer wmgl_TcsOutput { uint wmgl_tcs_out[]; };\n"
          "layout(std430) readonly buffer wmgl_TcsControl { uint wmgl_tcs_patch_vertices, wmgl_tcs_patch_count, "
-         "wmgl_tcs_patches_per_instance, wmgl_tcs_pad; };\n";
-    c += info.functions;
+         "wmgl_tcs_patches_per_instance, wmgl_tcs_pad; };\n"
+         "uint wmgl_patch_g;\n";
+    c += lazyLoads;
+    c += functions;
     c += "void main() {\n"
          "    uint wmgl_patch = gl_WorkGroupID.x;\n"
+         "    wmgl_patch_g = wmgl_patch;\n"
          "    wmgl_invocation_id = int(gl_LocalInvocationID.x);\n"
          "    wmgl_patch_vertices_in = int(wmgl_tcs_patch_vertices);\n"
          "    wmgl_primitive_id = int(wmgl_patch % max(wmgl_tcs_patches_per_instance, 1u));\n"
          "    for (uint wmgl_j = 0u; wmgl_j < wmgl_tcs_patch_vertices; ++wmgl_j) {\n"
          "        uint wmgl_b = (wmgl_patch * wmgl_tcs_patch_vertices + wmgl_j) * " + std::to_string(capture.xfbStride[0]) + "u;\n";
-    if (const TransformFeedbackVarying* p = captured("gl_Position"))
+    if (const TransformFeedbackVarying* p = lazy.count("wmgl_in_position") ? nullptr : captured("gl_Position"))
         c += "        wmgl_in_position[wmgl_j] = " +
              glslLoadValue("vec4", GL_FLOAT_VEC4, "wmgl_tcs_in", "wmgl_b + " + std::to_string(p->offset) + "u") + ";\n";
     if (const TransformFeedbackVarying* p = info.readsPointSize ? captured("gl_PointSize") : nullptr)
@@ -528,7 +668,7 @@ TessControlSources tessControlSources(const TessStageInfo& info, const LinkResul
         for (int k = 0; k < std::min(info.inputCullDistances, p->size); ++k)
             c += "        wmgl_in_culldistance[wmgl_j][" + std::to_string(k) + "] = " +
                  glslLoadValue("float", GL_FLOAT, "wmgl_tcs_in", "wmgl_b + " + std::to_string(p->offset + k) + "u") + ";\n";
-    for (const TessVar& v : info.inputs) {
+    for (const TessVar& v : arrayedInputs) {
         const TransformFeedbackVarying* p = captured(varKey(v));
         if (!p) continue;
         for (int e = 0; e < std::max(1, std::min(v.arraySize, p->size)); ++e)
@@ -578,6 +718,7 @@ TessControlSources tessControlSources(const TessStageInfo& info, const LinkResul
             c += store("wmgl_p", f.offset + static_cast<uint32_t>(e * words(v.type)), access(v, "", e), v.type);
     }
     c += "    }\n}\n";
+    packPatches(out, n, record);
     return out;
 }
 
@@ -626,13 +767,17 @@ std::string tessEvaluationVertexShader(const TessStageInfo& info, const TessCont
                 if (f.location == location) return &f;
         return nullptr;
     };
+    // With a control stage, the loads of its N output vertices are unrolled
+    // (below): constant indices let Metal keep the inputs in registers, where
+    // a loop leaves every input array on the stack (528 bytes per domain
+    // point for Foundation's terrain, issue #12).
+    size_t unrolledBody = std::string::npos;
     if (control) {
         const uint32_t n = static_cast<uint32_t>(control->verticesOut);
         const uint32_t record = n * control->vertexWords + control->patchWords;
         v += "    wmgl_patch_vertices_in = " + std::to_string(n) + ";\n"
-             "    uint wmgl_pb = wmgl_patch * " + std::to_string(record) + "u;\n"
-             "    for (uint wmgl_j = 0u; wmgl_j < " + std::to_string(n) + "u; ++wmgl_j) {\n"
-             "        uint wmgl_b = wmgl_pb + wmgl_j * " + std::to_string(control->vertexWords) + "u;\n";
+             "    uint wmgl_pb = wmgl_patch * " + std::to_string(record) + "u;\n";
+        unrolledBody = v.size();
     } else {
         const uint32_t stride = capture ? capture->xfbStride[0] : 0;
         v += "    wmgl_patch_vertices_in = int(wmgl_tes_patch_vertices);\n"
@@ -662,7 +807,16 @@ std::string tessEvaluationVertexShader(const TessStageInfo& info, const TessCont
         for (int e = 0; e < std::max(1, std::min(in.arraySize, f->elements)); ++e)
             v += load(access(in, "wmgl_j", e), in.glslType, in.type, "wmgl_b", f->offset + static_cast<uint32_t>(e * words(in.type)));
     }
-    v += "    }\n";
+    if (unrolledBody != std::string::npos) {
+        const std::string body = v.substr(unrolledBody);
+        v.resize(unrolledBody);
+        static const std::regex index("\\bwmgl_j\\b");
+        for (uint32_t j = 0; j < static_cast<uint32_t>(control->verticesOut); ++j)
+            v += "    {\n        uint wmgl_b = wmgl_pb + " + std::to_string(j * control->vertexWords) + "u;\n" +
+                 std::regex_replace(body, index, std::to_string(j)) + "    }\n";
+    } else {
+        v += "    }\n";
+    }
     if (control) {
         v += "    uint wmgl_ps = wmgl_pb + " + std::to_string(static_cast<uint32_t>(control->verticesOut) * control->vertexWords) +
              "u;\n";

@@ -101,6 +101,9 @@ struct TessControlSources {
     int verticesOut = 0;
     std::vector<TessRecordField> vertexFields, patchFields;
     uint32_t vertexWords = 0, patchWords = 0;
+    // Patches each threadgroup of the kernel runs (local size verticesOut x
+    // this): one 4-vertex patch alone fills an eighth of a SIMD-group.
+    uint32_t patchesPerGroup = 1;
 };
 
 // `capture` is the layout of the captured vertex-shader outputs.

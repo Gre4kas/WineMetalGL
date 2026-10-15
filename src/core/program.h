@@ -80,10 +80,21 @@ struct LinkedProgram {
     // post-tessellation vertex function for triangle or quad patches
     // (shader::postTessellationVertexMsl), without [[point_size]], with
     // clamp-to-border emulation variant `borders`. Nil if it has none.
-    id<MTLFunction> postTessellationVertex(bool quads, uint16_t borders);
+    id<MTLFunction> postTessellationVertex(bool quads, uint16_t borders, bool positionOnly = false);
+    // The vertex function writing only the position (and clip distances,
+    // layer, viewport) for depth-only passes: the other outputs become
+    // locals, which the compiler removes with what computes them. Nil when
+    // the shader's shape is not one the rewrite knows.
+    id<MTLFunction> positionOnlyVertex(bool pointSize);
     // On the evaluation executable: a Metal tessellation pipeline could not
     // be built, so its patches are tessellated on the CPU.
     std::atomic<bool> metalTessellationFailed{false};
+    // A pass without colour attachments (shadow maps, depth pre-passes) may
+    // draw this program without its fragment function: it writes no depth
+    // or sample mask, discards nothing and writes no memory, so the
+    // rasterizer's depth and stencil results are the whole of what it does
+    // there (PipelineCache::render). -1 until first computed.
+    std::atomic<int8_t> fragmentDepthOnlyRemovable{-1};
     std::shared_ptr<LinkedProgram> pipelineTessEvaluation(const shader::LinkResult& evaluation, std::shared_ptr<LinkedProgram> out);
     // A pipeline whose vertex processing stages span programs: the emulation
     // assembled from each stage's program (shader::linkPipeline), or null.
@@ -134,6 +145,8 @@ private:
     id<MTLFunction> passthrough_ = nil;
     id<MTLFunction> noPointSize_[2] = {};
     bool noPointSizeFailed_[2] = {};
+    id<MTLFunction> positionOnly_[2] = {};
+    bool positionOnlyFailed_[2] = {};
     id<MTLComputePipelineState> kernel_ = nil;
     bool passthroughFailed_ = false, kernelFailed_ = false;
     id<MTLComputePipelineState> compute_ = nil;

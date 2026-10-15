@@ -49,6 +49,10 @@ struct PipelineKey {
     // variant): 0 = none, else bit 0 set, bit 1 quads, bits 2-3 the
     // MTLTessellationPartitionMode, bit 4 MTLWindingClockwise.
     uint8_t tessellation;
+    // A depth-only pass whose depth texture was never drawn with colour
+    // (shadow maps): the vertex function may write only the position
+    // (LinkedProgram::positionOnlyVertex), with no fragment function.
+    uint8_t positionOnly;
     uint16_t borders[2];    // clamp-to-border emulation variants: vertex, fragment (shader::borderVariantId)
     uint16_t colorFormats[8];  // MTLPixelFormat
     uint16_t depthFormat, stencilFormat;
