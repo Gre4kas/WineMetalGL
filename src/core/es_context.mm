@@ -40,12 +40,15 @@ void Context::initEsStrings() {
     // Formats and compression.
     add({"GL_EXT_color_buffer_half_float", "GL_EXT_texture_compression_s3tc", "GL_EXT_texture_compression_s3tc_srgb",
          "GL_EXT_texture_compression_rgtc", "GL_EXT_texture_compression_bptc", "GL_EXT_texture_filter_anisotropic",
-         "GL_OES_compressed_ETC1_RGB8_texture", "GL_EXT_texture_sRGB_decode", "GL_EXT_texture_norm16",
+         "GL_OES_compressed_ETC1_RGB8_texture", "GL_EXT_texture_sRGB_decode", "GL_EXT_texture_sRGB_R8",
+         "GL_EXT_texture_sRGB_RG8", "GL_EXT_texture_norm16",
          "GL_EXT_render_snorm", "GL_EXT_texture_mirror_clamp_to_edge",
          "GL_EXT_depth_clamp", "GL_EXT_texture_shadow_lod"});
     if (Device::get().caps().astcTextures) add({"GL_KHR_texture_compression_astc_ldr"});
-    // Advanced blending in the fragment function (framebuffer fetch).
-    if (Device::get().caps().framebufferFetch) add({"GL_KHR_blend_equation_advanced"});
+    // Advanced blending in the fragment function (framebuffer fetch, which
+    // sees every earlier fragment's result: coherent).
+    if (Device::get().caps().framebufferFetch)
+        add({"GL_KHR_blend_equation_advanced", "GL_KHR_blend_equation_advanced_coherent"});
     if (es >= 30) {
         add({"GL_EXT_color_buffer_float", "GL_EXT_float_blend", "GL_OES_texture_stencil8", "GL_EXT_copy_image",
              "GL_OES_copy_image", "GL_EXT_draw_buffers_indexed", "GL_OES_draw_buffers_indexed",
@@ -69,7 +72,9 @@ void Context::initEsStrings() {
              "GL_OES_texture_storage_multisample_2d_array", "GL_EXT_primitive_bounding_box",
              "GL_OES_primitive_bounding_box", "GL_OES_viewport_array", "GL_EXT_multi_draw_indirect",
              "GL_EXT_geometry_point_size", "GL_OES_geometry_point_size", "GL_EXT_tessellation_point_size",
-             "GL_OES_tessellation_point_size"});
+             "GL_OES_tessellation_point_size",
+             // GLSL ES 3.10+ (glslang checks it; codegen converts anyway).
+             "GL_EXT_shader_implicit_conversions"});
 }
 
 }  // namespace wmgl

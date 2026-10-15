@@ -27,6 +27,8 @@ MTLPixelFormat mtlPixelFormat(Storage storage) {
     case Storage::RG16Float: return MTLPixelFormatRG16Float;
     case Storage::RGBA8Unorm: return MTLPixelFormatRGBA8Unorm;
     case Storage::RGBA8Unorm_sRGB: return MTLPixelFormatRGBA8Unorm_sRGB;
+    case Storage::R8Unorm_sRGB: return MTLPixelFormatR8Unorm_sRGB;
+    case Storage::RG8Unorm_sRGB: return MTLPixelFormatRG8Unorm_sRGB;
     case Storage::RGBA8Snorm: return MTLPixelFormatRGBA8Snorm;
     case Storage::RGBA8Uint: return MTLPixelFormatRGBA8Uint;
     case Storage::RGBA8Sint: return MTLPixelFormatRGBA8Sint;

@@ -53,6 +53,8 @@ bool esCapability(Context& ctx, GLenum cap) {
         return true;
     case GL_RASTERIZER_DISCARD: case GL_PRIMITIVE_RESTART_FIXED_INDEX: return ctx.esVersion() >= 30;
     case GL_SAMPLE_MASK: return ctx.esVersion() >= 31;
+    case 0x9285:  // GL_BLEND_ADVANCED_COHERENT_KHR
+        return ctx.advertises("GL_KHR_blend_equation_advanced_coherent");
     case GL_SAMPLE_SHADING: return ctx.esVersion() >= 31;  // OES_sample_shading
     default:
         // EXT_clip_cull_distance
@@ -64,6 +66,8 @@ bool esCapability(Context& ctx, GLenum cap) {
 bool setCapability(Context& ctx, GLenum cap, bool on) {
     ContextState& s = ctx.state;
     if (ctx.isEs() && !esCapability(ctx, cap)) return false;
+    // Framebuffer fetch is coherent either way: only the state is kept.
+    if (cap == 0x9285 && ctx.isEs()) { s.blendAdvancedCoherent = on; return true; }
     switch (cap) {
     case GL_BLEND: s.blendEnable = on ? 0xff : 0; ctx.markDirty(kDirtyBlend); return true;
     case GL_CULL_FACE: s.cullFace = on; ctx.markDirty(kDirtyRaster); return true;
@@ -113,6 +117,7 @@ bool setCapability(Context& ctx, GLenum cap, bool on) {
 bool getCapability(Context& ctx, GLenum cap, bool& value) {
     const ContextState& s = ctx.state;
     if (ctx.isEs() && !esCapability(ctx, cap)) return false;
+    if (cap == 0x9285 && ctx.isEs()) { value = s.blendAdvancedCoherent; return true; }
     switch (cap) {
     case GL_BLEND: value = s.blendEnable & 1; return true;
     case GL_CULL_FACE: value = s.cullFace; return true;

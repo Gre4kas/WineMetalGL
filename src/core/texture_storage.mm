@@ -451,6 +451,8 @@ MTLPixelFormat withoutSrgb(MTLPixelFormat f) {
     switch (f) {
     case MTLPixelFormatRGBA8Unorm_sRGB: return MTLPixelFormatRGBA8Unorm;
     case MTLPixelFormatBGRA8Unorm_sRGB: return MTLPixelFormatBGRA8Unorm;
+    case MTLPixelFormatR8Unorm_sRGB: return MTLPixelFormatR8Unorm;
+    case MTLPixelFormatRG8Unorm_sRGB: return MTLPixelFormatRG8Unorm;
     case MTLPixelFormatBC1_RGBA_sRGB: return MTLPixelFormatBC1_RGBA;
     case MTLPixelFormatBC2_RGBA_sRGB: return MTLPixelFormatBC2_RGBA;
     case MTLPixelFormatBC3_RGBA_sRGB: return MTLPixelFormatBC3_RGBA;
