@@ -1,0 +1,136 @@
+#!/bin/sh
+# Installs the WineMetalGL Wine module (scripts/build-wine-module.sh) into a
+# CrossOver bottle. For any other Wine, use install-wine-module.sh.
+#
+#   scripts/install-crossover.sh BOTTLE [CROSSOVER]
+#
+# BOTTLE is a bottle's name (in ~/Library/Application Support/CrossOver/Bottles)
+# or its directory. CROSSOVER is CrossOver.app, or its
+# Contents/SharedSupport/CrossOver (default /Applications/CrossOver.app, then
+# ~/Applications/CrossOver.app). Run it once per bottle.
+#
+# CrossOver.app is signed and macOS does not let it be changed, so nothing goes
+# into it:
+#   WINEMETALGL_HOME (default ~/Library/Application Support/WineMetalGL) gets
+#     lib/wine/x86_64-windows/winemetalgl.dll, lib/wine/i386-windows/winemetalgl.dll
+#     lib/wine/x86_64-unix/winemetalgl.so, lib/wine/x86_64-unix/libwinemetalgl.dylib (the core)
+#   the bottle's cxbottle.conf adds WINEMETALGL_HOME/lib/wine to [Wine] DllPath
+#   the bottle gets opengl32.dll, which forwards to winemetalgl.dll, and
+#     winemetalgl.dll itself, in system32 (and syswow64), and the DLL override
+#     opengl32=native.
+# Removing the override (in the bottle's Wine configuration, Libraries) gives
+# the bottle CrossOver's OpenGL back; `wine --bottle BOTTLE --dll opengl32=b`
+# does so for one run.
+#
+# From a checkout, MODULE (default build/wine-module) and CORE (default
+# build/release/libwinemetalgl.dylib) choose what is installed; from a release
+# package (this script at its top), its module directory.
+set -eu
+
+usage='usage: install-crossover.sh BOTTLE [CROSSOVER]'
+HERE=$(cd "$(dirname "$0")" && pwd)
+BOTTLE=${1:?$usage}
+CX=${2:-}
+if test -d "$HERE/module"; then
+    MODULE=${MODULE:-$HERE/module}
+    CORE=${CORE:-$HERE/module/x86_64-unix/libwinemetalgl.dylib}
+else
+    ROOT=$(cd "$HERE/.." && pwd)
+    MODULE=${MODULE:-$ROOT/build/wine-module}
+    CORE=${CORE:-$ROOT/build/release/libwinemetalgl.dylib}
+fi
+
+if test -z "$CX"; then
+    for app in /Applications/CrossOver.app "$HOME/Applications/CrossOver.app"; do
+        test -d "$app" && { CX=$app; break; }
+    done
+    test -n "$CX" || { echo "CrossOver.app not found; pass its path: $usage" >&2; exit 1; }
+fi
+CX=${CX%/}
+test -d "$CX/Contents/SharedSupport/CrossOver" && CX="$CX/Contents/SharedSupport/CrossOver"
+test -x "$CX/bin/wine" && test -x "$CX/bin/cxbottle" || { echo "not CrossOver: $CX" >&2; exit 1; }
+if test -e "$CX/lib/wine/aarch64-unix/ntdll.so"; then
+    echo "This CrossOver runs an arm64 Wine; the module is built for x86_64 Wine (issue #13)." >&2
+    exit 1
+fi
+
+case "$BOTTLE" in
+*/*) ;;
+*) BOTTLE="$HOME/Library/Application Support/CrossOver/Bottles/$BOTTLE" ;;
+esac
+test -f "$BOTTLE/cxbottle.conf" && test -d "$BOTTLE/drive_c/windows/system32" ||
+    { echo "not a CrossOver bottle: $BOTTLE" >&2; exit 1; }
+BOTTLE=$(cd "$BOTTLE" && pwd)
+
+for f in "$MODULE/x86_64-windows/winemetalgl.dll" "$MODULE/i386-windows/winemetalgl.dll" \
+         "$MODULE/x86_64-windows/opengl32.dll" "$MODULE/i386-windows/opengl32.dll" \
+         "$MODULE/x86_64-unix/winemetalgl.so" "$CORE"; do
+    test -e "$f" || { echo "missing: $f" >&2; exit 1; }
+done
+
+DEST=${WINEMETALGL_HOME:-$HOME/Library/Application Support/WineMetalGL}
+LIB="$DEST/lib/wine"
+mkdir -p "$LIB/x86_64-windows" "$LIB/i386-windows" "$LIB/x86_64-unix"
+cp "$MODULE/x86_64-windows/winemetalgl.dll" "$LIB/x86_64-windows/winemetalgl.dll"
+cp "$MODULE/i386-windows/winemetalgl.dll" "$LIB/i386-windows/winemetalgl.dll"
+cp "$MODULE/x86_64-unix/winemetalgl.so" "$LIB/x86_64-unix/winemetalgl.so"
+cp "$CORE" "$LIB/x86_64-unix/libwinemetalgl.dylib"
+# Copies keep a valid signature (a release's Developer ID one); others are
+# signed ad hoc.
+for f in "$LIB/x86_64-unix/winemetalgl.so" "$LIB/x86_64-unix/libwinemetalgl.dylib"; do
+    codesign --verify "$f" 2>/dev/null && continue
+    if ! out=$(codesign -f -s - "$f" 2>&1); then
+        echo "$out" >&2
+        echo "codesign failed: $f" >&2
+        exit 1
+    fi
+done
+echo "Installed winemetalgl into $LIB"
+
+# CrossOver's wine script sets WINEDLLPATH from the bottle's [Wine] DllPath,
+# or, unset, from CrossOver's lib/wine/<arch>-windows directories (the
+# defaults below). An entry like those would not do: Wine looks for a DLL's
+# unix library next to it there, and a 32-bit program would find the x86_64
+# winemetalgl.dll first. A lib/wine entry lets Wine pick the DLL of the
+# program's architecture and find winemetalgl.so in x86_64-unix.
+conf="$BOTTLE/cxbottle.conf"
+win32=0
+grep -q '^"WineArch" *= *"win64"' "$conf" || win32=1
+# shellcheck disable=SC2016 # ${CX_ROOT} is expanded by CrossOver
+if test "$win32" = 1; then
+    default='${CX_ROOT}/lib/wine/i386-windows:${CX_ROOT}/lib/wine'
+else
+    default='${CX_ROOT}/lib/wine/x86_64-windows:${CX_ROOT}/lib/wine/i386-windows:${CX_ROOT}/lib/wine'
+fi
+awk -v entry="$LIB" -v default="$default" '
+    function emit() { if (!done) { print "\"DllPath\" = \"" default ":" entry "\""; done = 1 } }
+    /^\[/ { if (wine) emit(); wine = ($0 == "[Wine]"); seen = seen || wine }
+    wine && /^"DllPath"[ \t]*=/ {
+        if (!index($0, ":" entry "\"") && !index($0, ":" entry ":")) sub(/"[ \t]*$/, ":" entry "\"")
+        print; done = 1; next
+    }
+    { print }
+    END { if (wine) emit(); else if (!seen) { print ""; print "[Wine]"; emit() } }
+' "$conf" > "$conf.winemetalgl"
+mv "$conf.winemetalgl" "$conf"
+echo "Added $LIB to the [Wine] DllPath of $conf"
+
+# winemetalgl.dll goes next to the forwarder too: CrossOver's loader finds the
+# builtin (through DllPath) only for a DLL it has found in the bottle (issue
+# #16: "Could not create window!"). A 32-bit bottle has its i386 DLLs in
+# system32.
+sys=$BOTTLE/drive_c/windows
+if test "$win32" = 1; then
+    cp "$MODULE/i386-windows/opengl32.dll" "$MODULE/i386-windows/winemetalgl.dll" "$sys/system32/"
+else
+    cp "$MODULE/x86_64-windows/opengl32.dll" "$MODULE/x86_64-windows/winemetalgl.dll" "$sys/system32/"
+    cp "$MODULE/i386-windows/opengl32.dll" "$MODULE/i386-windows/winemetalgl.dll" "$sys/syswow64/"
+fi
+# CrossOver's wine script picks the bottle with --bottle and ignores WINEPREFIX.
+if ! out=$("$CX/bin/wine" --bottle "$BOTTLE" --wait-children reg add \
+    'HKCU\Software\Wine\DllOverrides' /v opengl32 /d native /f 2>&1); then
+    echo "$out" >&2
+    echo "could not set opengl32=native in $BOTTLE" >&2
+    exit 1
+fi
+echo "Installed opengl32.dll (opengl32=native) into $BOTTLE"

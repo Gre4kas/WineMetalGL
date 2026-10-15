@@ -44,8 +44,8 @@ build/host/wmgl_host_tests && build/host/wmgl_gpu_tests
 WineMetalGL reaches Windows programs through a Wine module of its own, built
 outside Wine and installed next to Wine's modules: no Wine source is patched
 or rebuilt. It works with any x86_64 Wine 11.x on macOS 15 or later, such as
-the WineHQ release or MetalSharp's Wine 11.17; it is tested on stock Wine 11.0
-and on MetalSharp's Wine 11.17.
+the WineHQ release or MetalSharp's Wine 11.17; it is tested on stock Wine 11.0,
+WineHQ's macOS builds of Wine 11.0 and 11.18, and MetalSharp's Wine 11.17.
 
 | File | Where | What |
 |---|---|---|
@@ -61,13 +61,40 @@ and on MetalSharp's Wine 11.17.
 ```
 
 `install-wine-module.sh` adds the module and the core to the Wine installation
-without replacing any of Wine's files. Given a prefix, it also puts the
+(the directory with `bin/wine`, or a Wine app such as WineHQ's `Wine
+Stable.app`) without replacing any of Wine's files. Given a prefix, it also puts the
 forwarding `opengl32.dll` into it, with a copy of `winemetalgl.dll` for Wines
-whose loader does not look in `lib/wine` for it (CrossOver bottles, where a
-program otherwise fails to create its window), and sets the DLL override
-`opengl32=native`; run it once per prefix. Removing the override (or running
+whose loader does not look in `lib/wine` for it, and sets the DLL override
+`opengl32=native`; run it once per prefix (a prefix that does not exist yet
+is created). If macOS refuses the copy (`Operation not permitted`), the
+terminal needs App Management permission (System Settings, Privacy &
+Security). Removing the override (or running
 a program with `WINEDLLOVERRIDES=opengl32=b`) gives that prefix Wine's own
 OpenGL back.
+
+### CrossOver
+
+CrossOver.app is signed and macOS does not let it be changed (`cp: ...:
+Operation not permitted`), so `install-wine-module.sh` refuses it; use
+`install-crossover.sh` instead, once per bottle:
+
+```sh
+./scripts/install-crossover.sh "My Bottle"                 # a bottle's name, or its directory
+./scripts/install-crossover.sh "My Bottle" /path/to/CrossOver.app
+```
+
+Nothing goes into CrossOver.app. The module and the core go into
+`~/Library/Application Support/WineMetalGL/lib/wine` (`WINEMETALGL_HOME`
+chooses another directory), and the bottle's `cxbottle.conf` adds that
+directory to its `[Wine] DllPath`, so CrossOver's Wine finds them there. The
+bottle gets the forwarding `opengl32.dll` and `winemetalgl.dll` (in
+`system32`, and `syswow64` for a 64-bit bottle) and the `opengl32=native`
+override. CrossOver's `wine` script ignores `WINEPREFIX` and
+`WINEDLLOVERRIDES`; removing the override in the bottle's Wine configuration
+(Libraries) gives the bottle CrossOver's OpenGL back, and
+`wine --bottle "My Bottle" --dll opengl32=b` does so for one run. It is
+tested on CrossOver 26.3, in 64- and 32-bit bottles. CrossOver 27 runs an
+arm64 Wine, which the module is not built for yet (issue #13).
 
 What matters:
 

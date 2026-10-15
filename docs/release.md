@@ -10,7 +10,7 @@ records the commit, and says so when the tree had uncommitted changes:
 
 ```text
 OUTPUT/
-  install-wine-module.sh
+  install-wine-module.sh, install-crossover.sh
   module/
     x86_64-unix/     winemetalgl.so, libwinemetalgl.dylib (the core)
     x86_64-windows/  winemetalgl.dll, opengl32.dll
@@ -28,6 +28,9 @@ into any x86_64 Wine 11.x and, given a prefix, the forwarding `opengl32.dll`
 (and a copy of `winemetalgl.dll`) with the `opengl32=native` override ([Build it yourself](building.md#the-wine-module)).
 No Wine file is replaced, and the module does not depend on the Wine build it
 was staged with.
+
+`./install-crossover.sh BOTTLE [/path/to/CrossOver.app]` installs it for a
+CrossOver bottle without changing CrossOver.app ([CrossOver](building.md#crossover)).
 
 `scripts/verify-release.sh OUTPUT` checks the layout, the architectures and
 code signatures, that the core links no OpenGL.framework and exports only the

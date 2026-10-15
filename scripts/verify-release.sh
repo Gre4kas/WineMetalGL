@@ -19,6 +19,7 @@ for path in \
     "$stage/module/i386-windows/winemetalgl.dll" \
     "$stage/module/i386-windows/opengl32.dll" \
     "$stage/install-wine-module.sh" \
+    "$stage/install-crossover.sh" \
     "$stage/LICENSE" \
     "$stage/LICENSES/GPL-3.0.txt" \
     "$stage/docs/api-coverage.json" \
