@@ -626,13 +626,17 @@ std::string tessEvaluationVertexShader(const TessStageInfo& info, const TessCont
                 if (f.location == location) return &f;
         return nullptr;
     };
+    // With a control stage, the loads of its N output vertices are unrolled
+    // (below): constant indices let Metal keep the inputs in registers, where
+    // a loop leaves every input array on the stack (528 bytes per domain
+    // point for Foundation's terrain, issue #12).
+    size_t unrolledBody = std::string::npos;
     if (control) {
         const uint32_t n = static_cast<uint32_t>(control->verticesOut);
         const uint32_t record = n * control->vertexWords + control->patchWords;
         v += "    wmgl_patch_vertices_in = " + std::to_string(n) + ";\n"
-             "    uint wmgl_pb = wmgl_patch * " + std::to_string(record) + "u;\n"
-             "    for (uint wmgl_j = 0u; wmgl_j < " + std::to_string(n) + "u; ++wmgl_j) {\n"
-             "        uint wmgl_b = wmgl_pb + wmgl_j * " + std::to_string(control->vertexWords) + "u;\n";
+             "    uint wmgl_pb = wmgl_patch * " + std::to_string(record) + "u;\n";
+        unrolledBody = v.size();
     } else {
         const uint32_t stride = capture ? capture->xfbStride[0] : 0;
         v += "    wmgl_patch_vertices_in = int(wmgl_tes_patch_vertices);\n"
@@ -662,7 +666,16 @@ std::string tessEvaluationVertexShader(const TessStageInfo& info, const TessCont
         for (int e = 0; e < std::max(1, std::min(in.arraySize, f->elements)); ++e)
             v += load(access(in, "wmgl_j", e), in.glslType, in.type, "wmgl_b", f->offset + static_cast<uint32_t>(e * words(in.type)));
     }
-    v += "    }\n";
+    if (unrolledBody != std::string::npos) {
+        const std::string body = v.substr(unrolledBody);
+        v.resize(unrolledBody);
+        static const std::regex index("\\bwmgl_j\\b");
+        for (uint32_t j = 0; j < static_cast<uint32_t>(control->verticesOut); ++j)
+            v += "    {\n        uint wmgl_b = wmgl_pb + " + std::to_string(j * control->vertexWords) + "u;\n" +
+                 std::regex_replace(body, index, std::to_string(j)) + "    }\n";
+    } else {
+        v += "    }\n";
+    }
     if (control) {
         v += "    uint wmgl_ps = wmgl_pb + " + std::to_string(static_cast<uint32_t>(control->verticesOut) * control->vertexWords) +
              "u;\n";

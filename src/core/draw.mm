@@ -1272,10 +1272,24 @@ void DrawState::uncompressFeedbackTextures(LinkedProgram& program) {
         const auto [owner, ownIndex] = samplerSource(program, index);
         const GLint unit = owner && ownIndex < owner->samplerUnits.size() ? owner->samplerUnits[ownIndex] : 0;
         if (unit < 0 || unit >= ContextState::kMaxTextureUnits || slot.textureTarget < 0) continue;
-        Texture* sampled = root(ctx_.state.textureUnits[unit].bound[slot.textureTarget].get());
+        Texture* bound = ctx_.state.textureUnits[unit].bound[slot.textureTarget].get();
+        Texture* sampled = root(bound);
         if (!sampled || sampled->formatViews) continue;
-        bool attached = root(fb->depth.texture.get()) == sampled || root(fb->stencil.texture.get()) == sampled;
-        for (const Attachment& a : fb->color) attached = attached || root(a.texture.get()) == sampled;
+        // The levels the draw samples (texture views: all of the root's); an
+        // attachment of another level (a mip chain built a level at a time
+        // from the one above) is no feedback.
+        int first = 0, last = INT32_MAX;
+        if (bound == sampled && sampled->mtlLevels > 0) {
+            first = std::clamp(sampled->baseLevel, 0, sampled->mtlLevels - 1);
+            last = std::max(first, std::min(sampled->maxLevel, sampled->mtlLevels - 1));
+        }
+        const auto feeds = [&](const Attachment& a) {
+            Texture* t = a.texture.get();
+            if (root(t) != sampled) return false;
+            return t != sampled || (a.level >= first && a.level <= last);
+        };
+        bool attached = feeds(fb->depth) || feeds(fb->stencil);
+        for (const Attachment& a : fb->color) attached = attached || feeds(a);
         if (!attached) continue;
         sampled->formatViews = sampled->storageDirty = true;
         if (sampled->mtl) ensureTextureStorage(ctx_, *sampled);
@@ -3536,7 +3550,7 @@ bool DrawState::drawPatchesIndirectGpu(GLenum type, Buffer& commands, uintptr_t 
     site.next = (site.next + 1) % 8;
 
     // 1. List the patch vertices and gather their attributes.
-    id<MTLComputeCommandEncoder> setup = stream.preludeSetup();
+    id<MTLComputeCommandEncoder> setup = stream.preludeStep(CommandStream::PreludeStep::Scan);
     id<MTLComputePipelineState> scan = mdiPatchScanKernel();
     [setup setComputePipelineState:scan];
     [setup setBuffer:commands.mtl offset:offset atIndex:0];
@@ -3549,7 +3563,11 @@ bool DrawState::drawPatchesIndirectGpu(GLenum type, Buffer& commands, uintptr_t 
     [setup setBuffer:site.report offset:0 atIndex:7];
     const NSUInteger scanThreads = std::min<NSUInteger>(1024, scan.maxTotalThreadsPerThreadgroup) / 32 * 32;
     [setup dispatchThreadgroups:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(scanThreads, 1, 1)];
+    setup = stream.preludeStep(CommandStream::PreludeStep::Expand);
     [setup setComputePipelineState:mdiPatchExpandKernel()];
+    [setup setBuffer:commands.mtl offset:offset atIndex:0];
+    [setup setBuffer:starts.buffer offset:starts.offset atIndex:1];
+    [setup setBuffer:capture.buffer offset:capture.offset atIndex:3];
     [setup setBuffer:elements->mtl offset:0 atIndex:2];
     [setup setBuffer:gathered.buffer offset:gathered.offset atIndex:4];
     [setup setBytes:&params length:sizeof(params) atIndex:5];
@@ -3604,7 +3622,7 @@ bool DrawState::drawPatchesIndirectGpu(GLenum type, Buffer& commands, uintptr_t 
         id<MTLComputePipelineState> kernel =
             borders ? lp.kernelWithBorders(t.control, static_cast<int>(Stage::TessControl), borders) : lp.tessControlKernel();
         if (!kernel) return true;
-        id<MTLComputeCommandEncoder> compute = stream.preludeCompute();
+        id<MTLComputeCommandEncoder> compute = stream.preludeStep(CommandStream::PreludeStep::Control);
         [compute setComputePipelineState:kernel];
         bindKernelResources(compute, lp, t.control.usesDefaultUniforms, static_cast<int>(Stage::TessControl), &t.control);
         [compute setBuffer:captured.buffer offset:captured.offset atIndex:shader::kSlotFirstXfbBuffer];
@@ -3612,6 +3630,7 @@ bool DrawState::drawPatchesIndirectGpu(GLenum type, Buffer& commands, uintptr_t 
         [compute setBuffer:controlParams.buffer offset:controlParams.offset atIndex:shader::kSlotFirstXfbBuffer + 2];
         [compute dispatchThreadgroupsWithIndirectBuffer:args.buffer indirectBufferOffset:args.offset + 16
                                   threadsPerThreadgroup:MTLSizeMake(static_cast<NSUInteger>(t.verticesOut), 1, 1)];
+        compute = stream.preludeStep(CommandStream::PreludeStep::Factors);
         [compute setComputePipelineState:tessFactorsKernel()];
         [compute setBuffer:records.buffer offset:records.offset atIndex:0];
         [compute setBuffer:factors.buffer offset:factors.offset atIndex:1];

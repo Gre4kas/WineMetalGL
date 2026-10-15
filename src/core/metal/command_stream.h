@@ -92,10 +92,15 @@ public:
     // attachments; preludeCompute: one compute pass, run after it.
     id<MTLRenderCommandEncoder> preludeRender();
     id<MTLComputeCommandEncoder> preludeCompute();
-    // preludeSetup: one compute pass committed ahead of both, for the
-    // kernels that turn GPU-written multi-draw commands into what the
-    // capture and the control kernels read (DrawState::drawPatchesIndirectGpu).
-    id<MTLComputeCommandEncoder> preludeSetup();
+    // The GPU-driven multi-draw of patches (DrawState::drawPatchesIndirectGpu)
+    // records each step of all its draws in a concurrent compute pass of its
+    // own, in queue order: the scans (ahead of the capture pass), the
+    // expansions, then (after the prelude's kernels) the control kernels and
+    // the factor kernels. Each step reads only the previous steps' output,
+    // which the command buffer boundaries order, so the draws' dispatches of
+    // one step run side by side instead of one after another.
+    enum class PreludeStep : uint8_t { Scan, Expand, Control, Factors, Count };
+    id<MTLComputeCommandEncoder> preludeStep(PreludeStep step);
     // Commits the prelude and the command buffer being recorded, and waits
     // for the prelude's kernels (the CPU reads their results).
     void waitForPrelude();
@@ -178,8 +183,9 @@ private:
     id<MTLRenderCommandEncoder> render_ = nil;
     id<MTLBlitCommandEncoder> blit_ = nil;
     id<MTLComputeCommandEncoder> compute_ = nil;
-    id<MTLCommandBuffer> preludeRenderBuffer_ = nil, preludeComputeBuffer_ = nil, preludeSetupBuffer_ = nil;
-    id<MTLComputeCommandEncoder> preludeSetup_ = nil;
+    id<MTLCommandBuffer> preludeRenderBuffer_ = nil, preludeComputeBuffer_ = nil;
+    id<MTLCommandBuffer> stepBuffers_[static_cast<int>(PreludeStep::Count)] = {};
+    id<MTLComputeCommandEncoder> stepEncoders_[static_cast<int>(PreludeStep::Count)] = {};
     id<MTLRenderCommandEncoder> preludeRender_ = nil;
     id<MTLComputeCommandEncoder> preludeCompute_ = nil;
     id<MTLCommandBuffer> lastPrelude_ = nil;  // the last prelude committed (waitForPrelude)

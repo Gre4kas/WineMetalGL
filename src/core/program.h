@@ -84,6 +84,12 @@ struct LinkedProgram {
     // On the evaluation executable: a Metal tessellation pipeline could not
     // be built, so its patches are tessellated on the CPU.
     std::atomic<bool> metalTessellationFailed{false};
+    // A pass without colour attachments (shadow maps, depth pre-passes) may
+    // draw this program without its fragment function: it writes no depth
+    // or sample mask, discards nothing and writes no memory, so the
+    // rasterizer's depth and stencil results are the whole of what it does
+    // there (PipelineCache::render). -1 until first computed.
+    std::atomic<int8_t> fragmentDepthOnlyRemovable{-1};
     std::shared_ptr<LinkedProgram> pipelineTessEvaluation(const shader::LinkResult& evaluation, std::shared_ptr<LinkedProgram> out);
     // A pipeline whose vertex processing stages span programs: the emulation
     // assembled from each stage's program (shader::linkPipeline), or null.

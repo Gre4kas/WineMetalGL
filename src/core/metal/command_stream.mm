@@ -254,31 +254,42 @@ id<MTLComputeCommandEncoder> CommandStream::preludeCompute() {
     return preludeCompute_;
 }
 
-id<MTLComputeCommandEncoder> CommandStream::preludeSetup() {
-    if (preludeSetup_) return preludeSetup_;
-    if (!preludeSetupBuffer_) {
-        preludeSetupBuffer_ = [queue_.mtl() commandBuffer];
-        preludeSetupBuffer_.label = @"WineMetalGL prelude (multi-draw setup)";
+id<MTLComputeCommandEncoder> CommandStream::preludeStep(PreludeStep step) {
+    const int i = static_cast<int>(step);
+    if (stepEncoders_[i]) return stepEncoders_[i];
+    if (!stepBuffers_[i]) {
+        static NSString* const labels[] = {@"WineMetalGL prelude (multi-draw scan)", @"WineMetalGL prelude (multi-draw expand)",
+                                           @"WineMetalGL prelude (multi-draw control)", @"WineMetalGL prelude (multi-draw factors)"};
+        stepBuffers_[i] = [queue_.mtl() commandBuffer];
+        stepBuffers_[i].label = labels[i];
     }
-    preludeSetup_ = [preludeSetupBuffer_ computeCommandEncoder];
-    return preludeSetup_;
+    stepEncoders_[i] = [stepBuffers_[i] computeCommandEncoderWithDispatchType:MTLDispatchTypeConcurrent];
+    return stepEncoders_[i];
 }
 
 void CommandStream::commitPrelude() {
     // In queue order ahead of the command buffer being committed: the
-    // capture pass, then the kernels that read it (tracked resources order
-    // the kernels after the captures and the draws after the kernels).
-    if (preludeSetup_) [preludeSetup_ endEncoding];
+    // multi-draw scans and expansions, the capture pass, the kernels that
+    // read it, then the multi-draw control and factor kernels (tracked
+    // resources order each after what it reads, and the draws after them).
+    for (__strong id<MTLComputeCommandEncoder>& e : stepEncoders_)
+        if (e) [e endEncoding];
     if (preludeRender_) [preludeRender_ endEncoding];
     if (preludeCompute_) [preludeCompute_ endEncoding];
-    if (preludeSetupBuffer_) [preludeSetupBuffer_ commit];
-    if (preludeRenderBuffer_) [preludeRenderBuffer_ commit];
-    if (preludeComputeBuffer_) [preludeComputeBuffer_ commit];
+    const auto commit = [](id<MTLCommandBuffer> b) {
+        if (b) [b commit];
+    };
+    commit(stepBuffers_[static_cast<int>(PreludeStep::Scan)]);
+    commit(stepBuffers_[static_cast<int>(PreludeStep::Expand)]);
+    commit(preludeRenderBuffer_);
+    commit(preludeComputeBuffer_);
+    commit(stepBuffers_[static_cast<int>(PreludeStep::Control)]);
+    commit(stepBuffers_[static_cast<int>(PreludeStep::Factors)]);
     if (preludeComputeBuffer_ || preludeRenderBuffer_) lastPrelude_ = preludeComputeBuffer_ ?: preludeRenderBuffer_;
-    preludeSetup_ = nil;
+    for (__strong id<MTLComputeCommandEncoder>& e : stepEncoders_) e = nil;
+    for (__strong id<MTLCommandBuffer>& b : stepBuffers_) b = nil;
     preludeRender_ = nil;
     preludeCompute_ = nil;
-    preludeSetupBuffer_ = nil;
     preludeRenderBuffer_ = nil;
     preludeComputeBuffer_ = nil;
 }

@@ -964,7 +964,10 @@ void texParameter(Context& ctx, GLenum target, GLenum pname, const ParamValues& 
         } else {
             tex->maxLevel = value;
         }
-        tex->views.clear();
+        // Views are keyed by their levels: the ones of other base and max
+        // levels stay for when they come back (Foundation builds a mip chain
+        // a level at a time every frame, issue #12), up to a bound.
+        if (tex->views.size() > 64) tex->views.clear();
         imageChanged(ctx, *tex);
         return;
     }
