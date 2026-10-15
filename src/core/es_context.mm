@@ -31,7 +31,7 @@ void Context::initEsStrings() {
          "GL_OES_texture_float", "GL_OES_texture_half_float", "GL_OES_texture_float_linear",
          "GL_OES_texture_half_float_linear", "GL_OES_fbo_render_mipmap", "GL_OES_surfaceless_context",
          "GL_OES_get_program_binary", "GL_OES_texture_3D", "GL_OES_required_internalformat",
-         "GL_OES_vertex_type_10_10_10_2", "GL_EXT_blend_minmax", "GL_EXT_texture_rg", "GL_EXT_sRGB",
+         "GL_OES_vertex_type_10_10_10_2", "GL_OES_stencil8", "GL_EXT_blend_minmax", "GL_EXT_texture_rg", "GL_EXT_sRGB",
          "GL_EXT_texture_type_2_10_10_10_REV", "GL_EXT_occlusion_query_boolean", "GL_EXT_instanced_arrays",
          "GL_EXT_draw_instanced", "GL_EXT_texture_storage", "GL_EXT_draw_buffers", "GL_EXT_shader_texture_lod",
          "GL_EXT_frag_depth", "GL_EXT_discard_framebuffer", "GL_EXT_multi_draw_arrays", "GL_EXT_unpack_subimage",

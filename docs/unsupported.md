@@ -102,6 +102,28 @@ logged once.
 | Imaging subset (colour tables, convolution, histogram, colour matrix) | 1.2 | `GL_INVALID_OPERATION`; `GL_ARB_imaging` is not advertised. The colour matrix stack (`glMatrixMode(GL_COLOR)`, two deep) is kept and reads back, as the Steam overlay saves and restores it unchecked, but it does not transform pixels | Optional in the specification: it exists only when `GL_ARB_imaging` is advertised | Large, for almost no use |
 | Colour-index mode | 1.0 | Unreachable | Wine's macOS driver offers only RGBA pixel formats, so no program can create a colour-index context | Nothing worth doing |
 
+## OpenGL ES
+
+OpenGL ES contexts are OpenGL ES 3.2 (`WINEMETALGL_ES_VERSION` lowers the
+version they report). What they leave out:
+
+| Feature | Behaviour | Why |
+|---|---|---|
+| Lines wider than 1 | `ALIASED_LINE_WIDTH_RANGE` is 1 to 1 | Optional in OpenGL ES; Metal draws 1-pixel lines only |
+| HDR ASTC (`GL_KHR_texture_compression_astc_hdr`), 3D ASTC | Not advertised | LDR ASTC only |
+| `GL_NV_fbo_color_attachments`, `GL_OVR_multiview`, `GL_EXT_multisampled_render_to_texture`, `GL_EXT_shader_integer_mix` | Not advertised | Not implemented yet; `GL_EXT_draw_buffers` covers several color attachments |
+| Separate depth and stencil attachments | `FRAMEBUFFER_UNSUPPORTED` | Metal keeps depth and stencil in one texture; OpenGL ES allows the combination to be unsupported |
+| More than 4 samples | `MAX_SAMPLES` is 4 | Apple GPUs render with 1, 2 or 4 samples |
+| Struct varyings in geometry and tessellation stages, some OpenGL ES 3.1 image and storage-buffer layouts | Link errors or wrong results | Not done yet: the OpenGL ES 3.1 and 3.2 results in [Conformance results](conformance.md#opengl-es) list them |
+
+Apple GPUs shade the 2x2 pixel quads along an edge that two triangles of an
+indexed draw share together, so derivatives (and the texture level of a
+lookup) next to the edge mix both triangles' attributes. OpenGL ES draws whose
+vertex attributes are all in client memory are drawn without indices, which
+keeps each triangle's quads apart; draws from buffer objects keep the
+hardware behaviour, which changes the level of a few pixels along such edges
+only where the attributes' derivatives differ across them.
+
 ## Conformance notes
 
 <!-- BEGIN GENERATED: totals-notes (scripts/docs/generate.py) -->

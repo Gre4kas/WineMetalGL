@@ -21,6 +21,13 @@ Windows programs together in a WoW64 prefix. Wine's Direct3D 10 and 11
 (wined3d), which draw through OpenGL, get feature level 11_1 on it
 ([Test suite](docs/testing.md#direct3d-through-wined3d)).
 
+It also gives OpenGL ES 2.0, 3.0, 3.1 and 3.2 contexts
+(`WGL_EXT_create_context_es2_profile`), for programs and engines that render
+with OpenGL ES on Windows: GLSL ES 1.00 to 3.20, the OpenGL ES format,
+error and completeness rules, ASTC LDR and ETC2 textures, advanced blending,
+and the common OpenGL ES 2.0 extensions
+([Unsupported](docs/unsupported.md#opengl-es) lists what is left out).
+
 The core, `libwinemetalgl.dylib`, has no dependency on Apple's OpenGL. It
 compiles GLSL with glslang and SPIRV-Cross to the Metal Shading Language and
 implements the GL state machine, resources and draws on Metal. The Wine

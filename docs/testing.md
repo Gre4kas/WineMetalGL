@@ -70,6 +70,23 @@ done
 python3 scripts/docs/generate.py
 ```
 
+OpenGL ES lists run in configuration 1 of their `mustpass.xml` under Wine,
+Khronos's (`gles2-khr-main` to `gles32-khr-main`, `gles32-khr-glesext`, the
+`-noctx-main` and `-khr-single` lists) and dEQP's (`gles2-main`, `gles3-main`,
+`gles31-main` and their rotation, multisample and RGB565 lists):
+
+```sh
+python3 scripts/cts/run.py --mustpass gles3-main.txt --config 1 \
+    --wine /path/to/wine --cts /path/to/build-win64/external/openglcts/modules/glcts.exe \
+    --shards 6 --out tests/cts/baseline/gles3-main-cfg1-wine.txt
+```
+
+`cts-runner.exe --type=es3`, in the same directory as `glcts.exe`, runs every
+OpenGL ES 2.0 and 3.0 list in each pixel format it selects (window formats
+without samples or sRGB; about an hour under Wine);
+`scripts/cts/runner_summary.py LOGDIR tests/cts/es/cts-runner-es3.txt`
+records its result for `generate.py`.
+
 `--template` clones an existing WoW64 prefix instead of creating one per
 shard, and `--filter` runs a subset of cases. Each result file records the
 commit; run from a tree without uncommitted changes, or the source gate
