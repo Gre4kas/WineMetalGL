@@ -6,6 +6,7 @@ namespace wmgl::es {
 namespace {
 
 constexpr GLenum kBgra8 = 0x93A1;  // GL_BGRA8_EXT
+constexpr GLenum kLuminance4Alpha4 = 0x8043;  // GL_LUMINANCE4_ALPHA4_OES
 
 struct Row {
     GLenum format, type, internal;
@@ -146,7 +147,7 @@ const Row kUnsized[] = {
 // unsized table's format and type apply.
 bool sizedLegacy(GLenum internal) {
     switch (internal) {
-    case GL_RGB10: case GL_ALPHA8: case GL_LUMINANCE8: case GL_LUMINANCE8_ALPHA8: case GL_ALPHA32F_ARB: case GL_LUMINANCE32F_ARB:
+    case GL_RGB10: case GL_ALPHA8: case GL_LUMINANCE8: case GL_LUMINANCE8_ALPHA8: case kLuminance4Alpha4: case GL_ALPHA32F_ARB: case GL_LUMINANCE32F_ARB:
     case GL_LUMINANCE_ALPHA32F_ARB: case GL_ALPHA16F_ARB: case GL_LUMINANCE16F_ARB: case GL_LUMINANCE_ALPHA16F_ARB:
     case kBgra8:
         return true;
@@ -215,6 +216,12 @@ GLenum texImageFormat(GLenum internalformat, GLenum format, GLenum& type, GLenum
     }
     for (const Row& r : kSized)
         if (r.internal == internalformat && r.format == format && r.type == given) return internalformat;
+    // OES_required_internalformat's LUMINANCE4_ALPHA4 is stored as LUMINANCE8_ALPHA8.
+    if (internalformat == kLuminance4Alpha4) {
+        if (format == GL_LUMINANCE_ALPHA && given == GL_UNSIGNED_BYTE) return GL_LUMINANCE8_ALPHA8;
+        error = GL_INVALID_OPERATION;
+        return 0;
+    }
     // The luminance/alpha sized formats take their unsized format's data.
     for (const Row& r : kUnsized)
         if (r.internal == internalformat && r.format == format && r.type == given) return internalformat;
@@ -335,6 +342,8 @@ GLenum copyTexImageFormat(const FormatInfo& source, GLenum internalformat, GLenu
         if (source.type != ComponentType::UnsignedNormalized || source.srgb || !baseCompatible(source.baseFormat, internalformat))
             return 0;
         const int r = source.redBits, a = source.alphaBits;
+        // Table 8.22 has no unsized format for components over 8 bits (RGB10_A2).
+        if (r > 8 || a > 8) return 0;
         switch (internalformat) {
         case GL_LUMINANCE: return GL_LUMINANCE8;
         case GL_ALPHA: return GL_ALPHA8;
@@ -343,6 +352,17 @@ GLenum copyTexImageFormat(const FormatInfo& source, GLenum internalformat, GLenu
         default:  // GL_RGBA
             return r <= 4 && a <= 4 ? GL_RGBA4 : r == 5 && a == 1 ? GL_RGB5_A1 : r <= 8 && a >= 2 && a <= 8 ? GL_RGBA8 : 0;
         }
+    }
+    // OES_required_internalformat's sized luminance and alpha formats: the
+    // source's components as for their unsized formats, stored in 8 bits.
+    case GL_LUMINANCE8: case GL_ALPHA8: case GL_LUMINANCE8_ALPHA8: case kLuminance4Alpha4: {
+        const GLenum base = internalformat == GL_LUMINANCE8 ? GL_LUMINANCE
+                            : internalformat == GL_ALPHA8   ? GL_ALPHA
+                                                            : GL_LUMINANCE_ALPHA;
+        if (source.type != ComponentType::UnsignedNormalized || source.srgb || !baseCompatible(source.baseFormat, base) ||
+            source.redBits > 8 || source.alphaBits > 8)
+            return 0;
+        return internalformat == kLuminance4Alpha4 ? GL_LUMINANCE8_ALPHA8 : internalformat;
     }
     default: break;
     }

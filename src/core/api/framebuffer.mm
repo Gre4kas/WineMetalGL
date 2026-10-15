@@ -119,8 +119,10 @@ GLenum completeness(Context& ctx, Framebuffer* fb) {
         // luminance or RGB8_SNORM).
         if (kind == 0 && ctx.isEs() && !es::colorRenderable(f->internalFormat)) return GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT;
         // OES_texture_float's unsized float images are not color-renderable
-        // (EXT_color_buffer_float makes the sized formats renderable).
-        if (kind == 0 && ctx.isEs() && a.type == GL_TEXTURE && a.texture && f->isFloat() && f->redBits == 32) {
+        // (EXT_color_buffer_float makes the sized formats renderable), nor
+        // are EXT_texture_type_2_10_10_10_REV's unsized RGBA images.
+        if (kind == 0 && ctx.isEs() && a.type == GL_TEXTURE && a.texture &&
+            ((f->isFloat() && f->redBits == 32) || f->internalFormat == GL_RGB10_A2)) {
             const int face = a.cubeFace ? static_cast<int>(a.cubeFace - GL_TEXTURE_CUBE_MAP_POSITIVE_X) : 0;
             const GLenum requested = a.texture->image(face, a.level).requestedFormat;
             if (requested == GL_RGBA || requested == GL_RGB || requested == GL_RED || requested == GL_RG)
@@ -798,7 +800,10 @@ void ReadBuffer(Context& ctx, GLenum src) {
         return;
     }
     if (src != GL_NONE && (src < GL_COLOR_ATTACHMENT0 || src >= GL_COLOR_ATTACHMENT0 + Framebuffer::kMaxColor))
-        return ctx.setError(src >= GL_COLOR_ATTACHMENT0 && src < GL_COLOR_ATTACHMENT0 + 32 ? GL_INVALID_VALUE
+        // (OpenGL ES 3.2 section 16.1.1: INVALID_OPERATION for attachments
+        // past MAX_COLOR_ATTACHMENTS; desktop GL 4.6 says INVALID_VALUE.)
+        return ctx.setError(src >= GL_COLOR_ATTACHMENT0 && src < GL_COLOR_ATTACHMENT0 + 32
+                                ? (ctx.isEs() ? GL_INVALID_OPERATION : GL_INVALID_VALUE)
                             : (src == GL_BACK || (!ctx.isEs() && (src == GL_FRONT || src == GL_LEFT))) ? GL_INVALID_OPERATION
                                                                                                        : GL_INVALID_ENUM);
     fb->readBuffer = src;

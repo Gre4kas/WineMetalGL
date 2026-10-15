@@ -4,6 +4,7 @@
 #include <vector>
 #include <cstring>
 
+#include "core/format/es_formats.h"
 #include "core/format/formats.h"
 #include "core/format/pixel_transfer.h"
 #include "core/format/vertex_decode.h"
@@ -186,4 +187,27 @@ TEST(bench_pixel_transfer) {
         const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
         std::fprintf(stderr, "  bench: %-26s %7.2f ms\n", c.name, ms);
     }
+}
+
+// OpenGL ES glCopyTexImage: unsized formats take sources of at most 8 bits
+// per component (table 8.22), and OES_required_internalformat's sized
+// luminance/alpha formats copy like their unsized ones.
+TEST(format_es_copy_tex_image_rules) {
+    GLenum error = GL_NO_ERROR;
+    const FormatInfo& rgba8 = *formatInfo(GL_RGBA8);
+    const FormatInfo& rgb10a2 = *formatInfo(GL_RGB10_A2);
+    CHECK(es::copyTexImageFormat(rgba8, GL_RGB, error) == GL_RGB8);
+    CHECK(es::copyTexImageFormat(rgb10a2, GL_RGB, error) == 0);
+    CHECK(error == GL_INVALID_OPERATION);
+    CHECK(es::copyTexImageFormat(rgb10a2, GL_LUMINANCE, error) == 0);
+    CHECK(es::copyTexImageFormat(rgb10a2, GL_RGB10_A2, error) == GL_RGB10_A2);
+    CHECK(es::copyTexImageFormat(rgba8, GL_ALPHA8, error) == GL_ALPHA8);
+    CHECK(es::copyTexImageFormat(rgba8, GL_LUMINANCE8_ALPHA8, error) == GL_LUMINANCE8_ALPHA8);
+    CHECK(es::copyTexImageFormat(rgba8, 0x8043 /* LUMINANCE4_ALPHA4_OES */, error) == GL_LUMINANCE8_ALPHA8);
+    CHECK(es::copyTexImageFormat(*formatInfo(GL_RGB8), GL_ALPHA8, error) == 0);
+    GLenum type = GL_UNSIGNED_BYTE;
+    CHECK(es::texImageFormat(0x8043, GL_LUMINANCE_ALPHA, type, error) == GL_LUMINANCE8_ALPHA8);
+    type = GL_UNSIGNED_BYTE;
+    CHECK(es::texImageFormat(0x8043, GL_LUMINANCE, type, error) == 0);
+    CHECK(error == GL_INVALID_OPERATION);
 }

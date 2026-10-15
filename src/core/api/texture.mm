@@ -271,6 +271,10 @@ void defineImage(Context& ctx, Texture& tex, int face, int level, GLenum request
     TextureImage& image = tex.image(face, level);
     const bool reshaped = image.format != info || image.width != w || image.height != h || image.depth != d ||
                           image.samples != samples;
+    // Sampling views carry the format's swizzle (RGB8 and RGBA8 share a
+    // Metal format, and the storage may be kept).
+    if (image.format != info) tex.views.clear();
+    image.pending.clear();
     image.internalFormat = info ? info->internalFormat : 0;
     image.requestedFormat = requested;
     image.format = info;
@@ -289,16 +293,25 @@ void clearImage(TextureImage& image) { image = TextureImage(); }
 void uploadRegion(Context& ctx, Texture& tex, int face, int level, int x, int y, int z, int w, int h, int d,
                   GLenum format, GLenum type, const uint8_t* src) {
     if (!src || w <= 0 || h <= 0 || d <= 0) return;
-    const TextureImage& image = tex.image(face, level);
+    TextureImage& image = tex.image(face, level);
     if (!image.format) return;
+    const size_t texel = storageBytes(image.format->storage);
+    const size_t bytes = static_cast<size_t>(w) * h * d * texel;
+    PixelStoreParams ps = pixelStoreParams(ctx.state.unpack, threeDTarget(tex.target));
+    ps.clampFloatDepth = ctx.isEs();
     if (!imageHasStorage(ctx, tex, face, level)) {
+        // A whole 2D image or cube face waits for storage of its format
+        // (the base image is re-specified after it); other contents are lost.
+        if ((tex.target == GL_TEXTURE_2D || tex.target == GL_TEXTURE_CUBE_MAP) && !image.format->compressed && x == 0 &&
+            y == 0 && z == 0 && w == image.width && h == image.height && d == 1 && image.depth == 1) {
+            image.pending.resize(bytes);
+            unpackPixels(src, format, type, w, h, d, ps, *image.format, image.pending.data());
+            return;
+        }
         logOnce(LogLevel::Warn, "inconsistent-level", "texture %u level %d does not fit its mip chain; contents dropped",
                 tex.name, level);
         return;
     }
-    const size_t texel = storageBytes(image.format->storage);
-    const size_t bytes = static_cast<size_t>(w) * h * d * texel;
-    const PixelStoreParams ps = pixelStoreParams(ctx.state.unpack, threeDTarget(tex.target));
     if (tex.mtl && tex.mtl.pixelFormat != MTLPixelFormatDepth32Float_Stencil8) {
         // Converted straight into the staging memory the GPU copies from.
         TransientAllocation staging = ctx.draw().transient().allocate(bytes, ctx.stream().serial(), 16);

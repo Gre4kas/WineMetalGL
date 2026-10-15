@@ -416,6 +416,9 @@ void BlitFramebuffer(Context& ctx, GLint srcX0, GLint srcY0, GLint srcX1, GLint 
         // OpenGL ES 3.2 section 16.2.1: no multisampled draw framebuffer, and
         // a multisampled read framebuffer resolves into its own format.
         if (dst.samples > 1) return ctx.setError(GL_INVALID_OPERATION);
+        // ... and a multisampled read framebuffer blits to the same rectangle.
+        if (srcSamples > 1 && (srcX0 != dstX0 || srcY0 != dstY0 || srcX1 != dstX1 || srcY1 != dstY1))
+            return ctx.setError(GL_INVALID_OPERATION);
         if (srcSamples > 1 && doColor && colorInfo)
             if (const Framebuffer* fb = ctx.state.drawFramebuffer.get())
                 for (int i = 0; i < Framebuffer::kMaxColor; ++i)
@@ -423,6 +426,16 @@ void BlitFramebuffer(Context& ctx, GLint srcX0, GLint srcY0, GLint srcX1, GLint 
                         if (const FormatInfo* f = attachedFormat(fb->color[fb->drawBuffers[i] - GL_COLOR_ATTACHMENT0]);
                             f && f->internalFormat != colorInfo->internalFormat)
                             return ctx.setError(GL_INVALID_OPERATION);
+        // Section 16.2.1: the source and destination buffers may not be the
+        // same image (desktop GL leaves overlapping blits undefined).
+        auto same = [](const RenderTargetDesc::Target& a, const RenderTargetDesc::Target& b) {
+            return a.texture && a.texture == b.texture && a.level == b.level && a.slice == b.slice;
+        };
+        if (doColor)
+            for (int i = 0; i < 8; ++i)
+                if (same(srcColor, dst.color[i])) return ctx.setError(GL_INVALID_OPERATION);
+        if ((doDepth && same(srcDepth, dst.depth)) || (doStencil && same(srcStencil, dst.stencil)))
+            return ctx.setError(GL_INVALID_OPERATION);
     }
     if (!doColor && !doDepth && !doStencil) return;
 

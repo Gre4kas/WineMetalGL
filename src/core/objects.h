@@ -152,6 +152,10 @@ struct TextureImage {
     GLsizei width = 0, height = 0, depth = 0;  // depth = layers for arrays, 6 faces are separate images
     GLsizei samples = 0;
     bool fixedSampleLocations = true;
+    // Contents given while the image did not fit the texture's storage (a
+    // cube face re-specified in another format before the base face): its
+    // stored texels, written when the storage is rebuilt (texture_storage.mm).
+    std::vector<uint8_t> pending;
     bool defined() const { return format != nullptr; }
 };
 

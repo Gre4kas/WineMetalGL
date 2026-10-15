@@ -217,6 +217,11 @@ private:
     // Fixed-function wide lines (compat/fixed_function.h): `vertices` (one
     // restart-free line stream) drawn as two triangles per segment.
     void drawWideLines(GLenum mode, const std::vector<uint32_t>& vertices, GLsizei instances);
+    // Indexed triangles drawn without indices: `list` gives the vertex of
+    // each triangle corner (DrawState::drawElements, OpenGL ES client memory).
+    void drawGathered(const std::vector<uint32_t>& list, GLsizei instances);
+    // Whether every per-vertex attribute the program reads is client memory.
+    bool clientVertexArrays(LinkedProgram& program) const;
     // Draws `vertices` (vertex numbers in draw order, one restart-free
     // segment) as GL_PATCHES through the tessellation emulation
     // (shader/tessellation.h).

@@ -755,7 +755,7 @@ void unpackPixels(const void* src, GLenum format, GLenum type, int width, int he
     const TransferLayout l = transferLayout(format, type, width, height, depth, ps);
     const size_t texelBytes = storageBytes(info.storage);
     const bool integerDest = info.isInteger();
-    const bool clampDepth = info.isDepth() && info.type != ComponentType::Float;
+    const bool clampDepth = info.isDepth() && (info.type != ComponentType::Float || ps.clampFloatDepth);
     auto* dst = static_cast<uint8_t*>(out);
     const auto* base = static_cast<const uint8_t*>(src) + l.skipBytes;
     const bool swap = ps.swapBytes && typeBytes(type) > 1;
@@ -769,7 +769,7 @@ void unpackPixels(const void* src, GLenum format, GLenum type, int width, int he
     const bool rgba8 = info.storage == Storage::RGBA8Unorm || info.storage == Storage::RGBA8Unorm_sRGB;
     const size_t rowBytes = static_cast<size_t>(width) * texelBytes;
     auto rowAt = [&](int z, int y) { return base + static_cast<size_t>(z) * l.imageStride + static_cast<size_t>(y) * l.rowStride; };
-    if (!swap && l.groupBytes == texelBytes &&
+    if (!swap && l.groupBytes == texelBytes && !(ps.clampFloatDepth && info.isDepth()) &&
         (identityTransfer(format, byteType, info) || rawTransfer(format, type, info.storage))) {
         for (int z = 0; z < depth; ++z)
             for (int y = 0; y < height; ++y, dst += rowBytes) std::memcpy(dst, rowAt(z, y), rowBytes);
@@ -802,7 +802,7 @@ void unpackPixels(const void* src, GLenum format, GLenum type, int width, int he
             }
         return;
     }
-    const bool raw = rawTransfer(format, type, info.storage) && l.groupBytes == texelBytes;
+    const bool raw = rawTransfer(format, type, info.storage) && l.groupBytes == texelBytes && !(ps.clampFloatDepth && info.isDepth());
     const size_t rawComponent = type == GL_BYTE ? 1 : type == GL_HALF_FLOAT || type == GL_SHORT ? 2 : 4;
     for (int z = 0; z < depth; ++z)
         for (int y = 0; y < height; ++y) {
@@ -852,7 +852,7 @@ void packPixels(const void* storage, const FormatInfo& info, int width, int heig
                                                                                                            : type;
     const size_t rowBytes = static_cast<size_t>(width) * texelBytes;
     auto rowAt = [&](int z, int y) { return base + static_cast<size_t>(z) * l.imageStride + static_cast<size_t>(y) * l.rowStride; };
-    if (!swap && l.groupBytes == texelBytes &&
+    if (!swap && l.groupBytes == texelBytes && !(ps.clampFloatDepth && info.isDepth()) &&
         (identityTransfer(format, byteType, info) || rawTransfer(format, type, info.storage))) {
         for (int z = 0; z < depth; ++z)
             for (int y = 0; y < height; ++y, src += rowBytes) std::memcpy(rowAt(z, y), src, rowBytes);

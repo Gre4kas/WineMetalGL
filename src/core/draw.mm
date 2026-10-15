@@ -2858,6 +2858,42 @@ void DrawState::drawWideLines(GLenum mode, const std::vector<uint32_t>& vertices
     ctx_.markDirty(kDirtyRaster);
 }
 
+bool DrawState::clientVertexArrays(LinkedProgram& program) const {
+    const VertexArray& vao = *ctx_.state.vertexArray;
+    bool any = false;
+    for (const shader::StageOutput::VertexInput& input : program.stage(Stage::Vertex).vertexInputs) {
+        if (input.location < 0 || input.location >= VertexArray::kAttribSlots) continue;
+        const VertexAttrib& a = attribFor(vao, input.source());
+        if (!a.enabled || a.divisor) continue;
+        if (a.buffer) return false;
+        any = true;
+    }
+    return any;
+}
+
+void DrawState::drawGathered(const std::vector<uint32_t>& list, GLsizei instances) {
+    queriesCountPrimitives(ctx_, GL_TRIANGLES, static_cast<GLsizei>(list.size()), instances);
+    LinkedProgram* current = executable();
+    if (!current || list.empty()) return;
+    waitForCpuVertexReads(*current, true);
+    prepareSamplerStorage(*current);
+    MTLPrimitiveType primitive = MTLPrimitiveTypeTriangle;
+    id<MTLRenderCommandEncoder> encoder = prepare(GL_TRIANGLES, primitive);
+    if (!encoder) return;
+    queriesBeforeDraw(ctx_, encoder, instances);
+    PipelineKey key = lastKey_;
+    if (!bindVertexInputs(encoder, key, *current, 0, static_cast<GLsizei>(list.size()), instances, &list)) return;
+    id<MTLRenderPipelineState> pipeline = ctx_.share().pipelines().render(key, *current);
+    if (!pipeline) return;
+    stats::count(&stats::Frame::draws);
+    [encoder setRenderPipelineState:pipeline];
+    encoderState_.pipeline = nil;  // issue() sets its own again
+    bindDrawState(encoder, *current);
+    [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:list.size()
+              instanceCount:static_cast<NSUInteger>(std::max(1, instances)) baseInstance:baseInstance_];
+    ctx_.stream().noteDraw();
+}
+
 void DrawState::drawGeometry(GLenum mode, const std::vector<uint32_t>& vertices, GLsizei instances, uint32_t& primitiveBase,
                              bool assembled) {
     LinkedProgram& lp = *executable();
@@ -4011,6 +4047,20 @@ void DrawState::drawElements(GLenum mode, GLsizei count, GLenum type, const void
     bool needsIndices = false;
     nativePrimitive(mode, needsIndices);
     const bool rotate = rotateProvoking(mode, *executable());
+    // Apple GPUs shade the 2x2 quads along an edge that two triangles of an
+    // indexed draw share (the same vertices) together, so derivatives there
+    // mix both triangles' attributes, and a texture lookup's level with them
+    // (perspective-correct attributes differ across the edge: dEQP-GLES3
+    // texture.mipmap.2d.projected). OpenGL ES draws whose per-vertex
+    // attributes are all client memory, converted on the CPU anyway, are
+    // drawn without indices instead, which keeps each triangle's quads apart.
+    if (ctx_.isEs() && topologyClass(mode) == MTLPrimitiveTopologyClassTriangle && !pointPolygons(mode) &&
+        !executable()->readsVertexId() && clientVertexArrays(*executable())) {
+        std::vector<uint32_t> list;
+        forEachSegment(bias, [&](const std::vector<uint32_t>& segment) { appendMetalList(mode, segment, rotate, list); });
+        drawGathered(list, instances);
+        return;
+    }
     // Metal always restarts at the type's largest index; GL only when asked.
     const uint32_t metalRestart = indexSize == 2 ? 0xffffu : 0xffffffffu;
     const bool drawnAsIs = !hasRestart && !needsIndices && !rotate && indexSize != 1 && offset % indexSize == 0 &&

@@ -1,8 +1,10 @@
 // OpenGL ES contexts (WGL_EXT_create_context_es_profile): their strings,
 // GLSL ES shaders and the ES 3.2 features (advanced blending, ASTC).
 
+#include <cstdio>
 #include <cstring>
 #include <string>
+#include <vector>
 
 #include "gpu.h"
 
@@ -570,4 +572,387 @@ GPU_TEST_ES(gpu_es_clear_upload_then_draw, 20) {
     glDeleteTextures(1, &tex);
     glDeleteProgram(p);
     CHECK_GL();
+}
+
+// OpenGL ES 3 forbids blits whose source and destination are the same image
+// (KHR-GLES3.api.coverage); separate framebuffers still blit.
+GPU_TEST_ES(gpu_es_blit_same_buffer, 30) {
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glBlitFramebuffer(0, 0, 4, 4, 0, 0, 4, 4, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_INVALID_OPERATION));
+    GLuint tex = 0, fb = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, 4, 4);
+    glGenFramebuffers(1, &fb);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, fb);
+    glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+    glBlitFramebuffer(0, 0, 4, 4, 0, 0, 4, 4, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    CHECK_GL();
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &fb);
+    glDeleteTextures(1, &tex);
+}
+
+// GLSL ES 3.00: #extension after a non-preprocessor token is an error.
+GPU_TEST_ES(gpu_es_extension_after_tokens, 30) {
+    auto compiles = [](const char* source) {
+        GLuint s = glCreateShader(GL_FRAGMENT_SHADER);
+        glShaderSource(s, 1, &source, nullptr);
+        glCompileShader(s);
+        GLint ok = 0;
+        glGetShaderiv(s, GL_COMPILE_STATUS, &ok);
+        glDeleteShader(s);
+        return ok != 0;
+    };
+    CHECK(compiles("#version 300 es\n#extension all : warn\nprecision mediump float;\nout vec4 c;\n"
+                   "void main() { c = vec4(1.0); }\n"));
+    CHECK(!compiles("#version 300 es\nprecision mediump float;\nout vec4 c;\n"
+                    "void main() {\n#extension all : disable\n c = vec4(1.0); }\n"));
+    // Skipped groups and comments are not tokens.
+    CHECK(compiles("#version 300 es\n// comment\n#if 0\nfloat x;\n#endif\n#extension all : warn\n"
+                   "precision mediump float;\nout vec4 c;\nvoid main() { c = vec4(1.0); }\n"));
+}
+
+// OES_required_internalformat's sized luminance/alpha formats, and an R32F
+// buffer's RED / FLOAT implementation read format.
+GPU_TEST_ES(gpu_es_sized_luminance_alpha, 20) {
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    const uint8_t texels[4 * 2] = {};
+    glTexImage2D(GL_TEXTURE_2D, 0, 0x8043 /* LUMINANCE4_ALPHA4_OES */, 2, 2, 0, GL_LUMINANCE_ALPHA, GL_UNSIGNED_BYTE, texels);
+    CHECK_GL();
+    for (GLenum format : {GLenum(GL_ALPHA8), GLenum(GL_LUMINANCE8), GLenum(GL_LUMINANCE8_ALPHA8), GLenum(0x8043)}) {
+        glCopyTexImage2D(GL_TEXTURE_2D, 0, format, 0, 0, 2, 2, 0);
+        CHECK_GL();
+    }
+    glDeleteTextures(1, &tex);
+}
+
+GPU_TEST_ES(gpu_es_float_read_format, 30) {
+    GLuint tex = 0, fb = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexStorage2D(GL_TEXTURE_2D, 1, GL_R32F, 2, 2);
+    glGenFramebuffers(1, &fb);
+    glBindFramebuffer(GL_FRAMEBUFFER, fb);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+    glClearColor(0.5f, 0, 0, 0);
+    glClear(GL_COLOR_BUFFER_BIT);
+    GLint format = 0, type = 0;
+    glGetIntegerv(GL_IMPLEMENTATION_COLOR_READ_FORMAT, &format);
+    glGetIntegerv(GL_IMPLEMENTATION_COLOR_READ_TYPE, &type);
+    CHECK_EQ(format, GL_RED);
+    CHECK_EQ(type, GL_FLOAT);
+    float value = 0;
+    glReadPixels(0, 0, 1, 1, GL_RED, GL_FLOAT, &value);
+    CHECK_GL();
+    CHECK(value == 0.5f);
+    glClearColor(0, 0, 0, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &fb);
+    glDeleteTextures(1, &tex);
+}
+
+// Re-specifying an RGB8 image as RGBA8 (the same Metal format) samples the
+// new alpha, not the RGB format's alpha of one
+// (KHR-GLES3.copy_tex_image_conversions.required reuses its textures).
+GPU_TEST_ES(gpu_es_respecified_format_swizzle, 30) {
+    GLuint p = program("#version 300 es\nin vec2 position; void main() { gl_Position = vec4(position, 0.0, 1.0); }\n",
+                       "#version 300 es\nprecision mediump float; uniform sampler2D t; out vec4 o;\n"
+                       "void main() { o = vec4(texelFetch(t, ivec2(0), 0).a, 0.0, 0.0, 1.0); }\n");
+    GLuint vao = quad();
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    const uint8_t rgb[4] = {10, 20, 30, 0};
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, 1, 1, 0, GL_RGB, GL_UNSIGNED_BYTE, rgb);
+    glUseProgram(p);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    const uint8_t one[4] = {255, 0, 0, 255};
+    CHECK(near(readRGBA8(10, 10, 1, 1).data(), one));
+    const uint8_t rgba[4] = {10, 20, 30, 102};
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    CHECK_GL();
+    const uint8_t alpha[4] = {102, 0, 0, 255};
+    CHECK(near(readRGBA8(10, 10, 1, 1).data(), alpha));
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    glDeleteTextures(1, &tex);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
+}
+
+// && and || evaluate their right operand only when needed, also when it
+// returns an array (dEQP-GLES3 arrays.complex_expression).
+GPU_TEST_ES(gpu_es_short_circuit_array_operand, 30) {
+    GLuint p = program("#version 300 es\nin vec2 position; void main() { gl_Position = vec4(position, 0.0, 1.0); }\n",
+                       "#version 300 es\nprecision mediump float; out vec4 o; int g;\n"
+                       "int[2] plus() { ++g; return int[2](g, g); }\n"
+                       "bool minus() { --g; return false; }\n"
+                       "void main() { g = 0; int a[2] = int[2](0, 0);\n"
+                       "  minus() && (a == plus());\n"
+                       "  o = vec4(g == -1 ? 1.0 : 0.0, g == 0 ? 1.0 : 0.0, 0.0, 1.0); }\n");
+    GLuint vao = quad();
+    glUseProgram(p);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    CHECK_GL();
+    const uint8_t red[4] = {255, 0, 0, 255};
+    const std::vector<uint8_t> got = readRGBA8(10, 10, 1, 1);
+    CHECK(near(got.data(), red));
+    if (!near(got.data(), red)) std::fprintf(stderr, "  got %d %d %d %d\n", got[0], got[1], got[2], got[3]);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
+}
+
+// textureGrad on cube maps picks the level of the gradients projected onto
+// the face (dEQP-GLES3 texture_functions.texturegrad.samplercube_*).
+GPU_TEST_ES(gpu_es_cube_texture_grad_level, 30) {
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, tex);
+    glTexStorage2D(GL_TEXTURE_CUBE_MAP, 7, GL_RGBA8, 64, 64);
+    std::vector<uint8_t> texels(64 * 64 * 4);
+    for (int level = 0; level < 7; ++level) {
+        const int size = 64 >> level;
+        for (int i = 0; i < size * size; ++i) {
+            texels[i * 4] = static_cast<uint8_t>(level * 40);
+            texels[i * 4 + 1] = 0;
+            texels[i * 4 + 2] = 0;
+            texels[i * 4 + 3] = 255;
+        }
+        for (int face = 0; face < 6; ++face)
+            glTexSubImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, level, 0, 0, size, size, GL_RGBA, GL_UNSIGNED_BYTE,
+                            texels.data());
+    }
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_NEAREST);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    GLuint p = program("#version 300 es\nin vec2 position; void main() { gl_Position = vec4(position, 0.0, 1.0); }\n",
+                       "#version 300 es\nprecision highp float; uniform samplerCube t; uniform vec4 p, dx, dy; out vec4 o;\n"
+                       "void main() { o = textureGrad(t, p.xyz, dx.xyz, dy.xyz); }\n");
+    GLuint vao = quad();
+    glUseProgram(p);
+    // Face size 64: |d(s)/dx| = 0.5 * 0.2 / 1.01 per pixel, rho = 6.34, lambda = 2.66: level 3.
+    struct Case { float p[3], dx[3], dy[3]; };
+    const Case cases[] = {{{0.1f, 0.2f, 1.01f}, {0.2f, 0, 0}, {0, 0, 0}},
+                          {{0.1f, 0.2f, -1.01f}, {0, 0, 0}, {0, -0.2f, 0}},
+                          {{1.01f, 0.1f, 0.2f}, {0, 0, 0.2f}, {0, 0, 0}},
+                          {{0.1f, -1.01f, 0.2f}, {0.2f, 0, 0}, {0, 0, 0}}};
+    for (const Case& c : cases) {
+        glUniform4f(glGetUniformLocation(p, "p"), c.p[0], c.p[1], c.p[2], 0.0f);
+        glUniform4f(glGetUniformLocation(p, "dx"), c.dx[0], c.dx[1], c.dx[2], 0.0f);
+        glUniform4f(glGetUniformLocation(p, "dy"), c.dy[0], c.dy[1], c.dy[2], 0.0f);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        const std::vector<uint8_t> got = readRGBA8(10, 10, 1, 1);
+        const uint8_t want[4] = {120, 0, 0, 255};
+        CHECK(near(got.data(), want));
+        if (!near(got.data(), want)) std::fprintf(stderr, "  p (%g %g %g): level %d\n", c.p[0], c.p[1], c.p[2], got[0] / 40);
+    }
+    CHECK_GL();
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
+    glDeleteTextures(1, &tex);
+}
+
+// OpenGL ES clamps the depth glTexImage2D gives DEPTH_COMPONENT32F to [0, 1]
+// (dEQP-GLES3 texture.specification.teximage2d_depth).
+GPU_TEST_ES(gpu_es_depth32f_upload_clamped, 30) {
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    const float depth = 1.5f;
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32F, 1, 1, 0, GL_DEPTH_COMPONENT, GL_FLOAT, &depth);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    GLuint p = program("#version 300 es\nin vec2 position; void main() { gl_Position = vec4(position, 0.0, 1.0); }\n",
+                       "#version 300 es\nprecision highp float; uniform highp sampler2D t; out vec4 o;\n"
+                       "void main() { o = vec4(texture(t, vec2(0.5)).r * 0.5, 0.0, 0.0, 1.0); }\n");
+    GLuint vao = quad();
+    glUseProgram(p);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    CHECK_GL();
+    const std::vector<uint8_t> got = readRGBA8(10, 10, 1, 1);
+    const uint8_t want[4] = {128, 0, 0, 255};
+    CHECK(near(got.data(), want));
+    if (!near(got.data(), want)) std::fprintf(stderr, "  got %d\n", got[0]);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
+    glDeleteTextures(1, &tex);
+}
+
+// Pixels whose centres lie on the edge two triangles share belong to the
+// triangle dEQP's verifiers expect (texture.mipmap.2d.projected: the quad's
+// upper-right triangle owns its anti-diagonal).
+GPU_TEST_ES(gpu_es_shared_edge_owner, 30) {
+    GLuint p = program("#version 300 es\nin vec2 position; in vec4 color; out vec4 c;\n"
+                       "void main() { c = color; gl_Position = vec4(position, 0.0, 1.0); }\n",
+                       "#version 300 es\nprecision mediump float; in vec4 c; out vec4 o; void main() { o = c; }\n");
+    static const float verts[] = {-1, -1, 1, 0, 0, 1, -1, 1, 1, 0, 0, 1, 1, -1, 1, 0, 0, 1,
+                                  1, -1, 0, 1, 0, 1, -1, 1, 0, 1, 0, 1, 1, 1, 0, 1, 0, 1};
+    GLuint vao = 0, vbo = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_STATIC_DRAW);
+    glBindAttribLocation(p, 0, "position");
+    glVertexAttribPointer(static_cast<GLuint>(glGetAttribLocation(p, "position")), 2, GL_FLOAT, GL_FALSE, 24, nullptr);
+    glVertexAttribPointer(static_cast<GLuint>(glGetAttribLocation(p, "color")), 4, GL_FLOAT, GL_FALSE, 24,
+                          reinterpret_cast<void*>(8));
+    glEnableVertexAttribArray(static_cast<GLuint>(glGetAttribLocation(p, "position")));
+    glEnableVertexAttribArray(static_cast<GLuint>(glGetAttribLocation(p, "color")));
+    glViewport(0, 0, 64, 64);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glUseProgram(p);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+    CHECK_GL();
+    const std::vector<uint8_t> px = readRGBA8(0, 0, 64, 64);
+    int red = 0, green = 0;
+    for (int x = 0; x < 64; ++x) {
+        const uint8_t* c = &px[(static_cast<size_t>(63 - x) * 64 + x) * 4];
+        red += c[0] > 128;
+        green += c[1] > 128;
+    }
+    std::fprintf(stderr, "  anti-diagonal: %d lower-left, %d upper-right\n", red, green);
+    CHECK(green == 64);
+    glDeleteBuffers(1, &vbo);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
+}
+
+// An indexed perspective quad from client memory: the pixels along the
+// edge its triangles share take their own triangle's texture level (Apple
+// GPUs shade quads across a shared edge together: dEQP-GLES3
+// texture.mipmap.2d.projected, cell 2).
+GPU_TEST_ES(gpu_es_shared_edge_texture_level, 30) {
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexStorage2D(GL_TEXTURE_2D, 7, GL_RGBA8, 64, 64);
+    std::vector<uint8_t> texels(64 * 64 * 4);
+    for (int level = 0; level < 7; ++level) {
+        for (size_t i = 0; i < texels.size(); i += 4) {
+            texels[i] = static_cast<uint8_t>(level * 40);
+            texels[i + 1] = texels[i + 2] = 0;
+            texels[i + 3] = 255;
+        }
+        glTexSubImage2D(GL_TEXTURE_2D, level, 0, 0, 64 >> level, 64 >> level, GL_RGBA, GL_UNSIGNED_BYTE, texels.data());
+    }
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_NEAREST);
+    GLuint p = program("#version 300 es\nin vec4 position; in vec2 tc; out vec2 v;\n"
+                       "void main() { v = tc; gl_Position = position; }\n",
+                       "#version 300 es\nprecision highp float; in vec2 v; uniform sampler2D t; out vec4 o;\n"
+                       "void main() { o = texture(t, v); }\n");
+    const float w[4] = {0.8f, 1.0f, 1.7f, 0.6f};
+    const float verts[4][6] = {{-w[0], -w[0], 0, w[0], -0.3f, 0.6f},
+                               {-w[1], w[1], 0, w[1], -0.3f, -0.9f},
+                               {w[2], -w[2], 0, w[2], 0.7f, 0.6f},
+                               {w[3], w[3], 0, w[3], 0.7f, -0.9f}};
+    static const unsigned short indices[6] = {0, 1, 2, 2, 1, 3};
+    glBindVertexArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    const GLuint pos = static_cast<GLuint>(glGetAttribLocation(p, "position")), tc = static_cast<GLuint>(glGetAttribLocation(p, "tc"));
+    glVertexAttribPointer(pos, 4, GL_FLOAT, GL_FALSE, 24, &verts[0][0]);
+    glVertexAttribPointer(tc, 2, GL_FLOAT, GL_FALSE, 24, &verts[0][4]);
+    glEnableVertexAttribArray(pos);
+    glEnableVertexAttribArray(tc);
+    glViewport(0, 0, 64, 64);
+    glUseProgram(p);
+    glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, indices);
+    CHECK_GL();
+    // Pixel (55, 9): the upper triangle's level is 1.69 (2); the merged quad's 1.49 (1).
+    const std::vector<uint8_t> got = readRGBA8(55, 9, 1, 1);
+    const uint8_t want[4] = {80, 0, 0, 255};
+    CHECK(near(got.data(), want));
+    if (!near(got.data(), want)) std::fprintf(stderr, "  level %d\n", got[0] / 40);
+    glDisableVertexAttribArray(pos);
+    glDisableVertexAttribArray(tc);
+    glDeleteProgram(p);
+    glDeleteTextures(1, &tex);
+}
+
+// glCopyTexImage2D from each face of a cube map attached to the read
+// framebuffer (KHR-GLES3.copy_tex_image_conversions.required.cubemap_neg*).
+GPU_TEST_ES(gpu_es_copy_from_cube_faces, 30) {
+    GLuint cube = 0, dst = 0, fb = 0;
+    glGenTextures(1, &cube);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, cube);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    // First as RGBA8, then re-specified as RGB8 negative faces first (the
+    // CTS order): the faces given before the base face changes keep their data.
+    const uint8_t rgba[2 * 2 * 4] = {};
+    for (int face = 0; face < 6; ++face)
+        glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, 0, GL_RGBA8, 2, 2, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+    for (int face : {1, 3, 5, 0, 2, 4}) {
+        const uint8_t texel[2 * 2 * 3] = {static_cast<uint8_t>(40 * face + 10), 20, 30, static_cast<uint8_t>(40 * face + 10), 20, 30,
+                                          static_cast<uint8_t>(40 * face + 10), 20, 30, static_cast<uint8_t>(40 * face + 10), 20, 30};
+        glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, 0, GL_RGB8, 2, 2, 0, GL_RGB, GL_UNSIGNED_BYTE, texel);
+    }
+    glGenFramebuffers(1, &fb);
+    glGenTextures(1, &dst);
+    for (int face = 0; face < 6; ++face) {
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, fb);
+        glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, cube, 0);
+        uint8_t direct[4] = {};
+        glReadPixels(0, 0, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, direct);
+        glBindTexture(GL_TEXTURE_2D, dst);
+        glCopyTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, 0, 0, 2, 2, 0);
+        CHECK_GL();
+        glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, dst, 0);
+        uint8_t copied[4] = {};
+        glReadPixels(0, 0, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, copied);
+        const uint8_t want[4] = {static_cast<uint8_t>(40 * face + 10), 20, 30, 255};
+        CHECK(near(direct, want));
+        CHECK(near(copied, want));
+        if (!near(copied, want) || !near(direct, want))
+            std::fprintf(stderr, "  face %d: read %d %d %d, copied %d %d %d\n", face, direct[0], direct[1], direct[2], copied[0],
+                         copied[1], copied[2]);
+    }
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &fb);
+    glDeleteTextures(1, &dst);
+    glDeleteTextures(1, &cube);
+}
+
+// The CTS sequence: one cube map re-specified (negative faces first) with
+// another format while its NEGATIVE_X face stays attached to the read
+// framebuffer, then copied from.
+GPU_TEST_ES(gpu_es_copy_from_respecified_cube_face, 30) {
+    GLuint cube = 0, dst = 0, fb = 0, check = 0;
+    glGenTextures(1, &cube);
+    glGenTextures(1, &dst);
+    glGenFramebuffers(1, &fb);
+    glGenFramebuffers(1, &check);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    struct Spec { GLenum internal, format; int bytes; uint8_t value; };
+    const Spec specs[] = {{GL_R8, GL_RED, 1, 50}, {GL_RGBA8, GL_RGBA, 4, 100}, {GL_RGB8, GL_RGB, 3, 150}, {GL_RGBA8, GL_RGBA, 4, 200}};
+    static const GLenum order[6] = {GL_TEXTURE_CUBE_MAP_NEGATIVE_X, GL_TEXTURE_CUBE_MAP_NEGATIVE_Y, GL_TEXTURE_CUBE_MAP_NEGATIVE_Z,
+                                    GL_TEXTURE_CUBE_MAP_POSITIVE_X, GL_TEXTURE_CUBE_MAP_POSITIVE_Y, GL_TEXTURE_CUBE_MAP_POSITIVE_Z};
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, fb);
+    for (const Spec& s : specs) {
+        std::vector<uint8_t> data(static_cast<size_t>(4 * s.bytes), s.value);
+        glBindTexture(GL_TEXTURE_CUBE_MAP, cube);
+        for (GLenum target : order) glTexImage2D(target, 0, s.internal, 2, 2, 0, s.format, GL_UNSIGNED_BYTE, data.data());
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, fb);
+        glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_CUBE_MAP_NEGATIVE_X, cube, 0);
+        glBindTexture(GL_TEXTURE_2D, dst);
+        glCopyTexImage2D(GL_TEXTURE_2D, 0, s.internal, 0, 0, 2, 2, 0);
+        CHECK_GL();
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, check);
+        glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, dst, 0);
+        uint8_t copied[4] = {};
+        glReadPixels(0, 0, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, copied);
+        CHECK(copied[0] == s.value);
+        if (copied[0] != s.value) std::fprintf(stderr, "  %#x: copied %d, want %d\n", s.internal, copied[0], s.value);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, fb);
+    }
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &fb);
+    glDeleteFramebuffers(1, &check);
+    glDeleteTextures(1, &dst);
+    glDeleteTextures(1, &cube);
 }

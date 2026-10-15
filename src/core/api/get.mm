@@ -34,6 +34,11 @@ bool implementationReadFormat(Context& ctx, GLenum& format, GLenum& type) {
         format = info->defaultTransferFormat;
         type = info->defaultTransferType;
     }
+    // OpenGL ES: floating-point and integer buffers read in their own
+    // components (RED / FLOAT for R32F, RED_INTEGER / INT for R32I), which
+    // EXT_clip_cull_distance's tests rely on.
+    if (ctx.isEs() && (info->isFloat() || info->isInteger()) && info->defaultTransferFormat)
+        format = info->defaultTransferFormat;
     return true;
 }
 

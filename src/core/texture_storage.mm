@@ -187,6 +187,34 @@ bool ensureViewStorage(Context& ctx, Texture& tex) {
 
 }  // namespace
 
+namespace {
+
+// Writes the images' pending contents (TextureImage::pending) that fit the
+// storage now; the others stay pending.
+void writePendingImages(Context& ctx, Texture& tex) {
+    if (tex.target != GL_TEXTURE_2D && tex.target != GL_TEXTURE_CUBE_MAP) return;
+    for (int face = 0; face < (tex.target == GL_TEXTURE_CUBE_MAP ? 6 : 1); ++face)
+        for (int level = 0; level < tex.mtlLevels && level < Texture::kMaxLevels; ++level) {
+            TextureImage& image = tex.image(face, level);
+            if (image.pending.empty()) continue;
+            const GLsizei w = std::max(1, tex.mtlWidth >> level), h = std::max(1, tex.mtlHeight >> level);
+            if (!image.format || image.format->storage != tex.storage || image.width != w || image.height != h) continue;
+            const size_t rowBytes = static_cast<size_t>(w) * storageBytes(tex.storage);
+            if (image.pending.size() == rowBytes * static_cast<size_t>(h)) {
+                id<MTLBuffer> staging = [Device::get().mtl() newBufferWithBytes:image.pending.data() length:image.pending.size()
+                                                                         options:MTLResourceStorageModeShared];
+                if (staging)
+                    [ctx.stream().blit() copyFromBuffer:staging sourceOffset:0 sourceBytesPerRow:rowBytes
+                                    sourceBytesPerImage:image.pending.size() sourceSize:MTLSizeMake(w, h, 1)
+                                              toTexture:tex.mtl destinationSlice:static_cast<NSUInteger>(face)
+                                       destinationLevel:static_cast<NSUInteger>(level) destinationOrigin:MTLOriginMake(0, 0, 0)];
+            }
+            image.pending.clear();
+        }
+}
+
+}  // namespace
+
 bool ensureTextureStorage(Context& ctx, Texture& tex) {
     if (tex.viewOf) return ensureViewStorage(ctx, tex);
     if (tex.mtl && !tex.storageDirty) return true;
@@ -221,6 +249,7 @@ bool ensureTextureStorage(Context& ctx, Texture& tex) {
         tex.mtlSamples == samples && tex.mtlLevels >= levels && (tex.mtl.usage & writeUsage) == writeUsage &&
         (tex.mtl.usage & viewUsage) == viewUsage) {
         tex.storageDirty = false;
+        writePendingImages(ctx, tex);
         return true;
     }
     MTLTextureDescriptor* desc = [MTLTextureDescriptor new];
@@ -287,6 +316,7 @@ bool ensureTextureStorage(Context& ctx, Texture& tex) {
     tex.storageDirty = false;
     tex.views.clear();
     if (!tex.label.empty()) texture.label = [NSString stringWithUTF8String:tex.label.c_str()];
+    writePendingImages(ctx, tex);
     return true;
 }
 
