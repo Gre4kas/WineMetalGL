@@ -1004,6 +1004,34 @@ void main() { if (gl_GlobalInvocationID.x < words) commands[gl_GlobalInvocationI
         if (drawn <= 600) std::fprintf(stderr, "  %d pixels drawn\n", drawn);
         CHECK(drawn > 600);
     }
+    {
+        // Commands that all draw nothing (everything culled): after the
+        // first draw sizes the buffers, the GPU draws them with no wait.
+        const std::vector<GLuint> none(45, 0);
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, buffers[3]);
+        glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, static_cast<GLsizeiptr>(none.size() * 4), none.data());
+        unsigned long long gpuDraws = 0, waits = 0;
+        for (int frame = 0; frame < 3; ++frame) {
+            glClear(GL_COLOR_BUFFER_BIT);
+            glUseProgram(copy);
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, buffers[3]);
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, buffers[4]);
+            glDispatchCompute(1, 1, 1);
+            glMemoryBarrier(GL_COMMAND_BARRIER_BIT);
+            glUseProgram(p);
+            gpu::Counters counters;
+            glMultiDrawElementsIndirect(GL_PATCHES, GL_UNSIGNED_SHORT, nullptr, 8, 0);  // a call site of its own
+            gpuDraws = counters["tessMdiGpu"];
+            waits = counters["waits"];
+        }
+        CHECK_GL();
+        CHECK_EQ(gpuDraws, 1ull);
+        CHECK_EQ(waits, 0ull);
+        std::vector<uint8_t> image = gpu::readRGBA8(0, 0, 64, 64);
+        int drawn = 0;
+        for (size_t i = 0; i < image.size(); i += 4) drawn += image[i + 3] != 0;
+        CHECK_EQ(drawn, 0);
+    }
     glDeleteProgram(p);
     glDeleteProgram(copy);
     glDeleteBuffers(5, buffers);

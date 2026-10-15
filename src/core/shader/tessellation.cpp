@@ -451,6 +451,44 @@ const char* kindOf(GLenum type) {
     }
 }
 
+bool identifierChar(char ch) { return std::isalnum(static_cast<unsigned char>(ch)) || ch == '_'; }
+
+// Whether every use of identifier `name` in `code` indexes it (name[...]).
+bool alwaysIndexed(const std::string& code, const std::string& name) {
+    for (size_t at = code.find(name); at != std::string::npos; at = code.find(name, at + 1)) {
+        if ((at && (identifierChar(code[at - 1]) || code[at - 1] == '.')) ||
+            (at + name.size() < code.size() && identifierChar(code[at + name.size()])))
+            continue;
+        size_t next = at + name.size();
+        while (next < code.size() && (code[next] == ' ' || code[next] == '\t' || code[next] == '\n')) ++next;
+        if (next >= code.size() || code[next] != '[') return false;
+    }
+    return true;
+}
+
+// `code` with each name[index] as fn(int(index)) (alwaysIndexed holds).
+std::string callInsteadOfIndex(const std::string& code, const std::string& name, const std::string& fn) {
+    std::string out;
+    size_t from = 0;
+    for (size_t at = code.find(name); at != std::string::npos; at = code.find(name, at + 1)) {
+        if ((at && (identifierChar(code[at - 1]) || code[at - 1] == '.')) ||
+            (at + name.size() < code.size() && identifierChar(code[at + name.size()])))
+            continue;
+        size_t open = code.find('[', at + name.size());
+        int depth = 0;
+        size_t close = open;
+        for (; close < code.size(); ++close) {
+            if (code[close] == '[') ++depth;
+            else if (code[close] == ']' && --depth == 0) break;
+        }
+        if (close >= code.size()) return code;  // unbalanced: unchanged
+        out += code.substr(from, at - from) + fn + "(int(" + code.substr(open + 1, close - open - 1) + "))";
+        from = close + 1;
+        at = close;
+    }
+    return out + code.substr(from);
+}
+
 }  // namespace
 
 TessControlSources tessControlSources(const TessStageInfo& info, const LinkResult& capture) {
@@ -483,13 +521,40 @@ TessControlSources tessControlSources(const TessStageInfo& info, const LinkResul
     }
     const uint32_t record = static_cast<uint32_t>(n) * out.vertexWords + out.patchWords;
 
+    // Inputs the code only ever indexes are loaded from the captured vertex
+    // records where they are read, instead of copied into 32-element arrays
+    // first: dynamically indexed arrays live on the stack (4240 bytes a
+    // thread for Foundation's terrain, issue #12), loads from the read-only
+    // records do not. WINEMETALGL_TCS_LAZY_INPUTS=0 copies them all.
+    static const bool lazyInputs = [] {
+        const char* v = std::getenv("WINEMETALGL_TCS_LAZY_INPUTS");
+        return !v || v[0] != '0';
+    }();
+    std::string functions = info.functions, lazyLoads;
+    std::set<std::string> lazy;
+    const std::string stride = std::to_string(capture.xfbStride[0]);
+    auto makeLazy = [&](const std::string& name, const std::string& glslType, GLenum type, const TransformFeedbackVarying* p) {
+        if (!lazyInputs || !p || !alwaysIndexed(functions, name)) return;
+        const std::string fn = "wmgl_lazy_" + name;
+        lazyLoads += glslType + " " + fn + "(int v) {\n    uint b = (wmgl_patch_g * wmgl_tcs_patch_vertices + min(uint(v), "
+                     "wmgl_tcs_patch_vertices - 1u)) * " + stride + "u;\n    return " +
+                     glslLoadValue(glslType, type, "wmgl_tcs_in", "b + " + std::to_string(p->offset) + "u") + ";\n}\n";
+        functions = callInsteadOfIndex(functions, name, fn);
+        lazy.insert(name);
+    };
+    makeLazy("wmgl_in_position", "vec4", GL_FLOAT_VEC4, captured("gl_Position"));
+    for (const TessVar& v : info.inputs)
+        if (!v.patch && v.member.empty() && !v.arraySize) makeLazy(v.name, v.glslType, v.type, captured(varKey(v)));
+    std::vector<TessVar> arrayedInputs;
+    for (const TessVar& v : info.inputs)
+        if (!lazy.count(v.name)) arrayedInputs.push_back(v);
     std::string& c = out.kernel;
     c += "#version 450\nlayout(local_size_x = " + ns + ") in;\n";
     c += info.globals;
-    c += declareVars(info.inputs, false, kMaxPatchVertices, "", "wmgl_tcs_in_");
+    c += declareVars(arrayedInputs, false, kMaxPatchVertices, "", "wmgl_tcs_in_");
     c += declareVars(info.outputs, false, n, "shared ", "wmgl_tcs_out_");
     c += declareVars(info.outputs, true, 0, "shared ", "wmgl_tcs_patch_");
-    c += "vec4 wmgl_in_position[" + maxIn + "];\n";
+    if (!lazy.count("wmgl_in_position")) c += "vec4 wmgl_in_position[" + maxIn + "];\n";
     if (info.readsPointSize) c += "float wmgl_in_pointsize[" + maxIn + "];\n";
     if (info.readsClipDistance)
         c += "float wmgl_in_clipdistance[" + maxIn + "][" + std::to_string(info.inputClipDistances) + "];\n";
@@ -505,16 +570,19 @@ TessControlSources tessControlSources(const TessStageInfo& info, const LinkResul
          "layout(std430) readonly buffer wmgl_TcsInput { uint wmgl_tcs_in[]; };\n"
          "layout(std430) writeonly buffer wmgl_TcsOutput { uint wmgl_tcs_out[]; };\n"
          "layout(std430) readonly buffer wmgl_TcsControl { uint wmgl_tcs_patch_vertices, wmgl_tcs_patch_count, "
-         "wmgl_tcs_patches_per_instance, wmgl_tcs_pad; };\n";
-    c += info.functions;
+         "wmgl_tcs_patches_per_instance, wmgl_tcs_pad; };\n"
+         "uint wmgl_patch_g;\n";
+    c += lazyLoads;
+    c += functions;
     c += "void main() {\n"
          "    uint wmgl_patch = gl_WorkGroupID.x;\n"
+         "    wmgl_patch_g = wmgl_patch;\n"
          "    wmgl_invocation_id = int(gl_LocalInvocationID.x);\n"
          "    wmgl_patch_vertices_in = int(wmgl_tcs_patch_vertices);\n"
          "    wmgl_primitive_id = int(wmgl_patch % max(wmgl_tcs_patches_per_instance, 1u));\n"
          "    for (uint wmgl_j = 0u; wmgl_j < wmgl_tcs_patch_vertices; ++wmgl_j) {\n"
          "        uint wmgl_b = (wmgl_patch * wmgl_tcs_patch_vertices + wmgl_j) * " + std::to_string(capture.xfbStride[0]) + "u;\n";
-    if (const TransformFeedbackVarying* p = captured("gl_Position"))
+    if (const TransformFeedbackVarying* p = lazy.count("wmgl_in_position") ? nullptr : captured("gl_Position"))
         c += "        wmgl_in_position[wmgl_j] = " +
              glslLoadValue("vec4", GL_FLOAT_VEC4, "wmgl_tcs_in", "wmgl_b + " + std::to_string(p->offset) + "u") + ";\n";
     if (const TransformFeedbackVarying* p = info.readsPointSize ? captured("gl_PointSize") : nullptr)
@@ -528,7 +596,7 @@ TessControlSources tessControlSources(const TessStageInfo& info, const LinkResul
         for (int k = 0; k < std::min(info.inputCullDistances, p->size); ++k)
             c += "        wmgl_in_culldistance[wmgl_j][" + std::to_string(k) + "] = " +
                  glslLoadValue("float", GL_FLOAT, "wmgl_tcs_in", "wmgl_b + " + std::to_string(p->offset + k) + "u") + ";\n";
-    for (const TessVar& v : info.inputs) {
+    for (const TessVar& v : arrayedInputs) {
         const TransformFeedbackVarying* p = captured(varKey(v));
         if (!p) continue;
         for (int e = 0; e < std::max(1, std::min(v.arraySize, p->size)); ++e)

@@ -3486,7 +3486,9 @@ bool DrawState::drawPatchesIndirectGpu(GLenum type, Buffer& commands, uintptr_t 
         if (!site.report) return false;
     }
     const auto grow = [&](uint64_t total) {
-        if (total <= site.capacity) return;
+        // A site sized once keeps a capacity even when its commands drew
+        // nothing (all culled): it is never sized on the CPU again.
+        if (site.capacity && total <= site.capacity) return;
         const uint64_t wanted = std::max<uint64_t>(256, total * 2);
         site.capacity = static_cast<uint32_t>(std::min<uint64_t>(wanted, (1u << 26)) / patchVertices * patchVertices);
     };
