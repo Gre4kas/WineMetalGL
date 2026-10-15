@@ -24,6 +24,7 @@
 #include "core/query.h"
 #include "core/texture_storage.h"
 #include "core/util/log.h"
+#include "gl_api.gen.h"
 
 namespace wmgl {
 
@@ -358,6 +359,12 @@ bool DrawState::validateDraw(GLenum mode) {
         LinkedProgram* lp = executable();
         if (!lp || !lp->link.stages[static_cast<int>(Stage::Vertex)].present) return false;
     } else if (!program) {
+        // OpenGL ES reports an incomplete framebuffer first (dEQP negative_api
+        // draw_*_invalid_program).
+        if (ctx_.isEs() && api::CheckFramebufferStatus(ctx_, GL_DRAW_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+            ctx_.setError(GL_INVALID_FRAMEBUFFER_OPERATION);
+            return false;
+        }
         // Without a program, core profile draws are undefined but not an
         // error; the compatibility profile draws with fixed-function
         // processing (compat/fixed_function.h), or ARB assembly programs,

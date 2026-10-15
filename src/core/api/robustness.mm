@@ -13,6 +13,7 @@
 #include "core/compat/compat_api.h"
 #include "core/compat/fixed_state.h"
 #include "core/context.h"
+#include "core/format/es_formats.h"
 #include "core/format/pixel_transfer.h"
 #include "core/limits.h"
 #include "core/metal/device.h"
@@ -447,14 +448,19 @@ void GetInternalformati64v(Context& ctx, GLenum target, GLenum internalformat, G
 
 void GetInternalformativ(Context& ctx, GLenum target, GLenum internalformat, GLenum pname, GLsizei bufSize, GLint* params) {
     // GL 4.3 (GL_ARB_internalformat_query2): every target and pname.
-    if (ctx.version() >= 43 || ctx.hasExtension("GL_ARB_internalformat_query2"))
+    // OpenGL ES has the sample counts of renderable formats only.
+    if (!ctx.isEs() && (ctx.version() >= 43 || ctx.hasExtension("GL_ARB_internalformat_query2")))
         return getInternalformat(ctx, target, internalformat, pname, bufSize, params);
     if (target != GL_RENDERBUFFER && target != GL_TEXTURE_2D_MULTISAMPLE && target != GL_TEXTURE_2D_MULTISAMPLE_ARRAY)
+        return ctx.setError(GL_INVALID_ENUM);
+    if (ctx.isEs() && ((target == GL_TEXTURE_2D_MULTISAMPLE && ctx.esVersion() < 31) ||
+                       (target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY && ctx.esVersion() < 31)))
         return ctx.setError(GL_INVALID_ENUM);
     if (pname != GL_NUM_SAMPLE_COUNTS && pname != GL_SAMPLES) return ctx.setError(GL_INVALID_ENUM);
     const FormatInfo* info = formatInfo(internalformat);
     if (!info || !(info->colorRenderable || info->depthRenderable || info->stencilRenderable))
         return ctx.setError(GL_INVALID_ENUM);
+    if (ctx.isEs() && !es::renderbufferFormat(internalformat)) return ctx.setError(GL_INVALID_ENUM);
     if (bufSize < 0) return ctx.setError(GL_INVALID_VALUE);
     // Supported counts, highest first (GL_MAX_INTEGER_SAMPLES limits integer formats).
     std::vector<GLint> counts;

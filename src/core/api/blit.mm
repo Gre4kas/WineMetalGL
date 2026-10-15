@@ -18,12 +18,35 @@
 #include "core/draw.h"
 #include "core/metal/device.h"
 #include "core/query.h"
+#include "core/surface.h"
 #include "core/texture_storage.h"
 #include "core/util/log.h"
 #include "gl_api.gen.h"
 
 namespace wmgl::api {
 namespace {
+
+// The GL format of a framebuffer attachment (null when none).
+const FormatInfo* attachedFormat(const Attachment& a) {
+    if (a.type == GL_RENDERBUFFER && a.renderbuffer) return a.renderbuffer->format;
+    if (a.type == GL_TEXTURE && a.texture) {
+        const int face = a.cubeFace ? static_cast<int>(a.cubeFace - GL_TEXTURE_CUBE_MAP_POSITIVE_X) : 0;
+        if (a.level < 0 || a.level >= Texture::kMaxLevels) return nullptr;
+        return a.texture->image(face, a.level).format;
+    }
+    return nullptr;
+}
+
+// The draw framebuffer's depth or stencil format (the default
+// framebuffer's: DEPTH24_STENCIL8 or DEPTH_COMPONENT16/24).
+const FormatInfo* drawDepthStencilFormat(Context& ctx, bool stencil) {
+    if (const Framebuffer* fb = ctx.state.drawFramebuffer.get()) return attachedFormat(stencil ? fb->stencil : fb->depth);
+    Surface* s = ctx.drawSurface();
+    if (!s) return nullptr;
+    return formatInfo(s->hasStencil() ? GL_DEPTH24_STENCIL8
+                      : s->pixelFormat().depth_bits == 16 ? GL_DEPTH_COMPONENT16
+                                                          : GL_DEPTH_COMPONENT24);
+}
 
 struct BlitParams {
     float dst[4];
@@ -374,6 +397,33 @@ void BlitFramebuffer(Context& ctx, GLint srcX0, GLint srcY0, GLint srcX1, GLint 
     }
     if (doDepth && srcDepth.texture.pixelFormat != dstFormats.depth) return ctx.setError(GL_INVALID_OPERATION);
     if (doStencil && srcStencil.texture.pixelFormat != dstFormats.stencil) return ctx.setError(GL_INVALID_OPERATION);
+    // The GL formats must match too (DEPTH24_STENCIL8 and DEPTH32F_STENCIL8
+    // share Metal's Depth32Float_Stencil8).
+    if (doDepth && depthInfo && drawDepthStencilFormat(ctx, false) && depthInfo != drawDepthStencilFormat(ctx, false))
+        return ctx.setError(GL_INVALID_OPERATION);
+    if (doStencil && stencilInfo && drawDepthStencilFormat(ctx, true) && stencilInfo != drawDepthStencilFormat(ctx, true))
+        return ctx.setError(GL_INVALID_OPERATION);
+    if (doColor && colorInfo && colorInfo->isInteger()) {
+        // Integer colors copy to integer buffers of the same signedness.
+        if (const Framebuffer* fb = ctx.state.drawFramebuffer.get())
+            for (int i = 0; i < Framebuffer::kMaxColor; ++i)
+                if (fb->drawBuffers[i] >= GL_COLOR_ATTACHMENT0 && fb->drawBuffers[i] < GL_COLOR_ATTACHMENT0 + Framebuffer::kMaxColor)
+                    if (const FormatInfo* f = attachedFormat(fb->color[fb->drawBuffers[i] - GL_COLOR_ATTACHMENT0]);
+                        f && f->isSignedInteger() != colorInfo->isSignedInteger())
+                        return ctx.setError(GL_INVALID_OPERATION);
+    }
+    if (ctx.isEs()) {
+        // OpenGL ES 3.2 section 16.2.1: no multisampled draw framebuffer, and
+        // a multisampled read framebuffer resolves into its own format.
+        if (dst.samples > 1) return ctx.setError(GL_INVALID_OPERATION);
+        if (srcSamples > 1 && doColor && colorInfo)
+            if (const Framebuffer* fb = ctx.state.drawFramebuffer.get())
+                for (int i = 0; i < Framebuffer::kMaxColor; ++i)
+                    if (fb->drawBuffers[i] >= GL_COLOR_ATTACHMENT0 && fb->drawBuffers[i] < GL_COLOR_ATTACHMENT0 + Framebuffer::kMaxColor)
+                        if (const FormatInfo* f = attachedFormat(fb->color[fb->drawBuffers[i] - GL_COLOR_ATTACHMENT0]);
+                            f && f->internalFormat != colorInfo->internalFormat)
+                            return ctx.setError(GL_INVALID_OPERATION);
+    }
     if (!doColor && !doDepth && !doStencil) return;
 
     const GLint srcRect[4] = {srcX0, srcY0, srcX1, srcY1};

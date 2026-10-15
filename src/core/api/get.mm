@@ -849,8 +849,10 @@ bool getIndexed(Context& ctx, GLenum pname, GLuint index, Value& out, bool& badI
     }
 }
 
+// `es`: OpenGL ES maps normalized values to the 32-bit range for 64-bit
+// queries too (OpenGL ES 3.2 section 2.2.2).
 template <class T>
-void convert(const Value& v, T* params) {
+void convert(const Value& v, T* params, bool es = false) {
     for (int i = 0; i < v.count; ++i) {
         const double x = v.v[i];
         if constexpr (std::is_same_v<T, GLboolean>) {
@@ -860,7 +862,7 @@ void convert(const Value& v, T* params) {
         } else {
             if (v.kind == Value::NormFloat) {
                 // Normalized values map [-1, 1] linearly to the integer range (GL 3.3 section 6.1.2).
-                const double scaled = std::clamp(x, -1.0, 1.0) * (sizeof(T) == 8 ? 9223372036854775807.0 : 2147483647.0);
+                const double scaled = std::clamp(x, -1.0, 1.0) * (sizeof(T) == 8 && !es ? 9223372036854775807.0 : 2147483647.0);
                 params[i] = static_cast<T>(std::llround(scaled));
             } else if (v.kind == Value::Float || v.kind == Value::Double) {
                 params[i] = static_cast<T>(std::llround(x));
@@ -879,7 +881,7 @@ template <class T>
 void get(Context& ctx, GLenum pname, T* params) {
     Value v;
     if (!getState(ctx, pname, v)) return ctx.setError(GL_INVALID_ENUM);
-    if (params) convert(v, params);
+    if (params) convert(v, params, ctx.isEs());
 }
 
 template <class T>

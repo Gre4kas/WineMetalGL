@@ -1036,9 +1036,11 @@ void texParameter(Context& ctx, GLenum target, GLenum pname, const ParamValues& 
     switch (pname) {
     case GL_TEXTURE_BASE_LEVEL:
     case GL_TEXTURE_MAX_LEVEL: {
-        if (v.kind == ParamValues::Float && v.f[0] != std::floor(v.f[0])) return ctx.setError(GL_INVALID_VALUE);
-        if (v.i[0] < 0) return ctx.setError(GL_INVALID_VALUE);
-        const GLint value = static_cast<GLint>(std::min<int64_t>(v.i[0], std::numeric_limits<GLint>::max()));
+        // OpenGL ES rounds fractional levels (section 8.10); desktop GL rejects them.
+        if (v.kind == ParamValues::Float && v.f[0] != std::floor(v.f[0]) && !ctx.isEs()) return ctx.setError(GL_INVALID_VALUE);
+        const int64_t level = v.kind == ParamValues::Float && ctx.isEs() ? std::llround(v.f[0]) : v.i[0];
+        if (level < 0) return ctx.setError(GL_INVALID_VALUE);
+        const GLint value = static_cast<GLint>(std::min<int64_t>(level, std::numeric_limits<GLint>::max()));
         if (pname == GL_TEXTURE_BASE_LEVEL) {
             if ((multisample || target == GL_TEXTURE_RECTANGLE) && value != 0) return ctx.setError(GL_INVALID_OPERATION);
             tex->baseLevel = value;
@@ -1967,6 +1969,7 @@ void GenerateMipmap(Context& ctx, GLenum target) {
         target != GL_TEXTURE_1D_ARRAY && target != GL_TEXTURE_2D_ARRAY && target != GL_TEXTURE_CUBE_MAP &&
         !(target == GL_TEXTURE_CUBE_MAP_ARRAY && ctx.version() >= 40))
         return ctx.setError(GL_INVALID_ENUM);
+    if (ctx.isEs() && !targetSupported(ctx, target)) return ctx.setError(GL_INVALID_ENUM);
     Texture* tex = boundTexture(ctx, target);
     if (!tex) return ctx.setError(GL_INVALID_OPERATION);
     // An immutable texture's levels are fixed by TexStorage: the base level is
@@ -1988,6 +1991,15 @@ void GenerateMipmap(Context& ctx, GLenum target) {
     // Desktop GL generates depth mipmaps too (stencil-only formats cannot).
     if (info->compressed || info->isInteger() || (info->isDepthOrStencil() && !info->depthBits))
         return ctx.setError(GL_INVALID_OPERATION);
+    // OpenGL ES 3.2 section 8.14.4: an unsized format, or one both
+    // color-renderable and filterable.
+    if (ctx.isEs()) {
+        const GLenum r = baseImage.requestedFormat;
+        const bool unsized = r == GL_RGBA || r == GL_RGB || r == GL_LUMINANCE_ALPHA || r == GL_LUMINANCE || r == GL_ALPHA ||
+                             r == GL_RED || r == GL_RG || r == GL_SRGB || r == GL_SRGB_ALPHA || r == es::kBgra;
+        if (!unsized && !(es::colorRenderable(info->internalFormat) && info->textureFilterable))
+            return ctx.setError(GL_INVALID_OPERATION);
+    }
     // Define every level from base + 1 to the end of the chain (or maxLevel).
     const bool oneD = target == GL_TEXTURE_1D || target == GL_TEXTURE_1D_ARRAY;
     GLsizei w = baseImage.width, h = baseImage.height, d = baseImage.depth;

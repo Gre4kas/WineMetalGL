@@ -126,7 +126,7 @@ public:
         return hasExtension("GL_ARB_parallel_shader_compile") || hasExtension("GL_KHR_parallel_shader_compile");
     }
     // SPIR-V shaders: GL 4.6 or GL_ARB_gl_spirv.
-    bool glSpirv() const { return version() >= 46 || hasExtension("GL_ARB_gl_spirv"); }
+    bool glSpirv() const { return !isEs() && (version() >= 46 || hasExtension("GL_ARB_gl_spirv")); }  // not OpenGL ES
     // Draw counts from PARAMETER_BUFFER: GL 4.6 or GL_ARB_indirect_parameters.
     bool indirectParameters() const { return version() >= 46 || hasExtension("GL_ARB_indirect_parameters"); }
 

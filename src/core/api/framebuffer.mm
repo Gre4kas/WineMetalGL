@@ -169,6 +169,8 @@ void attachTexture(Context& ctx, GLenum target, GLenum attachment, GLenum textar
     if (tex) {
         if (tex->target == GL_TEXTURE_BUFFER) return ctx.setError(GL_INVALID_OPERATION);
         if (level < 0 || level >= Texture::kMaxLevels) return ctx.setError(GL_INVALID_VALUE);
+        // OpenGL ES 3.2 section 9.2.8: a level past log2 of the largest size.
+        if (ctx.isEs() && level > (tex->target == GL_TEXTURE_3D ? 11 : 14)) return ctx.setError(GL_INVALID_VALUE);
         // An immutable texture has only its levels.
         if (tex->immutable && tex->immutableLevels > 0 && level >= tex->immutableLevels) return ctx.setError(GL_INVALID_VALUE);
         if (textarget) {
@@ -725,6 +727,9 @@ void DrawBuffer(Context& ctx, GLenum buf) {
 void ReadBuffer(Context& ctx, GLenum src) {
     Framebuffer* fb = ctx.state.readFramebuffer.get();
     if (!fb) {
+        // OpenGL ES's default framebuffer has only GL_BACK.
+        if (ctx.isEs() && src != GL_NONE && src != GL_BACK)
+            return ctx.setError(src >= GL_COLOR_ATTACHMENT0 && src < GL_COLOR_ATTACHMENT0 + 32 ? GL_INVALID_OPERATION : GL_INVALID_ENUM);
         if (src != GL_NONE && src != GL_BACK && src != GL_FRONT && src != GL_LEFT && src != GL_BACK_LEFT && src != GL_FRONT_LEFT)
             return ctx.setError(src >= GL_COLOR_ATTACHMENT0 && src < GL_COLOR_ATTACHMENT0 + 32 ? GL_INVALID_OPERATION : GL_INVALID_ENUM);
         ctx.state.defaultReadBuffer = src;
@@ -732,8 +737,8 @@ void ReadBuffer(Context& ctx, GLenum src) {
     }
     if (src != GL_NONE && (src < GL_COLOR_ATTACHMENT0 || src >= GL_COLOR_ATTACHMENT0 + Framebuffer::kMaxColor))
         return ctx.setError(src >= GL_COLOR_ATTACHMENT0 && src < GL_COLOR_ATTACHMENT0 + 32 ? GL_INVALID_VALUE
-                            : (src == GL_BACK || src == GL_FRONT || src == GL_LEFT) ? GL_INVALID_OPERATION
-                                                                                     : GL_INVALID_ENUM);
+                            : (src == GL_BACK || (!ctx.isEs() && (src == GL_FRONT || src == GL_LEFT))) ? GL_INVALID_OPERATION
+                                                                                                       : GL_INVALID_ENUM);
     fb->readBuffer = src;
     framebufferChanged(ctx, *fb);
 }

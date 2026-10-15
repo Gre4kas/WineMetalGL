@@ -266,9 +266,9 @@ bool depthOrStencilRenderable(GLenum f) {
 }
 
 bool renderbufferFormat(GLenum f) {
-    // Every color-renderable format but the texture-only RGB16F, and the
-    // depth and stencil formats (DEPTH_COMPONENT32: OES_depth32).
-    return (colorRenderable(f) && f != GL_RGB16F) || depthOrStencilRenderable(f);
+    // The color-renderable formats (RGB16F: EXT_color_buffer_half_float) and
+    // the depth and stencil formats (DEPTH_COMPONENT32: OES_depth32).
+    return colorRenderable(f) || depthOrStencilRenderable(f);
 }
 
 bool readPixelsCompatible(GLenum internalformat, GLenum format, GLenum type) {
