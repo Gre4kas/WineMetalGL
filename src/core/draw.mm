@@ -3502,7 +3502,13 @@ bool DrawState::drawPatchesIndirectGpu(GLenum type, Buffer& commands, uintptr_t 
         // A site sized once keeps a capacity even when its commands drew
         // nothing (all culled): it is never sized on the CPU again.
         if (site.capacity && total <= site.capacity) return;
-        const uint64_t wanted = std::max<uint64_t>(256, total * 2);
+        // Patches past the capacity are not drawn until a later report grows
+        // it (wmgl_mdi_patch_scan), so it holds at least one patch per
+        // command: culling that keeps or drops each command's patch
+        // (Foundation's terrain, issue #12) then fits from the first frame
+        // that shows them, even for a site sized while everything was culled.
+        const uint64_t perCommand = std::min<uint64_t>(uint64_t{static_cast<uint32_t>(drawcount)} * patchVertices, 1u << 17);
+        const uint64_t wanted = std::max<uint64_t>({256, total * 2, perCommand});
         site.capacity = static_cast<uint32_t>(std::min<uint64_t>(wanted, (1u << 26)) / patchVertices * patchVertices);
     };
     for (int i = 0; i < 8; ++i)
@@ -3540,10 +3546,19 @@ bool DrawState::drawPatchesIndirectGpu(GLenum type, Buffer& commands, uintptr_t 
     TransientAllocation capture = transient_.allocate((12 + size_t{capacity}) * 4, serial, 16);
     TransientAllocation controlParams = transient_.allocate(16, serial, 16);
     TransientAllocation factorParams = transient_.allocate(16, serial, 16);
-    TransientAllocation gathered = transient_.allocate(std::max<size_t>(4, size_t{gatheredWords} * 4), serial, 16);
+    // The records and factors share the gathered windows' memory: the
+    // capture pass reads the windows (prelude render buffer) before the
+    // control kernels write the records (prelude control buffer, committed
+    // after it), and tracked resources order the writes after the reads.
+    // The capacity holds a patch per command (grow()), so this is most of
+    // what a site with many commands takes in a frame.
+    const size_t recordsBytes = (size_t{patchCapacity} * recordWords * 4 + 15) / 16 * 16;
+    const size_t sharedBytes = std::max<size_t>({4, size_t{gatheredWords} * 4, recordsBytes + size_t{patchCapacity} * (quads ? 12 : 8)});
+    TransientAllocation gathered = transient_.allocate(sharedBytes, serial, 16);
     TransientAllocation captured = transient_.allocate(size_t{capacity} * t.inputStride * 4, serial, 16);
-    TransientAllocation records = transient_.allocate(size_t{patchCapacity} * recordWords * 4, serial, 16);
-    TransientAllocation factors = transient_.allocate(size_t{patchCapacity} * (quads ? 12 : 8), serial, 16);
+    TransientAllocation records = gathered, factors = gathered;
+    factors.offset += recordsBytes;
+    if (factors.data) factors.data = static_cast<uint8_t*>(factors.data) + recordsBytes;
     if (!starts.buffer || !args.buffer || !capture.buffer || !controlParams.buffer || !factorParams.buffer || !gathered.buffer ||
         !captured.buffer || !records.buffer || !factors.buffer)
         return false;
