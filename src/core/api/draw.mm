@@ -172,6 +172,17 @@ GLsizei drawIndirectOnGpu(Context& ctx, GLenum mode, GLenum type, const void* in
     return ctx.draw().drawIndirect(mode, type, *buffer, offset, draws, step);
 }
 
+// OpenGL ES 3.1 section 10.5: indirect draws read every enabled array from a
+// buffer (client arrays are INVALID_OPERATION).
+bool esClientArrays(Context& ctx) {
+    if (!ctx.isEs()) return false;
+    for (int i = 0; i < VertexArray::kMaxAttribs; ++i) {
+        const VertexAttrib& a = ctx.state.vertexArray->attribs[static_cast<size_t>(i)];
+        if (a.enabled && !a.buffer) return true;
+    }
+    return false;
+}
+
 bool validIndirectMode(Context& ctx, GLenum mode) {
     switch (mode) {
     case GL_POINTS: case GL_LINES: case GL_LINE_LOOP: case GL_LINE_STRIP: case GL_TRIANGLES: case GL_TRIANGLE_STRIP:
@@ -226,6 +237,7 @@ void DrawArraysIndirect(Context& ctx, GLenum mode, const void* indirect) {
     if (!validIndirectMode(ctx, mode)) return;
     // Core profile: a vertex array object must be bound.
     if (ctx.isCore() && ctx.state.vertexArray == ctx.defaultVertexArray) return ctx.setError(GL_INVALID_OPERATION);
+    if (esClientArrays(ctx)) return ctx.setError(GL_INVALID_OPERATION);
     if (drawIndirectOnGpu(ctx, mode, GL_NONE, indirect, 4)) return;
     drawArraysCommand(ctx, mode, indirect, false);
 }
@@ -235,7 +247,7 @@ void DrawElementsIndirect(Context& ctx, GLenum mode, GLenum type, const void* in
     if (!validIndirectMode(ctx, mode)) return;
     if (type != GL_UNSIGNED_BYTE && type != GL_UNSIGNED_SHORT && type != GL_UNSIGNED_INT) return ctx.setError(GL_INVALID_ENUM);
     if (ctx.isCore() && ctx.state.vertexArray == ctx.defaultVertexArray) return ctx.setError(GL_INVALID_OPERATION);
-    if (!ctx.state.vertexArray->elementBuffer) return ctx.setError(GL_INVALID_OPERATION);
+    if (!ctx.state.vertexArray->elementBuffer || esClientArrays(ctx)) return ctx.setError(GL_INVALID_OPERATION);
     if (drawIndirectOnGpu(ctx, mode, type, indirect, 5)) return;
     drawElementsCommand(ctx, mode, type, indirect, false);
 }

@@ -1089,3 +1089,132 @@ GPU_TEST_ES(gpu_es_separable_single_tessellation_stage, 32) {
     glDeleteProgram(whole);
     glDeleteShader(shader);
 }
+
+// A program pipeline of separable vertex and geometry programs, without a
+// fragment stage, captures the geometry program's transform feedback.
+GPU_TEST_ES(gpu_es_pipeline_geometry_capture, 32) {
+    auto separable = [](GLenum type, const char* source, const char* varying) {
+        GLuint p = glCreateProgram();
+        glProgramParameteri(p, GL_PROGRAM_SEPARABLE, GL_TRUE);
+        GLuint s = glCreateShader(type);
+        glShaderSource(s, 1, &source, nullptr);
+        glCompileShader(s);
+        glAttachShader(p, s);
+        glTransformFeedbackVaryings(p, 1, &varying, GL_INTERLEAVED_ATTRIBS);
+        glLinkProgram(p);
+        GLint linked = 0;
+        glGetProgramiv(p, GL_LINK_STATUS, &linked);
+        if (!linked) {
+            char log[2048] = {};
+            glGetProgramInfoLog(p, sizeof(log), nullptr, log);
+            std::fprintf(stderr, "  link failed: %s\n", log);
+        }
+        CHECK_EQ(linked, GL_TRUE);
+        glDeleteShader(s);
+        return p;
+    };
+    GLuint vs = separable(GL_VERTEX_SHADER,
+                          "#version 320 es\n"
+                          "flat out ivec4 out_vs_1;\nflat out int vertexID;\n"
+                          "void main() {\n"
+                          "    vertexID = gl_VertexID;\n"
+                          "    out_vs_1 = ivec4(gl_VertexID, gl_VertexID + 1, gl_VertexID + 2, gl_VertexID + 3);\n"
+                          "    gl_Position = vec4(1.0, 0.0, 0.0, 1.0);\n"
+                          "}\n",
+                          "out_vs_1");
+    GLuint gs = separable(GL_GEOMETRY_SHADER,
+                          "#version 320 es\n"
+                          "layout(points) in;\nlayout(points, max_vertices = 1) out;\n"
+                          "flat in int vertexID[];\nflat in ivec4 out_vs_1[];\nout vec4 out_gs_1;\n"
+                          "void main() {\n"
+                          "    out_gs_1 = vec4(vertexID[0] * 2, vertexID[0] * 2 + 1, vertexID[0] * 2 + 2, vertexID[0] * 2 + 3);\n"
+                          "    gl_Position = vec4(0, 0, 0, 1);\n"
+                          "    EmitVertex();\n"
+                          "}\n",
+                          "out_gs_1");
+    GLuint pipeline = 0, vao = 0, buffer = 0;
+    glGenProgramPipelines(1, &pipeline);
+    glUseProgramStages(pipeline, GL_GEOMETRY_SHADER_BIT, gs);
+    glUseProgramStages(pipeline, GL_VERTEX_SHADER_BIT, vs);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(1, &buffer);
+    glBindBuffer(GL_ARRAY_BUFFER, buffer);
+    glBufferData(GL_ARRAY_BUFFER, 16, nullptr, GL_STREAM_READ);
+    glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 0, buffer);
+    glUseProgram(0);
+    glBindProgramPipeline(pipeline);
+    glEnable(GL_RASTERIZER_DISCARD);
+    glBeginTransformFeedback(GL_POINTS);
+    glDrawArrays(GL_POINTS, 0, 1);
+    CHECK_GL();
+    glEndTransformFeedback();
+    glDisable(GL_RASTERIZER_DISCARD);
+    const float* data = static_cast<const float*>(glMapBufferRange(GL_TRANSFORM_FEEDBACK_BUFFER, 0, 16, GL_MAP_READ_BIT));
+    CHECK(data && data[0] == 0.0f && data[1] == 1.0f && data[2] == 2.0f && data[3] == 3.0f);
+    if (data) glUnmapBuffer(GL_TRANSFORM_FEEDBACK_BUFFER);
+    CHECK_GL();
+    glBindProgramPipeline(0);
+    glDeleteProgramPipelines(1, &pipeline);
+    glDeleteBuffers(1, &buffer);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(vs);
+    glDeleteProgram(gs);
+}
+
+// OpenGL ES stages agree on whether a varying is flat; centroid may differ.
+GPU_TEST_ES(gpu_es_interpolation_qualifiers_match, 32) {
+    auto links = [](const char* vsOut, const char* gsIn) {
+        const std::string vs = std::string("#version 320 es\n") + vsOut + " vec4 test;\nvoid main() { test = vec4(1.0); }\n";
+        const std::string gs = std::string("#version 320 es\nlayout(points) in;\nlayout(points, max_vertices = 1) out;\n") +
+                               gsIn + " vec4 test[];\nvoid main() { gl_Position = test[0]; EmitVertex(); }\n";
+        const char* fs = "#version 320 es\nprecision mediump float;\nout vec4 o;\nvoid main() { o = vec4(1.0); }\n";
+        GLuint p = glCreateProgram();
+        for (const auto& [type, source] : {std::pair<GLenum, const char*>{GL_VERTEX_SHADER, vs.c_str()},
+                                           {GL_GEOMETRY_SHADER, gs.c_str()}, {GL_FRAGMENT_SHADER, fs}}) {
+            GLuint s = glCreateShader(type);
+            glShaderSource(s, 1, &source, nullptr);
+            glCompileShader(s);
+            glAttachShader(p, s);
+            glDeleteShader(s);
+        }
+        glLinkProgram(p);
+        GLint linked = 0;
+        glGetProgramiv(p, GL_LINK_STATUS, &linked);
+        glDeleteProgram(p);
+        return linked == GL_TRUE;
+    };
+    CHECK(!links("out", "in flat"));
+    CHECK(links("flat out", "flat in"));
+    CHECK(links("out", "centroid in"));
+    CHECK_GL();
+}
+
+// An OpenGL ES program pipeline whose vertex output and fragment input differ
+// in precision does not validate; the same precisions do.
+GPU_TEST_ES(gpu_es_pipeline_varying_precisions, 31) {
+    auto validates = [](const char* vsPrecision, const char* fsPrecision) {
+        const std::string vs = std::string("#version 310 es\nout ") + vsPrecision +
+                               " vec4 v;\nvoid main() { v = vec4(1.0); gl_Position = vec4(0.0); }\n";
+        const std::string fs = std::string("#version 310 es\nprecision mediump float;\nin ") + fsPrecision +
+                               " vec4 v;\nout vec4 o;\nvoid main() { o = v; }\n";
+        const char* vsSource = vs.c_str();
+        const char* fsSource = fs.c_str();
+        GLuint a = glCreateShaderProgramv(GL_VERTEX_SHADER, 1, &vsSource);
+        GLuint b = glCreateShaderProgramv(GL_FRAGMENT_SHADER, 1, &fsSource);
+        GLuint pipeline = 0;
+        glGenProgramPipelines(1, &pipeline);
+        glUseProgramStages(pipeline, GL_VERTEX_SHADER_BIT, a);
+        glUseProgramStages(pipeline, GL_FRAGMENT_SHADER_BIT, b);
+        glValidateProgramPipeline(pipeline);
+        GLint status = 0;
+        glGetProgramPipelineiv(pipeline, GL_VALIDATE_STATUS, &status);
+        glDeleteProgramPipelines(1, &pipeline);
+        glDeleteProgram(a);
+        glDeleteProgram(b);
+        return status == GL_TRUE;
+    };
+    CHECK(!validates("highp", "mediump"));
+    CHECK(validates("mediump", "mediump"));
+    CHECK_GL();
+}

@@ -81,6 +81,14 @@ struct EsCompileResult : CompileResult {
     std::map<std::string, int> uniformPrecisions;
     // Uniform and storage blocks' members (names, types, layouts), by block name.
     std::map<std::string, std::string> blockSignatures;
+    // Each stage input's and output's interpolation and precision, by name
+    // ("Block.member" for block members), for checkEsLink and the program
+    // pipeline checks.
+    struct Varying {
+        bool flat = false;
+        int precision = 0;  // glslang's TPrecisionQualifier
+    };
+    std::map<std::string, Varying> inputs, outputs;
 };
 EsCompileResult compileEs(Stage stage, const std::string& source);
 
@@ -111,6 +119,9 @@ struct LinkInput {
     // GL_ARB_gl_spirv: the shaders are SPIR-V modules translated to GLSL
     // (spirv_input.h); `spirvUnnamed`: one of them has no debug names.
     bool spirv = false, spirvUnnamed = false;
+    // OpenGL ES: the precisions of the first stage's inputs and the last
+    // stage's outputs, by name, which program pipelines compare.
+    std::map<std::string, int> esInputPrecisions, esOutputPrecisions;
 };
 
 struct UniformInfo {

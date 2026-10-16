@@ -636,7 +636,8 @@ void GetBufferParameteri64v(Context& ctx, GLenum target, GLenum pname, GLint64* 
         *params = (buffer->mapAccess & GL_MAP_READ_BIT) && (buffer->mapAccess & GL_MAP_WRITE_BIT) ? GL_READ_WRITE
                   : (buffer->mapAccess & GL_MAP_READ_BIT)                                          ? GL_READ_ONLY
                                                                                                    : GL_WRITE_ONLY;
-        if (!buffer->mapped) *params = GL_READ_WRITE;
+        // OpenGL ES (GL_OES_mapbuffer) maps write-only, its initial value.
+        if (!buffer->mapped) *params = ctx.isEs() ? GL_WRITE_ONLY : GL_READ_WRITE;
         return;
     case GL_BUFFER_ACCESS_FLAGS: *params = buffer->mapped ? buffer->mapAccess : 0; return;
     case GL_BUFFER_MAPPED: *params = buffer->mapped ? GL_TRUE : GL_FALSE; return;

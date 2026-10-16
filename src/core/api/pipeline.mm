@@ -69,16 +69,31 @@ std::string esInterfaceMismatch(const ProgramPipeline& pp) {
             const bool arrayed = s == Stage::TessControl || s == Stage::TessEval || s == Stage::Geometry;
             for (const shader::InterfaceVariableInfo& in : p->linked->link.programInputs) {
                 if (in.name.rfind("gl_", 0) == 0 || in.perPatch) continue;
+                // Per-vertex inputs of arrayed stages are listed as "name[0]".
+                std::string name = in.name;
+                if (arrayed && name.size() > 3 && name.compare(name.size() - 3, 3, "[0]") == 0) name.resize(name.size() - 3);
                 const shader::InterfaceVariableInfo* match = nullptr;
                 for (const shader::InterfaceVariableInfo& out : producer->linked->link.programOutputs) {
                     if (out.name.rfind("gl_", 0) == 0) continue;
-                    if (in.location >= 0 && out.location >= 0 ? in.location == out.location : in.name == out.name) {
+                    if (in.location >= 0 && out.location >= 0 ? in.location == out.location
+                                                              : in.name == out.name || name == out.name) {
                         match = &out;
                         break;
                     }
                 }
                 if (!match || match->type != in.type || (!arrayed && producerStage != Stage::TessControl && match->size != in.size))
                     return "error: input '" + in.name + "' does not match an output of the previous stage\n";
+                // Their precisions match too (OpenGL ES 3.2 section 7.4.1).
+                std::string outName = match->name;
+                if (outName.size() > 3 && outName.compare(outName.size() - 3, 3, "[0]") == 0) outName.resize(outName.size() - 3);
+                const auto& outs = producer->linked->input.esOutputPrecisions;
+                const auto& ins = p->linked->input.esInputPrecisions;
+                const auto o = outs.find(outName);
+                std::string inName = in.name;
+                if (inName.size() > 3 && inName.compare(inName.size() - 3, 3, "[0]") == 0) inName.resize(inName.size() - 3);
+                const auto i = ins.find(inName);
+                if (o != outs.end() && i != ins.end() && o->second != i->second)
+                    return "error: input '" + in.name + "' and its output in the previous stage differ in precision\n";
             }
         }
         producer = p;

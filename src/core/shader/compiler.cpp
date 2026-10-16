@@ -15,6 +15,7 @@
 #include <list>
 #include <memory>
 #include <mutex>
+#include <regex>
 #include <set>
 #include <sstream>
 #include <unordered_map>
@@ -1725,6 +1726,38 @@ std::map<std::string, int> uniformPrecisionsOf(glslang::TShader& shader) {
     return out;
 }
 
+// Each user stage input's (`input`) or output's interpolation and
+// precision, by name ("Block.member" for members of blocks).
+std::map<std::string, EsCompileResult::Varying> varyingsOf(glslang::TShader& shader, bool input) {
+    std::map<std::string, EsCompileResult::Varying> out;
+    const glslang::TIntermediate* intermediate = shader.getIntermediate();
+    glslang::TIntermAggregate* root =
+        intermediate && intermediate->getTreeRoot() ? intermediate->getTreeRoot()->getAsAggregate() : nullptr;
+    if (!root) return out;
+    const glslang::TStorageQualifier storage = input ? glslang::EvqVaryingIn : glslang::EvqVaryingOut;
+    for (TIntermNode* node : root->getSequence()) {
+        glslang::TIntermAggregate* objects = node->getAsAggregate();
+        if (!objects || objects->getOp() != glslang::EOpLinkerObjects) continue;
+        for (TIntermNode* object : objects->getSequence()) {
+            glslang::TIntermSymbol* symbol = object->getAsSymbolNode();
+            if (!symbol || symbol->getQualifier().storage != storage) continue;
+            const glslang::TType& type = symbol->getType();
+            const std::string name = symbol->getName().c_str();
+            if (type.getBasicType() == glslang::EbtBlock) {
+                const std::string block = type.getTypeName().c_str();
+                if (block.rfind("gl_", 0) == 0) continue;
+                for (const glslang::TTypeLoc& member : *type.getStruct())
+                    out[block + "." + member.type->getFieldName().c_str()] = {
+                        member.type->getQualifier().flat || type.getQualifier().flat,
+                        static_cast<int>(member.type->getQualifier().precision)};
+                continue;
+            }
+            if (name.rfind("gl_", 0) != 0) out[name] = {type.getQualifier().flat, static_cast<int>(type.getQualifier().precision)};
+        }
+    }
+    return out;
+}
+
 }  // namespace
 
 namespace {
@@ -1809,6 +1842,8 @@ EsCompileResult compileEsUncached(Stage stage, const std::string& source) {
         if (result.ok) {
             result.uniformPrecisions = uniformPrecisionsOf(shader);
             result.blockSignatures = blockSignaturesOf(shader);
+            result.inputs = varyingsOf(shader, true);
+            result.outputs = varyingsOf(shader, false);
             // compile()'s checks: block bindings within the limits, interface
             // locations, reserved words.
             std::string errors = checkBlockBindings(shader);
@@ -1857,6 +1892,29 @@ EsCompileResult compileEsUncached(Stage stage, const std::string& source) {
             at = end + 1;
         }
     }
+    // GLSL ES 3.20 section 4.1.8: struct members take precision qualifiers
+    // only (glslang lets 'precise' through).
+    {
+        static const std::regex kPreciseMember(R"(\bstruct\b[^{;]*\{[^}]*\bprecise\b)");
+        if (std::regex_search(preprocessed, kPreciseMember)) {
+            result.ok = false;
+            result.log += "ERROR: 'precise' : not allowed on struct members\n";
+            return result;
+        }
+    }
+    // GLSL ES 3.10 section 7.1.3: gl_WorkGroupSize needs a fixed local size
+    // declared before its first use.
+    if (stage == Stage::Compute) {
+        static const std::regex kUse(R"(\bgl_WorkGroupSize\b)");
+        static const std::regex kLocalSize(R"(layout\s*\([^)]*\blocal_size_[xyz]\s*=[^)]*\)\s*in\s*;)");
+        std::smatch use, size;
+        if (std::regex_search(preprocessed, use, kUse) &&
+            (!std::regex_search(preprocessed, size, kLocalSize) || size.position(0) > use.position(0))) {
+            result.ok = false;
+            result.log += "ERROR: 'gl_WorkGroupSize' : used before a fixed local group size is declared\n";
+            return result;
+        }
+    }
     result.desktop = esToDesktopGlsl(preprocessed, version);
     // Make sure the shader translates (as compile() does).
     ParsedShader parsed;
@@ -1876,6 +1934,24 @@ std::string checkEsLink(const std::vector<ShaderSource>& esShaders) {
     std::map<std::string, std::pair<int, Stage>> precisions;
     std::map<std::string, std::pair<std::string, Stage>> blocks;
     std::string errors;
+    // Interpolation qualifiers (flat or not) of a stage's inputs match the
+    // previous stage's outputs (GLSL ES 3.20 section 4.5; an auxiliary
+    // qualifier such as centroid may differ).
+    const Stage order[] = {Stage::Vertex, Stage::TessControl, Stage::TessEval, Stage::Geometry, Stage::Fragment};
+    std::map<std::string, EsCompileResult::Varying> previousOutputs;
+    bool havePrevious = false;
+    for (Stage stage : order)
+        for (const ShaderSource& s : esShaders) {
+            if (s.stage != stage) continue;
+            const EsCompileResult compiled = compileEs(s.stage, s.source);
+            if (havePrevious)
+                for (const auto& [name, in] : compiled.inputs)
+                    if (auto out = previousOutputs.find(name); out != previousOutputs.end() && out->second.flat != in.flat)
+                        errors += "error: '" + name + "' has different interpolation qualifiers in its stages\n";
+            previousOutputs = compiled.outputs;
+            havePrevious = true;
+            break;
+        }
     for (const ShaderSource& s : esShaders) {
         const EsCompileResult compiled = compileEs(s.stage, s.source);
         for (const auto& [name, precision] : compiled.uniformPrecisions) {
