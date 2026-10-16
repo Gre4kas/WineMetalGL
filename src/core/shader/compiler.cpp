@@ -651,6 +651,89 @@ std::string stripHashedLocations(const std::string& glsl) {
 // are active even when unused: glslang compiles for SPIR-V, which drops
 // shared and packed, so the packing is read from the source. A block takes
 // the buffer default ("layout(std430) buffer;" sets it; shared otherwise).
+// imageAtomicExchange on an r32f image: Metal has texture atomics on 32-bit
+// integer textures only. The image becomes an r32ui one (its binding then
+// goes through an R32Uint view or shadow, imageView) and its loads, stores
+// and exchanges carry the float's bits. Images used any other way than
+// those and imageSize are left alone.
+std::string floatImageAtomicsAsUint(const std::string& glsl) {
+    if (glsl.find("imageAtomicExchange") == std::string::npos) return glsl;
+    static const std::regex kDecl(
+        R"(layout\s*\(([^)]*\br32f\b[^)]*)\)((?:\s*\w+)*?)\s+(image(?:2D|3D|Cube|2DArray|CubeArray|Buffer))\s+(\w+)\s*;)");
+    std::string out = glsl;
+    std::vector<std::string> names;
+    for (auto it = std::sregex_iterator(glsl.begin(), glsl.end(), kDecl); it != std::sregex_iterator(); ++it)
+        names.push_back((*it)[4]);
+    // The arguments of the call whose '(' is at `open`, and the index past its ')'.
+    auto arguments = [](const std::string& text, size_t open, std::vector<std::string>& args) {
+        args.clear();
+        int depth = 0;
+        size_t start = open + 1;
+        for (size_t i = open; i < text.size(); ++i) {
+            const char c = text[i];
+            if (c == '(' || c == '[') ++depth;
+            else if (c == ')' || c == ']') {
+                if (--depth == 0) {
+                    args.push_back(text.substr(start, i - start));
+                    return i + 1;
+                }
+            } else if (c == ',' && depth == 1) {
+                args.push_back(text.substr(start, i - start));
+                start = i + 1;
+            }
+        }
+        return std::string::npos;
+    };
+    for (const std::string& name : names) {
+        const std::regex use("\\b" + name + "\\b");
+        const std::regex call("\\b(imageAtomicExchange|imageLoad|imageStore|imageSize)\\s*\\(\\s*" + name + "\\b");
+        size_t uses = 0, calls = 0;
+        for (auto it = std::sregex_iterator(out.begin(), out.end(), use); it != std::sregex_iterator(); ++it) ++uses;
+        for (auto it = std::sregex_iterator(out.begin(), out.end(), call); it != std::sregex_iterator(); ++it) ++calls;
+        bool exchanged = false;
+        for (auto it = std::sregex_iterator(out.begin(), out.end(), call); it != std::sregex_iterator(); ++it)
+            exchanged |= (*it)[1] == "imageAtomicExchange";
+        if (!exchanged || uses != calls + 1) continue;  // the declaration, then only these calls
+        std::string rewritten;
+        size_t at = 0;
+        std::smatch m;
+        std::string rest = out;
+        while (std::regex_search(rest, m, call)) {
+            const size_t begin = at + static_cast<size_t>(m.position(0));
+            const size_t open = out.find('(', begin);
+            std::vector<std::string> args;
+            const size_t end = arguments(out, open, args);
+            if (end == std::string::npos) return glsl;
+            rewritten += out.substr(at, begin - at);
+            const std::string fn = m[1];
+            if (fn == "imageAtomicExchange" && args.size() == 3)
+                rewritten += "uintBitsToFloat(imageAtomicExchange(" + args[0] + "," + args[1] + ", floatBitsToUint(" + args[2] + ")))";
+            else if (fn == "imageLoad" && args.size() == 2)
+                rewritten += "vec4(uintBitsToFloat(imageLoad(" + args[0] + "," + args[1] + ").x), 0.0, 0.0, 1.0)";
+            else if (fn == "imageStore" && args.size() == 3)
+                rewritten += "imageStore(" + args[0] + "," + args[1] + ", uvec4(floatBitsToUint((" + args[2] + ").x)))";
+            else
+                rewritten += out.substr(begin, end - begin);
+            at = end;
+            rest = out.substr(at);
+        }
+        rewritten += out.substr(at);
+        out = rewritten;
+        // The declaration: r32ui, uimage, highp unless a precision is given.
+        const std::regex decl(
+            "layout\\s*\\(([^)]*)\\br32f\\b([^)]*)\\)((?:\\s*\\w+)*?)\\s+image(2D|3D|Cube|2DArray|CubeArray|Buffer)\\s+" + name +
+            "\\s*;");
+        std::smatch d;
+        if (!std::regex_search(out, d, decl)) return glsl;
+        const std::string qualifiers = d[3];
+        const bool precision = std::regex_search(qualifiers, std::regex("\\b(lowp|mediump|highp)\\b"));
+        out.replace(static_cast<size_t>(d.position(0)), static_cast<size_t>(d.length(0)),
+                    "layout(" + std::string(d[1]) + "r32ui" + std::string(d[2]) + ")" + qualifiers + (precision ? "" : " highp") +
+                        " uimage" + std::string(d[4]) + " " + name + ";");
+    }
+    return out;
+}
+
 std::set<std::string> sharedBufferBlocks(const std::string& source) {
     std::set<std::string> out;
     static const std::regex kDecl(R"(((?:layout\s*\(([^)]*)\)\s*)?)((?:\w+\s+)*?)buffer\s*(\w*)\s*(\{|;))");
@@ -2064,7 +2147,7 @@ EsCompileResult compileEsUncached(Stage stage, const std::string& source) {
             return result;
         }
     }
-    result.desktop = esToDesktopGlsl(preprocessed, version);
+    result.desktop = esToDesktopGlsl(floatImageAtomicsAsUint(preprocessed), version);
     // Make sure the shader translates (as compile() does).
     ParsedShader parsed;
     std::string log;

@@ -1550,3 +1550,63 @@ GPU_TEST_ES(gpu_es_sample_mask_in_with_sample_mask, 31) {
     glDeleteVertexArrays(1, &vao);
     glDeleteProgram(prog);
 }
+
+// imageAtomicExchange on an r32f image (GL_OES_shader_image_atomic): the
+// old values come back and the exchanged values stay.
+GPU_TEST_ES(gpu_es_image_atomic_exchange_r32f, 31) {
+    const char* source =
+        "#version 310 es\n"
+        "#extension GL_OES_shader_image_atomic : require\n"
+        "layout(local_size_x = 4) in;\n"
+        "layout(r32f, binding = 0) coherent uniform highp image2D img;\n"
+        "layout(std430, binding = 0) buffer Out { highp float old[4]; };\n"
+        "void main() {\n"
+        "    old[gl_LocalInvocationID.x] = imageAtomicExchange(img, ivec2(gl_LocalInvocationID.x, 0), 2.5 + float(gl_LocalInvocationID.x));\n"
+        "}\n";
+    GLuint shader = glCreateShader(GL_COMPUTE_SHADER);
+    glShaderSource(shader, 1, &source, nullptr);
+    glCompileShader(shader);
+    GLuint prog = glCreateProgram();
+    glAttachShader(prog, shader);
+    glLinkProgram(prog);
+    GLint linked = 0;
+    glGetProgramiv(prog, GL_LINK_STATUS, &linked);
+    CHECK_EQ(linked, GL_TRUE);
+    GLuint tex = 0, buffer = 0, fb = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexStorage2D(GL_TEXTURE_2D, 1, GL_R32F, 4, 1);
+    const float initial[4] = {1.0f, -2.0f, 0.5f, 7.0f};
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 4, 1, GL_RED, GL_FLOAT, initial);
+    glBindImageTexture(0, tex, 0, GL_FALSE, 0, GL_READ_WRITE, GL_R32F);
+    glGenBuffers(1, &buffer);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, buffer);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, 16, nullptr, GL_STREAM_READ);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, buffer);
+    glUseProgram(prog);
+    glDispatchCompute(1, 1, 1);
+    glMemoryBarrier(GL_ALL_BARRIER_BITS);
+    CHECK_GL();
+    const float* old = static_cast<const float*>(glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0, 16, GL_MAP_READ_BIT));
+    for (int i = 0; old && i < 4; ++i) {
+        CHECK(old[i] == initial[i]);
+        if (old[i] != initial[i]) std::fprintf(stderr, "  old[%d] = %g, want %g\n", i, old[i], initial[i]);
+    }
+    glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
+    glGenFramebuffers(1, &fb);
+    glBindFramebuffer(GL_FRAMEBUFFER, fb);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+    float stored[4] = {};
+    glReadPixels(0, 0, 4, 1, GL_RED, GL_FLOAT, stored);
+    for (int i = 0; i < 4; ++i) {
+        CHECK(stored[i] == 2.5f + static_cast<float>(i));
+        if (stored[i] != 2.5f + static_cast<float>(i)) std::fprintf(stderr, "  stored[%d] = %g\n", i, stored[i]);
+    }
+    CHECK_GL();
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &fb);
+    glDeleteBuffers(1, &buffer);
+    glDeleteTextures(1, &tex);
+    glDeleteProgram(prog);
+    glDeleteShader(shader);
+}
