@@ -956,3 +956,71 @@ GPU_TEST_ES(gpu_es_copy_from_respecified_cube_face, 30) {
     glDeleteTextures(1, &dst);
     glDeleteTextures(1, &cube);
 }
+
+// An sRGB-capable window is linear to OpenGL ES (dEQP's WGL configurations
+// expect it): clears and draws store their values unconverted and the color
+// encoding reads LINEAR. Desktop GL encodes with GL_FRAMEBUFFER_SRGB enabled.
+TEST(gpu_es_srgb_capable_window_is_linear) {
+    for (const bool es : {true, false}) {
+        gpu::Fixture fixture(64, 64, true, es ? 30 : 33, es, 24, true);
+        CHECK(fixture.ok);
+        if (!fixture.ok) continue;
+        if (!es) glEnable(GL_FRAMEBUFFER_SRGB);
+        GLint encoding = 0;
+        glGetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER, es ? GL_BACK : GL_BACK_LEFT,
+                                              GL_FRAMEBUFFER_ATTACHMENT_COLOR_ENCODING, &encoding);
+        CHECK_EQ(encoding, es ? GL_LINEAR : GL_SRGB);
+        glClearColor(0.5f, 0.5f, 0.5f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        uint8_t cleared[4] = {};
+        glReadPixels(8, 8, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, cleared);
+        const uint8_t want[4] = {static_cast<uint8_t>(es ? 128 : 188), static_cast<uint8_t>(es ? 128 : 188),
+                                 static_cast<uint8_t>(es ? 128 : 188), 255};
+        CHECK(near(cleared, want, 2));
+        GLuint prog = program(es ? "#version 300 es\nlayout(location = 0) in vec2 p;\nvoid main() { gl_Position = vec4(p, 0.0, 1.0); }\n"
+                                 : "#version 330 core\nlayout(location = 0) in vec2 p;\nvoid main() { gl_Position = vec4(p, 0.0, 1.0); }\n",
+                              es ? "#version 300 es\nprecision mediump float;\nout vec4 c;\nvoid main() { c = vec4(0.5, 0.5, 0.5, 1.0); }\n"
+                                 : "#version 330 core\nout vec4 c;\nvoid main() { c = vec4(0.5, 0.5, 0.5, 1.0); }\n");
+        GLuint vao = quad();
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glUseProgram(prog);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        uint8_t drawn[4] = {};
+        glReadPixels(8, 8, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, drawn);
+        CHECK(near(drawn, want, 2));
+        if (!near(drawn, want, 2)) std::fprintf(stderr, "  es=%d: drew %d, want %d\n", es, drawn[0], want[0]);
+        CHECK_GL();
+        glDeleteVertexArrays(1, &vao);
+        glDeleteProgram(prog);
+    }
+}
+
+// A window with 32-bit depth and stencil is DEPTH32F_STENCIL8: its depth
+// blits to DEPTH32F_STENCIL8 buffers (not DEPTH24_STENCIL8) and reads FLOAT.
+TEST(gpu_es_depth32f_window_blit) {
+    gpu::Fixture fixture(64, 64, true, 30, true, 32, false);
+    CHECK(fixture.ok);
+    if (!fixture.ok) return;
+    GLint type = 0;
+    glGetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER, GL_DEPTH, GL_FRAMEBUFFER_ATTACHMENT_COMPONENT_TYPE, &type);
+    CHECK_EQ(type, GL_FLOAT);
+    glClearDepth(0.25);
+    glClear(GL_DEPTH_BUFFER_BIT);
+    for (const GLenum internal : {GL_DEPTH32F_STENCIL8, GL_DEPTH24_STENCIL8}) {
+        GLuint rb = 0, fb = 0;
+        glGenRenderbuffers(1, &rb);
+        glBindRenderbuffer(GL_RENDERBUFFER, rb);
+        glRenderbufferStorage(GL_RENDERBUFFER, internal, 64, 64);
+        glGenFramebuffers(1, &fb);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fb);
+        glFramebufferRenderbuffer(GL_DRAW_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, rb);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+        glBlitFramebuffer(0, 0, 64, 64, 0, 0, 64, 64, GL_DEPTH_BUFFER_BIT, GL_NEAREST);
+        CHECK_EQ(glGetError(), internal == GL_DEPTH32F_STENCIL8 ? static_cast<GLenum>(GL_NO_ERROR)
+                                                                : static_cast<GLenum>(GL_INVALID_OPERATION));
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glDeleteFramebuffers(1, &fb);
+        glDeleteRenderbuffers(1, &rb);
+    }
+}

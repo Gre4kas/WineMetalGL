@@ -57,6 +57,10 @@ public:
     // The core profile's rules without ES's exceptions: drawing needs a
     // vertex array object, and vertex attributes need buffers.
     bool isDesktopCore() const { return config_.coreProfile && !config_.es; }
+    // Whether an sRGB-capable window is sRGB. OpenGL ES contexts treat it as
+    // linear, as EGL configs (which carry no sRGB) and dEQP's WGL
+    // configurations do.
+    bool windowSrgb() const { return !config_.es; }
 
     // --- errors and diagnostics
     void setError(GLenum error);

@@ -698,9 +698,7 @@ bool copySource(Context& ctx, bool depth, CopySource& out, bool stencil = false)
         if (!surface || !surface->hasDepth() || (stencil && !surface->hasStencil()))
             return ctx.setError(GL_INVALID_OPERATION), false;
         out.texture = surface->resolvedDepthStencil(ctx.stream());
-        out.info = formatInfo(surface->hasStencil()                  ? GL_DEPTH24_STENCIL8
-                              : surface->pixelFormat().depth_bits == 16 ? GL_DEPTH_COMPONENT16
-                                                                        : GL_DEPTH_COMPONENT24);
+        out.info = formatInfo(surface->depthStencilFormat());
         out.width = surface->width();
         out.height = surface->height();
     }

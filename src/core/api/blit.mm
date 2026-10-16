@@ -38,14 +38,12 @@ const FormatInfo* attachedFormat(const Attachment& a) {
 }
 
 // The draw framebuffer's depth or stencil format (the default
-// framebuffer's: DEPTH24_STENCIL8 or DEPTH_COMPONENT16/24).
+// framebuffer's: Surface::depthStencilFormat).
 const FormatInfo* drawDepthStencilFormat(Context& ctx, bool stencil) {
     if (const Framebuffer* fb = ctx.state.drawFramebuffer.get()) return attachedFormat(stencil ? fb->stencil : fb->depth);
     Surface* s = ctx.drawSurface();
     if (!s) return nullptr;
-    return formatInfo(s->hasStencil() ? GL_DEPTH24_STENCIL8
-                      : s->pixelFormat().depth_bits == 16 ? GL_DEPTH_COMPONENT16
-                                                          : GL_DEPTH_COMPONENT24);
+    return formatInfo(s->depthStencilFormat());
 }
 
 struct BlitParams {

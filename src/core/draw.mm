@@ -156,9 +156,10 @@ bool DrawState::drawTarget(RenderTargetDesc& target, TargetFormats& formats, boo
         Surface* surface = ctx_.drawSurface();
         if (!surface) return false;
         surface->describe(target);
-        if (!ctx_.state.framebufferSRGB) target.color[0].texture = surface->linearColor();
+        const bool srgb = ctx_.state.framebufferSRGB && ctx_.windowSrgb();
+        if (!srgb) target.color[0].texture = surface->linearColor();
         formats.color[0] = target.color[0].texture.pixelFormat;
-        formats.srgb[0] = surface->srgbCapable() && ctx_.state.framebufferSRGB;
+        formats.srgb[0] = surface->srgbCapable() && srgb;
         formats.alphaIsOne[0] = surface->pixelFormat().alpha_bits == 0;
         if (target.depth.texture) formats.depth = target.depth.texture.pixelFormat;
         if (target.stencil.texture) formats.stencil = target.stencil.texture.pixelFormat;
@@ -264,7 +265,7 @@ id<MTLTexture> DrawState::readColorTexture(uint32_t& level, uint32_t& slice, GLe
         Surface* surface = ctx_.readSurface();
         if (!surface || ctx_.state.defaultReadBuffer == GL_NONE) return nil;
         surface->resolveForRead(ctx_.stream());
-        internalFormat = surface->colorFormat();
+        internalFormat = surface->colorFormat(ctx_.windowSrgb());
         width = surface->width();
         height = surface->height();
         return surface->resolvedColor();
@@ -300,16 +301,14 @@ bool DrawState::readTarget(GLenum buffer, RenderTargetDesc::Target& out, const F
             if (ctx_.state.defaultReadBuffer == GL_NONE) return false;
             surface->resolveForRead(ctx_.stream());
             out.texture = surface->resolvedColor();
-            if (!ctx_.state.framebufferSRGB && linearFormat(out.texture.pixelFormat))
+            if ((!ctx_.state.framebufferSRGB || !ctx_.windowSrgb()) && linearFormat(out.texture.pixelFormat))
                 out.texture = [out.texture newTextureViewWithPixelFormat:linearFormat(out.texture.pixelFormat)];
-            info = formatInfo(surface->colorFormat());
+            info = formatInfo(surface->colorFormat(ctx_.windowSrgb()));
             return true;
         }
         if ((buffer == GL_DEPTH && !surface->hasDepth()) || (buffer == GL_STENCIL && !surface->hasStencil())) return false;
         out.texture = surface->depthStencil();
-        info = formatInfo(surface->hasStencil() ? (surface->hasDepth() ? GL_DEPTH24_STENCIL8 : GL_STENCIL_INDEX8)
-                          : surface->pixelFormat().depth_bits == 16 ? GL_DEPTH_COMPONENT16
-                                                                    : GL_DEPTH_COMPONENT24);
+        info = formatInfo(surface->depthStencilFormat());
         return out.texture != nil;
     }
     const Attachment* a = nullptr;

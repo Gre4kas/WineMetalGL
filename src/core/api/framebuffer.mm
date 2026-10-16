@@ -522,11 +522,13 @@ void GetFramebufferAttachmentParameteriv(Context& ctx, GLenum target, GLenum att
             return;
         case GL_FRAMEBUFFER_ATTACHMENT_COMPONENT_TYPE:
             if (!present) return ctx.setError(GL_INVALID_OPERATION);
-            *params = color || depth ? GL_UNSIGNED_NORMALIZED : GL_INDEX;
+            *params = color ? GL_UNSIGNED_NORMALIZED
+                      : depth ? (surface->pixelFormat().depth_bits == 32 ? GL_FLOAT : GL_UNSIGNED_NORMALIZED)
+                              : GL_INDEX;
             return;
         case GL_FRAMEBUFFER_ATTACHMENT_COLOR_ENCODING:
             if (!present) return ctx.setError(GL_INVALID_OPERATION);
-            *params = color && surface->srgbCapable() ? GL_SRGB : GL_LINEAR;
+            *params = color && surface->srgbCapable() && ctx.windowSrgb() ? GL_SRGB : GL_LINEAR;
             return;
         default: return ctx.setError(present ? GL_INVALID_ENUM : GL_INVALID_OPERATION);
         }
@@ -884,7 +886,7 @@ void ReadPixels(Context& ctx, GLint x, GLint y, GLsizei width, GLsizei height, G
                 (depthStencil && !(surface->hasDepth() && surface->hasStencil())))
                 return ctx.setError(GL_INVALID_OPERATION);
             source = surface->resolvedDepthStencil(ctx.stream());
-            internalFormat = surface->hasStencil() ? GL_DEPTH24_STENCIL8 : surface->pixelFormat().depth_bits == 16 ? GL_DEPTH_COMPONENT16 : GL_DEPTH_COMPONENT24;
+            internalFormat = surface->depthStencilFormat();
             levelWidth = surface->width();
             levelHeight = surface->height();
         }

@@ -34,6 +34,7 @@
     X(glFramebufferTextureLayer) X(glFramebufferRenderbuffer) X(glCheckFramebufferStatus)                  \
     X(glGenRenderbuffers) X(glBindRenderbuffer) X(glRenderbufferStorage)                                   \
     X(glRenderbufferStorageMultisample) X(glBlitFramebuffer) X(glGenQueries) X(glDeleteQueries)            \
+    X(glGetFramebufferAttachmentParameteriv)                                                               \
     X(glBeginQuery) X(glEndQuery) X(glGetQueryObjectuiv) X(glGetQueryObjectui64v) X(glQueryCounter)        \
     X(glBeginConditionalRender) X(glEndConditionalRender) X(glFenceSync) X(glClientWaitSync)               \
     X(glGetSynciv) X(glDeleteSync) X(glIsSync) X(glVertexAttribP4ui) X(glGetVertexAttribfv)                \
@@ -90,8 +91,10 @@ namespace gpu {
 // `version` (10 * major + minor); versions above 4.6 go through the
 // development override (WINEMETALGL_DEV_MAX_VERSION).
 // `es`: an OpenGL ES context (WGL_CONTEXT_ES_PROFILE_BIT_EXT) of `version`.
+// The pbuffer has 8-bit stencil, `depthBits` depth and is sRGB-capable if `srgb`.
 struct Fixture {
-    explicit Fixture(int width = 64, int height = 64, bool core = true, int version = 33, bool es = false);
+    explicit Fixture(int width = 64, int height = 64, bool core = true, int version = 33, bool es = false,
+                     int depthBits = 24, bool srgb = false);
     ~Fixture();
     bool ok = false;
     wmgl_context* context = nullptr;

@@ -20,14 +20,14 @@ int failures = 0;
 namespace gpu {
 namespace {
 
-int pickFormat() {
+int pickFormat(int depthBits, bool srgb) {
     std::vector<wmgl_pixel_format> formats(256);
     unsigned onscreen = 0;
     const unsigned count = wmgl_get_pixel_formats(formats.data(), static_cast<unsigned>(formats.size()), &onscreen);
     for (unsigned i = 0; i < count && i < formats.size(); ++i) {
         const wmgl_pixel_format& f = formats[i];
-        if (f.draw_to_pbuffer && f.red_bits == 8 && f.alpha_bits == 8 && f.depth_bits >= 24 && f.stencil_bits == 8 &&
-            f.samples <= 1 && !f.srgb_capable && !f.float_components)
+        if (f.draw_to_pbuffer && f.red_bits == 8 && f.alpha_bits == 8 && f.depth_bits == depthBits && f.stencil_bits == 8 &&
+            f.samples <= 1 && !f.srgb_capable == !srgb && !f.float_components)
             return static_cast<int>(i + 1);
     }
     return 0;
@@ -45,10 +45,10 @@ bool loadFunctions() {
 
 }  // namespace
 
-Fixture::Fixture(int width, int height, bool core, int version, bool es) {
+Fixture::Fixture(int width, int height, bool core, int version, bool es, int depthBits, bool srgb) {
     static const bool initialized = wmgl_initialize(WMGL_DRIVER_ABI_VERSION) == 0 && loadFunctions();
     if (!initialized) return;
-    format = pickFormat();
+    format = pickFormat(depthBits, srgb);
     if (!format) return;
     surface = wmgl_surface_create_pbuffer(format, width, height);
     const int attribs[] = {0x2091 /* MAJOR */, version / 10, 0x2092 /* MINOR */, version % 10, 0x9126 /* PROFILE_MASK */,
