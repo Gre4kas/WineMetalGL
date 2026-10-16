@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <map>
 #include <regex>
+#include <set>
 #include <sstream>
 
 #include "core/shader/glsl_upgrade.h"
@@ -227,7 +228,67 @@ std::string renameGlIn(const std::string& text, GeometryShaderInfo& info) {
 // The varying name the capture pass records an input under: GL names, so
 // identifiers escaped for codegen (escapeVulkanKeywords) are restored.
 std::string captureName(const GeometryVar& v) {
-    return unescapeName(v.member.empty() ? v.name : v.blockName + "." + v.member);
+    return unescapeName((v.member.empty() ? v.name : v.blockName + "." + v.member) + v.path);
+}
+
+// A struct's fields: (type, name, array size).
+struct StructField { std::string type, name; int arraySize = 0; };
+using StructTable = std::map<std::string, std::vector<StructField>>;
+
+// The fields of a struct definition's body ("float a; vec3 b[2]; ...").
+std::vector<StructField> structFields(const std::string& body) {
+    std::vector<StructField> fields;
+    std::istringstream members(body);
+    std::string member;
+    while (std::getline(members, member, ';')) {
+        member = trim(member);
+        if (member.empty()) continue;
+        StructField f;
+        parseVariable(member, f.type, f.name, f.arraySize);
+        if (!f.name.empty()) fields.push_back(f);
+    }
+    return fields;
+}
+
+// Appends the leaves (non-struct fields) of a `type` value at `path`:
+// (type, path, array size). False when a field's type is not supported.
+bool structLeaves(const StructTable& structs, const std::string& type, const std::string& path,
+                  std::vector<StructField>& leaves, int depth = 0) {
+    const auto it = structs.find(type);
+    if (it == structs.end() || depth > 8) return false;
+    for (const StructField& f : it->second) {
+        if (structs.count(f.type)) {
+            for (int e = 0; e < std::max(1, f.arraySize); ++e)
+                if (!structLeaves(structs, f.type, path + "." + f.name + (f.arraySize ? "[" + std::to_string(e) + "]" : ""),
+                                  leaves, depth + 1))
+                    return false;
+        } else if (glslTypeEnum(f.type)) {
+            leaves.push_back({f.type, path + "." + f.name, f.arraySize});
+        } else {
+            return false;
+        }
+    }
+    return true;
+}
+
+// One GeometryVar per leaf of `base`, a variable or block member of struct
+// type `structType` (an array of `structArray` elements, or 0).
+bool addStructLeaves(const StructTable& structs, const GeometryVar& base, const std::string& structType, int structArray,
+                     std::vector<GeometryVar>& out) {
+    std::vector<StructField> leaves;
+    for (int e = 0; e < std::max(1, structArray); ++e)
+        if (!structLeaves(structs, structType, structArray ? "[" + std::to_string(e) + "]" : "", leaves)) return false;
+    for (const StructField& leaf : leaves) {
+        GeometryVar v = base;
+        v.glslType = leaf.type;
+        v.type = glslTypeEnum(leaf.type);
+        v.arraySize = leaf.arraySize;
+        v.path = leaf.name;
+        v.structType = structType;
+        v.structArray = structArray;
+        out.push_back(v);
+    }
+    return true;
 }
 
 }  // namespace
@@ -253,6 +314,7 @@ bool parseGeometryGlsl(const std::string& glsl, GeometryShaderInfo& info, std::s
     }
     // Global statements (blocks are gathered whole).
     bool inputTyped = false, outputTyped = false;  // GL_POINTS is 0
+    StructTable structs;
     std::vector<std::string> statements;
     std::string current;
     depth = 0;
@@ -312,6 +374,18 @@ bool parseGeometryGlsl(const std::string& glsl, GeometryShaderInfo& info, std::s
                 continue;
             }
             const GLenum glType = glslTypeEnum(type);
+            if (!glType && structs.count(type) && name.rfind("gl_", 0) != 0) {
+                // Struct-typed variables are stored field by field. Inputs are
+                // arrays of vertices: their own array size is the second dimension.
+                GeometryVar base{type, 0, name, "", "", 0, flat};
+                if (direction == "out") base.stream = layoutStream(flat);
+                if (!addStructLeaves(structs, base, type, direction == "out" ? arraySize : innerSize,
+                                     direction == "in" ? info.inputs : info.outputs)) {
+                    log += "error: geometry shader " + direction + "put '" + name + "' has an unsupported type\n";
+                    return false;
+                }
+                continue;
+            }
             if (!glType) {
                 log += "error: geometry shader " + direction + "put '" + name + "' has an unsupported type\n";
                 return false;
@@ -339,6 +413,10 @@ bool parseGeometryGlsl(const std::string& glsl, GeometryShaderInfo& info, std::s
         std::istringstream hw(headerNoLayout);
         std::string direction, blockName;
         hw >> direction >> blockName;
+        if (direction == "struct") {
+            structs[blockName] = structFields(body);
+            info.structs += flat + "\n";
+        }
         if (direction != "in" && direction != "out") {
             info.globals += flat + "\n";  // uniform / buffer blocks
             continue;
@@ -367,7 +445,7 @@ bool parseGeometryGlsl(const std::string& glsl, GeometryShaderInfo& info, std::s
             int arraySize = 0;
             parseVariable(member, type, name, arraySize);
             const GLenum glType = glslTypeEnum(type);
-            if (!glType) {
+            if (!glType && !structs.count(type)) {
                 log += "error: geometry shader block member '" + name + "' has an unsupported type\n";
                 return false;
             }
@@ -377,6 +455,15 @@ bool parseGeometryGlsl(const std::string& glsl, GeometryShaderInfo& info, std::s
                 v.declaration = flat;  // whole block, emitted once by the pass-through
                 v.stream = layoutStream(member) ? layoutStream(member) : layoutStream(header);
                 v.instanceSize = instance.empty() ? 0 : instanceSize;
+            }
+            if (!glType) {
+                // A struct-typed member, stored field by field.
+                v.arraySize = 0;
+                if (!addStructLeaves(structs, v, type, arraySize, direction == "in" ? info.inputs : info.outputs)) {
+                    log += "error: geometry shader block member '" + name + "' has an unsupported type\n";
+                    return false;
+                }
+                continue;
             }
             (direction == "in" ? info.inputs : info.outputs).push_back(v);
         }
@@ -469,14 +556,15 @@ GeometrySources geometrySources(const GeometryShaderInfo& info, const LinkResult
     if (info.writesViewportIndex) addVar("gl_ViewportIndex", "wmgl_out_viewport", GL_INT, "int", 0);
     for (const GeometryVar& v : info.outputs) {
         if (!v.instanceSize) {
-            addVar(v.member.empty() ? v.name : v.blockName + "." + v.member, v.member.empty() ? v.name : v.name + "." + v.member,
-                   v.type, v.glslType, v.arraySize);
+            addVar((v.member.empty() ? v.name : v.blockName + "." + v.member) + v.path,
+                   (v.member.empty() ? v.name : v.name + "." + v.member) + v.path, v.type, v.glslType, v.arraySize);
             continue;
         }
         // An array of blocks: each element's member ("Block[k].member").
         for (int k = 0; k < v.instanceSize; ++k) {
             const std::string element = "[" + std::to_string(k) + "].";
-            addVar(v.blockName + element + v.member, v.name + element + v.member, v.type, v.glslType, v.arraySize);
+            addVar(v.blockName + element + v.member + v.path, v.name + element + v.member + v.path, v.type, v.glslType,
+                   v.arraySize);
             out.fields.back().stream = v.stream;
         }
     }
@@ -485,41 +573,50 @@ GeometrySources geometrySources(const GeometryShaderInfo& info, const LinkResult
     out.outputStride = words;
     for (GeometryEmulation::Field& f : out.fields)
         for (const GeometryVar& v : info.outputs)
-            if (f.name == (v.member.empty() ? v.name : v.blockName + "." + v.member)) f.stream = v.stream;
+            if (f.name == (v.member.empty() ? v.name : v.blockName + "." + v.member) + v.path) f.stream = v.stream;
     const std::string stride = std::to_string(words), maxS = std::to_string(maxV), region = std::to_string(2 * maxV);
 
     // ---- compute kernel
     std::string& c = out.compute;
     c += "#version 450\nlayout(local_size_x = 64) in;\n";
     c += info.globals;
-    std::map<std::string, std::string> inputBlocks;  // instance -> struct name
+    // A block member's declaration in the struct standing in for its block
+    // (a struct-typed member's fields are declared once, as the struct).
+    auto memberDeclarations = [](const std::vector<GeometryVar>& vars, const std::string& instance) {
+        std::string d;
+        std::set<std::string> declared;
+        for (const GeometryVar& m : vars) {
+            if (m.name != instance || !declared.insert(m.member).second) continue;
+            if (!m.path.empty())
+                d += " " + m.structType + " " + m.member + (m.structArray ? "[" + std::to_string(m.structArray) + "]" : "") + ";";
+            else
+                d += " " + m.glslType + " " + m.member + (m.arraySize ? "[" + std::to_string(m.arraySize) + "]" : "") + ";";
+        }
+        return d;
+    };
+    std::set<std::string> declaredInputs;
     for (const GeometryVar& v : info.inputs) {
+        if (!declaredInputs.insert(v.name).second) continue;
         if (v.member.empty()) {
-            c += v.glslType + " " + v.name + "[" + std::to_string(n) + "]" + (v.arraySize ? "[" + std::to_string(v.arraySize) + "]" : "") +
-                 ";\n";
-        } else if (!inputBlocks.count(v.name)) {
-            std::string structName = "wmgl_in_" + v.blockName;
-            c += "struct " + structName + " {";
-            for (const GeometryVar& m : info.inputs)
-                if (m.name == v.name)
-                    c += " " + m.glslType + " " + m.member + (m.arraySize ? "[" + std::to_string(m.arraySize) + "]" : "") + ";";
-            c += " };\n" + structName + " " + v.name + "[" + std::to_string(n) + "];\n";
-            inputBlocks[v.name] = structName;
+            const std::string type = v.path.empty() ? v.glslType : v.structType;
+            const int array = v.path.empty() ? v.arraySize : v.structArray;
+            c += type + " " + v.name + "[" + std::to_string(n) + "]" + (array ? "[" + std::to_string(array) + "]" : "") + ";\n";
+        } else {
+            const std::string structName = "wmgl_in_" + v.blockName;
+            c += "struct " + structName + " {" + memberDeclarations(info.inputs, v.name) + " };\n" + structName + " " + v.name + "[" +
+                 std::to_string(n) + "];\n";
         }
     }
-    std::map<std::string, bool> outputBlocks;
+    std::set<std::string> declaredOutputs;
     for (const GeometryVar& v : info.outputs) {
-        const std::string array = v.arraySize ? "[" + std::to_string(v.arraySize) + "]" : "";
+        if (!declaredOutputs.insert(v.name).second) continue;
         if (v.member.empty()) {
-            c += v.glslType + " " + v.name + array + ";\n";
-        } else if (!outputBlocks[v.name]) {
-            c += "struct wmgl_out_" + v.blockName + " {";
-            for (const GeometryVar& m : info.outputs)
-                if (m.name == v.name)
-                    c += " " + m.glslType + " " + m.member + (m.arraySize ? "[" + std::to_string(m.arraySize) + "]" : "") + ";";
-            c += " };\nwmgl_out_" + v.blockName + " " + v.name + (v.instanceSize ? "[" + std::to_string(v.instanceSize) + "]" : "") +
-                 ";\n";
-            outputBlocks[v.name] = true;
+            const std::string type = v.path.empty() ? v.glslType : v.structType;
+            const int array = v.path.empty() ? v.arraySize : v.structArray;
+            c += type + " " + v.name + (array ? "[" + std::to_string(array) + "]" : "") + ";\n";
+        } else {
+            c += "struct wmgl_out_" + v.blockName + " {" + memberDeclarations(info.outputs, v.name) + " };\nwmgl_out_" +
+                 v.blockName + " " + v.name + (v.instanceSize ? "[" + std::to_string(v.instanceSize) + "]" : "") + ";\n";
         }
     }
     c += "vec4 wmgl_in_position[" + std::to_string(n) + "];\n";
@@ -586,7 +683,7 @@ GeometrySources geometrySources(const GeometryShaderInfo& info, const LinkResult
     for (const GeometryVar& v : info.inputs) {
         const TransformFeedbackVarying* p = captured(captureName(v));
         if (!p) continue;
-        const std::string target = v.member.empty() ? v.name + "[wmgl_j]" : v.name + "[wmgl_j]." + v.member;
+        const std::string target = (v.member.empty() ? v.name + "[wmgl_j]" : v.name + "[wmgl_j]." + v.member) + v.path;
         if (!v.arraySize) {
             c += "        " + target + " = " + loadValue(v.glslType, v.type, "wmgl_gs_in", "wmgl_b + " + std::to_string(p->offset) + "u") +
                  ";\n";
@@ -618,7 +715,7 @@ GeometrySources geometrySources(const GeometryShaderInfo& info, const LinkResult
     std::string& p = out.passthrough;
     p += "#version 450\n";
     if (info.writesLayer || info.writesViewportIndex) p += "#extension GL_ARB_shader_viewport_layer_array : require\n";
-    p += "buffer wmgl_GsVertices { uint wmgl_gs_v[]; };\n";
+    p += "buffer wmgl_GsVertices { uint wmgl_gs_v[]; };\n" + info.structs;
     std::map<std::string, bool> declared;
     for (const GeometryVar& v : info.outputs) {
         if (declared[v.declaration]) continue;

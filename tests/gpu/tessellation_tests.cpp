@@ -1174,3 +1174,57 @@ void main() { imageAtomicAdd(counts, 4, 1); o = vec4(0.0, 1.0, 0.0, 1.0); })";
     glDeleteBuffers(1, &buffer);
     glDeleteProgram(p);
 }
+
+TESS_TEST(gpu_tess_struct_block_members_and_arrays) {
+    // Struct-typed block members (arrays of structs too) and per-patch structs are
+    // stored field by field.
+    const char* vs = R"(#version 400 core
+struct S { float a; vec2 b; };
+out Blk { S s; } blk;
+out Arr { S e[2]; } arr;
+void main() {
+    float v = float(gl_VertexID);
+    blk.s.a = v; blk.s.b = vec2(10.0 * v, 0.0);
+    arr.e[0].a = 100.0 * v; arr.e[1].b = vec2(0.0, 1000.0 * v);
+    gl_Position = vec4(0.0);
+})";
+    const char* tcs = R"(#version 400 core
+struct S { float a; vec2 b; };
+struct P { S inner; float k; };
+layout(vertices = 3) out;
+in Blk { S s; } blk[];
+in Arr { S e[2]; } arr[];
+out Out { S s; } o[];
+patch out P ps;
+void main() {
+    o[gl_InvocationID].s.a = blk[gl_InvocationID].s.a + arr[gl_InvocationID].e[0].a;
+    o[gl_InvocationID].s.b = blk[gl_InvocationID].s.b + arr[gl_InvocationID].e[1].b;
+    if (gl_InvocationID == 0) { ps.inner.a = 0.5; ps.k = 0.25; }
+    gl_TessLevelInner[0] = 1.0;
+    gl_TessLevelOuter[0] = gl_TessLevelOuter[1] = gl_TessLevelOuter[2] = 1.0;
+})";
+    const char* tes = R"(#version 400 core
+struct S { float a; vec2 b; };
+struct P { S inner; float k; };
+layout(triangles, equal_spacing, point_mode) in;
+in Out { S s; } o[];
+patch in P ps;
+out float result;
+void main() {
+    int i = gl_TessCoord.x > 0.5 ? 0 : gl_TessCoord.y > 0.5 ? 1 : 2;
+    result = o[i].s.a + o[i].s.b.x + o[i].s.b.y + ps.inner.a + ps.k;
+    gl_Position = vec4(0.0);
+})";
+    GLuint p = link({vs, tcs, tes, nullptr, nullptr}, {"result"});
+    GLuint primitives = 0;
+    const std::vector<float> data = capture(p, GL_POINTS, 3, 3, 8, &primitives);
+    CHECK_EQ(primitives, 3u);
+    // Vertex v: a = v + 100v, b = (10v, 1000v) -> 1111v, plus 0.75 per patch.
+    std::multiset<int> got, want = {milli(0.75f), milli(1111.75f), milli(2222.75f)};
+    for (GLuint i = 0; i < std::min(primitives, 3u); ++i) got.insert(milli(data[i]));
+    CHECK(got == want);
+    if (got != want)
+        for (GLuint i = 0; i < std::min(primitives, 3u); ++i) std::fprintf(stderr, "  result %g\n", data[i]);
+    glDeleteProgram(p);
+    CHECK_GL();
+}

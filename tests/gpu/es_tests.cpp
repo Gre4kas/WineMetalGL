@@ -1060,3 +1060,32 @@ TEST(gpu_es_srgb_capable_window_blit) {
     glDeleteRenderbuffers(1, &color);
     glDeleteRenderbuffers(1, &depth);
 }
+
+// A separable OpenGL ES program may hold one tessellation stage; a program
+// that is not separable needs both.
+GPU_TEST_ES(gpu_es_separable_single_tessellation_stage, 32) {
+    const char* control =
+        "#version 320 es\n"
+        "layout(vertices = 3) out;\n"
+        "void main() {\n"
+        "    gl_out[gl_InvocationID].gl_Position = gl_in[gl_InvocationID].gl_Position;\n"
+        "    gl_TessLevelInner[0] = 1.0;\n"
+        "    gl_TessLevelOuter[0] = gl_TessLevelOuter[1] = gl_TessLevelOuter[2] = 1.0;\n"
+        "}\n";
+    GLuint separable = glCreateShaderProgramv(GL_TESS_CONTROL_SHADER, 1, &control);
+    GLint linked = 0;
+    glGetProgramiv(separable, GL_LINK_STATUS, &linked);
+    CHECK_EQ(linked, GL_TRUE);
+    GLuint shader = glCreateShader(GL_TESS_CONTROL_SHADER);
+    glShaderSource(shader, 1, &control, nullptr);
+    glCompileShader(shader);
+    GLuint whole = glCreateProgram();
+    glAttachShader(whole, shader);
+    glLinkProgram(whole);
+    glGetProgramiv(whole, GL_LINK_STATUS, &linked);
+    CHECK_EQ(linked, GL_FALSE);
+    CHECK_GL();
+    glDeleteProgram(separable);
+    glDeleteProgram(whole);
+    glDeleteShader(shader);
+}

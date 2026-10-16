@@ -1999,6 +1999,35 @@ GLenum glTypeOfAst(const glslang::TType& t) {
 std::vector<StageOutputVar> captureableOutputs(glslang::TIntermediate* intermediate) {
     std::vector<StageOutputVar> outputs;
     bool clipDistance = false;
+    // A struct's members, by "s.member" ("s[k].member" for an array of
+    // structs), recursively: `glName` names the struct, `expr` reads it.
+    std::function<void(const glslang::TType&, const std::string&, const std::string&)> structMembers =
+        [&](const glslang::TType& t, const std::string& glName, const std::string& expr) {
+            for (const glslang::TTypeLoc& member : *t.getStruct()) {
+                const glslang::TType& m = *member.type;
+                const std::string field = unescapeName(m.getFieldName().c_str());
+                const std::string n = glName + "." + field, e = expr + "." + m.getFieldName().c_str();
+                if (m.isStruct()) {
+                    if (m.isSizedArray())
+                        for (int k = 0; k < m.getOuterArraySize(); ++k) {
+                            glslang::TType element(m, 0);
+                            structMembers(element, n + "[" + std::to_string(k) + "]", e + "[" + std::to_string(k) + "]");
+                        }
+                    else
+                        structMembers(m, n, e);
+                    continue;
+                }
+                outputs.push_back({n, glTypeOfAst(m), m.isSizedArray() ? m.getOuterArraySize() : 0, e});
+            }
+        };
+    // A struct-typed variable or member (an array of structs element by element).
+    auto structVar = [&](const glslang::TType& t, const std::string& glName, const std::string& expr) {
+        if (!t.isSizedArray()) return structMembers(t, glName, expr);
+        for (int k = 0; k < t.getOuterArraySize(); ++k) {
+            glslang::TType element(t, 0);
+            structMembers(element, glName + "[" + std::to_string(k) + "]", expr + "[" + std::to_string(k) + "]");
+        }
+    };
     glslang::TIntermAggregate* root = intermediate && intermediate->getTreeRoot() ? intermediate->getTreeRoot()->getAsAggregate() : nullptr;
     if (root) {
         for (TIntermNode* node : root->getSequence()) {
@@ -2021,6 +2050,24 @@ std::vector<StageOutputVar> captureableOutputs(glslang::TIntermediate* intermedi
                         if (field == "gl_CullDistance" && m.isSizedArray())
                             outputs.push_back({"gl_CullDistance", GL_FLOAT, m.getOuterArraySize()});
                         if (blockName == "gl_PerVertex" || field.rfind("gl_", 0) == 0) continue;
+                        if (m.isStruct()) {
+                            // A struct-typed member: its members, "Block.member.field".
+                            if (type.isArray()) {
+                                if (anonymous || !type.isSizedArray()) continue;
+                                for (int k = 0; k < type.getOuterArraySize(); ++k) {
+                                    const std::string element = "[" + std::to_string(k) + "].";
+                                    structVar(m, blockName + element + field,
+                                              std::string(symbol->getName().c_str()) + element + m.getFieldName().c_str());
+                                }
+                                continue;
+                            }
+                            const std::string expression = anonymous ? m.getFieldName().c_str()
+                                                                     : std::string(symbol->getName().c_str()) + "." +
+                                                                           m.getFieldName().c_str();
+                            structVar(m, blockName + "." + field, expression);
+                            if (anonymous) structVar(m, field, expression);
+                            continue;
+                        }
                         if (type.isArray()) {
                             // An array of blocks: "Block[k].member" (GL 4.6 section 7.3.1.1).
                             if (anonymous || !type.isSizedArray()) continue;
@@ -2051,36 +2098,9 @@ std::vector<StageOutputVar> captureableOutputs(glslang::TIntermediate* intermedi
                 static const char* const kLegacy[] = {"wmgl_FrontColor", "wmgl_BackColor", "wmgl_FrontSecondaryColor",
                                                       "wmgl_BackSecondaryColor", "wmgl_TexCoord", "wmgl_FogFragCoord"};
                 const bool legacy = std::find(std::begin(kLegacy), std::end(kLegacy), name) != std::end(kLegacy);
-                // A struct (GLSL ES 3.00 allows them as outputs): its members, by
-                // "s.member" ("s[k].member" for an array of structs), recursively.
+                // A struct (GLSL ES 3.00 allows them as outputs): its members (structMembers).
                 if (type.isStruct()) {
-                    std::function<void(const glslang::TType&, const std::string&, const std::string&)> members =
-                        [&](const glslang::TType& t, const std::string& glName, const std::string& expr) {
-                            for (const glslang::TTypeLoc& member : *t.getStruct()) {
-                                const glslang::TType& m = *member.type;
-                                const std::string field = unescapeName(m.getFieldName().c_str());
-                                const std::string n = glName + "." + field, e = expr + "." + m.getFieldName().c_str();
-                                if (m.isStruct()) {
-                                    if (m.isSizedArray())
-                                        for (int k = 0; k < m.getOuterArraySize(); ++k) {
-                                            glslang::TType element(m, 0);
-                                            members(element, n + "[" + std::to_string(k) + "]", e + "[" + std::to_string(k) + "]");
-                                        }
-                                    else
-                                        members(m, n, e);
-                                    continue;
-                                }
-                                outputs.push_back({n, glTypeOfAst(m), m.isSizedArray() ? m.getOuterArraySize() : 0, e});
-                            }
-                        };
-                    if (type.isSizedArray()) {
-                        for (int k = 0; k < type.getOuterArraySize(); ++k) {
-                            glslang::TType element(type, 0);
-                            members(element, name + "[" + std::to_string(k) + "]", codegenName + "[" + std::to_string(k) + "]");
-                        }
-                    } else {
-                        members(type, name, codegenName);
-                    }
+                    structVar(type, name, codegenName);
                     continue;
                 }
                 // The capture code reads the codegen name (escaped keywords keep their prefix there).

@@ -711,8 +711,9 @@ void LinkProgram(Context& ctx, GLuint program) {
             log += "error: an OpenGL ES program needs a vertex and a fragment shader\n";
             ok = false;
         }
-        // ... and its tessellation stages come together (section 7.3).
-        if (control != evaluation) {
+        // ... and its tessellation stages come together, unless it is
+        // separable (section 7.3).
+        if (!input.separable && control != evaluation) {
             log += "error: an OpenGL ES program needs tessellation control and evaluation shaders together\n";
             ok = false;
         }

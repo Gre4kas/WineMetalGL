@@ -60,7 +60,13 @@ struct TessVar {
     std::string name;         // variable, or block instance name
     std::string member;       // block member, empty for plain variables
     std::string blockName;    // interface block name for block members
-    std::string structType;   // struct-typed variables: the struct (member = its field)
+    // A field of a struct-typed variable or block member, which is stored
+    // field by field: the declared struct, its declared array size (0 = not
+    // an array) and the field's path below the variable or member (".a",
+    // "[1].b.c").
+    std::string structType;
+    int structArray = 0;
+    std::string path;
     int arraySize = 0;        // 0 = not an array
     bool patch = false;       // per-patch (patch in/out)
     int location = -1;        // layout(location) of the variable (plain variables)

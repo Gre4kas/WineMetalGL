@@ -44,6 +44,12 @@ struct GeometryVar {
     std::string declaration;  // outputs: the original declaration line(s)
     int stream = 0;           // outputs: layout(stream = N) (GL 4.0 vertex streams)
     int instanceSize = 0;     // outputs: elements of an array of blocks (0 = not an array)
+    // A field of a struct-typed variable or block member, which is stored
+    // field by field: its path below the variable or member (".a", "[1].b.c"),
+    // the declared struct type and the declared array size (0 = not an array).
+    std::string path;
+    std::string structType;
+    int structArray = 0;
 };
 
 struct GeometryShaderInfo {
@@ -63,6 +69,7 @@ struct GeometryShaderInfo {
     // their stream; only stream 0 is rasterized.
     bool streams = false;
     std::string globals;      // other global declarations (uniforms, constants, structs)
+    std::string structs;      // struct definitions (also in globals), for the pass-through vertex shader
     std::string functions;    // function definitions, built-ins renamed
 };
 
