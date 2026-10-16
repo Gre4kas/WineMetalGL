@@ -1,5 +1,5 @@
 # mustpass gles3-khr-main.txt config 1: --deqp-screen-rotation=unspecified --deqp-surface-width=64 --deqp-surface-height=64 --deqp-base-seed=1 --deqp-watchdog=disable
-# commit 02d9b86, path winemetalgl, 6498 cases, 61 s
+# commit c56a900, path winemetalgl, 6498 cases, 49 s
 # cts dEQP Core 1942832354c96f0de379f491519734256fbd4f9d
 # totals NotSupported=19 Pass=6479
 KHR-GLES3.api.coverage Pass

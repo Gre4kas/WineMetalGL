@@ -114,30 +114,30 @@ Run times from the committed results:
 | `KHR-GL42` | 12,305 | 10.0 min to 11.3 min | 4.3 min to 4.5 min | 60.6 min |
 | `KHR-GL43` | 16,085 | 9.6 min to 11.6 min | 4.7 min to 5.2 min | 62.5 min |
 | `KHR-GL46` | 19,714 | 7.2 min to 7.4 min | 4.7 min | 19.2 min |
-| `gles2-khr-main` | 473 | 8 s | - | 8 s |
+| `gles2-khr-main` | 473 | 7 s | - | 7 s |
 | `gles2-khr-noctx-main` | 1 | 3 s | - | 3 s |
-| `gles2-main` | 17,165 | 3.0 min | - | 3.0 min |
-| `gles3-khr-main` | 6,498 | 61 s | - | 61 s |
-| `gles3-main` | 44,768 | 13.5 min | - | 13.5 min |
-| `gles3-rotate-portrait` | 983 | 10 s | - | 10 s |
-| `gles3-rotate-landscape` | 983 | 11 s | - | 11 s |
-| `gles3-rotate-reverse-portrait` | 983 | 8 s | - | 8 s |
-| `gles3-rotate-reverse-landscape` | 983 | 7 s | - | 7 s |
-| `gles3-multisample` | 4,635 | 38 s | - | 38 s |
-| `gles3-565-no-depth-no-stencil` | 3,340 | 28 s | - | 28 s |
-| `gles31-khr-main` | 4,101 | 64 s | - | 64 s |
-| `gles31-khr-single` | 6,053 | 16 s | - | 16 s |
-| `gles31-main` | 37,802 | 14.1 min | - | 14.1 min |
-| `gles31-rotate-portrait` | 132 | 9 s | - | 9 s |
-| `gles31-rotate-landscape` | 132 | 9 s | - | 9 s |
-| `gles31-rotate-reverse-portrait` | 132 | 9 s | - | 9 s |
-| `gles31-rotate-reverse-landscape` | 132 | 9 s | - | 9 s |
-| `gles31-multisample` | 239 | 10 s | - | 10 s |
-| `gles31-565-no-depth-no-stencil` | 23 | 7 s | - | 7 s |
-| `gles32-khr-main` | 1,405 | 34 s | - | 34 s |
+| `gles2-main` | 17,165 | 3.5 min | - | 3.5 min |
+| `gles3-khr-main` | 6,498 | 49 s | - | 49 s |
+| `gles3-main` | 44,768 | 13.1 min | - | 13.1 min |
+| `gles3-rotate-portrait` | 983 | 11 s | - | 11 s |
+| `gles3-rotate-landscape` | 983 | 10 s | - | 10 s |
+| `gles3-rotate-reverse-portrait` | 983 | 10 s | - | 10 s |
+| `gles3-rotate-reverse-landscape` | 983 | 10 s | - | 10 s |
+| `gles3-multisample` | 4,635 | 33 s | - | 33 s |
+| `gles3-565-no-depth-no-stencil` | 3,340 | 35 s | - | 35 s |
+| `gles31-khr-main` | 4,101 | 57 s | - | 57 s |
+| `gles31-khr-single` | 6,053 | 13 s | - | 13 s |
+| `gles31-main` | 37,802 | 14.4 min | - | 14.4 min |
+| `gles31-rotate-portrait` | 132 | 7 s | - | 7 s |
+| `gles31-rotate-landscape` | 132 | 7 s | - | 7 s |
+| `gles31-rotate-reverse-portrait` | 132 | 7 s | - | 7 s |
+| `gles31-rotate-reverse-landscape` | 132 | 7 s | - | 7 s |
+| `gles31-multisample` | 239 | 9 s | - | 9 s |
+| `gles31-565-no-depth-no-stencil` | 23 | 6 s | - | 6 s |
+| `gles32-khr-main` | 1,405 | 28 s | - | 28 s |
 | `gles32-khr-noctx-main` | 13 | 6 s | - | 6 s |
-| `gles32-khr-single` | 6,053 | 17 s | - | 17 s |
-| `gles32-khr-glesext` | 1,097 | 11 s | - | 11 s |
+| `gles32-khr-single` | 6,053 | 14 s | - | 14 s |
+| `gles32-khr-glesext` | 1,097 | 10 s | - | 10 s |
 <!-- END GENERATED: cts-times -->
 
 ## Direct3D through wined3d

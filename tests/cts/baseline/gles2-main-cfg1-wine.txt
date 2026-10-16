@@ -1,5 +1,5 @@
 # mustpass gles2-main.txt config 1: --deqp-gl-config-name=rgba8888d24s8ms0 --deqp-screen-rotation=unspecified --deqp-surface-width=256 --deqp-surface-height=256 --deqp-watchdog=disable
-# commit 02d9b86, path winemetalgl, 17165 cases, 181 s
+# commit c56a900, path winemetalgl, 17165 cases, 208 s
 # cts dEQP Core 1942832354c96f0de379f491519734256fbd4f9d
 # totals CompatibilityWarning=3 NotSupported=90 Pass=17065 QualityWarning=7
 dEQP-GLES2.functional.attribute_location.bind.float Pass

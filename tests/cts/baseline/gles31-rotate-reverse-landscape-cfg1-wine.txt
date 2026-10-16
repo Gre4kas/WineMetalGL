@@ -1,5 +1,5 @@
 # mustpass gles31-rotate-reverse-landscape.txt config 1: --deqp-gl-config-name=rgba8888d24s8ms0 --deqp-screen-rotation=270 --deqp-surface-width=256 --deqp-surface-height=256 --deqp-watchdog=disable
-# commit 02d9b86, path winemetalgl, 132 cases, 9 s
+# commit 71b7989, path winemetalgl, 132 cases, 7 s
 # cts dEQP Core 1942832354c96f0de379f491519734256fbd4f9d
 # totals NotSupported=18 Pass=114
 dEQP-GLES31.functional.primitive_bounding_box.blit_fbo.blit_default_to_fbo Pass

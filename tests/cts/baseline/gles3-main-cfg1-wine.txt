@@ -1,7 +1,7 @@
 # mustpass gles3-main.txt config 1: --deqp-gl-config-name=rgba8888d24s8ms0 --deqp-screen-rotation=unspecified --deqp-surface-width=256 --deqp-surface-height=256 --deqp-watchdog=disable
-# commit 02d9b86, path winemetalgl, 44768 cases, 810 s
+# commit c56a900, path winemetalgl, 44768 cases, 783 s
 # cts dEQP Core 1942832354c96f0de379f491519734256fbd4f9d
-# totals NotSupported=433 Pass=44315 QualityWarning=20
+# totals CompatibilityWarning=1 NotSupported=433 Pass=44314 QualityWarning=20
 dEQP-GLES3.functional.attribute_location.bind.float Pass
 dEQP-GLES3.functional.attribute_location.bind.int Pass
 dEQP-GLES3.functional.attribute_location.bind.ivec2 Pass
@@ -4213,7 +4213,7 @@ dEQP-GLES3.functional.fence_sync.client_wait_sync_timeout_smalldraw Pass
 dEQP-GLES3.functional.fence_sync.wait_sync_largedraw Pass
 dEQP-GLES3.functional.fence_sync.wait_sync_smalldraw Pass
 dEQP-GLES3.functional.flush_finish.finish Pass
-dEQP-GLES3.functional.flush_finish.finish_wait Pass
+dEQP-GLES3.functional.flush_finish.finish_wait CompatibilityWarning
 dEQP-GLES3.functional.flush_finish.flush Pass
 dEQP-GLES3.functional.flush_finish.flush_wait Pass
 dEQP-GLES3.functional.flush_finish.wait Pass

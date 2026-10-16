@@ -1,5 +1,5 @@
 # mustpass gles32-khr-noctx-main.txt config 1: --deqp-screen-rotation=unspecified --deqp-surface-width=64 --deqp-surface-height=64 --deqp-base-seed=1 --deqp-watchdog=disable
-# commit 02d9b86, path winemetalgl, 13 cases, 6 s
+# commit 71b7989, path winemetalgl, 13 cases, 6 s
 # cts dEQP Core 1942832354c96f0de379f491519734256fbd4f9d
 # totals Fail=1 Pass=12
 KHR-NoContext.es32.context_flags.all_flags_set_case Pass

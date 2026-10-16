@@ -1,5 +1,5 @@
 # mustpass gles3-565-no-depth-no-stencil.txt config 1: --deqp-gl-config-name=rgb565d0s0ms0 --deqp-screen-rotation=unspecified --deqp-surface-width=256 --deqp-surface-height=256 --deqp-watchdog=disable
-# commit 02d9b86, path winemetalgl, 3340 cases, 28 s
+# commit c56a900, path winemetalgl, 3340 cases, 35 s
 # cts dEQP Core 1942832354c96f0de379f491519734256fbd4f9d
 # totals NotSupported=8 Pass=3331 QualityWarning=1
 dEQP-GLES3.functional.color_clear.complex_rgb Pass

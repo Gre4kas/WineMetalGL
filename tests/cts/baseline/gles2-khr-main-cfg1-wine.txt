@@ -1,5 +1,5 @@
 # mustpass gles2-khr-main.txt config 1: --deqp-screen-rotation=unspecified --deqp-surface-width=64 --deqp-surface-height=64 --deqp-base-seed=1 --deqp-watchdog=disable
-# commit 02d9b86, path winemetalgl, 473 cases, 8 s
+# commit c56a900, path winemetalgl, 473 cases, 7 s
 # cts dEQP Core 1942832354c96f0de379f491519734256fbd4f9d
 # totals NotSupported=33 Pass=440
 KHR-GLES2.core.internalformat.copy_tex_image.alpha Pass

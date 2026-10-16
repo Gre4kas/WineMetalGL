@@ -22,14 +22,14 @@ Khronos CTS mustpass lists (`glNN-main.txt`) in configurations 1 to 4 of `mustpa
 |---|---:|---|---:|
 | 2.0 | 100% | GLSL ES 1.00, framebuffer objects, the ES 2.0 extensions (float and depth textures, ...) | 0.60% |
 | 3.0 | 100% | GLSL ES 3.00, transform feedback, instancing, integer and sRGB formats, multisample renderbuffers | 0.83% |
-| 3.1 | 99.98% | Compute shaders, images, storage buffers, indirect draws, separate programs, multisample textures | 3.99% |
-| 3.2 | 99.93% | Geometry and tessellation shaders, advanced blending, ASTC, texture buffers, debug output | 42.50% |
+| 3.1 | 99.98% | Compute shaders, images, storage buffers, indirect draws, separate programs, multisample textures | 1.24% |
+| 3.2 | 99.95% | Geometry and tessellation shaders, advanced blending, ASTC, texture buffers, debug output | 0.64% |
 
 **Conformance %**: passing cases over applicable cases (cases that are not NotSupported) of the version's Khronos CTS mustpass list (`KHR-GL30` to `KHR-GL43`, `KHR-GL46`), in the worst of its runs: 8 for `KHR-GL30` to `KHR-GL43` (configurations 1 to 4 of `mustpass.xml`, each under Wine and natively), 3 for `KHR-GL46` (configuration 1 natively, configurations 1 and 3 under Wine), at commit 14eaa75, 49c5099, 851476e, f4ecccd. OpenGL 4.4 and 4.5 have no list of their own: `KHR-GL46` runs their tests.
 
 The cases that were not Pass in `KHR-GL33`, `KHR-GL40`, `KHR-GL41`, `KHR-GL42`, `KHR-GL43` were run again at commit 49c5099, in the same configurations under Wine and natively (`tests/cts/recheck/`); those results replace the baselines' for those cases.
 
-**GLES**: passing cases over applicable cases of all of the version's OpenGL ES mustpass lists together, Khronos's (`KHR-GLES2` to `KHR-GLES32`, `KHR-GLESEXT`, `KHR-NoContext`; not `KHR-Single`, which tests only subgroup operations) and dEQP's (`dEQP-GLES2` to `dEQP-GLES31`, with their rotation, multisample and RGB565 lists), in configuration 1 under Wine at commit 02d9b86; Unsupported % likewise. `cts-runner --type=es3` runs the OpenGL ES 2.0 and 3.0 lists in every configuration it selects ([OpenGL ES](#opengl-es)).
+**GLES**: passing cases over applicable cases of all of the version's OpenGL ES mustpass lists together, Khronos's (`KHR-GLES2` to `KHR-GLES32`, `KHR-GLESEXT`, `KHR-NoContext`; not `KHR-Single`, which tests only subgroup operations) and dEQP's (`dEQP-GLES2` to `dEQP-GLES31`, with their rotation, multisample and RGB565 lists), in configuration 1 under Wine at commit 71b7989, c56a900; Unsupported % likewise. `cts-runner --type=es3` runs the OpenGL ES 2.0 and 3.0 lists in every configuration it selects ([OpenGL ES](#opengl-es)).
 
 **Unsupported %**: cases the CTS reports NotSupported because WineMetalGL does not offer what they test (an extension it does not advertise, or a limit above the minimum), over the cases any implementation can run: [Unsupported](unsupported.md#conformance-notes).
 
@@ -229,7 +229,9 @@ OpenGL 3.x features are core in every context. The OpenGL 4.x features are the e
 | 3.2 | Tessellation shaders | Yes | - |
 | 3.2 | Advanced blend equations | Yes | - |
 | 3.2 | ASTC LDR compressed textures | Yes | - |
-| 3.2 | ASTC HDR and 3D compressed textures | No | Not advertised; LDR ASTC only |
+| 3.2 | ASTC 3D textures (`GL_KHR_texture_compression_astc_sliced_3d`) | Yes | - |
+| 3.2 | ASTC HDR compressed textures | No | Not advertised; LDR ASTC only |
+| 3.2 | Fragment shading rate (`GL_EXT_fragment_shading_rate`, `_primitive`, `_attachment`) | Partly | The 1x1 rate only: Metal has no per-draw, per-primitive or attachment shading rates |
 | 3.2 | Texture buffers | Yes | - |
 | 3.2 | Cube map arrays | Yes | - |
 | 3.2 | Debug output | Yes | - |
@@ -425,30 +427,30 @@ OpenGL ES contexts (`WGL_EXT_create_context_es2_profile`; OpenGL ES 3.2) run the
 
 | List | Runs | OpenGL ES | Pass | Fail | NotSupported | InternalError | Crash | Timeout | Missing | Other | Cases | Applicable passing | Time | Commit | File |
 |---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|
-| `gles2-khr-main` | KHR-GLES2 | 2.0 | 440 | 0 | 33 | 0 | 0 | 0 | 0 | 0 | 473 | 100% | 8 s | 02d9b86 | `tests/cts/baseline/gles2-khr-main-cfg1-wine.txt` |
-| `gles2-khr-noctx-main` | KHR-NoContext.es2 | 2.0 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 100% | 3 s | 02d9b86 | `tests/cts/baseline/gles2-khr-noctx-main-cfg1-wine.txt` |
-| `gles2-main` | dEQP-GLES2 | 2.0 | 17075 | 0 | 90 | 0 | 0 | 0 | 0 | 0 | 17165 | 100% | 3.0 min | 02d9b86 | `tests/cts/baseline/gles2-main-cfg1-wine.txt` |
-| `gles3-khr-main` | KHR-GLES3 | 3.0 | 6479 | 0 | 19 | 0 | 0 | 0 | 0 | 0 | 6498 | 100% | 61 s | 02d9b86 | `tests/cts/baseline/gles3-khr-main-cfg1-wine.txt` |
-| `gles3-main` | dEQP-GLES3 | 3.0 | 44335 | 0 | 433 | 0 | 0 | 0 | 0 | 0 | 44768 | 100% | 13.5 min | 02d9b86 | `tests/cts/baseline/gles3-main-cfg1-wine.txt` |
-| `gles3-rotate-portrait` | dEQP-GLES3, screen rotation 0 | 3.0 | 963 | 0 | 20 | 0 | 0 | 0 | 0 | 0 | 983 | 100% | 10 s | 02d9b86 | `tests/cts/baseline/gles3-rotate-portrait-cfg1-wine.txt` |
-| `gles3-rotate-landscape` | dEQP-GLES3, screen rotation 90 | 3.0 | 963 | 0 | 20 | 0 | 0 | 0 | 0 | 0 | 983 | 100% | 11 s | 02d9b86 | `tests/cts/baseline/gles3-rotate-landscape-cfg1-wine.txt` |
-| `gles3-rotate-reverse-portrait` | dEQP-GLES3, screen rotation 180 | 3.0 | 963 | 0 | 20 | 0 | 0 | 0 | 0 | 0 | 983 | 100% | 8 s | 02d9b86 | `tests/cts/baseline/gles3-rotate-reverse-portrait-cfg1-wine.txt` |
-| `gles3-rotate-reverse-landscape` | dEQP-GLES3, screen rotation 270 | 3.0 | 963 | 0 | 20 | 0 | 0 | 0 | 0 | 0 | 983 | 100% | 7 s | 02d9b86 | `tests/cts/baseline/gles3-rotate-reverse-landscape-cfg1-wine.txt` |
-| `gles3-multisample` | dEQP-GLES3, 4 samples | 3.0 | 4615 | 0 | 20 | 0 | 0 | 0 | 0 | 0 | 4635 | 100% | 38 s | 02d9b86 | `tests/cts/baseline/gles3-multisample-cfg1-wine.txt` |
-| `gles3-565-no-depth-no-stencil` | dEQP-GLES3, RGB565 without depth and stencil | 3.0 | 3332 | 0 | 8 | 0 | 0 | 0 | 0 | 0 | 3340 | 100% | 28 s | 02d9b86 | `tests/cts/baseline/gles3-565-no-depth-no-stencil-cfg1-wine.txt` |
-| `gles31-khr-main` | KHR-GLES31 | 3.1 | 4052 | 1 | 48 | 0 | 0 | 0 | 0 | 0 | 4101 | 99.97% | 64 s | 02d9b86 | `tests/cts/baseline/gles31-khr-main-cfg1-wine.txt` |
-| `gles31-khr-single` | KHR-Single-GLES31 | 3.1 | 0 | 0 | 6053 | 0 | 0 | 0 | 0 | 0 | 6053 | 100% | 16 s | 02d9b86 | `tests/cts/baseline/gles31-khr-single-cfg1-wine.txt` |
-| `gles31-main` | dEQP-GLES31 | 3.1 | 36224 | 6 | 1572 | 0 | 0 | 0 | 0 | 0 | 37802 | 99.98% | 14.1 min | 02d9b86 | `tests/cts/baseline/gles31-main-cfg1-wine.txt` |
-| `gles31-rotate-portrait` | dEQP-GLES31, screen rotation 0 | 3.1 | 114 | 0 | 18 | 0 | 0 | 0 | 0 | 0 | 132 | 100% | 9 s | 02d9b86 | `tests/cts/baseline/gles31-rotate-portrait-cfg1-wine.txt` |
-| `gles31-rotate-landscape` | dEQP-GLES31, screen rotation 90 | 3.1 | 114 | 0 | 18 | 0 | 0 | 0 | 0 | 0 | 132 | 100% | 9 s | 02d9b86 | `tests/cts/baseline/gles31-rotate-landscape-cfg1-wine.txt` |
-| `gles31-rotate-reverse-portrait` | dEQP-GLES31, screen rotation 180 | 3.1 | 114 | 0 | 18 | 0 | 0 | 0 | 0 | 0 | 132 | 100% | 9 s | 02d9b86 | `tests/cts/baseline/gles31-rotate-reverse-portrait-cfg1-wine.txt` |
-| `gles31-rotate-reverse-landscape` | dEQP-GLES31, screen rotation 270 | 3.1 | 114 | 0 | 18 | 0 | 0 | 0 | 0 | 0 | 132 | 100% | 9 s | 02d9b86 | `tests/cts/baseline/gles31-rotate-reverse-landscape-cfg1-wine.txt` |
-| `gles31-multisample` | dEQP-GLES31, 4 samples | 3.1 | 216 | 0 | 23 | 0 | 0 | 0 | 0 | 0 | 239 | 100% | 10 s | 02d9b86 | `tests/cts/baseline/gles31-multisample-cfg1-wine.txt` |
-| `gles31-565-no-depth-no-stencil` | dEQP-GLES31, RGB565 without depth and stencil | 3.1 | 21 | 0 | 2 | 0 | 0 | 0 | 0 | 0 | 23 | 100% | 7 s | 02d9b86 | `tests/cts/baseline/gles31-565-no-depth-no-stencil-cfg1-wine.txt` |
-| `gles32-khr-main` | KHR-GLES32 | 3.2 | 1403 | 0 | 2 | 0 | 0 | 0 | 0 | 0 | 1405 | 100% | 34 s | 02d9b86 | `tests/cts/baseline/gles32-khr-main-cfg1-wine.txt` |
-| `gles32-khr-noctx-main` | KHR-NoContext.es32 | 3.2 | 12 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 13 | 92.30% | 6 s | 02d9b86 | `tests/cts/baseline/gles32-khr-noctx-main-cfg1-wine.txt` |
-| `gles32-khr-single` | KHR-Single-GLES32 | 3.2 | 0 | 0 | 6053 | 0 | 0 | 0 | 0 | 0 | 6053 | 100% | 17 s | 02d9b86 | `tests/cts/baseline/gles32-khr-single-cfg1-wine.txt` |
-| `gles32-khr-glesext` | KHR-GLESEXT | 3.2 | 29 | 0 | 1068 | 0 | 0 | 0 | 0 | 0 | 1097 | 100% | 11 s | 02d9b86 | `tests/cts/baseline/gles32-khr-glesext-cfg1-wine.txt` |
+| `gles2-khr-main` | KHR-GLES2 | 2.0 | 440 | 0 | 33 | 0 | 0 | 0 | 0 | 0 | 473 | 100% | 7 s | c56a900 | `tests/cts/baseline/gles2-khr-main-cfg1-wine.txt` |
+| `gles2-khr-noctx-main` | KHR-NoContext.es2 | 2.0 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 100% | 3 s | c56a900 | `tests/cts/baseline/gles2-khr-noctx-main-cfg1-wine.txt` |
+| `gles2-main` | dEQP-GLES2 | 2.0 | 17075 | 0 | 90 | 0 | 0 | 0 | 0 | 0 | 17165 | 100% | 3.5 min | c56a900 | `tests/cts/baseline/gles2-main-cfg1-wine.txt` |
+| `gles3-khr-main` | KHR-GLES3 | 3.0 | 6479 | 0 | 19 | 0 | 0 | 0 | 0 | 0 | 6498 | 100% | 49 s | c56a900 | `tests/cts/baseline/gles3-khr-main-cfg1-wine.txt` |
+| `gles3-main` | dEQP-GLES3 | 3.0 | 44335 | 0 | 433 | 0 | 0 | 0 | 0 | 0 | 44768 | 100% | 13.1 min | c56a900 | `tests/cts/baseline/gles3-main-cfg1-wine.txt` |
+| `gles3-rotate-portrait` | dEQP-GLES3, screen rotation 0 | 3.0 | 963 | 0 | 20 | 0 | 0 | 0 | 0 | 0 | 983 | 100% | 11 s | c56a900 | `tests/cts/baseline/gles3-rotate-portrait-cfg1-wine.txt` |
+| `gles3-rotate-landscape` | dEQP-GLES3, screen rotation 90 | 3.0 | 963 | 0 | 20 | 0 | 0 | 0 | 0 | 0 | 983 | 100% | 10 s | c56a900 | `tests/cts/baseline/gles3-rotate-landscape-cfg1-wine.txt` |
+| `gles3-rotate-reverse-portrait` | dEQP-GLES3, screen rotation 180 | 3.0 | 963 | 0 | 20 | 0 | 0 | 0 | 0 | 0 | 983 | 100% | 10 s | c56a900 | `tests/cts/baseline/gles3-rotate-reverse-portrait-cfg1-wine.txt` |
+| `gles3-rotate-reverse-landscape` | dEQP-GLES3, screen rotation 270 | 3.0 | 963 | 0 | 20 | 0 | 0 | 0 | 0 | 0 | 983 | 100% | 10 s | c56a900 | `tests/cts/baseline/gles3-rotate-reverse-landscape-cfg1-wine.txt` |
+| `gles3-multisample` | dEQP-GLES3, 4 samples | 3.0 | 4615 | 0 | 20 | 0 | 0 | 0 | 0 | 0 | 4635 | 100% | 33 s | c56a900 | `tests/cts/baseline/gles3-multisample-cfg1-wine.txt` |
+| `gles3-565-no-depth-no-stencil` | dEQP-GLES3, RGB565 without depth and stencil | 3.0 | 3332 | 0 | 8 | 0 | 0 | 0 | 0 | 0 | 3340 | 100% | 35 s | c56a900 | `tests/cts/baseline/gles3-565-no-depth-no-stencil-cfg1-wine.txt` |
+| `gles31-khr-main` | KHR-GLES31 | 3.1 | 4052 | 1 | 48 | 0 | 0 | 0 | 0 | 0 | 4101 | 99.97% | 57 s | 71b7989 | `tests/cts/baseline/gles31-khr-main-cfg1-wine.txt` |
+| `gles31-khr-single` | KHR-Single-GLES31 | 3.1 | 0 | 0 | 6053 | 0 | 0 | 0 | 0 | 0 | 6053 | 100% | 13 s | 71b7989 | `tests/cts/baseline/gles31-khr-single-cfg1-wine.txt` |
+| `gles31-main` | dEQP-GLES31 | 3.1 | 37400 | 6 | 396 | 0 | 0 | 0 | 0 | 0 | 37802 | 99.98% | 14.4 min | 71b7989 | `tests/cts/baseline/gles31-main-cfg1-wine.txt` |
+| `gles31-rotate-portrait` | dEQP-GLES31, screen rotation 0 | 3.1 | 114 | 0 | 18 | 0 | 0 | 0 | 0 | 0 | 132 | 100% | 7 s | 71b7989 | `tests/cts/baseline/gles31-rotate-portrait-cfg1-wine.txt` |
+| `gles31-rotate-landscape` | dEQP-GLES31, screen rotation 90 | 3.1 | 114 | 0 | 18 | 0 | 0 | 0 | 0 | 0 | 132 | 100% | 7 s | 71b7989 | `tests/cts/baseline/gles31-rotate-landscape-cfg1-wine.txt` |
+| `gles31-rotate-reverse-portrait` | dEQP-GLES31, screen rotation 180 | 3.1 | 114 | 0 | 18 | 0 | 0 | 0 | 0 | 0 | 132 | 100% | 7 s | 71b7989 | `tests/cts/baseline/gles31-rotate-reverse-portrait-cfg1-wine.txt` |
+| `gles31-rotate-reverse-landscape` | dEQP-GLES31, screen rotation 270 | 3.1 | 114 | 0 | 18 | 0 | 0 | 0 | 0 | 0 | 132 | 100% | 7 s | 71b7989 | `tests/cts/baseline/gles31-rotate-reverse-landscape-cfg1-wine.txt` |
+| `gles31-multisample` | dEQP-GLES31, 4 samples | 3.1 | 216 | 0 | 23 | 0 | 0 | 0 | 0 | 0 | 239 | 100% | 9 s | 71b7989 | `tests/cts/baseline/gles31-multisample-cfg1-wine.txt` |
+| `gles31-565-no-depth-no-stencil` | dEQP-GLES31, RGB565 without depth and stencil | 3.1 | 21 | 0 | 2 | 0 | 0 | 0 | 0 | 0 | 23 | 100% | 6 s | 71b7989 | `tests/cts/baseline/gles31-565-no-depth-no-stencil-cfg1-wine.txt` |
+| `gles32-khr-main` | KHR-GLES32 | 3.2 | 1403 | 0 | 2 | 0 | 0 | 0 | 0 | 0 | 1405 | 100% | 28 s | 71b7989 | `tests/cts/baseline/gles32-khr-main-cfg1-wine.txt` |
+| `gles32-khr-noctx-main` | KHR-NoContext.es32 | 3.2 | 12 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 13 | 92.30% | 6 s | 71b7989 | `tests/cts/baseline/gles32-khr-noctx-main-cfg1-wine.txt` |
+| `gles32-khr-single` | KHR-Single-GLES32 | 3.2 | 0 | 0 | 6053 | 0 | 0 | 0 | 0 | 0 | 6053 | 100% | 14 s | 71b7989 | `tests/cts/baseline/gles32-khr-single-cfg1-wine.txt` |
+| `gles32-khr-glesext` | KHR-GLESEXT | 3.2 | 1081 | 0 | 16 | 0 | 0 | 0 | 0 | 0 | 1097 | 100% | 10 s | 71b7989 | `tests/cts/baseline/gles32-khr-glesext-cfg1-wine.txt` |
 
 CTS build: dEQP Core 1942832354c96f0de379f491519734256fbd4f9d.
 

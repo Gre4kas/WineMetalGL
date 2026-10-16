@@ -1,5 +1,5 @@
 # mustpass gles32-khr-main.txt config 1: --deqp-screen-rotation=unspecified --deqp-surface-width=64 --deqp-surface-height=64 --deqp-base-seed=1 --deqp-watchdog=disable
-# commit 02d9b86, path winemetalgl, 1405 cases, 34 s
+# commit 71b7989, path winemetalgl, 1405 cases, 28 s
 # cts dEQP Core 1942832354c96f0de379f491519734256fbd4f9d
 # totals NotSupported=2 Pass=1403
 KHR-GLES32.core.compressed_format.api.copy_compressed_to_compressed Pass

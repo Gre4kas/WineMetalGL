@@ -55,8 +55,8 @@ WineMetalGL module: an OpenGL 4.6 compatibility context on an Apple M4.
 |---|---:|---:|
 | 2.0 | 100% | 0.60% |
 | 3.0 | 100% | 0.83% |
-| 3.1 | 99.98% | 3.99% |
-| 3.2 | 99.93% | 42.50% |
+| 3.1 | 99.98% | 1.24% |
+| 3.2 | 99.95% | 0.64% |
 
 **Conformance %**: passing cases over applicable cases (cases that are not NotSupported) of the version's Khronos CTS mustpass lists (OpenGL: the worst of its runs; GLES: its lists together). **Unsupported %**: cases the CTS reports NotSupported because WineMetalGL does not offer what they test. Each version's features, what is supported and every run: [Conformance results](docs/conformance.md#conformance-totals).
 

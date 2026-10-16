@@ -1,5 +1,5 @@
 # mustpass gles3-multisample.txt config 1: --deqp-gl-config-name=rgba8888d24s8ms4 --deqp-screen-rotation=unspecified --deqp-surface-width=256 --deqp-surface-height=256 --deqp-watchdog=disable
-# commit 02d9b86, path winemetalgl, 4635 cases, 38 s
+# commit c56a900, path winemetalgl, 4635 cases, 33 s
 # cts dEQP Core 1942832354c96f0de379f491519734256fbd4f9d
 # totals NotSupported=20 Pass=4615
 dEQP-GLES3.functional.clipping.line.line_attrib_clip Pass
