@@ -1228,3 +1228,28 @@ void main() {
     glDeleteProgram(p);
     CHECK_GL();
 }
+
+TESS_TEST(gpu_tess_patch_block_arrays) {
+    // An array of per-patch blocks: each element's members are stored apart.
+    const char* tcs = R"(#version 400 core
+layout(vertices = 1) out;
+patch out B { float v; vec2 w; } b[2];
+void main() {
+    b[0].v = 1.0; b[0].w = vec2(10.0, 0.0);
+    b[1].v = 100.0; b[1].w = vec2(0.0, 1000.0);
+    gl_TessLevelOuter[0] = gl_TessLevelOuter[1] = 1.0;
+})";
+    const char* tes = R"(#version 400 core
+layout(isolines, point_mode) in;
+patch in B { float v; vec2 w; } b[2];
+out float result;
+void main() { result = b[0].v + b[0].w.x + b[1].v + b[1].w.y; gl_Position = vec4(0.0); })";
+    GLuint p = link({kVertexIdVs, tcs, tes, nullptr, nullptr}, {"result"});
+    GLuint primitives = 0;
+    const std::vector<float> data = capture(p, GL_POINTS, 1, 1, 4, &primitives);
+    CHECK(primitives >= 1u);
+    CHECK_EQ(milli(data[0]), milli(1111.0f));
+    if (milli(data[0]) != milli(1111.0f)) std::fprintf(stderr, "  result %g\n", data[0]);
+    glDeleteProgram(p);
+    CHECK_GL();
+}

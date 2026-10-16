@@ -67,6 +67,10 @@ struct TessVar {
     std::string structType;
     int structArray = 0;
     std::string path;
+    // A member of an array of blocks ("patch out B { ... } b[2];"): the
+    // array's size, and the element this entry is (-1: not an array).
+    int instanceArray = 0;
+    int instanceIndex = -1;
     int arraySize = 0;        // 0 = not an array
     bool patch = false;       // per-patch (patch in/out)
     int location = -1;        // layout(location) of the variable (plain variables)

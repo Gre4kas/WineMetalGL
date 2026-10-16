@@ -2833,6 +2833,39 @@ static LinkResult linkImplCore(const LinkInput& input, const CaptureCode* captur
                                type && type->getQualifier().hasComponent() ? static_cast<int>(type->getQualifier().layoutComponent)
                                                                            : 0});
     }
+    // Members of "patch in" / "patch out" blocks are per patch too
+    // (reflection gives a member's own type, without the block's qualifier).
+    {
+        std::set<std::string> patchMembers;
+        for (int st = EShLangTessControl; st <= EShLangTessEvaluation; ++st) {
+            const glslang::TIntermediate* stage = program.getIntermediate(static_cast<EShLanguage>(st));
+            glslang::TIntermAggregate* root = stage && stage->getTreeRoot() ? stage->getTreeRoot()->getAsAggregate() : nullptr;
+            for (TIntermNode* node : root ? root->getSequence() : glslang::TIntermSequence()) {
+                glslang::TIntermAggregate* objects = node->getAsAggregate();
+                if (!objects || objects->getOp() != glslang::EOpLinkerObjects) continue;
+                for (TIntermNode* object : objects->getSequence()) {
+                    glslang::TIntermSymbol* symbol = object->getAsSymbolNode();
+                    if (!symbol || !symbol->getQualifier().patch || symbol->getBasicType() != glslang::EbtBlock) continue;
+                    const glslang::TType& type = symbol->getType();
+                    const bool anonymous = glslang::IsAnonymous(symbol->getName());
+                    for (const glslang::TTypeLoc& member : *type.getStruct()) {
+                        const std::string field = unescapeName(member.type->getFieldName().c_str());
+                        patchMembers.insert(unescapeName(type.getTypeName().c_str()) + "." + field);
+                        if (anonymous) patchMembers.insert(field);
+                    }
+                }
+            }
+        }
+        auto inPatchBlock = [&](const std::string& name) {
+            for (size_t end = name.size(); end != std::string::npos && end > 0;) {
+                if (patchMembers.count(name.substr(0, end))) return true;
+                end = name.find_last_of(".[", end - 1);
+            }
+            return false;
+        };
+        for (std::vector<PipeVar>* vars : {&pipeInputs, &pipeOutputs})
+            for (PipeVar& v : *vars) v.patch = v.patch || inPatchBlock(v.name);
+    }
     for (const PipeVar& v : pipeInputs)
         if (v.location != kNoLocation && !(v.stages & EShLangVertexMask)) explicitVaryings.insert(v.name);
     for (const PipeVar& v : pipeOutputs)
