@@ -141,6 +141,172 @@ PROMOTED = {
             "GL_ARB_transform_feedback_overflow_query", "GL_KHR_no_error"],
 }
 
+# Features each 3.x version made core: every context offers them.
+CORE_FEATURES = {
+    "3.0": ["GLSL 1.30", "Framebuffer objects", "Vertex array objects", "Transform feedback", "Integer textures",
+            "Floating-point textures and color buffers", "Depth float buffers", "Half-float pixels and vertices",
+            "Buffer range mapping", "Red and red-green textures", "RGTC compressed textures", "Texture arrays",
+            "Packed float and shared exponent formats", "sRGB framebuffers", "Conditional rendering",
+            "Per-buffer color masks and blending"],
+    "3.1": ["GLSL 1.40", "Instanced draws", "Texture buffers", "Uniform buffers", "Primitive restart",
+            "Buffer copies", "Rectangle textures", "Signed normalized textures"],
+    "3.2": ["GLSL 1.50", "Core and compatibility profiles", "Geometry shaders", "Sync objects",
+            "Multisample textures", "Base vertex draws", "Provoking vertex control", "Seamless cube maps",
+            "Depth clamping", "Fragment coordinate conventions"],
+    "3.3": ["GLSL 3.30", "Sampler objects", "Timer queries", "Instanced arrays", "Dual-source blending",
+            "Explicit attribute locations", "Boolean occlusion queries", "Shader bit encoding",
+            "RGB10_A2UI textures", "Texture swizzles", "Packed 2_10_10_10 vertex attributes"],
+}
+# Optional features WineMetalGL does not offer, by the version whose feature they extend: the
+# NotSupported cases of the KHR-GL lists (tests/cts/notsupported.json). (version, feature, reason)
+GL_NOT_OFFERED = [
+    ("3.2", "More than 4 samples", "`GL_MAX_SAMPLES` is 4, the most every color and depth format takes on Apple GPUs"),
+    ("4.2", "Multisample images (`GL_MAX_IMAGE_SAMPLES` above 0)",
+     "Metal shaders cannot write multisample textures; 0 is the GL minimum"),
+    ("4.6", "Sparse textures and buffers (`GL_ARB_sparse_texture`, `GL_ARB_sparse_texture2`, "
+     "`GL_ARB_sparse_texture_clamp`, `GL_ARB_sparse_buffer`)", "Not advertised"),
+    ("4.6", "Advanced blend equations (`GL_KHR_blend_equation_advanced`)",
+     "Not advertised in OpenGL contexts (OpenGL ES contexts have it)"),
+    ("4.6", "Shader ballot and 64-bit integers (`GL_ARB_shader_ballot`, `GL_ARB_gpu_shader_int64`)", "Not advertised"),
+    ("4.6", "Min/max texture filtering (`GL_ARB_texture_filter_minmax`)", "Not advertised"),
+    ("4.6", "Post-depth coverage (`GL_ARB_post_depth_coverage`)",
+     "Metal has no post-depth-test sample coverage input"),
+    ("4.6", "Fragment shading rate (`GL_EXT_fragment_shading_rate`)", "Not advertised"),
+    ("4.6", "ASTC compressed textures (`GL_KHR_texture_compression_astc_ldr`)",
+     "Not advertised in OpenGL contexts (OpenGL ES contexts have it)"),
+]
+# Names for the extensions PROMOTED lists, for the feature tables.
+FEATURE_NAMES = {
+    "GL_ARB_draw_buffers_blend": "Per-buffer blend equations", "GL_ARB_draw_indirect": "Indirect draws",
+    "GL_ARB_gpu_shader5": "GLSL 4.00 shader features (gpu_shader5)", "GL_ARB_gpu_shader_fp64": "Double precision",
+    "GL_ARB_sample_shading": "Per-sample shading", "GL_ARB_shader_subroutine": "Shader subroutines",
+    "GL_ARB_tessellation_shader": "Tessellation shaders", "GL_ARB_texture_buffer_object_rgb32": "RGB32 texture buffers",
+    "GL_ARB_texture_cube_map_array": "Cube map arrays", "GL_ARB_texture_gather": "Texture gather",
+    "GL_ARB_texture_query_lod": "Texture LOD queries", "GL_ARB_transform_feedback2": "Transform feedback objects",
+    "GL_ARB_transform_feedback3": "Multiple transform feedback streams",
+    "GL_ARB_ES2_compatibility": "OpenGL ES 2.0 compatibility", "GL_ARB_get_program_binary": "Program binaries",
+    "GL_ARB_separate_shader_objects": "Separate shader objects", "GL_ARB_shader_precision": "Shader precision rules",
+    "GL_ARB_vertex_attrib_64bit": "64-bit vertex attributes", "GL_ARB_viewport_array": "Viewport arrays",
+    "GL_ARB_base_instance": "Base instance draws",
+    "GL_ARB_compressed_texture_pixel_storage": "Compressed texture pixel storage",
+    "GL_ARB_conservative_depth": "Conservative depth", "GL_ARB_internalformat_query": "Internal format queries",
+    "GL_ARB_map_buffer_alignment": "Mapped buffer alignment", "GL_ARB_shader_atomic_counters": "Atomic counters",
+    "GL_ARB_shader_image_load_store": "Image load/store", "GL_ARB_shading_language_420pack": "GLSL 4.20 syntax (420pack)",
+    "GL_ARB_shading_language_packing": "Shader packing functions",
+    "GL_ARB_texture_compression_bptc": "BPTC compressed textures", "GL_ARB_texture_storage": "Immutable texture storage",
+    "GL_ARB_transform_feedback_instanced": "Instanced transform feedback draws",
+    "GL_ARB_arrays_of_arrays": "Arrays of arrays", "GL_ARB_clear_buffer_object": "Buffer clears",
+    "GL_ARB_compute_shader": "Compute shaders", "GL_ARB_copy_image": "Image copies",
+    "GL_ARB_ES3_compatibility": "OpenGL ES 3.0 compatibility",
+    "GL_ARB_explicit_uniform_location": "Explicit uniform locations",
+    "GL_ARB_fragment_layer_viewport": "Layer and viewport index in fragment shaders",
+    "GL_ARB_framebuffer_no_attachments": "Framebuffers without attachments",
+    "GL_ARB_internalformat_query2": "Internal format queries 2", "GL_ARB_invalidate_subdata": "Data invalidation",
+    "GL_ARB_multi_draw_indirect": "Multi-draw indirect", "GL_ARB_program_interface_query": "Program interface queries",
+    "GL_ARB_robust_buffer_access_behavior": "Robust buffer access behavior",
+    "GL_ARB_shader_image_size": "Image size queries", "GL_ARB_shader_storage_buffer_object": "Shader storage buffers",
+    "GL_ARB_stencil_texturing": "Stencil texturing", "GL_ARB_texture_buffer_range": "Texture buffer ranges",
+    "GL_ARB_texture_query_levels": "Texture level queries",
+    "GL_ARB_texture_storage_multisample": "Immutable multisample textures", "GL_ARB_texture_view": "Texture views",
+    "GL_ARB_vertex_attrib_binding": "Vertex attribute bindings", "GL_KHR_debug": "Debug output",
+    "GL_ARB_buffer_storage": "Buffer storage", "GL_ARB_clear_texture": "Texture clears",
+    "GL_ARB_enhanced_layouts": "Enhanced layouts", "GL_ARB_multi_bind": "Multi-bind",
+    "GL_ARB_query_buffer_object": "Query buffer objects",
+    "GL_ARB_texture_mirror_clamp_to_edge": "Mirror clamp to edge", "GL_ARB_texture_stencil8": "Stencil-only textures",
+    "GL_ARB_vertex_type_10f_11f_11f_rev": "Packed 10/11-bit float vertex attributes",
+    "GL_ARB_clip_control": "Clip control", "GL_ARB_conditional_render_inverted": "Inverted conditional rendering",
+    "GL_ARB_cull_distance": "Cull distances", "GL_ARB_derivative_control": "Coarse and fine derivatives",
+    "GL_ARB_direct_state_access": "Direct state access", "GL_ARB_ES3_1_compatibility": "OpenGL ES 3.1 compatibility",
+    "GL_ARB_get_texture_sub_image": "Texture sub-image reads",
+    "GL_ARB_shader_texture_image_samples": "Texture and image sample counts in shaders",
+    "GL_ARB_texture_barrier": "Texture barriers", "GL_KHR_context_flush_control": "Context flush control",
+    "GL_KHR_robustness": "Robustness",
+    "GL_ARB_gl_spirv": "SPIR-V shaders", "GL_ARB_indirect_parameters": "Indirect draw counts",
+    "GL_ARB_pipeline_statistics_query": "Pipeline statistics queries",
+    "GL_ARB_polygon_offset_clamp": "Polygon offset clamp", "GL_ARB_shader_atomic_counter_ops": "Atomic counter operations",
+    "GL_ARB_shader_draw_parameters": "Draw parameters in shaders", "GL_ARB_shader_group_vote": "Shader group votes",
+    "GL_ARB_spirv_extensions": "SPIR-V extensions", "GL_ARB_texture_filter_anisotropic": "Anisotropic filtering",
+    "GL_ARB_transform_feedback_overflow_query": "Transform feedback overflow queries",
+    "GL_KHR_no_error": "No-error contexts",
+}
+# OpenGL ES features by version: (feature, None if fully supported or what is missing).
+# Hand-maintained from the ES results in tests/cts/baseline and docs/unsupported.md#opengl-es.
+ES_FEATURES = {
+    "2.0": [
+        ("GLSL ES 1.00 vertex and fragment shaders", "Yes", None),
+        ("Framebuffer objects", "Yes", None),
+        ("Vertex buffer objects", "Yes", None),
+        ("Cube maps and non-power-of-two textures", "Yes", None),
+        ("Depth, stencil and packed depth-stencil buffers", "Yes", None),
+        ("Float, half-float and depth textures (extensions)", "Yes", None),
+        ("3D textures, vertex array objects, instancing (extensions)", "Yes", None),
+        ("Color attachments through `GL_NV_fbo_color_attachments`", "No",
+         "Not advertised; `GL_EXT_draw_buffers` gives several color attachments"),
+        ("Separate depth and stencil attachments", "No",
+         "`FRAMEBUFFER_UNSUPPORTED`: Metal keeps depth and stencil in one texture (allowed by OpenGL ES)"),
+        ("Lines wider than 1", "No", "Optional; Metal draws 1-pixel lines only"),
+    ],
+    "3.0": [
+        ("GLSL ES 3.00", "Yes", None),
+        ("Transform feedback", "Yes", None),
+        ("Instanced draws", "Yes", None),
+        ("Uniform buffers", "Yes", None),
+        ("Integer textures and attributes", "Yes", None),
+        ("sRGB textures and framebuffers", "Yes", None),
+        ("Multisample renderbuffers (up to 4 samples)", "Yes", None),
+        ("ETC2 and EAC compressed textures", "Yes", None),
+        ("3D and 2D array textures", "Yes", None),
+        ("Sampler objects", "Yes", None),
+        ("Occlusion queries", "Yes", None),
+        ("Sync objects", "Yes", None),
+        ("Multiple render targets", "Yes", None),
+        ("Primitive restart", "Yes", None),
+        ("Program binaries", "Yes", None),
+        ("Texture swizzles", "Yes", None),
+        ("Immutable texture storage", "Yes", None),
+        ("Pixel buffer objects", "Yes", None),
+        ("More than 4 samples", "No", "Optional; Apple GPUs render with 1, 2 or 4 samples"),
+        ("Multiview (`GL_OVR_multiview`)", "No", "Not advertised"),
+        ("Multisampled render to texture (`GL_EXT_multisampled_render_to_texture`)", "No", "Not advertised"),
+    ],
+    "3.1": [
+        ("GLSL ES 3.10", "Yes", None),
+        ("Compute shaders", "Yes", None),
+        ("Image load/store", "Partly", "Some dEQP-GLES31 cases fail"),
+        ("Shader storage buffers", "Yes", None),
+        ("Atomic counters", "Yes", None),
+        ("Indirect draws and dispatches", "Yes", None),
+        ("Separate shader programs", "Partly", "Some dEQP-GLES31 cases fail"),
+        ("Multisample textures", "Yes", None),
+        ("Vertex attribute bindings", "Partly", "Some dEQP-GLES31 cases fail"),
+        ("Program interface queries", "Partly",
+         "Some dEQP-GLES31 cases fail (resources of interface blocks and built-ins)"),
+        ("Texture gather", "Yes", None),
+        ("Stencil texturing", "Yes", None),
+        ("Framebuffers without attachments", "Yes", None),
+    ],
+    "3.2": [
+        ("GLSL ES 3.20", "Yes", None),
+        ("Geometry shaders", "Partly", "Struct varyings do not link"),
+        ("Tessellation shaders", "Partly", "Struct varyings do not link"),
+        ("Advanced blend equations", "Yes", None),
+        ("ASTC LDR compressed textures", "Yes", None),
+        ("ASTC HDR and 3D compressed textures", "No", "Not advertised; LDR ASTC only"),
+        ("Texture buffers", "Yes", None),
+        ("Cube map arrays", "Yes", None),
+        ("Debug output", "Partly", "Some dEQP-GLES31 cases fail"),
+        ("Robustness", "Yes", None),
+        ("Per-sample shading", "Yes", None),
+        ("Multisample 2D array textures", "Yes", None),
+        ("Primitive bounding box", "Yes", None),
+        ("Per-buffer blending", "Yes", None),
+        ("Image copies", "Yes", None),
+        ("Border clamping", "Yes", None),
+        ("Base vertex draws", "Yes", None),
+    ],
+}
+
+
 
 def rel(*parts):
     return os.path.join(ROOT, *parts)
@@ -421,6 +587,72 @@ def render(suites, es_suites):
                          "\n  ".join("%s: %s" % (k, ", ".join(v)) for k, v in sorted(incomplete.items())))
     game_entries, game_results, game_record = games()
 
+    # Kinds of NotSupported entries, for the unsupported share.
+    def kind_of(case):
+        return next(e["kind"] for e in entries if fnmatch.fnmatchcase(case, e["pattern"]))
+
+    # ---- Conformance totals: (version, conformance %, features, unsupported %) per OpenGL and OpenGL ES version.
+    gl_rows = []
+    commits = sorted({meta.get("commit", "?") for b in suites.values() for meta, _ in b.values()})
+    rechecks = sorted({(suite, meta["recheck"].get("commit", "?")) for suite, b in suites.items()
+                       for meta, _ in b.values() if "recheck" in meta})
+    for version, adds, suite in VERSIONS:
+        if version < "3.0":
+            continue
+        baselines = suites.get(suite) if suite and suite != "covered" else None
+        if suite == "covered":
+            conformance_cell, unsupported_cell = "covered by %s" % dict(SUITES)[COVERED_BY], "-"
+        elif baselines:
+            runs = sorted(baselines)
+            rates = {k: applicable(baselines[k][1]) for k in runs}
+            worst = min(runs, key=lambda k: (rates[k][0] / max(rates[k][1], 1), k))
+            shares = [lacking(baselines[k][1], kind_of) for k in runs]
+            most = max(shares, key=lambda x: x[0] / max(x[1], 1))
+            conformance_cell, unsupported_cell = percent(*rates[worst]), share(*most)
+        elif version > MAX_VERSION:
+            conformance_cell, unsupported_cell = "-", "100%"
+        else:
+            conformance_cell, unsupported_cell = "not measured", "not measured"
+        gl_rows.append((version, conformance_cell, adds, unsupported_cell))
+    es_rows, es_commits = [], set()
+    for version, adds in ES_VERSIONS:
+        runs = [results for suite, _, v in ES_SUITES if v == version for _, results in es_suites[suite].values()]
+        es_commits.update(meta.get("commit", "?") for suite, _, v in ES_SUITES if v == version
+                          for meta, _ in es_suites[suite].values())
+        if not runs:
+            es_rows.append((version, "not measured", adds, "not measured"))
+            continue
+        rates = [applicable(r) for r in runs]
+        worst = min(rates, key=lambda x: x[0] / max(x[1], 1))
+        most = max((lacking(r, kind_of) for r in runs), key=lambda x: x[0] / max(x[1], 1))
+        es_rows.append((version, percent(*worst), adds, share(*most)))
+    es_summary = es_runner_summary()
+    gl_measure = (
+        "**Conformance %%**: passing cases over applicable cases (cases that are not NotSupported) of the "
+        "version's Khronos CTS mustpass list (`KHR-GL30` to `KHR-GL43`, `KHR-GL46`), in the worst of its runs: "
+        "%d for `KHR-GL30` to `KHR-GL43` (configurations %s of `mustpass.xml`, each under Wine and natively), "
+        "3 for `KHR-GL46` (configuration 1 natively, configurations 1 and 3 under Wine), at commit %s. "
+        "OpenGL 4.4 and 4.5 have no list of their own: `KHR-GL46` runs their tests." % (
+            2 * len(CONFIGS), "%d to %d" % (CONFIGS[0], CONFIGS[-1]), ", ".join(commits)))
+    gl_recheck = None
+    if rechecks:
+        packages = [package for suite, package in SUITES if any(s == suite for s, _ in rechecks)]
+        gl_recheck = ("The cases that were not Pass in %s were run again at commit %s, in the same configurations "
+                      "under Wine and natively (`tests/cts/recheck/`); those results replace the baselines' for "
+                      "those cases." % (", ".join("`%s`" % p for p in packages),
+                                        ", ".join(sorted({c for _, c in rechecks}))))
+    es_measure = (
+        "**GLES**: the same measure over each version's OpenGL ES mustpass lists, Khronos's "
+        "(`KHR-GLES2` to `KHR-GLES32`, `KHR-GLESEXT`) and dEQP's (`dEQP-GLES2` to `dEQP-GLES31`, with "
+        "their rotation, multisample and RGB565 lists), in configuration 1 under Wine at commit %s." % (
+            ", ".join(sorted(es_commits)) or "-") +
+        (" `cts-runner --type=es3` runs the OpenGL ES 2.0 and 3.0 lists in every configuration it "
+         "selects ([OpenGL ES](#opengl-es))." if es_summary else ""))
+    unsupported_measure = (
+        "**Unsupported %**: cases the CTS reports NotSupported because WineMetalGL does not offer what they test "
+        "(an extension it does not advertise, or a limit above the minimum), over the cases any implementation "
+        "can run: [Unsupported](unsupported.md#conformance-notes).")
+
     # ---- conformance.md
     md = ["# WineMetalGL conformance", "",
           "Generated by `scripts/docs/generate.py` from the committed result files; do not edit.", "",
@@ -431,6 +663,31 @@ def render(suites, es_suites):
           "`KHR-GL30` to `KHR-GL43` on MetalSharp's Wine 11.17 with the 2.x patches. `KHR-GL46` runs "
           "configuration 1 natively and configurations 1 and 3 under Wine. Applicable cases are those that are not "
           "NotSupported.", ""]
+    md += ["## Conformance totals", "", "| OpenGL | Conformance % | Features | Unsupported % |", "|---|---:|---|---:|"]
+    md += ["| %s | %s | %s | %s |" % row for row in gl_rows]
+    md += ["", "| GLES | Conformance % | Features | Unsupported % |", "|---|---:|---|---:|"]
+    md += ["| %s | %s | %s | %s |" % row for row in es_rows]
+    md += ["", gl_measure, ""] + ([gl_recheck, ""] if gl_recheck else []) + [es_measure, "", unsupported_measure, ""]
+    md += ["## Features", "",
+           "OpenGL 3.x features are core in every context. The OpenGL 4.x features are the extensions each version "
+           "promoted to core, supported when the context advertises them. The rows marked No are optional: the "
+           "CTS cases that test them are NotSupported, which is what Unsupported % counts.", "",
+           "| OpenGL | Feature | Supported | Unsupported |", "|---|---|---|---|"]
+    for version, _, _ in VERSIONS:
+        for name in CORE_FEATURES.get(version, []):
+            md.append("| %s | %s | Yes | - |" % (version, name))
+        for ext in PROMOTED.get(version, []):
+            advertised = ext in extensions
+            md.append("| %s | %s (`%s`) | %s | %s |" % (version, FEATURE_NAMES[ext], ext,
+                                                         "Yes" if advertised else "No",
+                                                         "-" if advertised else "Not advertised"))
+        for _, name, reason in (row for row in GL_NOT_OFFERED if row[0] == version):
+            md.append("| %s | %s | No | %s |" % (version, name, reason))
+    md += ["", "| GLES | Feature | Supported | Unsupported |", "|---|---|---|---|"]
+    for version, _ in ES_VERSIONS:
+        for name, status, gap in ES_FEATURES[version]:
+            md.append("| %s | %s | %s | %s |" % (version, name, status, gap or "-"))
+    md += ["", "What OpenGL ES contexts leave out, and why: [Unsupported](unsupported.md#opengl-es).", ""]
     for suite, package in SUITES:
         baselines = suites[suite]
         if not baselines:
@@ -589,10 +846,6 @@ def render(suites, es_suites):
                budget.get("ratio", 1.2), budget.get("hitch_ms", 50), 100 * (budget.get("regression", 1.1) - 1)), ""]
     performance = "\n".join(pm)
 
-    # Kinds of NotSupported entries, for the unsupported share.
-    def kind_of(case):
-        return next(e["kind"] for e in entries if fnmatch.fnmatchcase(case, e["pattern"]))
-
     blocks = {}
 
     # ---- docs/unsupported.md: OpenGL 4.x and the NotSupported audit.
@@ -664,69 +917,19 @@ def render(suites, es_suites):
                                                     duration(seconds) if seconds else "?"))
     blocks[("docs/testing.md", "cts-times")] = "\n".join(t)
 
-    # ---- README.md: conformance totals.
-    lines = ["## Conformance totals", "",
-             "| OpenGL | Conformance % | Features | Unsupported % |", "|---|---:|---|---:|"]
-    commits = sorted({meta.get("commit", "?") for b in suites.values() for meta, _ in b.values()})
-    rechecks = sorted({(suite, meta["recheck"].get("commit", "?")) for suite, b in suites.items()
-                       for meta, _ in b.values() if "recheck" in meta})
-    for version, adds, suite in VERSIONS:
-        if version < "3.0":
-            continue
-        baselines = suites.get(suite) if suite and suite != "covered" else None
-        if suite == "covered":
-            conformance_cell, unsupported_cell = "covered by %s" % dict(SUITES)[COVERED_BY], "-"
-        elif baselines:
-            runs = sorted(baselines)
-            rates = {k: applicable(baselines[k][1]) for k in runs}
-            worst = min(runs, key=lambda k: (rates[k][0] / max(rates[k][1], 1), k))
-            shares = [lacking(baselines[k][1], kind_of) for k in runs]
-            most = max(shares, key=lambda x: x[0] / max(x[1], 1))
-            conformance_cell, unsupported_cell = percent(*rates[worst]), share(*most)
-        elif version > MAX_VERSION:
-            conformance_cell, unsupported_cell = "-", "100%"
-        else:
-            conformance_cell, unsupported_cell = "not measured", "not measured"
-        lines.append("| %s | %s | %s | %s |" % (version, conformance_cell, adds, unsupported_cell))
+    # ---- README.md: conformance totals (the full tables are in docs/conformance.md).
+    lines = ["## Conformance totals", "", "| OpenGL | Conformance % | Unsupported % |", "|---|---:|---:|"]
+    lines += ["| %s | %s | %s |" % (version, conformance_cell, unsupported_cell)
+              for version, conformance_cell, _, unsupported_cell in gl_rows]
+    lines += ["", "| GLES | Conformance % | Unsupported % |", "|---|---:|---:|"]
+    lines += ["| %s | %s | %s |" % (version, conformance_cell, unsupported_cell)
+              for version, conformance_cell, _, unsupported_cell in es_rows]
     lines += ["",
-              "**Conformance %%**: passing cases over applicable cases (cases that are not NotSupported) of the "
-              "version's Khronos CTS mustpass list (`KHR-GL30` to `KHR-GL43`, `KHR-GL46`), in the worst of its runs: "
-              "%d for `KHR-GL30` to `KHR-GL43` (configurations %s of `mustpass.xml`, each under Wine and natively), "
-              "3 for `KHR-GL46` (configuration 1 natively, configurations 1 and 3 under Wine), at commit %s. "
-              "OpenGL 4.4 and 4.5 have no list of their own: `KHR-GL46` runs their tests." % (
-                  2 * len(CONFIGS), "%d to %d" % (CONFIGS[0], CONFIGS[-1]), ", ".join(commits)),
-              ""]
-    if rechecks:
-        packages = [package for suite, package in SUITES if any(s == suite for s, _ in rechecks)]
-        recheck_commits = sorted({c for _, c in rechecks})
-        lines += ["The cases that were not Pass in %s were run again at commit %s, in the same configurations "
-                  "under Wine and natively (`tests/cts/recheck/`); those results replace the baselines' for "
-                  "those cases." % (", ".join("`%s`" % p for p in packages), ", ".join(recheck_commits)), ""]
-    if any(es_suites.values()):
-        lines += ["| OpenGL ES | Conformance % | Features | Unsupported % |", "|---|---:|---|---:|"]
-        es_commits = set()
-        for version, adds in ES_VERSIONS:
-            runs = [results for suite, _, v in ES_SUITES if v == version for _, results in es_suites[suite].values()]
-            es_commits.update(meta.get("commit", "?") for suite, _, v in ES_SUITES if v == version
-                              for meta, _ in es_suites[suite].values())
-            if not runs:
-                lines.append("| %s | not measured | %s | not measured |" % (version, adds))
-                continue
-            rates = [applicable(r) for r in runs]
-            worst = min(rates, key=lambda x: x[0] / max(x[1], 1))
-            most = max((lacking(r, kind_of) for r in runs), key=lambda x: x[0] / max(x[1], 1))
-            lines.append("| %s | %s | %s | %s |" % (version, percent(*worst), adds, share(*most)))
-        summary = es_runner_summary()
-        lines += ["",
-                  "**OpenGL ES**: the same measure over each version's OpenGL ES mustpass lists, Khronos's "
-                  "(`KHR-GLES2` to `KHR-GLES32`, `KHR-GLESEXT`) and dEQP's (`dEQP-GLES2` to `dEQP-GLES31`, with "
-                  "their rotation, multisample and RGB565 lists), in configuration 1 under Wine at commit %s." % (
-                      ", ".join(sorted(es_commits))) +
-                  (" `cts-runner --type=es3` runs the OpenGL ES 2.0 and 3.0 lists in every configuration it "
-                   "selects: [Conformance results](docs/conformance.md#opengl-es)." if summary else ""), ""]
-    lines += ["What Unsupported % counts, and why each failing case fails: "
-              "[Unsupported](docs/unsupported.md#conformance-notes)."]
-    lines += ["",
+              "**Conformance %**: passing cases over applicable cases (cases that are not NotSupported) of the "
+              "version's Khronos CTS mustpass lists, in the worst of their runs. **Unsupported %**: cases the CTS "
+              "reports NotSupported because WineMetalGL does not offer what they test. Each version's features, "
+              "what is supported and every run: [Conformance results](docs/conformance.md#conformance-totals).",
+              "",
               "OpenGL 1.0 to 2.1 are implemented by WineMetalGL itself, as its compatibility profile: the "
               "fixed-function pipeline, immediate mode, display lists and legacy GLSL, alongside every 3.x feature. "
               "No public Khronos suite measures them; the Wine fixtures, GPU tests and game corpus exercise them, and "
@@ -734,7 +937,7 @@ def render(suites, es_suites):
     blocks[("README.md", "totals")] = "\n".join(lines)
 
     # ---- docs/unsupported.md: what the README totals' Unsupported % counts, and the failing cases.
-    notes = ["**Unsupported %** (README conformance totals): cases the CTS reports NotSupported because "
+    notes = ["**Unsupported %** ([conformance totals](conformance.md#conformance-totals)): cases the CTS reports NotSupported because "
              "WineMetalGL does not offer what they test (an extension it does not advertise, or a limit above the "
              "GL minimum), over the cases any implementation can run. Contexts are OpenGL " + MAX_VERSION +
              ", the newest version; the unsupported cases are optional extensions ([OpenGL 4.x](#opengl-4x))."]
