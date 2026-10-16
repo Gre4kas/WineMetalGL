@@ -101,6 +101,14 @@ bool attachmentTarget(Context& ctx, const Attachment& a, RenderTargetDesc::Targe
     return false;
 }
 
+// Whether an attachment is multisample in GL's terms (samples > 0).
+bool multisampleAttachment(const Attachment& a) {
+    if (a.type == GL_RENDERBUFFER) return a.renderbuffer && a.renderbuffer->samples > 0;
+    const Texture* tex = a.texture.get();
+    return a.type == GL_TEXTURE && tex &&
+           (tex->target == GL_TEXTURE_2D_MULTISAMPLE || tex->target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY);
+}
+
 // Layers of a layered attachment (glFramebufferTexture on an array, cube or
 // 3D texture): the render target array length it gives a pass.
 uint32_t attachmentLayers(const Attachment& a) {
@@ -229,6 +237,7 @@ bool DrawState::drawTarget(RenderTargetDesc& target, TargetFormats& formats, boo
         for (uint32_t s : {2u, 4u, 8u})
             if (static_cast<uint32_t>(fb->defaultSamples) > samples && Device::get().caps().sampleCountSupported[s]) samples = s;
         target.samples = samples;
+        target.multisampled = fb->defaultSamples > 0;
         if (fb->defaultLayers > 0) target.layers = static_cast<uint32_t>(fb->defaultLayers);
         return true;
     }
@@ -251,6 +260,8 @@ bool DrawState::drawTarget(RenderTargetDesc& target, TargetFormats& formats, boo
     target.width = width;
     target.height = height;
     target.samples = std::max(1u, samples);
+    target.multisampled = target.samples > 1 || multisampleAttachment(fb->depth) || multisampleAttachment(fb->stencil);
+    for (const Attachment& a : fb->color) target.multisampled |= multisampleAttachment(a);
     // A layered framebuffer (every attachment is layered, checked by
     // completeness) renders to the layers its attachments have in common.
     if (layers != UINT32_MAX) target.layers = layers;
@@ -1630,7 +1641,8 @@ id<MTLRenderCommandEncoder> DrawState::prepare(GLenum mode, MTLPrimitiveType& pr
     // GL_SAMPLE_MASK and GL_SAMPLE_COVERAGE: the fragment function writes the
     // mask (a pipeline variant, so other draws keep Metal's fast paths).
     sampleMask_ = ~0u;
-    if (st.multisample && target.samples > 1 && (st.sampleMask || st.sampleCoverage)) {
+    const bool multisampled = target.samples > 1 || target.multisampled;
+    if (st.multisample && multisampled && (st.sampleMask || st.sampleCoverage)) {
         uint32_t mask = st.sampleMask ? st.sampleMaskValue : ~0u;
         if (st.sampleCoverage) {
             const uint32_t all = target.samples >= 32 ? ~0u : (1u << target.samples) - 1;
@@ -1647,7 +1659,7 @@ id<MTLRenderCommandEncoder> DrawState::prepare(GLenum mode, MTLPrimitiveType& pr
     // GL_SAMPLE_SHADING with more than one sample to shade: per-sample execution.
     key.sampleShading = st.multisample && st.sampleShading && target.samples > 1 &&
                         std::ceil(st.minSampleShading * static_cast<float>(target.samples)) > 1.0f;
-    key.ignoreSampleMask = !(st.multisample && target.samples > 1) && program->writesSampleMask();
+    key.ignoreSampleMask = !(st.multisample && multisampled) && program->writesSampleMask();
     key.rasterization = !st.rasterizerDiscard;
     // Metal requires the input topology class when the vertex function
     // writes the layer or viewport index; otherwise it stays unspecified.

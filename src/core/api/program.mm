@@ -739,12 +739,8 @@ void LinkProgram(Context& ctx, GLuint program) {
                     if (!first) first = &s;
                     last = &s;
                 }
-        if (ok && first)
-            for (const auto& [name, v] : shader::compileEs(first->stage, first->source).inputs)
-                input.esInputPrecisions[name] = v.precision;
-        if (ok && last)
-            for (const auto& [name, v] : shader::compileEs(last->stage, last->source).outputs)
-                input.esOutputPrecisions[name] = v.precision;
+        if (ok && first) input.esInputInterface = shader::compileEs(first->stage, first->source).inputInterface;
+        if (ok && last) input.esOutputInterface = shader::compileEs(last->stage, last->source).outputInterface;
     }
     // Compatibility profile: a program without a vertex shader uses
     // fixed-function vertex processing (transform, colours, texture

@@ -30,6 +30,9 @@ struct RenderTargetDesc {
     Target depth, stencil;
     uint32_t width = 0, height = 0;
     uint32_t samples = 1;
+    // GL's SAMPLE_BUFFERS: multisample rasterization applies, as it does to a
+    // renderbuffer or texture of one sample, which Metal renders single-sample.
+    bool multisampled = false;
     uint32_t layers = 0;           // renderTargetArrayLength for layered rendering (0 = not layered)
     bool operator==(const RenderTargetDesc& o) const;
     bool operator!=(const RenderTargetDesc& o) const { return !(*this == o); }

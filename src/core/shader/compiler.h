@@ -89,6 +89,11 @@ struct EsCompileResult : CompileResult {
         int precision = 0;  // glslang's TPrecisionQualifier
     };
     std::map<std::string, Varying> inputs, outputs;
+    // The stage interface as program pipelines match it (OpenGL ES 3.2
+    // section 7.4.1): one entry per variable (keyed "@N" with an explicit
+    // location, else by name) or block ("block Name"), its value the type,
+    // precision, interpolation and layout, arrayed stages' vertex index aside.
+    std::map<std::string, std::string> inputInterface, outputInterface;
 };
 EsCompileResult compileEs(Stage stage, const std::string& source);
 
@@ -119,9 +124,9 @@ struct LinkInput {
     // GL_ARB_gl_spirv: the shaders are SPIR-V modules translated to GLSL
     // (spirv_input.h); `spirvUnnamed`: one of them has no debug names.
     bool spirv = false, spirvUnnamed = false;
-    // OpenGL ES: the precisions of the first stage's inputs and the last
-    // stage's outputs, by name, which program pipelines compare.
-    std::map<std::string, int> esInputPrecisions, esOutputPrecisions;
+    // OpenGL ES: the first stage's input interface and the last stage's
+    // output interface (EsCompileResult), which program pipelines compare.
+    std::map<std::string, std::string> esInputInterface, esOutputInterface;
 };
 
 struct UniformInfo {
@@ -474,8 +479,9 @@ std::string fragmentWithLogicOp(const std::string& msl, unsigned op, const Logic
 std::string fragmentWithAdvancedBlend(const std::string& msl, unsigned equation);
 
 // GL_SAMPLE_MASK / GL_SAMPLE_COVERAGE: the fragment function with a
-// [[sample_mask]] output, word 1 of buffer kSlotDriverUniforms (empty if the
-// stage has no output struct or writes the sample mask itself).
+// [[sample_mask]] output, word 1 of buffer kSlotDriverUniforms, ANDed into
+// the mask the shader writes (gl_SampleMask) if it does (empty if the stage
+// has no output struct).
 std::string fragmentWithSampleMask(const std::string& msl);
 
 // GL_SAMPLE_SHADING: the fragment function run once per sample (it takes

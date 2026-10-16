@@ -487,11 +487,19 @@ std::string fragmentCountingInvocations(const std::string& msl) {
 std::string fragmentWithSampleMask(const std::string& msl) {
     const std::string signature = "fragment main0_out main0(", member = "struct main0_out\n{\n";
     const size_t structAt = msl.find(member);
-    if (msl.find("[[sample_mask]]") != std::string::npos) return std::string();
+    const size_t written = msl.find(" [[sample_mask]]");
+    if (written != std::string::npos && (structAt == std::string::npos || written < structAt)) return std::string();
     if (structAt == std::string::npos || msl.find(signature) == std::string::npos || structAt > msl.find(signature))
         return voidFragmentWithSampleMask(msl);
     std::string out = msl;
-    out.insert(structAt + member.size(), "    uint wmgl_sample_mask [[sample_mask]];\n");
+    // A shader writing gl_SampleMask: the mask applies on top of it.
+    std::string maskMember = "wmgl_sample_mask";
+    if (written != std::string::npos) {
+        const size_t nameStart = msl.rfind(' ', written - 1) + 1;
+        maskMember = msl.substr(nameStart, written - nameStart);
+    } else {
+        out.insert(structAt + member.size(), "    uint wmgl_sample_mask [[sample_mask]];\n");
+    }
     const size_t fn = out.find(signature);
     if (out.find("wmgl_fs_driver [[buffer(") == std::string::npos) {
         const size_t open = fn + signature.size() - 1;
@@ -499,7 +507,8 @@ std::string fragmentWithSampleMask(const std::string& msl) {
         out.insert(open + 1, "constant uint* wmgl_fs_driver [[buffer(" + std::to_string(kSlotDriverUniforms) + ")]]" +
                                  (noParameters ? "" : ", "));
     }
-    const std::string assign = "out.wmgl_sample_mask = wmgl_fs_driver[1]; ";
+    const std::string assign = written != std::string::npos ? "out." + maskMember + " &= wmgl_fs_driver[1]; "
+                                                            : "out.wmgl_sample_mask = wmgl_fs_driver[1]; ";
     for (size_t at = out.find("return out;", fn); at != std::string::npos; at = out.find("return out;", at + assign.size() + 11))
         out.insert(at, assign);
     return out;
@@ -1758,6 +1767,67 @@ std::map<std::string, EsCompileResult::Varying> varyingsOf(glslang::TShader& sha
     return out;
 }
 
+// A type as program pipeline interfaces compare it: basic type, sizes,
+// arrays, precision, flat, and a struct's or block's name and
+// members in order. `dropOuterArray`: the per-vertex array of an arrayed stage.
+std::string interfaceSignature(const glslang::TType& type, bool dropOuterArray) {
+    std::string s;
+    const glslang::TQualifier& q = type.getQualifier();
+    // Auxiliary qualifiers (centroid, sample) may differ.
+    if (q.flat) s += "flat ";
+    if (q.patch) s += "patch ";
+    if (type.getBasicType() != glslang::EbtBlock && type.getBasicType() != glslang::EbtStruct)
+        s += std::string(glslang::GetPrecisionQualifierString(q.precision)) + " ";
+    if (type.isStruct()) {
+        s += std::string(type.getBasicType() == glslang::EbtBlock ? "block " : "struct ") + type.getTypeName().c_str() + " {";
+        for (const glslang::TTypeLoc& member : *type.getStruct())
+            s += std::string(member.type->getFieldName().c_str()) + ": " + interfaceSignature(*member.type, false) + "; ";
+        s += "}";
+    } else {
+        s += type.getBasicTypeString().c_str();
+        if (type.isMatrix()) s += std::to_string(type.getMatrixCols()) + "x" + std::to_string(type.getMatrixRows());
+        else if (type.isVector()) s += std::to_string(type.getVectorSize());
+    }
+    if (const glslang::TArraySizes* arrays = type.getArraySizes())
+        for (int d = dropOuterArray ? 1 : 0; d < arrays->getNumDims(); ++d) s += "[" + std::to_string(arrays->getDimSize(d)) + "]";
+    return s;
+}
+
+// The pipeline interface of a stage's inputs (`input`) or outputs
+// (EsCompileResult::inputInterface).
+std::map<std::string, std::string> interfaceOf(glslang::TShader& shader, Stage stage, bool input) {
+    std::map<std::string, std::string> out;
+    const glslang::TIntermediate* intermediate = shader.getIntermediate();
+    glslang::TIntermAggregate* root =
+        intermediate && intermediate->getTreeRoot() ? intermediate->getTreeRoot()->getAsAggregate() : nullptr;
+    if (!root) return out;
+    const glslang::TStorageQualifier storage = input ? glslang::EvqVaryingIn : glslang::EvqVaryingOut;
+    // Per-vertex inputs of arrayed stages, and tessellation control outputs, have the vertex index outermost.
+    const bool arrayed = input ? stage == Stage::TessControl || stage == Stage::TessEval || stage == Stage::Geometry
+                               : stage == Stage::TessControl;
+    for (TIntermNode* node : root->getSequence()) {
+        glslang::TIntermAggregate* objects = node->getAsAggregate();
+        if (!objects || objects->getOp() != glslang::EOpLinkerObjects) continue;
+        for (TIntermNode* object : objects->getSequence()) {
+            glslang::TIntermSymbol* symbol = object->getAsSymbolNode();
+            if (!symbol || symbol->getQualifier().storage != storage) continue;
+            const glslang::TType& type = symbol->getType();
+            const bool block = type.getBasicType() == glslang::EbtBlock;
+            const std::string name = block ? type.getTypeName().c_str() : symbol->getName().c_str();
+            if (name.rfind("gl_", 0) == 0) continue;
+            const bool vertexArray = arrayed && !type.getQualifier().patch && type.isArray();
+            std::string key = block ? "block " + name : name;
+            std::string signature = interfaceSignature(type, vertexArray);
+            if (type.getQualifier().hasLocation()) {
+                if (!block) key = "@" + std::to_string(type.getQualifier().layoutLocation);
+                signature = "location " + std::to_string(type.getQualifier().layoutLocation) + " " + signature;
+            }
+            out[key] = signature;
+        }
+    }
+    return out;
+}
+
 }  // namespace
 
 namespace {
@@ -1844,6 +1914,8 @@ EsCompileResult compileEsUncached(Stage stage, const std::string& source) {
             result.blockSignatures = blockSignaturesOf(shader);
             result.inputs = varyingsOf(shader, true);
             result.outputs = varyingsOf(shader, false);
+            result.inputInterface = interfaceOf(shader, stage, true);
+            result.outputInterface = interfaceOf(shader, stage, false);
             // compile()'s checks: block bindings within the limits, interface
             // locations, reserved words.
             std::string errors = checkBlockBindings(shader);

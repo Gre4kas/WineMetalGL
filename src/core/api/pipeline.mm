@@ -83,18 +83,25 @@ std::string esInterfaceMismatch(const ProgramPipeline& pp) {
                 }
                 if (!match || match->type != in.type || (!arrayed && producerStage != Stage::TessControl && match->size != in.size))
                     return "error: input '" + in.name + "' does not match an output of the previous stage\n";
-                // Their precisions match too (OpenGL ES 3.2 section 7.4.1).
-                std::string outName = match->name;
-                if (outName.size() > 3 && outName.compare(outName.size() - 3, 3, "[0]") == 0) outName.resize(outName.size() - 3);
-                const auto& outs = producer->linked->input.esOutputPrecisions;
-                const auto& ins = p->linked->input.esInputPrecisions;
-                const auto o = outs.find(outName);
-                std::string inName = in.name;
-                if (inName.size() > 3 && inName.compare(inName.size() - 3, 3, "[0]") == 0) inName.resize(inName.size() - 3);
-                const auto i = ins.find(inName);
-                if (o != outs.end() && i != ins.end() && o->second != i->second)
-                    return "error: input '" + in.name + "' and its output in the previous stage differ in precision\n";
+
             }
+        }
+        // OpenGL ES 3.2 section 7.4.1: the stages' interfaces match exactly,
+        // every output an input and every input an output, with the same
+        // types (struct and block names and members in order), precisions,
+        // interpolation, locations and array sizes.
+        if (producer && producer != p) {
+            const auto& outs = producer->linked->input.esOutputInterface;
+            const auto& ins = p->linked->input.esInputInterface;
+            for (const auto& [key, signature] : ins) {
+                const auto o = outs.find(key);
+                if (o == outs.end()) return "error: input '" + key + "' has no matching output in the previous stage\n";
+                if (o->second != signature)
+                    return "error: input '" + key + "' does not match its output in the previous stage (" + signature +
+                           " / " + o->second + ")\n";
+            }
+            for (const auto& [key, signature] : outs)
+                if (!ins.count(key)) return "error: output '" + key + "' has no matching input in the next stage\n";
         }
         producer = p;
         producerStage = s;
