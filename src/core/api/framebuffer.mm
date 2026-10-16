@@ -55,7 +55,8 @@ const FormatInfo* attachmentFormat(const Attachment& a, GLsizei& width, GLsizei&
         width = image.width;
         height = a.texture->target == GL_TEXTURE_1D_ARRAY ? 1 : image.height;  // 1D array: height counts layers
         samples = image.samples;
-        fixedLocations = image.fixedSampleLocations;
+        // Single-sample images (and renderbuffers) have fixed locations.
+        fixedLocations = image.samples > 0 ? image.fixedSampleLocations : true;
         return image.format;
     }
     return nullptr;
@@ -155,7 +156,7 @@ GLenum completeness(Context& ctx, Framebuffer* fb) {
         if (samples < 0) samples = normalizedSamples;
         else if (samples != normalizedSamples) return GL_FRAMEBUFFER_INCOMPLETE_MULTISAMPLE;
         if (fixed < 0) fixed = fixedLocations;
-        else if (fixed != static_cast<int>(fixedLocations) && a.type == GL_TEXTURE) return GL_FRAMEBUFFER_INCOMPLETE_MULTISAMPLE;
+        else if (fixed != static_cast<int>(fixedLocations)) return GL_FRAMEBUFFER_INCOMPLETE_MULTISAMPLE;
         const int isLayered = a.layered ? 1 : 0;
         if (layered < 0) {
             layered = isLayered;
@@ -248,6 +249,8 @@ void attachTexture(Context& ctx, GLenum target, GLenum attachment, GLenum textar
                 t != GL_TEXTURE_CUBE_MAP_ARRAY && !cube)
                 return ctx.setError(GL_INVALID_OPERATION);
             if (layer < 0 || (cube && layer >= 6)) return ctx.setError(GL_INVALID_VALUE);
+            // A multisample array has level 0 only.
+            if (t == GL_TEXTURE_2D_MULTISAMPLE_ARRAY && level != 0) return ctx.setError(GL_INVALID_VALUE);
             if (cube) a.cubeFace = GL_TEXTURE_CUBE_MAP_POSITIVE_X + static_cast<GLenum>(layer);
             // A layer past the target's limit (MAX_3D_TEXTURE_SIZE or MAX_ARRAY_TEXTURE_LAYERS).
             if (layer >= (t == GL_TEXTURE_3D ? limits::kMax3DTextureSize : limits::kMaxArrayLayers))

@@ -520,8 +520,9 @@ void* MapBufferRange(Context& ctx, GLenum target, GLintptr offset, GLsizeiptr le
         ctx.setError(GL_INVALID_VALUE);
         return nullptr;
     }
+    // A zero length: INVALID_VALUE in GL 4.6, INVALID_OPERATION in OpenGL ES 3.2 (section 6.3).
     if (length == 0) {
-        ctx.setError(GL_INVALID_VALUE);
+        ctx.setError(ctx.isEs() ? GL_INVALID_OPERATION : GL_INVALID_VALUE);
         return nullptr;
     }
     const bool read = access & GL_MAP_READ_BIT, write = access & GL_MAP_WRITE_BIT;

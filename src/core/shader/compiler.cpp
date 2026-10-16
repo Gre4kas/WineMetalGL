@@ -387,7 +387,12 @@ std::string voidFragmentWithSampleMask(const std::string& msl) {
 
 }  // namespace
 
-std::string fragmentSampleMaskInPerSample(const std::string& msl) {
+namespace {
+
+// The fragment entry point's parameter with `attribute` (" [[sample_mask]]"):
+// its name, and where the function body starts (after its '{'). Empty if
+// there is none.
+std::string fragmentParameter(const std::string& msl, const char* attribute, size_t& body) {
     for (const char* signature : {"fragment main0_out main0(", "fragment void main0("}) {
         const size_t fn = msl.find(signature);
         if (fn == std::string::npos) continue;
@@ -395,21 +400,27 @@ std::string fragmentSampleMaskInPerSample(const std::string& msl) {
         size_t close = fn + std::strlen(signature);
         for (int depth = 1; close < msl.size() && depth; ++close) depth += msl[close] == '(' ? 1 : msl[close] == ')' ? -1 : 0;
         const std::string parameters = msl.substr(fn, close - fn);
-        // A parameter's name: the word before its attribute.
-        auto named = [&](const char* attribute) {
-            const size_t at = parameters.find(attribute);
-            if (at == std::string::npos) return std::string();
-            const size_t end = parameters.find_last_not_of(' ', at - 1) + 1;
-            const size_t begin = parameters.rfind(' ', end - 1) + 1;
-            return parameters.substr(begin, end - begin);
-        };
-        const std::string mask = named(" [[sample_mask]]"), sample = named(" [[sample_id]]");
-        if (mask.empty() || sample.empty()) return msl;
-        std::string out = msl;
-        out.insert(out.find('{', close) + 1, "\n    " + mask + " &= (1u << " + sample + ");");
-        return out;
+        const size_t at = parameters.find(attribute);
+        if (at == std::string::npos) return std::string();
+        body = msl.find('{', close) + 1;
+        // The word before the attribute.
+        const size_t end = parameters.find_last_not_of(' ', at - 1) + 1;
+        const size_t begin = parameters.rfind(' ', end - 1) + 1;
+        return parameters.substr(begin, end - begin);
     }
-    return msl;
+    return std::string();
+}
+
+}  // namespace
+
+std::string fragmentSampleMaskInPerSample(const std::string& msl) {
+    size_t body = 0;
+    const std::string mask = fragmentParameter(msl, " [[sample_mask]]", body);
+    const std::string sample = fragmentParameter(msl, " [[sample_id]]", body);
+    if (mask.empty() || sample.empty()) return msl;
+    std::string out = msl;
+    out.insert(body, "\n    " + mask + " &= (1u << " + sample + ");");
+    return out;
 }
 
 std::string fragmentAtSampleRate(const std::string& msl) {
@@ -539,6 +550,10 @@ std::string fragmentWithSampleMask(const std::string& msl) {
                                                             : "out.wmgl_sample_mask = wmgl_fs_driver[1]; ";
     for (size_t at = out.find("return out;", fn); at != std::string::npos; at = out.find("return out;", at + assign.size() + 11))
         out.insert(at, assign);
+    // gl_SampleMaskIn holds no sample the mask removes.
+    size_t body = 0;
+    const std::string maskIn = fragmentParameter(out, " [[sample_mask]]", body);
+    if (!maskIn.empty()) out.insert(body, "\n    " + maskIn + " &= wmgl_fs_driver[1];");
     return out;
 }
 
@@ -1749,9 +1764,15 @@ std::map<std::string, std::string> blockSignaturesOf(glslang::TShader& shader) {
                          std::to_string(q.hasBinding() ? static_cast<int>(q.layoutBinding) : -1) + " {";
             // Members' precisions may differ between stages (KHR-GLES3
             // uniform_block.common.precision_matching).
-            for (const glslang::TTypeLoc& member : *type.getStruct())
+            for (const glslang::TTypeLoc& member : *type.getStruct()) {
                 signature += std::string(member.type->getCompleteString(true, true, false, true).c_str()) + " " +
-                             member.type->getFieldName().c_str() + ";";
+                             member.type->getFieldName().c_str();
+                // Array sizes, an unsized (runtime) array's as "[]".
+                if (const glslang::TArraySizes* arrays = member.type->getArraySizes())
+                    for (int d = 0; d < arrays->getNumDims(); ++d)
+                        signature += arrays->getDimSize(d) > 0 ? "[" + std::to_string(arrays->getDimSize(d)) + "]" : "[]";
+                signature += ";";
+            }
             out[(q.storage == glslang::EvqBuffer ? "buffer " : "uniform ") + name] = signature + "}";
         }
     }
@@ -3936,6 +3957,7 @@ static LinkResult linkImplCore(const LinkInput& input, const CaptureCode* captur
             }
             // Samplers.
             uint32_t nextTexture = 0;
+            std::vector<std::pair<uint32_t, std::vector<int>>> samplerSlotsById;  // image id -> its slots
             for (const auto& image : resources.sampled_images) {
                 const std::string name = unescapeName(msl.get_name(image.id));
                 const spirv_cross::SPIRType& type = msl.get_type(image.type_id);
@@ -3955,6 +3977,8 @@ static LinkResult linkImplCore(const LinkInput& input, const CaptureCode* captur
                     const auto element = samplerElement.find(name);
                     const int first = result.uniforms[it->second].samplerSlot + (element != samplerElement.end() ? element->second : 0);
                     for (uint32_t e = 0; e < count; ++e) result.samplers[first + e].stageTexture[s] = static_cast<int>(nextTexture + e);
+                    samplerSlotsById.push_back({image.id, {}});
+                    for (uint32_t e = 0; e < count; ++e) samplerSlotsById.back().second.push_back(first + static_cast<int>(e));
                 }
                 nextTexture += count;
                 if (nextTexture > kMaxStageSamplers) {
@@ -4070,6 +4094,12 @@ static LinkResult linkImplCore(const LinkInput& input, const CaptureCode* captur
             }
             stage.msl = finishFp64Msl(msl.compile());
             addDefaultBorderMacros(stage.msl);
+            // Samplers read through filtering lookups (SamplerSlotInfo::sampled).
+            for (const auto& [id, slots] : samplerSlotsById) {
+                const std::regex lookup("\\b" + msl.get_name(id) + "(\\[[^\\]]*\\])*\\.(sample|gather)");
+                if (std::regex_search(stage.msl, lookup))
+                    for (int slot : slots) result.samplers[static_cast<size_t>(slot)].sampled = true;
+            }
             if (s == static_cast<int>(Stage::Vertex)) {
                 ensureVertexOutput(stage.msl);
                 addCullDistances(stage.msl);
@@ -4109,8 +4139,15 @@ static LinkResult linkImplCore(const LinkInput& input, const CaptureCode* captur
                 result.log += "error: too many image uniforms in one stage\n";
                 return result;
             }
-        for (const StorageBlockInfo& b : result.storageBlocks)
-            for (int s = 0; s < kStageCount; ++s) blocks += (b.stageMask >> s) & 1;
+        // An array of blocks counts all its elements in a stage that uses any.
+        std::map<std::string, std::pair<int, uint32_t>> arrays;  // base name -> (elements, stages)
+        for (const StorageBlockInfo& b : result.storageBlocks) {
+            auto& a = arrays[b.name.substr(0, b.name.find('['))];
+            ++a.first;
+            a.second |= b.stageMask;
+        }
+        for (const auto& [name, a] : arrays)
+            for (int s = 0; s < kStageCount; ++s) blocks += ((a.second >> s) & 1) * a.first;
         if (blocks > limits::kMaxCombinedStorageBlocks) {
             result.log += "error: too many shader storage blocks in the program\n";
             return result;

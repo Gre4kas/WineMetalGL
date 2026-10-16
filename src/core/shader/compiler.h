@@ -244,6 +244,9 @@ struct SamplerSlotInfo {
     int textureTarget = -1;    // TextureTarget index the sampler reads (core/state.h)
     bool shadow = false;
     int stageTexture[kStageCount] = {-1, -1, -1, -1, -1, -1};  // Metal texture/sampler index per stage
+    // Read through filtering lookups (texture(), textureGather()...); a
+    // sampler only texelFetch reads ignores GL_SKIP_DECODE_EXT.
+    bool sampled = false;
 };
 
 struct StageOutput {

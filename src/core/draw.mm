@@ -426,6 +426,12 @@ bool DrawState::validateDraw(GLenum mode) {
         ctx_.setError(GL_INVALID_OPERATION);
         return false;
     }
+    // OpenGL ES tessellates only with a control shader too (section 11.1.2.1;
+    // desktop GL takes the default levels).
+    if (tessellated && ctx_.isEs() && !executableNow->hasStage(Stage::TessControl)) {
+        ctx_.setError(GL_INVALID_OPERATION);
+        return false;
+    }
     if (tessellated && !executableNow->link.tess.active) return false;  // a pipeline without the vertex program's emulation
     // Active transform feedback restricts the draw mode (GL 3.3 section 2.15.2).
     const TransformFeedback& xfb = *ctx_.state.transformFeedback;
@@ -1385,7 +1391,8 @@ void DrawState::samplerBinding(LinkedProgram& program, size_t index, __strong id
                                  : nullptr;
     if (texture && textureComplete(ctx_, *texture, samplerObject ? &samplerObject->params : &texture->sampler)) {
         SamplerParams params = samplerObject ? samplerObject->params : texture->sampler;
-        view = samplingView(ctx_, *texture, params.srgbDecode == GL_SKIP_DECODE_EXT);
+        // OpenGL ES: texelFetch decodes sRGB whatever GL_TEXTURE_SRGB_DECODE_EXT says.
+        view = samplingView(ctx_, *texture, params.srgbDecode == GL_SKIP_DECODE_EXT && (slot.sampled || !ctx_.isEs()));
         params.lodBias += compat::textureUnitLodBias(ctx_, unit);  // glTexEnv(GL_TEXTURE_FILTER_CONTROL)
         sampler = samplerState(ctx_, *texture, params, slot.shadow);
         markSampled(*texture);

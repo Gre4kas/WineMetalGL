@@ -1501,3 +1501,52 @@ GPU_TEST_ES(gpu_es_unused_shared_storage_blocks, 31) {
     glDeleteProgram(prog);
     glDeleteShader(shader);
 }
+
+// gl_SampleMaskIn holds no sample GL_SAMPLE_MASK removes.
+GPU_TEST_ES(gpu_es_sample_mask_in_with_sample_mask, 31) {
+    GLuint prog = program("#version 310 es\nlayout(location = 0) in vec2 p;\nvoid main() { gl_Position = vec4(p, 0.0, 1.0); }\n",
+                          "#version 310 es\n#extension GL_OES_sample_variables : require\n"
+                          "layout(location = 0) out mediump vec4 o;\nuniform highp uint u_mask;\n"
+                          "void main() { o = (uint(gl_SampleMaskIn[0]) & ~u_mask) != 0u ? vec4(1.0, 0.0, 0.0, 1.0)\n"
+                          "                                                             : vec4(0.0, 1.0, 0.0, 1.0); }\n");
+    GLuint vao = quad();
+    GLuint ms = 0, single = 0, msFb = 0, singleFb = 0;
+    glGenRenderbuffers(1, &ms);
+    glBindRenderbuffer(GL_RENDERBUFFER, ms);
+    glRenderbufferStorageMultisample(GL_RENDERBUFFER, 4, GL_RGBA8, 16, 16);
+    glGenFramebuffers(1, &msFb);
+    glBindFramebuffer(GL_FRAMEBUFFER, msFb);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, ms);
+    glViewport(0, 0, 16, 16);
+    glClearColor(0, 0, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glUseProgram(prog);
+    glUniform1ui(glGetUniformLocation(prog, "u_mask"), 0x5u);
+    glEnable(GL_SAMPLE_MASK);
+    glSampleMaski(0, 0x5u);
+    glBindVertexArray(vao);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glDisable(GL_SAMPLE_MASK);
+    glSampleMaski(0, ~0u);
+    glGenRenderbuffers(1, &single);
+    glBindRenderbuffer(GL_RENDERBUFFER, single);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8, 16, 16);
+    glGenFramebuffers(1, &singleFb);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, singleFb);
+    glFramebufferRenderbuffer(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, single);
+    glBlitFramebuffer(0, 0, 16, 16, 0, 0, 16, 16, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, singleFb);
+    // Half the samples drawn green, none red.
+    const std::vector<uint8_t> got = readRGBA8(8, 8, 1, 1);
+    CHECK(got[0] < 3 && got[1] > 100);
+    if (!(got[0] < 3 && got[1] > 100)) std::fprintf(stderr, "  got %d %d %d\n", got[0], got[1], got[2]);
+    CHECK_GL();
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glViewport(0, 0, 64, 64);
+    glDeleteFramebuffers(1, &msFb);
+    glDeleteFramebuffers(1, &singleFb);
+    glDeleteRenderbuffers(1, &ms);
+    glDeleteRenderbuffers(1, &single);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(prog);
+}
