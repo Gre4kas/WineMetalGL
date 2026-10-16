@@ -1024,3 +1024,39 @@ TEST(gpu_es_depth32f_window_blit) {
         glDeleteRenderbuffers(1, &rb);
     }
 }
+
+// Blits into an sRGB-capable window from an RGBA8 framebuffer follow the
+// OpenGL ES rules of a linear window: a color blit is valid, and one between
+// the window and itself is INVALID_OPERATION.
+TEST(gpu_es_srgb_capable_window_blit) {
+    gpu::Fixture fixture(64, 64, true, 30, true, 24, true);
+    CHECK(fixture.ok);
+    if (!fixture.ok) return;
+    GLuint fb = 0, color = 0, depth = 0;
+    glGenFramebuffers(1, &fb);
+    glBindFramebuffer(GL_FRAMEBUFFER, fb);
+    glGenRenderbuffers(1, &color);
+    glBindRenderbuffer(GL_RENDERBUFFER, color);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8, 32, 32);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, color);
+    glGenRenderbuffers(1, &depth);
+    glBindRenderbuffer(GL_RENDERBUFFER, depth);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, 32, 32);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, depth);
+    CHECK_EQ(glCheckFramebufferStatus(GL_FRAMEBUFFER), static_cast<GLenum>(GL_FRAMEBUFFER_COMPLETE));
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+    glBlitFramebuffer(0, 0, 32, 32, 0, 0, 32, 32, 0, GL_NEAREST);
+    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_NO_ERROR));
+    glBlitFramebuffer(0, 0, 32, 32, 0, 0, 32, 32, GL_COLOR_BUFFER_BIT | GL_STENCIL_BUFFER_BIT, GL_LINEAR);
+    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_INVALID_OPERATION));
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glBlitFramebuffer(0, 0, 32, 32, 0, 0, 32, 32, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_INVALID_OPERATION));
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, fb);
+    glBlitFramebuffer(0, 0, 32, 32, 0, 0, 32, 32, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_NO_ERROR));
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &fb);
+    glDeleteRenderbuffers(1, &color);
+    glDeleteRenderbuffers(1, &depth);
+}

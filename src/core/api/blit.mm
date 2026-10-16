@@ -426,8 +426,18 @@ void BlitFramebuffer(Context& ctx, GLint srcX0, GLint srcY0, GLint srcX1, GLint 
                             return ctx.setError(GL_INVALID_OPERATION);
         // Section 16.2.1: the source and destination buffers may not be the
         // same image (desktop GL leaves overlapping blits undefined).
+        // A view (such as the linear view of sRGB storage) is its texture's
+        // image at the view's first level and slice.
         auto same = [](const RenderTargetDesc::Target& a, const RenderTargetDesc::Target& b) {
-            return a.texture && a.texture == b.texture && a.level == b.level && a.slice == b.slice;
+            if (!a.texture || !b.texture) return false;
+            auto storage = [](id<MTLTexture> t) { return t.parentTexture ? t.parentTexture : t; };
+            auto level = [](const RenderTargetDesc::Target& t) {
+                return t.level + (t.texture.parentTexture ? t.texture.parentRelativeLevel : 0);
+            };
+            auto slice = [](const RenderTargetDesc::Target& t) {
+                return t.slice + (t.texture.parentTexture ? t.texture.parentRelativeSlice : 0);
+            };
+            return storage(a.texture) == storage(b.texture) && level(a) == level(b) && slice(a) == slice(b);
         };
         if (doColor)
             for (int i = 0; i < 8; ++i)
