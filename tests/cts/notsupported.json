@@ -435,6 +435,11 @@
    "pattern": "dEQP-GLES31.functional.texture.multisample.samples_*",
    "kind": "extension",
    "reason": "The cases need more than 4 samples (or more GL_MAX_SAMPLE_MASK_WORDS); Apple GPUs render with at most 4."
+  },
+  {
+   "pattern": "dEQP-GLES31.functional.primitive_bounding_box.blit_fbo.blit_fbo_to_default",
+   "kind": "test-design",
+   "reason": "The case needs a single-sample default framebuffer; the multisample list's configuration has a 4-sample one (es31fPrimitiveBoundingBoxTests.cpp)."
   }
  ]
 }

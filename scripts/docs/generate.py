@@ -617,16 +617,20 @@ def render(suites, es_suites):
         gl_rows.append((version, conformance_cell, adds, unsupported_cell))
     es_rows, es_commits = [], set()
     for version, adds in ES_VERSIONS:
-        runs = [results for suite, _, v in ES_SUITES if v == version for _, results in es_suites[suite].values()]
-        es_commits.update(meta.get("commit", "?") for suite, _, v in ES_SUITES if v == version
-                          for meta, _ in es_suites[suite].values())
+        # The KHR-Single lists test only GL_KHR_shader_subgroup; like the desktop
+        # totals, the totals leave them out (the run table lists them).
+        counted = [suite for suite, _, v in ES_SUITES if v == version and not suite.endswith("-khr-single")]
+        runs = [results for suite in counted for _, results in es_suites[suite].values()]
+        es_commits.update(meta.get("commit", "?") for suite in counted for meta, _ in es_suites[suite].values())
         if not runs:
             es_rows.append((version, "not measured", adds, "not measured"))
             continue
-        rates = [applicable(r) for r in runs]
-        worst = min(rates, key=lambda x: x[0] / max(x[1], 1))
-        most = max((lacking(r, kind_of) for r in runs), key=lambda x: x[0] / max(x[1], 1))
-        es_rows.append((version, percent(*worst), adds, share(*most)))
+        # The version's lists together (different lists, not configurations of one).
+        passed = sum(applicable(r)[0] for r in runs)
+        total = sum(applicable(r)[1] for r in runs)
+        offered_not = sum(lacking(r, kind_of)[0] for r in runs)
+        runnable = sum(lacking(r, kind_of)[1] for r in runs)
+        es_rows.append((version, percent(passed, total), adds, share(offered_not, runnable)))
     es_summary = es_runner_summary()
     gl_measure = (
         "**Conformance %%**: passing cases over applicable cases (cases that are not NotSupported) of the "
@@ -643,9 +647,11 @@ def render(suites, es_suites):
                       "those cases." % (", ".join("`%s`" % p for p in packages),
                                         ", ".join(sorted({c for _, c in rechecks}))))
     es_measure = (
-        "**GLES**: the same measure over each version's OpenGL ES mustpass lists, Khronos's "
-        "(`KHR-GLES2` to `KHR-GLES32`, `KHR-GLESEXT`) and dEQP's (`dEQP-GLES2` to `dEQP-GLES31`, with "
-        "their rotation, multisample and RGB565 lists), in configuration 1 under Wine at commit %s." % (
+        "**GLES**: passing cases over applicable cases of all of the version's OpenGL ES mustpass lists "
+        "together, Khronos's (`KHR-GLES2` to `KHR-GLES32`, `KHR-GLESEXT`, `KHR-NoContext`; not `KHR-Single`, which "
+        "tests only subgroup operations) and "
+        "dEQP's (`dEQP-GLES2` to `dEQP-GLES31`, with their rotation, multisample and RGB565 lists), in "
+        "configuration 1 under Wine at commit %s; Unsupported %% likewise." % (
             ", ".join(sorted(es_commits)) or "-") +
         (" `cts-runner --type=es3` runs the OpenGL ES 2.0 and 3.0 lists in every configuration it "
          "selects ([OpenGL ES](#opengl-es))." if es_summary else ""))
@@ -926,7 +932,8 @@ def render(suites, es_suites):
               for version, conformance_cell, _, unsupported_cell in es_rows]
     lines += ["",
               "**Conformance %**: passing cases over applicable cases (cases that are not NotSupported) of the "
-              "version's Khronos CTS mustpass lists, in the worst of their runs. **Unsupported %**: cases the CTS "
+              "version's Khronos CTS mustpass lists (OpenGL: the worst of its runs; GLES: its lists together). "
+              "**Unsupported %**: cases the CTS "
               "reports NotSupported because WineMetalGL does not offer what they test. Each version's features, "
               "what is supported and every run: [Conformance results](docs/conformance.md#conformance-totals).",
               "",

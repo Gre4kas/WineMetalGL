@@ -20,16 +20,16 @@ Khronos CTS mustpass lists (`glNN-main.txt`) in configurations 1 to 4 of `mustpa
 
 | GLES | Conformance % | Features | Unsupported % |
 |---|---:|---|---:|
-| 2.0 | not measured | GLSL ES 1.00, framebuffer objects, the ES 2.0 extensions (float and depth textures, ...) | not measured |
-| 3.0 | not measured | GLSL ES 3.00, transform feedback, instancing, integer and sRGB formats, multisample renderbuffers | not measured |
-| 3.1 | not measured | Compute shaders, images, storage buffers, indirect draws, separate programs, multisample textures | not measured |
-| 3.2 | not measured | Geometry and tessellation shaders, advanced blending, ASTC, texture buffers, debug output | not measured |
+| 2.0 | 100% | GLSL ES 1.00, framebuffer objects, the ES 2.0 extensions (float and depth textures, ...) | 0.60% |
+| 3.0 | 100% | GLSL ES 3.00, transform feedback, instancing, integer and sRGB formats, multisample renderbuffers | 0.83% |
+| 3.1 | 99.98% | Compute shaders, images, storage buffers, indirect draws, separate programs, multisample textures | 3.99% |
+| 3.2 | 99.93% | Geometry and tessellation shaders, advanced blending, ASTC, texture buffers, debug output | 42.50% |
 
 **Conformance %**: passing cases over applicable cases (cases that are not NotSupported) of the version's Khronos CTS mustpass list (`KHR-GL30` to `KHR-GL43`, `KHR-GL46`), in the worst of its runs: 8 for `KHR-GL30` to `KHR-GL43` (configurations 1 to 4 of `mustpass.xml`, each under Wine and natively), 3 for `KHR-GL46` (configuration 1 natively, configurations 1 and 3 under Wine), at commit 14eaa75, 49c5099, 851476e, f4ecccd. OpenGL 4.4 and 4.5 have no list of their own: `KHR-GL46` runs their tests.
 
 The cases that were not Pass in `KHR-GL33`, `KHR-GL40`, `KHR-GL41`, `KHR-GL42`, `KHR-GL43` were run again at commit 49c5099, in the same configurations under Wine and natively (`tests/cts/recheck/`); those results replace the baselines' for those cases.
 
-**GLES**: the same measure over each version's OpenGL ES mustpass lists, Khronos's (`KHR-GLES2` to `KHR-GLES32`, `KHR-GLESEXT`) and dEQP's (`dEQP-GLES2` to `dEQP-GLES31`, with their rotation, multisample and RGB565 lists), in configuration 1 under Wine at commit -.
+**GLES**: passing cases over applicable cases of all of the version's OpenGL ES mustpass lists together, Khronos's (`KHR-GLES2` to `KHR-GLES32`, `KHR-GLESEXT`, `KHR-NoContext`; not `KHR-Single`, which tests only subgroup operations) and dEQP's (`dEQP-GLES2` to `dEQP-GLES31`, with their rotation, multisample and RGB565 lists), in configuration 1 under Wine at commit 02d9b86; Unsupported % likewise. `cts-runner --type=es3` runs the OpenGL ES 2.0 and 3.0 lists in every configuration it selects ([OpenGL ES](#opengl-es)).
 
 **Unsupported %**: cases the CTS reports NotSupported because WineMetalGL does not offer what they test (an extension it does not advertise, or a limit above the minimum), over the cases any implementation can run: [Unsupported](unsupported.md#conformance-notes).
 
@@ -212,26 +212,27 @@ OpenGL 3.x features are core in every context. The OpenGL 4.x features are the e
 | 3.0 | Multisampled render to texture (`GL_EXT_multisampled_render_to_texture`) | No | Not advertised |
 | 3.1 | GLSL ES 3.10 | Yes | - |
 | 3.1 | Compute shaders | Yes | - |
-| 3.1 | Image load/store | Partly | Some dEQP-GLES31 cases fail |
+| 3.1 | Image load/store | Yes | - |
 | 3.1 | Shader storage buffers | Yes | - |
-| 3.1 | Atomic counters | Yes | - |
+| 3.1 | Atomic counters | Partly | Arrays of atomic counters passed to functions do not compile |
 | 3.1 | Indirect draws and dispatches | Yes | - |
-| 3.1 | Separate shader programs | Partly | Some dEQP-GLES31 cases fail |
+| 3.1 | Separate shader programs | Yes | - |
 | 3.1 | Multisample textures | Yes | - |
-| 3.1 | Vertex attribute bindings | Partly | Some dEQP-GLES31 cases fail |
-| 3.1 | Program interface queries | Partly | Some dEQP-GLES31 cases fail (resources of interface blocks and built-ins) |
+| 3.1 | Vertex attribute bindings | Yes | - |
+| 3.1 | Program interface queries | Yes | - |
+| 3.1 | Arrays of matrices as stage inputs and outputs | No | Metal stage inputs and outputs cannot hold them (SPIRV-Cross); such programs do not link |
 | 3.1 | Texture gather | Yes | - |
 | 3.1 | Stencil texturing | Yes | - |
 | 3.1 | Framebuffers without attachments | Yes | - |
 | 3.2 | GLSL ES 3.20 | Yes | - |
-| 3.2 | Geometry shaders | Partly | Struct varyings do not link |
-| 3.2 | Tessellation shaders | Partly | Struct varyings do not link |
+| 3.2 | Geometry shaders | Yes | - |
+| 3.2 | Tessellation shaders | Yes | - |
 | 3.2 | Advanced blend equations | Yes | - |
 | 3.2 | ASTC LDR compressed textures | Yes | - |
 | 3.2 | ASTC HDR and 3D compressed textures | No | Not advertised; LDR ASTC only |
 | 3.2 | Texture buffers | Yes | - |
 | 3.2 | Cube map arrays | Yes | - |
-| 3.2 | Debug output | Partly | Some dEQP-GLES31 cases fail |
+| 3.2 | Debug output | Yes | - |
 | 3.2 | Robustness | Yes | - |
 | 3.2 | Per-sample shading | Yes | - |
 | 3.2 | Multisample 2D array textures | Yes | - |
@@ -415,6 +416,64 @@ Cases that neither pass nor are NotSupported:
 | `KHR-GL46.clear_tex_image.negative_gl_clear_tex_and_sub_image_compressed_texture` | Fail natively in configuration 1; Fail under Wine in configurations 1, 3 | The case defines its texture with the generic GL_COMPRESSED_RGBA and expects glClearTexImage to raise INVALID_OPERATION for a compressed image (gl4cClearTexImageAndSubImageTests.cpp, compressedTextureTestCase). GL 4.6 section 8.6 lets the GL store a generic compressed format uncompressed; WineMetalGL stores it as RGBA8 (GL_TEXTURE_COMPRESSED is GL_FALSE), so the clear is valid. |
 | `KHR-GL46.internalformat.renderbuffer.rgb9_e5` | Fail natively in configuration 1; Fail under Wine in configurations 1, 3 | The case expects `glRenderbufferStorage(GL_RGB9_E5)` to succeed (glcInternalformatTests.cpp, RenderbufferCase::createAndAttachRenderBuffer). GL 4.2 section 4.4.2.1 requires `GL_INVALID_ENUM` for an internal format that is not color-, depth- or stencil-renderable, and table 3.12 does not list `GL_RGB9_E5` as color-renderable. |
 | `KHR-GL46.texture_view.view_sampling` | Fail natively in configuration 1; Fail under Wine in configurations 1, 3 | The case sets the view's filtering with `glTexParameteri` on the parent's target (gl4cTextureViewTests.cpp, TextureViewTestViewSampling::initTextureObject), so a cube-map or cube-map-array view of a parent with another target keeps `GL_LINEAR` magnification, and the fragment stage samples next to a face edge. It expects non-seamless per-face filtering (`GL_TEXTURE_CUBE_MAP_SEAMLESS` is disabled). Metal always filters cube maps seamlessly, blending the neighbouring face. Every other view, target and stage of the case passes. |
+
+## OpenGL ES
+
+OpenGL ES contexts (`WGL_EXT_create_context_es2_profile`; OpenGL ES 3.2) run the OpenGL ES mustpass lists, Khronos's (`gles*-khr-*`) and dEQP's (`aosp_mustpass`), each in configuration 1 of its `mustpass.xml` under Wine: `scripts/cts/run.py --mustpass LIST.txt --config 1`.
+
+`cts-runner --type=es3`, which runs every OpenGL ES 2.0 and 3.0 list in each configuration it selects (22 WGL window pixel formats: 1 to 10 (no samples, no sRGB), 31 to 40 (sRGB-capable), 61 and 62 (RGB565)), at commit c57a9ed: 48 runs, 219,931 cases, no failing case (Fail, Crash, Timeout, InternalError) in any run. The runs are listed in `tests/cts/es/cts-runner-es3.txt`.
+
+| List | Runs | OpenGL ES | Pass | Fail | NotSupported | InternalError | Crash | Timeout | Missing | Other | Cases | Applicable passing | Time | Commit | File |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|
+| `gles2-khr-main` | KHR-GLES2 | 2.0 | 440 | 0 | 33 | 0 | 0 | 0 | 0 | 0 | 473 | 100% | 8 s | 02d9b86 | `tests/cts/baseline/gles2-khr-main-cfg1-wine.txt` |
+| `gles2-khr-noctx-main` | KHR-NoContext.es2 | 2.0 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 100% | 3 s | 02d9b86 | `tests/cts/baseline/gles2-khr-noctx-main-cfg1-wine.txt` |
+| `gles2-main` | dEQP-GLES2 | 2.0 | 17075 | 0 | 90 | 0 | 0 | 0 | 0 | 0 | 17165 | 100% | 3.0 min | 02d9b86 | `tests/cts/baseline/gles2-main-cfg1-wine.txt` |
+| `gles3-khr-main` | KHR-GLES3 | 3.0 | 6479 | 0 | 19 | 0 | 0 | 0 | 0 | 0 | 6498 | 100% | 61 s | 02d9b86 | `tests/cts/baseline/gles3-khr-main-cfg1-wine.txt` |
+| `gles3-main` | dEQP-GLES3 | 3.0 | 44335 | 0 | 433 | 0 | 0 | 0 | 0 | 0 | 44768 | 100% | 13.5 min | 02d9b86 | `tests/cts/baseline/gles3-main-cfg1-wine.txt` |
+| `gles3-rotate-portrait` | dEQP-GLES3, screen rotation 0 | 3.0 | 963 | 0 | 20 | 0 | 0 | 0 | 0 | 0 | 983 | 100% | 10 s | 02d9b86 | `tests/cts/baseline/gles3-rotate-portrait-cfg1-wine.txt` |
+| `gles3-rotate-landscape` | dEQP-GLES3, screen rotation 90 | 3.0 | 963 | 0 | 20 | 0 | 0 | 0 | 0 | 0 | 983 | 100% | 11 s | 02d9b86 | `tests/cts/baseline/gles3-rotate-landscape-cfg1-wine.txt` |
+| `gles3-rotate-reverse-portrait` | dEQP-GLES3, screen rotation 180 | 3.0 | 963 | 0 | 20 | 0 | 0 | 0 | 0 | 0 | 983 | 100% | 8 s | 02d9b86 | `tests/cts/baseline/gles3-rotate-reverse-portrait-cfg1-wine.txt` |
+| `gles3-rotate-reverse-landscape` | dEQP-GLES3, screen rotation 270 | 3.0 | 963 | 0 | 20 | 0 | 0 | 0 | 0 | 0 | 983 | 100% | 7 s | 02d9b86 | `tests/cts/baseline/gles3-rotate-reverse-landscape-cfg1-wine.txt` |
+| `gles3-multisample` | dEQP-GLES3, 4 samples | 3.0 | 4615 | 0 | 20 | 0 | 0 | 0 | 0 | 0 | 4635 | 100% | 38 s | 02d9b86 | `tests/cts/baseline/gles3-multisample-cfg1-wine.txt` |
+| `gles3-565-no-depth-no-stencil` | dEQP-GLES3, RGB565 without depth and stencil | 3.0 | 3332 | 0 | 8 | 0 | 0 | 0 | 0 | 0 | 3340 | 100% | 28 s | 02d9b86 | `tests/cts/baseline/gles3-565-no-depth-no-stencil-cfg1-wine.txt` |
+| `gles31-khr-main` | KHR-GLES31 | 3.1 | 4052 | 1 | 48 | 0 | 0 | 0 | 0 | 0 | 4101 | 99.97% | 64 s | 02d9b86 | `tests/cts/baseline/gles31-khr-main-cfg1-wine.txt` |
+| `gles31-khr-single` | KHR-Single-GLES31 | 3.1 | 0 | 0 | 6053 | 0 | 0 | 0 | 0 | 0 | 6053 | 100% | 16 s | 02d9b86 | `tests/cts/baseline/gles31-khr-single-cfg1-wine.txt` |
+| `gles31-main` | dEQP-GLES31 | 3.1 | 36224 | 6 | 1572 | 0 | 0 | 0 | 0 | 0 | 37802 | 99.98% | 14.1 min | 02d9b86 | `tests/cts/baseline/gles31-main-cfg1-wine.txt` |
+| `gles31-rotate-portrait` | dEQP-GLES31, screen rotation 0 | 3.1 | 114 | 0 | 18 | 0 | 0 | 0 | 0 | 0 | 132 | 100% | 9 s | 02d9b86 | `tests/cts/baseline/gles31-rotate-portrait-cfg1-wine.txt` |
+| `gles31-rotate-landscape` | dEQP-GLES31, screen rotation 90 | 3.1 | 114 | 0 | 18 | 0 | 0 | 0 | 0 | 0 | 132 | 100% | 9 s | 02d9b86 | `tests/cts/baseline/gles31-rotate-landscape-cfg1-wine.txt` |
+| `gles31-rotate-reverse-portrait` | dEQP-GLES31, screen rotation 180 | 3.1 | 114 | 0 | 18 | 0 | 0 | 0 | 0 | 0 | 132 | 100% | 9 s | 02d9b86 | `tests/cts/baseline/gles31-rotate-reverse-portrait-cfg1-wine.txt` |
+| `gles31-rotate-reverse-landscape` | dEQP-GLES31, screen rotation 270 | 3.1 | 114 | 0 | 18 | 0 | 0 | 0 | 0 | 0 | 132 | 100% | 9 s | 02d9b86 | `tests/cts/baseline/gles31-rotate-reverse-landscape-cfg1-wine.txt` |
+| `gles31-multisample` | dEQP-GLES31, 4 samples | 3.1 | 216 | 0 | 23 | 0 | 0 | 0 | 0 | 0 | 239 | 100% | 10 s | 02d9b86 | `tests/cts/baseline/gles31-multisample-cfg1-wine.txt` |
+| `gles31-565-no-depth-no-stencil` | dEQP-GLES31, RGB565 without depth and stencil | 3.1 | 21 | 0 | 2 | 0 | 0 | 0 | 0 | 0 | 23 | 100% | 7 s | 02d9b86 | `tests/cts/baseline/gles31-565-no-depth-no-stencil-cfg1-wine.txt` |
+| `gles32-khr-main` | KHR-GLES32 | 3.2 | 1403 | 0 | 2 | 0 | 0 | 0 | 0 | 0 | 1405 | 100% | 34 s | 02d9b86 | `tests/cts/baseline/gles32-khr-main-cfg1-wine.txt` |
+| `gles32-khr-noctx-main` | KHR-NoContext.es32 | 3.2 | 12 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 13 | 92.30% | 6 s | 02d9b86 | `tests/cts/baseline/gles32-khr-noctx-main-cfg1-wine.txt` |
+| `gles32-khr-single` | KHR-Single-GLES32 | 3.2 | 0 | 0 | 6053 | 0 | 0 | 0 | 0 | 0 | 6053 | 100% | 17 s | 02d9b86 | `tests/cts/baseline/gles32-khr-single-cfg1-wine.txt` |
+| `gles32-khr-glesext` | KHR-GLESEXT | 3.2 | 29 | 0 | 1068 | 0 | 0 | 0 | 0 | 0 | 1097 | 100% | 11 s | 02d9b86 | `tests/cts/baseline/gles32-khr-glesext-cfg1-wine.txt` |
+
+CTS build: dEQP Core 1942832354c96f0de379f491519734256fbd4f9d.
+
+### `gles31-khr-main`: cases that neither pass nor are NotSupported
+
+| Case | Result | Reason |
+|---|---|---|
+| `KHR-GLES31.core.shader_atomic_counters.advanced-usage-multidim-array-small` | Fail | Not a CTS defect: a WineMetalGL limitation. The shader passes arrays of atomic counters to functions (es31cShaderAtomicCountersTests.cpp, AdvancedUsageMultiDimArray); glslang lowers atomic counters to storage buffer words for SPIR-V, which function parameters cannot reference, and the shader does not compile. |
+
+### `gles31-main`: cases that neither pass nor are NotSupported
+
+| Case | Result | Reason |
+|---|---|---|
+| `dEQP-GLES31.functional.program_interface_query.program_input.type.interface_blocks.in.named_block.array.mat3x2` | Fail | Not a CTS defect: a WineMetalGL limitation. The shaders pass arrays of matrices between stages in an interface block; Metal stage inputs and outputs cannot hold arrays of matrices (SPIRV-Cross reports "MSL cannot emit arrays-of-matrices in input and output variables"), so the program does not link. |
+| `dEQP-GLES31.functional.program_interface_query.program_input.type.interface_blocks.in.named_block_explicit_location.array.mat3x2` | Fail | Not a CTS defect: a WineMetalGL limitation. The shaders pass arrays of matrices between stages in an interface block; Metal stage inputs and outputs cannot hold arrays of matrices (SPIRV-Cross reports "MSL cannot emit arrays-of-matrices in input and output variables"), so the program does not link. |
+| `dEQP-GLES31.functional.program_interface_query.program_input.type.interface_blocks.in.unnamed_block.array.mat3x2` | Fail | Not a CTS defect: a WineMetalGL limitation. The shaders pass arrays of matrices between stages in an interface block; Metal stage inputs and outputs cannot hold arrays of matrices (SPIRV-Cross reports "MSL cannot emit arrays-of-matrices in input and output variables"), so the program does not link. |
+| `dEQP-GLES31.functional.program_interface_query.program_output.type.interface_blocks.out.named_block.array.mat3x2` | Fail | Not a CTS defect: a WineMetalGL limitation. The shaders pass arrays of matrices between stages in an interface block; Metal stage inputs and outputs cannot hold arrays of matrices (SPIRV-Cross reports "MSL cannot emit arrays-of-matrices in input and output variables"), so the program does not link. |
+| `dEQP-GLES31.functional.program_interface_query.program_output.type.interface_blocks.out.named_block_explicit_location.array.mat3x2` | Fail | Not a CTS defect: a WineMetalGL limitation. The shaders pass arrays of matrices between stages in an interface block; Metal stage inputs and outputs cannot hold arrays of matrices (SPIRV-Cross reports "MSL cannot emit arrays-of-matrices in input and output variables"), so the program does not link. |
+| `dEQP-GLES31.functional.program_interface_query.program_output.type.interface_blocks.out.unnamed_block.array.mat3x2` | Fail | Not a CTS defect: a WineMetalGL limitation. The shaders pass arrays of matrices between stages in an interface block; Metal stage inputs and outputs cannot hold arrays of matrices (SPIRV-Cross reports "MSL cannot emit arrays-of-matrices in input and output variables"), so the program does not link. |
+
+### `gles32-khr-noctx-main`: cases that neither pass nor are NotSupported
+
+| Case | Result | Reason |
+|---|---|---|
+| `KHR-NoContext.es32.robust_buffer_access_behavior.uniform_buffer` | Fail | Not a CTS defect: a WineMetalGL limitation. The case reads a uniform block array past its end in a robust context and expects zero or a value from the buffer (glcRobustBufferAccessBehaviorTests.cpp, UniformBufferTest); Metal does not bound uniform buffer reads, so the value is whatever memory follows (the case passes or fails from run to run). |
 
 NotSupported cases, and the reason for each: [Unsupported](unsupported.md#cts-cases-reported-notsupported).
 

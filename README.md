@@ -53,12 +53,12 @@ WineMetalGL module: an OpenGL 4.6 compatibility context on an Apple M4.
 
 | GLES | Conformance % | Unsupported % |
 |---|---:|---:|
-| 2.0 | not measured | not measured |
-| 3.0 | not measured | not measured |
-| 3.1 | not measured | not measured |
-| 3.2 | not measured | not measured |
+| 2.0 | 100% | 0.60% |
+| 3.0 | 100% | 0.83% |
+| 3.1 | 99.98% | 3.99% |
+| 3.2 | 99.93% | 42.50% |
 
-**Conformance %**: passing cases over applicable cases (cases that are not NotSupported) of the version's Khronos CTS mustpass lists, in the worst of their runs. **Unsupported %**: cases the CTS reports NotSupported because WineMetalGL does not offer what they test. Each version's features, what is supported and every run: [Conformance results](docs/conformance.md#conformance-totals).
+**Conformance %**: passing cases over applicable cases (cases that are not NotSupported) of the version's Khronos CTS mustpass lists (OpenGL: the worst of its runs; GLES: its lists together). **Unsupported %**: cases the CTS reports NotSupported because WineMetalGL does not offer what they test. Each version's features, what is supported and every run: [Conformance results](docs/conformance.md#conformance-totals).
 
 OpenGL 1.0 to 2.1 are implemented by WineMetalGL itself, as its compatibility profile: the fixed-function pipeline, immediate mode, display lists and legacy GLSL, alongside every 3.x feature. No public Khronos suite measures them; the Wine fixtures, GPU tests and game corpus exercise them, and [Unsupported](docs/unsupported.md#compatibility-profile-opengl-10-to-21) lists what is not implemented.
 

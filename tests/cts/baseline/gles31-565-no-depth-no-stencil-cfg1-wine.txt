@@ -1,0 +1,27 @@
+# mustpass gles31-565-no-depth-no-stencil.txt config 1: --deqp-gl-config-name=rgb565d0s0ms0 --deqp-screen-rotation=unspecified --deqp-surface-width=256 --deqp-surface-height=256 --deqp-watchdog=disable
+# commit 02d9b86, path winemetalgl, 23 cases, 7 s
+# cts dEQP Core 1942832354c96f0de379f491519734256fbd4f9d
+# totals NotSupported=2 Pass=21
+dEQP-GLES31.functional.sample_shading.min_sample_shading.default_framebuffer_color NotSupported
+dEQP-GLES31.functional.sample_shading.min_sample_shading.default_framebuffer_discard NotSupported
+dEQP-GLES31.functional.shaders.sample_variables.max_samples.default_framebuffer Pass
+dEQP-GLES31.functional.shaders.sample_variables.num_samples.default_framebuffer Pass
+dEQP-GLES31.functional.shaders.sample_variables.sample_id.default_framebuffer Pass
+dEQP-GLES31.functional.shaders.sample_variables.sample_mask.discard_half_per_pixel.default_framebuffer Pass
+dEQP-GLES31.functional.shaders.sample_variables.sample_mask.discard_half_per_sample.default_framebuffer Pass
+dEQP-GLES31.functional.shaders.sample_variables.sample_mask.discard_half_per_two_samples.default_framebuffer Pass
+dEQP-GLES31.functional.shaders.sample_variables.sample_mask.inverse_per_pixel.default_framebuffer Pass
+dEQP-GLES31.functional.shaders.sample_variables.sample_mask.inverse_per_sample.default_framebuffer Pass
+dEQP-GLES31.functional.shaders.sample_variables.sample_mask.inverse_per_two_samples.default_framebuffer Pass
+dEQP-GLES31.functional.shaders.sample_variables.sample_mask_in.bit_count_per_pixel.default_framebuffer Pass
+dEQP-GLES31.functional.shaders.sample_variables.sample_mask_in.bit_count_per_sample.default_framebuffer Pass
+dEQP-GLES31.functional.shaders.sample_variables.sample_mask_in.bit_count_per_two_samples.default_framebuffer Pass
+dEQP-GLES31.functional.shaders.sample_variables.sample_mask_in.sample_mask.default_framebuffer Pass
+dEQP-GLES31.functional.shaders.sample_variables.sample_pos.correctness.default_framebuffer Pass
+dEQP-GLES31.functional.shaders.sample_variables.sample_pos.distribution.default_framebuffer Pass
+dEQP-GLES31.info.extensions Pass
+dEQP-GLES31.info.render_target Pass
+dEQP-GLES31.info.renderer Pass
+dEQP-GLES31.info.shading_language_version Pass
+dEQP-GLES31.info.vendor Pass
+dEQP-GLES31.info.version Pass
