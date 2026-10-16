@@ -48,6 +48,14 @@ struct wmgl_pixel_format
     int max_pbuffer_width, max_pbuffer_height, max_pbuffer_pixels;
 };
 
+/* Child windows a window's layer leaves room for (wmgl_window_placement). */
+#define WMGL_MAX_HOLES 8
+
+struct wmgl_rect
+{
+    INT x, y, width, height;
+};
+
 /* Where a window DC draws: its window, and the window's client area in
  * pixels no DPI awareness scaled (the PE side asks user32, whose answers are
  * stable across Wine versions; the unix side keeps no window state of its
@@ -61,12 +69,24 @@ struct wmgl_window_placement
     UINT screen_width;  /* the primary screen's width */
     INT clip_x, clip_y, clip_width, clip_height;  /* the part of it its ancestors show, likewise */
     BOOL visible;
+    /* Its visible child windows without a drawable of their own, likewise:
+     * Wine draws those into the top-level window, under the layer, which
+     * shows them through holes (the video window a movie player gives the
+     * GL window, say). */
+    UINT hole_count;
+    struct wmgl_rect holes[WMGL_MAX_HOLES];
 };
 
 /* forget_window: a destroyed window's drawable goes. */
 struct wmgl_forget_window_params
 {
     UINT64 hwnd;
+};
+
+/* place_window: a window's child windows changed, between swaps. */
+struct wmgl_place_window_params
+{
+    struct wmgl_window_placement window;
 };
 
 struct wmgl_init_params

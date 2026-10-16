@@ -6,6 +6,7 @@
 
 BOOL wmgl_debug;
 
+static HINSTANCE module;
 static unixlib_handle_t unixlib;
 static NTSTATUS (WINAPI *unix_call_dispatcher)( unixlib_handle_t, unsigned int, void * );
 static DWORD tls_index = TLS_OUT_OF_INDEXES;
@@ -165,6 +166,7 @@ BOOL WINAPI DllMain( HINSTANCE instance, DWORD reason, LPVOID reserved )
     switch (reason)
     {
     case DLL_PROCESS_ATTACH:
+        module = instance;
         wmgl_debug = getenv( "WINEMETALGL_WINE_DEBUG" ) != NULL;
         if (getenv( "WINEMETALGL_BATCH" ) && !strcmp( getenv( "WINEMETALGL_BATCH" ), "0" )) batching = FALSE;
         if ((tls_index = TlsAlloc()) == TLS_OUT_OF_INDEXES) return FALSE;
@@ -213,15 +215,22 @@ static SRWLOCK windows_lock = SRWLOCK_INIT;
 static HWND windows[256];
 static unsigned int window_count, window_checks;
 
-static void track_window( HWND hwnd )
+/* TRUE: the window is new here. */
+static BOOL track_window( HWND hwnd )
 {
     unsigned int i;
+    BOOL added = FALSE;
 
     AcquireSRWLockExclusive( &windows_lock );
     for (i = 0; i < window_count; i++)
         if (windows[i] == hwnd) break;
-    if (i == window_count && window_count < sizeof(windows) / sizeof(windows[0])) windows[window_count++] = hwnd;
+    if (i == window_count && window_count < sizeof(windows) / sizeof(windows[0]))
+    {
+        windows[window_count++] = hwnd;
+        added = TRUE;
+    }
     ReleaseSRWLockExclusive( &windows_lock );
+    return added;
 }
 
 static void forget_destroyed_windows(void)
@@ -244,17 +253,27 @@ static void forget_destroyed_windows(void)
     }
 }
 
-/* Where a DC's window is (wmgl_window_placement), in pixels no DPI
- * awareness has scaled. */
-static void window_placement( HDC hdc, struct wmgl_window_placement *placement )
+static BOOL is_tracked( HWND hwnd )
+{
+    unsigned int i;
+    BOOL found = FALSE;
+
+    AcquireSRWLockShared( &windows_lock );
+    for (i = 0; i < window_count && !found; i++) found = windows[i] == hwnd;
+    ReleaseSRWLockShared( &windows_lock );
+    return found;
+}
+
+/* Where a window is (wmgl_window_placement), in pixels no DPI awareness
+ * has scaled; `gone`, a child window going away, makes no hole. */
+static void hwnd_placement( HWND hwnd, HWND gone, struct wmgl_window_placement *placement )
 {
     DPI_AWARENESS_CONTEXT awareness;
-    HWND hwnd, top_level, parent;
-    RECT client = {0}, around = {0}, clip, shown;
+    HWND top_level, parent, child;
+    RECT client = {0}, around = {0}, clip, shown, rect;
+    struct wmgl_rect *hole;
 
     memset( placement, 0, sizeof(*placement) );
-    if (!hdc || !(hwnd = WindowFromDC( hdc ))) return;
-    track_window( hwnd );
     awareness = SetThreadDpiAwarenessContext( DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 );
     top_level = GetAncestor( hwnd, GA_ROOT );
     GetClientRect( hwnd, &client );
@@ -282,7 +301,75 @@ static void window_placement( HDC hdc, struct wmgl_window_placement *placement )
     placement->clip_width = clip.right - clip.left;
     placement->clip_height = clip.bottom - clip.top;
     placement->visible = IsWindowVisible( hwnd );
+    /* Child windows a window with a pixel format clips out (on Windows, by
+     * WS_CLIPCHILDREN, which such a window needs), but whose drawables have
+     * layers of their own. */
+    for (child = GetWindow( hwnd, GW_CHILD ); child && placement->hole_count < WMGL_MAX_HOLES;
+         child = GetWindow( child, GW_HWNDNEXT ))
+    {
+        if (child == gone || !IsWindowVisible( child ) || is_tracked( child )) continue;
+        GetWindowRect( child, &rect );
+        MapWindowPoints( HWND_DESKTOP, top_level, (POINT *)&rect, 2 );
+        if (!IntersectRect( &rect, &rect, &clip )) continue;
+        hole = &placement->holes[placement->hole_count++];
+        hole->x = rect.left;
+        hole->y = rect.top;
+        hole->width = rect.right - rect.left;
+        hole->height = rect.bottom - rect.top;
+    }
     SetThreadDpiAwarenessContext( awareness );
+}
+
+/* A child window of a window with a drawable was created, shown, hidden,
+ * moved, given to another parent or destroyed: the drawable's layer makes
+ * room for it now, as a program that stops swapping while it plays a movie
+ * in it would not have us see before the movie ends. */
+static void CALLBACK child_window_event( HWINEVENTHOOK hook, DWORD event, HWND hwnd, LONG object, LONG child,
+                                         DWORD thread, DWORD time )
+{
+    struct wmgl_place_window_params params;
+    HWND parent;
+
+    if (object != OBJID_WINDOW || child != CHILDID_SELF || !hwnd) return;
+    if (!(GetWindowLongW( hwnd, GWL_STYLE ) & WS_CHILD) || !(parent = GetAncestor( hwnd, GA_PARENT ))) return;
+    if (!is_tracked( parent )) return;
+    hwnd_placement( parent, event == EVENT_OBJECT_HIDE || event == EVENT_OBJECT_DESTROY ? hwnd : NULL, &params.window );
+    wmgl_unix_call( unix_wmgl_place_window, &params );
+}
+
+static BOOL CALLBACK watch_child_windows( INIT_ONCE *once, void *param, void **context )
+{
+    /* In context: called in the thread that changes the window, which may
+     * not be one that pumps messages. */
+    if (!SetWinEventHook( EVENT_OBJECT_CREATE, EVENT_OBJECT_PARENTCHANGE, module, child_window_event,
+                          GetCurrentProcessId(), 0, WINEVENT_INCONTEXT ) && wmgl_debug)
+        fprintf( stderr, "winemetalgl: no hook for child windows (%lu)\n", GetLastError() );
+    return TRUE;
+}
+
+/* Where a DC's window is. */
+static void window_placement( HDC hdc, struct wmgl_window_placement *placement )
+{
+    static INIT_ONCE watching = INIT_ONCE_STATIC_INIT;
+    HWND hwnd;
+
+    struct wmgl_place_window_params params;
+    HWND parent;
+
+    memset( placement, 0, sizeof(*placement) );
+    if (!hdc || !(hwnd = WindowFromDC( hdc ))) return;
+    InitOnceExecuteOnce( &watching, watch_child_windows, NULL, NULL );
+    /* A child window that gets a drawable of its own (wined3d presenting
+     * a movie into a video window) needs no hole in its parent's layer: its
+     * own layer is above it, and shows its parent until its first frame,
+     * where a hole would show what Wine painted there (white). */
+    if (track_window( hwnd ) && (GetWindowLongW( hwnd, GWL_STYLE ) & WS_CHILD) &&
+        (parent = GetAncestor( hwnd, GA_PARENT )) && is_tracked( parent ))
+    {
+        hwnd_placement( parent, NULL, &params.window );
+        wmgl_unix_call( unix_wmgl_place_window, &params );
+    }
+    hwnd_placement( hwnd, NULL, placement );
 }
 
 /* ------------------------------------------------------------ contexts */

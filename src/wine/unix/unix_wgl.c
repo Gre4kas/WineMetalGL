@@ -198,8 +198,14 @@ static int dc_pixel_format( UINT64 hdc, UINT64 hwnd )
     return (dc = find_dc_format( hdc, FALSE )) ? dc->format : 0;
 }
 
+C_ASSERT( WMGL_WINDOW_MAX_HOLES == WMGL_MAX_HOLES );
+
 static void to_placement( const struct wmgl_window_placement *from, struct wmgl_placement *to )
 {
+    unsigned int i;
+
+    /* Whole, padding and unused holes too: wmgl_window_place compares them. */
+    memset( to, 0, sizeof(*to) );
     to->hwnd = from->hwnd;
     to->top_level = from->top_level;
     to->x = from->x;
@@ -214,6 +220,14 @@ static void to_placement( const struct wmgl_window_placement *from, struct wmgl_
     to->clip_width = from->clip_width;
     to->clip_height = from->clip_height;
     to->visible = from->visible;
+    to->hole_count = from->hole_count < WMGL_MAX_HOLES ? from->hole_count : WMGL_MAX_HOLES;
+    for (i = 0; i < to->hole_count; i++)
+    {
+        to->holes[i].x = from->holes[i].x;
+        to->holes[i].y = from->holes[i].y;
+        to->holes[i].width = from->holes[i].width;
+        to->holes[i].height = from->holes[i].height;
+    }
 }
 
 /* A window's surface, made on first use and kept on its client area. */
@@ -550,6 +564,27 @@ NTSTATUS wmgl_unix_forget_window( void *args )
         if (window->surface) wmgl.surface_destroy( window->surface );
         wmgl_window_destroy( window->host );
         memset( window, 0, sizeof(*window) );
+    }
+    pthread_mutex_unlock( &wgl_lock );
+    return STATUS_SUCCESS;
+}
+
+/* A window's child windows changed (the PE side notices), which a program
+ * that has stopped swapping, to play a movie in one, does not show us
+ * otherwise: its layer makes room for them now. */
+NTSTATUS wmgl_unix_place_window( void *args )
+{
+    struct wmgl_place_window_params *params = args;
+    struct wmgl_placement where;
+    struct window *window;
+
+    pthread_mutex_lock( &wgl_lock );
+    if ((window = find_window( params->window.hwnd, FALSE )) && window->host)
+    {
+        WMGL_TRACE( "window %#llx: %u child windows over it\n", (unsigned long long)params->window.hwnd,
+                    params->window.hole_count );
+        to_placement( &params->window, &where );
+        wmgl_window_place( window->host, &where );
     }
     pthread_mutex_unlock( &wgl_lock );
     return STATUS_SUCCESS;

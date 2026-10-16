@@ -36,7 +36,7 @@ WGL_CALLS = """
 init debug_message pixel_formats get_pixel_format set_pixel_format create_context delete_context
 make_current share_lists copy_context swap_buffers swap_interval get_swap_interval create_pbuffer
 destroy_pbuffer get_pbuffer_dc release_pbuffer_dc query_pbuffer bind_tex_image release_tex_image
-set_pbuffer_attrib query_renderer_integer query_renderer_string extensions_string forget_window batch
+set_pbuffer_attrib query_renderer_integer query_renderer_string extensions_string forget_window place_window batch
 """.split()
 
 # Pointer-sized types, opaque handles and callbacks (32-bit wide for wow64).
