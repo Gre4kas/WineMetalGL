@@ -6,6 +6,14 @@
 
 #include <stdint.h>
 
+/* WMGL_MAX_HOLES and struct wmgl_rect of wmgl_wine.h. */
+#define WMGL_WINDOW_MAX_HOLES 8
+
+struct wmgl_hole
+{
+    int32_t x, y, width, height;
+};
+
 /* struct wmgl_window_placement of wmgl_wine.h, in C types. */
 struct wmgl_placement
 {
@@ -16,6 +24,8 @@ struct wmgl_placement
     uint32_t screen_width;
     int32_t clip_x, clip_y, clip_width, clip_height;
     int32_t visible;
+    uint32_t hole_count;
+    struct wmgl_hole holes[WMGL_WINDOW_MAX_HOLES];
 };
 
 /* A CAMetalLayer over the window's client area (*layer), and the host that

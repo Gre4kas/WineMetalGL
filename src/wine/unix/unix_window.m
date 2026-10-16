@@ -72,6 +72,12 @@ struct macdrv_functions_t
     struct wmgl_placement placement;
     int placed;                     /* in a Cocoa window that is open (atomic) */
     id closing;                     /* the observer of that window closing */
+    /* Main thread only: */
+    struct wmgl_placement latest;   /* the newest placement */
+    struct wmgl_hole holes[WMGL_WINDOW_MAX_HOLES];  /* the holes in the mask */
+    uint32_t hole_count;
+    int hole_wait;                  /* new holes: 1 waiting, 2 due */
+    int gone;                       /* wmgl_window_destroy took the view off */
 }
 @end
 
@@ -117,9 +123,83 @@ static NSRect content_rect( NSView *content, const struct wmgl_placement *placem
     return rect;
 }
 
+static void place_on_main_thread( WineMetalGLHost *host, struct wmgl_placement placement );
+
+/* How long a new hole waits: a child window that gets a drawable of its own
+ * meanwhile (the PE side then sends a placement without it) never shows
+ * the white Wine painted under it. */
+#define HOLE_DELAY_MS 250
+
+static int has_hole( const struct wmgl_hole *holes, uint32_t count, const struct wmgl_hole *hole )
+{
+    uint32_t i;
+    for (i = 0; i < count; i++)
+        if (!memcmp( &holes[i], hole, sizeof(*hole) )) return 1;
+    return 0;
+}
+
+/* Masks the window's child windows out of its layer (main thread): Wine
+ * draws them into the top-level window, under our view. Holes go at once;
+ * new ones wait HOLE_DELAY_MS. */
+static void make_holes( WineMetalGLHost *host, NSView *content, const struct wmgl_placement *placement )
+{
+    CGRect bounds = CGRectMake( 0, 0, host->view.bounds.size.width, host->view.bounds.size.height );
+    struct wmgl_hole shown[WMGL_WINDOW_MAX_HOLES];
+    uint32_t i, count = 0;
+    int waiting = 0;
+    CAShapeLayer *mask;
+    CGMutablePathRef path;
+
+    for (i = 0; i < placement->hole_count && i < WMGL_WINDOW_MAX_HOLES; i++)
+    {
+        if (host->hole_wait == 2 || has_hole( host->holes, host->hole_count, &placement->holes[i] ))
+            shown[count++] = placement->holes[i];
+        else
+            waiting = 1;
+    }
+    if (!waiting)
+        host->hole_wait = 0;
+    else if (!host->hole_wait)
+    {
+        host->hole_wait = 1;
+        dispatch_after( dispatch_time( DISPATCH_TIME_NOW, HOLE_DELAY_MS * NSEC_PER_MSEC ), dispatch_get_main_queue(), ^{
+            host->hole_wait = 2;
+            place_on_main_thread( host, host->latest );
+        } );
+    }
+    memcpy( host->holes, shown, sizeof(shown[0]) * count );
+    host->hole_count = count;
+
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    if (!count)
+        host->layer.mask = nil;
+    else
+    {
+        path = CGPathCreateMutable();
+        CGPathAddRect( path, NULL, bounds );
+        for (i = 0; i < count; i++)
+        {
+            const struct wmgl_hole *hole = &shown[i];
+            NSRect rect = content_rect( content, placement, hole->x, hole->y, hole->width, hole->height );
+            /* The layer's geometry is its (unflipped) view's. */
+            CGPathAddRect( path, NULL, NSRectToCGRect( [host->view convertRect:rect fromView:content] ) );
+        }
+        mask = [CAShapeLayer layer];
+        mask.frame = bounds;
+        mask.path = path;
+        mask.fillRule = kCAFillRuleEvenOdd;
+        host->layer.mask = mask;
+        CGPathRelease( path );
+    }
+    [CATransaction commit];
+}
+
 /* Puts a host's view over its window's client area (main thread). */
 static void place_on_main_thread( WineMetalGLHost *host, struct wmgl_placement placement )
 {
+    if (host->gone) return;
+    host->latest = placement;
     for (NSWindow *window in [NSApp windows])
     {
         NSView *content;
@@ -157,6 +237,7 @@ static void place_on_main_thread( WineMetalGLHost *host, struct wmgl_placement p
                              area.size.height );
         if (content.isFlipped) inside.origin.y = shown.size.height - NSMaxY( inside );
         host->view.frame = inside;
+        make_holes( host, content, &placement );
         host->clip.hidden = !placement.visible || placement.clip_width <= 0 || placement.clip_height <= 0;
         host->layer.contentsScale = window.backingScaleFactor;
         __atomic_store_n( &host->placed, 1, __ATOMIC_RELEASE );
@@ -231,6 +312,8 @@ void wmgl_window_destroy( void *handle )
         return;
     }
     dispatch_async( dispatch_get_main_queue(), ^{
+        /* Placements still queued, or holes waiting, leave it off. */
+        host->gone = 1;
         if (host->closing) [[NSNotificationCenter defaultCenter] removeObserver:host->closing];
         [host->clip removeFromSuperview];
     } );

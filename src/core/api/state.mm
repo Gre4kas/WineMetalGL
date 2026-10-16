@@ -716,9 +716,28 @@ void MinSampleShading(Context& ctx, GLfloat value) {
 
 GLenum GetError(Context& ctx) { return ctx.takeError(); }
 
-void Flush(Context& ctx) { ctx.stream().flush(); }
+// Drawing to a window's front buffer shows on glFlush and glFinish, as it
+// does on Windows (win32u presents with GL_FLUSH_PRESENT likewise): wined3d
+// draws a DirectDraw primary surface without a flip chain that way, a movie
+// player's video window for one. The default framebuffer's one colour
+// buffer is both buffers, so presenting it shows what was drawn.
+static bool drawsToFrontBuffer(Context& ctx) {
+    Surface* surface = ctx.drawSurface();
+    if (!surface || !surface->isWindow() || ctx.state.drawFramebuffer) return false;
+    const GLenum buffer = ctx.state.defaultDrawBuffer;
+    return buffer == GL_FRONT || buffer == GL_FRONT_LEFT || buffer == GL_FRONT_AND_BACK ||
+           (buffer != GL_NONE && !surface->pixelFormat().double_buffer);
+}
 
-void Finish(Context& ctx) { finishUnlocked(ctx); }
+void Flush(Context& ctx) {
+    if (drawsToFrontBuffer(ctx)) ctx.drawSurface()->swap(ctx.stream());
+    else ctx.stream().flush();
+}
+
+void Finish(Context& ctx) {
+    if (drawsToFrontBuffer(ctx)) ctx.drawSurface()->swap(ctx.stream());
+    finishUnlocked(ctx);
+}
 
 const GLubyte* GetString(Context& ctx, GLenum name) {
     switch (name) {
