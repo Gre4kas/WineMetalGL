@@ -359,8 +359,7 @@ bool DrawState::validateDraw(GLenum mode) {
         LinkedProgram* lp = executable();
         if (!lp || !lp->link.stages[static_cast<int>(Stage::Vertex)].present) return false;
     } else if (!program) {
-        // OpenGL ES reports an incomplete framebuffer first (dEQP negative_api
-        // draw_*_invalid_program).
+        // OpenGL ES reports an incomplete framebuffer before a missing program.
         if (ctx_.isEs() && api::CheckFramebufferStatus(ctx_, GL_DRAW_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
             ctx_.setError(GL_INVALID_FRAMEBUFFER_OPERATION);
             return false;
@@ -4049,8 +4048,8 @@ void DrawState::drawElements(GLenum mode, GLsizei count, GLenum type, const void
     // Apple GPUs shade the 2x2 quads along an edge that two triangles of an
     // indexed draw share (the same vertices) together, so derivatives there
     // mix both triangles' attributes, and a texture lookup's level with them
-    // (perspective-correct attributes differ across the edge: dEQP-GLES3
-    // texture.mipmap.2d.projected). OpenGL ES draws whose per-vertex
+    // (perspective-correct attributes differ across the edge, as with
+    // projected texture coordinates). OpenGL ES draws whose per-vertex
     // attributes are all client memory, converted on the CPU anyway, are
     // drawn without indices instead, which keeps each triangle's quads apart.
     if (ctx_.isEs() && topologyClass(mode) == MTLPrimitiveTopologyClassTriangle && !pointPolygons(mode) &&

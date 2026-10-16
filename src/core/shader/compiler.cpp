@@ -1797,7 +1797,7 @@ EsCompileResult compileEsUncached(Stage stage, const std::string& source) {
     }
     const char* text = source.c_str();
     // 'defined' produced by macro expansion is undefined behaviour, which
-    // drivers (and dEQP) evaluate: as compile() does, a shader whose only
+    // drivers evaluate: as compile() does, a shader whose only
     // errors are that is accepted.
     EShMessages messages = EShMsgDefault;
     for (int attempt = 0; attempt < 2; ++attempt) {

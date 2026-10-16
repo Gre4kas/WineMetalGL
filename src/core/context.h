@@ -58,8 +58,7 @@ public:
     // vertex array object, and vertex attributes need buffers.
     bool isDesktopCore() const { return config_.coreProfile && !config_.es; }
     // Whether an sRGB-capable window is sRGB. OpenGL ES contexts treat it as
-    // linear, as EGL configs (which carry no sRGB) and dEQP's WGL
-    // configurations do.
+    // linear, as EGL configs (which carry no sRGB) do.
     bool windowSrgb() const { return !config_.es; }
 
     // --- errors and diagnostics

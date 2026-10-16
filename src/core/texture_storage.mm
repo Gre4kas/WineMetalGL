@@ -60,8 +60,7 @@ bool baseDimensions(const Texture& tex, GLsizei& w0, GLsizei& h0, GLsizei& d0, c
                     GLsizei& samples) {
     // The chain of TEXTURE_BASE_LEVEL's image when it has one: levels left
     // from earlier definitions that do not fit it are never sampled
-    // (dEQP-GLES2 texture.completeness.cube.extra_level redefines the
-    // default cube map's levels over another size's).
+    // (a program can redefine a cube map's levels over another size's).
     auto fromLevel = [&](int level) {
         const TextureImage* defined = nullptr;
         for (int face = 0; face < tex.faceCount() && !defined; ++face)
