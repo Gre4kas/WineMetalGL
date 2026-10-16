@@ -74,6 +74,9 @@ void Context::initEsStrings() {
              "GL_OES_primitive_bounding_box", "GL_OES_viewport_array", "GL_EXT_multi_draw_indirect",
              "GL_EXT_geometry_point_size", "GL_OES_geometry_point_size", "GL_EXT_tessellation_point_size",
              "GL_OES_tessellation_point_size",
+             // The 1x1 shading rate only (api/es.mm).
+             "GL_EXT_fragment_shading_rate", "GL_EXT_fragment_shading_rate_primitive",
+             "GL_EXT_fragment_shading_rate_attachment",
              // GLSL ES 3.10+ (glslang checks it; codegen converts anyway).
              "GL_EXT_shader_implicit_conversions"});
 }

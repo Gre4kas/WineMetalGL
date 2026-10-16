@@ -502,6 +502,35 @@ bool getState(Context& ctx, GLenum pname, Value& out) {
     case GL_MAX_TEXTURE_MAX_ANISOTROPY: out = floats({16.0}); return true;
     // --- rasterization and fragment state
     case GL_VIEWPORT: out = floats({s.viewports[0][0], s.viewports[0][1], s.viewports[0][2], s.viewports[0][3]}); return true;
+    // GL_EXT_fragment_shading_rate (api/es.mm): the 1x1 rate only.
+    case GL_SHADING_RATE_EXT:
+        if (!ctx.advertises("GL_EXT_fragment_shading_rate")) return false;
+        out = ints({static_cast<int64_t>(s.shadingRate)});
+        return true;
+    case GL_MIN_FRAGMENT_SHADING_RATE_ATTACHMENT_TEXEL_WIDTH_EXT: case GL_MAX_FRAGMENT_SHADING_RATE_ATTACHMENT_TEXEL_WIDTH_EXT:
+    case GL_MIN_FRAGMENT_SHADING_RATE_ATTACHMENT_TEXEL_HEIGHT_EXT: case GL_MAX_FRAGMENT_SHADING_RATE_ATTACHMENT_TEXEL_HEIGHT_EXT:
+        if (!ctx.advertises("GL_EXT_fragment_shading_rate")) return false;
+        out = ints({16});
+        return true;
+    case GL_MAX_FRAGMENT_SHADING_RATE_ATTACHMENT_TEXEL_ASPECT_RATIO_EXT:
+        if (!ctx.advertises("GL_EXT_fragment_shading_rate")) return false;
+        out = ints({1});
+        return true;
+    case GL_MAX_FRAGMENT_SHADING_RATE_ATTACHMENT_LAYERS_EXT:
+        if (!ctx.advertises("GL_EXT_fragment_shading_rate")) return false;
+        out = ints({limits::kMaxArrayLayers});
+        return true;
+    case GL_FRAGMENT_SHADING_RATE_WITH_SHADER_DEPTH_STENCIL_WRITES_SUPPORTED_EXT:
+    case GL_FRAGMENT_SHADING_RATE_WITH_SAMPLE_MASK_SUPPORTED_EXT:
+    case GL_FRAGMENT_SHADING_RATE_NON_TRIVIAL_COMBINERS_SUPPORTED_EXT:
+    case GL_FRAGMENT_SHADING_RATE_PRIMITIVE_RATE_WITH_MULTI_VIEWPORT_SUPPORTED_EXT:
+        if (!ctx.advertises("GL_EXT_fragment_shading_rate")) return false;
+        out = bools({true});
+        return true;
+    case GL_FRAGMENT_SHADING_RATE_ATTACHMENT_WITH_DEFAULT_FRAMEBUFFER_SUPPORTED_EXT:
+        if (!ctx.advertises("GL_EXT_fragment_shading_rate")) return false;
+        out = bools({false});
+        return true;
     case GL_PRIMITIVE_BOUNDING_BOX:
         if (!ctx.isEs() || ctx.esVersion() < 31) return false;
         out = floats({s.primitiveBoundingBox[0], s.primitiveBoundingBox[1], s.primitiveBoundingBox[2], s.primitiveBoundingBox[3],

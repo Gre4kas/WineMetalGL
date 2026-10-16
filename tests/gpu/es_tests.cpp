@@ -1654,3 +1654,68 @@ GPU_TEST_ES(gpu_es_astc_sliced_3d, 32) {
     glDeleteProgram(prog);
     glDeleteTextures(1, &tex);
 }
+
+// GL_EXT_fragment_shading_rate with the 1x1 rate only: queries, state and
+// attachment validation, and the built-ins (gl_ShadingRateEXT reads 1x1).
+GPU_TEST_ES(gpu_es_fragment_shading_rate_1x1, 32) {
+    using GetRates = void (*)(GLsizei, GLsizei, GLsizei*, GLenum*);
+    using Rate = void (*)(GLenum);
+    using Combiners = void (*)(GLenum, GLenum);
+    using Attach = void (*)(GLenum, GLenum, GLuint, GLint, GLsizei, GLsizei, GLsizei);
+    auto getRates = reinterpret_cast<GetRates>(wmgl_get_proc_address("glGetFragmentShadingRatesEXT"));
+    auto rate = reinterpret_cast<Rate>(wmgl_get_proc_address("glShadingRateEXT"));
+    auto combiners = reinterpret_cast<Combiners>(wmgl_get_proc_address("glShadingRateCombinerOpsEXT"));
+    auto attach = reinterpret_cast<Attach>(wmgl_get_proc_address("glFramebufferShadingRateEXT"));
+    GLenum rates[16] = {};
+    GLsizei count = 0;
+    getRates(1, 16, &count, rates);
+    CHECK_EQ(count, 1);
+    CHECK_EQ(rates[0], static_cast<GLenum>(0x96A6));  // GL_SHADING_RATE_1X1_PIXELS_EXT
+    rate(0x96A9);                                      // GL_SHADING_RATE_2X2_PIXELS_EXT
+    CHECK_GL();
+    GLint value = 0;
+    glGetIntegerv(0x96D0 /* GL_SHADING_RATE_EXT */, &value);
+    CHECK_EQ(value, 0x96A9);
+    rate(GL_SAMPLE_SHADING);
+    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_INVALID_ENUM));
+    combiners(0x96D4 /* MIN */, 0x96D6 /* MUL */);
+    CHECK_GL();
+    GLuint fb = 0, color = 0, sr = 0, mutableTex = 0;
+    glGenFramebuffers(1, &fb);
+    glBindFramebuffer(GL_FRAMEBUFFER, fb);
+    glGenTextures(1, &sr);
+    glBindTexture(GL_TEXTURE_2D, sr);
+    glTexStorage2D(GL_TEXTURE_2D, 1, GL_R8UI, 4, 4);
+    attach(GL_FRAMEBUFFER, 0x96D1 /* GL_SHADING_RATE_ATTACHMENT_EXT */, sr, 0, 1, 16, 16);
+    CHECK_GL();
+    glGenTextures(1, &mutableTex);
+    glBindTexture(GL_TEXTURE_2D, mutableTex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_R8UI, 4, 4, 0, GL_RED_INTEGER, GL_UNSIGNED_BYTE, nullptr);
+    attach(GL_FRAMEBUFFER, 0x96D1, mutableTex, 0, 1, 16, 16);
+    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_INVALID_VALUE));
+    glGenTextures(1, &color);
+    glBindTexture(GL_TEXTURE_2D, color);
+    glTexStorage2D(GL_TEXTURE_2D, 1, GL_R32I, 64, 64);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, color, 0);
+    GLuint prog = program("#version 320 es\n#extension GL_EXT_fragment_shading_rate : require\n"
+                          "layout(location = 0) in vec2 p;\n"
+                          "void main() { gl_PrimitiveShadingRateEXT = gl_ShadingRateFlag2VerticalPixelsEXT; "
+                          "gl_Position = vec4(p, 0.0, 1.0); }\n",
+                          "#version 320 es\n#extension GL_EXT_fragment_shading_rate : require\n"
+                          "precision highp int;\nlayout(location = 0) out int o;\n"
+                          "void main() { o = gl_ShadingRateEXT + 7; }\n");
+    GLuint vao = quad();
+    glUseProgram(prog);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    CHECK_GL();
+    GLint got = -1;
+    glReadPixels(32, 32, 1, 1, GL_RED_INTEGER, GL_INT, &got);
+    CHECK_EQ(got, 7);  // 1x1 packs as 0
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &fb);
+    glDeleteTextures(1, &color);
+    glDeleteTextures(1, &sr);
+    glDeleteTextures(1, &mutableTex);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(prog);
+}

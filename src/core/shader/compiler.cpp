@@ -656,6 +656,39 @@ std::string stripHashedLocations(const std::string& glsl) {
 // goes through an R32Uint view or shadow, imageView) and its loads, stores
 // and exchanges carry the float's bits. Images used any other way than
 // those and imageSize are left alone.
+// GL_EXT_fragment_shading_rate's built-ins with the 1x1 rate, the only one
+// (api/es.mm): gl_ShadingRateEXT reads 0 (1x1), gl_PrimitiveShadingRateEXT
+// writes go to a variable nothing reads, and the rate flags are their values.
+// Metal has no shading rate inputs or outputs to give SPIRV-Cross.
+std::string shadingRateBuiltinsAs1x1(const std::string& glsl) {
+    if (glsl.find("ShadingRate") == std::string::npos) return glsl;
+    std::string out = glsl;
+    auto replaceAll = [&](const std::string& word, const std::string& with) {
+        const std::regex r("\\b" + word + "\\b");
+        out = std::regex_replace(out, r, with);
+    };
+    out = std::regex_replace(out, std::regex(R"(#\s*extension\s+GL_EXT_fragment_shading_rate\s*:\s*\w+[^\n]*)"), "");
+    const bool primitive = std::regex_search(out, std::regex(R"(\bgl_PrimitiveShadingRateEXT\b)"));
+    replaceAll("gl_ShadingRateEXT", "0");
+    replaceAll("gl_PrimitiveShadingRateEXT", "wmgl_primitive_shading_rate");
+    replaceAll("gl_ShadingRateFlag2VerticalPixelsEXT", "1");
+    replaceAll("gl_ShadingRateFlag4VerticalPixelsEXT", "2");
+    replaceAll("gl_ShadingRateFlag2HorizontalPixelsEXT", "4");
+    replaceAll("gl_ShadingRateFlag4HorizontalPixelsEXT", "8");
+    if (primitive) {
+        // After the leading directives (#version, #extension).
+        size_t at = 0;
+        while (at < out.size()) {
+            const size_t first = out.find_first_not_of(" \t\r\n", at);
+            if (first == std::string::npos || out[first] != '#') break;
+            const size_t end = out.find('\n', first);
+            at = end == std::string::npos ? out.size() : end + 1;
+        }
+        out.insert(at, "highp int wmgl_primitive_shading_rate;\n");
+    }
+    return out;
+}
+
 std::string floatImageAtomicsAsUint(const std::string& glsl) {
     if (glsl.find("imageAtomicExchange") == std::string::npos) return glsl;
     static const std::regex kDecl(
@@ -2147,7 +2180,7 @@ EsCompileResult compileEsUncached(Stage stage, const std::string& source) {
             return result;
         }
     }
-    result.desktop = esToDesktopGlsl(floatImageAtomicsAsUint(preprocessed), version);
+    result.desktop = esToDesktopGlsl(shadingRateBuiltinsAs1x1(floatImageAtomicsAsUint(preprocessed)), version);
     // Make sure the shader translates (as compile() does).
     ParsedShader parsed;
     std::string log;

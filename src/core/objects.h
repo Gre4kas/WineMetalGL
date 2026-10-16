@@ -269,6 +269,11 @@ public:
     // GL 4.3 framebuffers without attachments: GL_FRAMEBUFFER_DEFAULT_*.
     GLint defaultWidth = 0, defaultHeight = 0, defaultLayers = 0, defaultSamples = 0;
     bool defaultFixedSampleLocations = false;
+    // GL_EXT_fragment_shading_rate_attachment (glFramebufferShadingRateEXT).
+    // Kept for the state; the 1x1 rate, the only one, ignores the texels.
+    RefPtr<Texture> shadingRateTexture;
+    GLint shadingRateBaseLayer = 0;
+    GLsizei shadingRateLayers = 0, shadingRateTexelWidth = 0, shadingRateTexelHeight = 0;
     bool hasAttachments() const {
         for (const Attachment& a : color)
             if (a.attached()) return true;

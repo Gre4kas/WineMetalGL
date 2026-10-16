@@ -110,8 +110,9 @@ version they report). What they leave out:
 | Feature | Behaviour | Why |
 |---|---|---|
 | Lines wider than 1 | `ALIASED_LINE_WIDTH_RANGE` is 1 to 1 | Optional in OpenGL ES; Metal draws 1-pixel lines only |
-| HDR ASTC (`GL_KHR_texture_compression_astc_hdr`), 3D ASTC | Not advertised | LDR ASTC only |
-| `GL_NV_fbo_color_attachments`, `GL_OVR_multiview`, `GL_EXT_multisampled_render_to_texture`, `GL_EXT_shader_framebuffer_fetch`, `GL_EXT_shader_group_vote`, `GL_EXT_sRGB_write_control`, `GL_EXT_fragment_shading_rate`, `GL_KHR_shader_subgroup`, `GL_ANDROID_extension_pack_es31a` | Not advertised | Not implemented yet; `GL_EXT_draw_buffers` covers several color attachments |
+| HDR ASTC (`GL_KHR_texture_compression_astc_hdr`) | Not advertised | LDR ASTC only (including 3D textures, `GL_KHR_texture_compression_astc_sliced_3d`) |
+| Fragment shading rates other than 1x1 (`GL_EXT_fragment_shading_rate`) | `glGetFragmentShadingRatesEXT` reports only 1x1; every requested or combined rate clamps to it and `gl_ShadingRateEXT` reads 1x1 | Metal has no per-draw, per-primitive or attachment shading rates |
+| `GL_NV_fbo_color_attachments`, `GL_OVR_multiview`, `GL_EXT_multisampled_render_to_texture`, `GL_EXT_shader_framebuffer_fetch`, `GL_EXT_shader_group_vote`, `GL_EXT_sRGB_write_control`, `GL_KHR_shader_subgroup`, `GL_ANDROID_extension_pack_es31a` | Not advertised | Not implemented yet; `GL_EXT_draw_buffers` covers several color attachments |
 | Separate depth and stencil attachments | `FRAMEBUFFER_UNSUPPORTED` | Metal keeps depth and stencil in one texture; OpenGL ES allows the combination to be unsupported |
 | More than 4 samples | `MAX_SAMPLES` is 4 | Apple GPUs render with 1, 2 or 4 samples |
 | Arrays of matrices as shader stage inputs or outputs (`out mat3x2 m[2]`, in blocks too) | The program does not link | Metal stage inputs and outputs cannot hold them (SPIRV-Cross) |

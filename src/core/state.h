@@ -120,6 +120,10 @@ struct ContextState {
     bool blendAdvancedCoherent = true;
     // OpenGL ES 3.2 / EXT_primitive_bounding_box: a hint, kept for queries.
     GLfloat primitiveBoundingBox[8] = {-1, -1, -1, 1, 1, 1, 1, 1};
+    // GL_EXT_fragment_shading_rate: the pipeline rate and the combiners. Only
+    // the 1x1 rate is supported, which every rate clamps to.
+    GLenum shadingRate = 0x96A6;                    // GL_SHADING_RATE_1X1_PIXELS_EXT
+    GLenum shadingRateCombiners[2] = {0x96D2, 0x96D2};  // GL_FRAGMENT_SHADING_RATE_COMBINER_OP_KEEP_EXT
     uint32_t scissorTests = 0;  // bit per viewport index
     GLint scissors[kMaxViewports][4] = {};
     bool cullFace = false;

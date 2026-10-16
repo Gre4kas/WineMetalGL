@@ -347,9 +347,9 @@
    "reason": "OpenGL ES has no shader subroutines; the case runs only on desktop GL (glcViewportArrayTests.cpp)."
   },
   {
-   "pattern": "KHR-GLESEXT.fragment_shading_rate.*",
+   "pattern": "KHR-GLESEXT.fragment_shading_rate.render_target.*",
    "kind": "extension",
-   "reason": "GL_EXT_fragment_shading_rate is not advertised."
+   "reason": "Every render target case needs GL_OVR_multiview (esextcFragmentShadingRateAttachmentTests.cpp, FragmentShadingRateAttachment::init), which is not advertised."
   },
   {
    "pattern": "KHR-Single-GLES3[12].subgroups.*",
@@ -360,11 +360,6 @@
    "pattern": "dEQP-GLES31.functional.android_extension_pack.*",
    "kind": "extension",
    "reason": "GL_ANDROID_extension_pack_es31a is not advertised (it needs GL_KHR_texture_compression_astc_hdr and GL_EXT_shader_framebuffer_fetch, which are not)."
-  },
-  {
-   "pattern": "dEQP-GLES31.functional.copy_image.*texture3d*",
-   "kind": "extension",
-   "reason": "ASTC in 3D textures (GL_KHR_texture_compression_astc_sliced_3d, GL_KHR_texture_compression_astc_hdr or GL_OES_texture_compression_astc) is not advertised; the test reports every 3D target NotSupported without it."
   },
   {
    "pattern": "dEQP-GLES31.functional.debug.*framebuffer_fetch*",
