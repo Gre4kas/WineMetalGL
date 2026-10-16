@@ -632,6 +632,34 @@ std::string stripHashedLocations(const std::string& glsl) {
     return out;
 }
 
+// Buffer blocks a shader declares with the shared or std140 layout, which
+// are active even when unused: glslang compiles for SPIR-V, which drops
+// shared and packed, so the packing is read from the source. A block takes
+// the buffer default ("layout(std430) buffer;" sets it; shared otherwise).
+std::set<std::string> sharedBufferBlocks(const std::string& source) {
+    std::set<std::string> out;
+    static const std::regex kDecl(R"(((?:layout\s*\(([^)]*)\)\s*)?)((?:\w+\s+)*?)buffer\s*(\w*)\s*(\{|;))");
+    std::string defaultPacking = "shared";
+    auto packingOf = [](const std::string& qualifiers, const std::string& fallback) {
+        std::string packing = fallback;
+        static const std::regex kPacking(R"(\b(shared|packed|std140|std430)\b)");
+        for (auto it = std::sregex_iterator(qualifiers.begin(), qualifiers.end(), kPacking); it != std::sregex_iterator(); ++it)
+            packing = (*it)[1];
+        return packing;
+    };
+    for (auto it = std::sregex_iterator(source.begin(), source.end(), kDecl); it != std::sregex_iterator(); ++it) {
+        const std::smatch& m = *it;
+        if (m[5] == ";" && m[4].length() == 0) {
+            defaultPacking = packingOf(m[2], defaultPacking);  // "layout(std430) buffer;"
+            continue;
+        }
+        if (m[5] != "{" || m[4].length() == 0) continue;
+        const std::string packing = packingOf(m[2], defaultPacking);
+        if (packing == "shared" || packing == "std140") out.insert(m[4]);
+    }
+    return out;
+}
+
 void hashVaryingLocations(std::vector<uint32_t>& spirv, Stage stage, const std::set<std::string>& explicitNames) {
     if (spirv.size() < 5) return;
     std::map<uint32_t, std::string> names;
@@ -2705,6 +2733,11 @@ static LinkResult linkImplCore(const LinkInput& input, const CaptureCode* captur
     std::set<std::string> liveBuffers;  // storage blocks (GL 4.3)
     for (int i = 0; i < program.getNumBufferBlocks(); ++i)
         liveBuffers.insert(unescapeName(topLevelName(program.getBufferBlock(i).name)));
+    // OpenGL ES: shared and std140 buffer blocks, unused ones too (GLSL ES
+    // 3.10 section 4.4.5).
+    if (input.es)
+        for (const ShaderSource& sh : input.shaders)
+            for (const std::string& name : sharedBufferBlocks(sh.source)) liveBuffers.insert(name);
     int defaultBlockReflectionIndex = -1;
     for (int i = 0; i < program.getNumUniformBlocks(); ++i) {
         const auto& block = program.getUniformBlock(i);

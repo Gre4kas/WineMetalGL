@@ -1473,3 +1473,31 @@ GPU_TEST_ES(gpu_es_pipeline_varyings_by_location, 31) {
     glDeleteProgram(vs);
     glDeleteProgram(fs);
 }
+
+// Storage blocks declared shared or std140 are active even when unused,
+// those ending in an unsized array too.
+GPU_TEST_ES(gpu_es_unused_shared_storage_blocks, 31) {
+    const char* source =
+        "#version 310 es\nlayout(local_size_x = 1) in;\n"
+        "layout(column_major, binding = 0) buffer BlockB { mediump uvec2 a; } blockB;\n"
+        "layout(shared, binding = 1) buffer BlockC { mediump mat2 b[]; } blockC;\n"
+        "layout(std430, binding = 2) buffer Used { highp uint n; } used;\n"
+        "void main() { used.n = 1u; }\n";
+    GLuint shader = glCreateShader(GL_COMPUTE_SHADER);
+    glShaderSource(shader, 1, &source, nullptr);
+    glCompileShader(shader);
+    GLuint prog = glCreateProgram();
+    glAttachShader(prog, shader);
+    glLinkProgram(prog);
+    GLint linked = 0;
+    glGetProgramiv(prog, GL_LINK_STATUS, &linked);
+    CHECK_EQ(linked, GL_TRUE);
+    for (const char* name : {"BlockB", "BlockC", "Used"}) {
+        const GLuint index = glGetProgramResourceIndex(prog, GL_SHADER_STORAGE_BLOCK, name);
+        CHECK(index != GL_INVALID_INDEX);
+        if (index == GL_INVALID_INDEX) std::fprintf(stderr, "  %s is not active\n", name);
+    }
+    CHECK_GL();
+    glDeleteProgram(prog);
+    glDeleteShader(shader);
+}
