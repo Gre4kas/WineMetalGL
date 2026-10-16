@@ -2866,8 +2866,9 @@ static LinkResult linkImplCore(const LinkInput& input, const CaptureCode* captur
                                type && type->getQualifier().hasComponent() ? static_cast<int>(type->getQualifier().layoutComponent)
                                                                            : 0});
     }
-    // Members of "patch in" / "patch out" blocks are per patch too
-    // (reflection gives a member's own type, without the block's qualifier).
+    // Members of "patch in" / "patch out" blocks and fields of patch struct
+    // variables are per patch too (reflection gives a member its own type,
+    // without the qualifier).
     {
         std::set<std::string> patchMembers;
         for (int st = EShLangTessControl; st <= EShLangTessEvaluation; ++st) {
@@ -2878,7 +2879,12 @@ static LinkResult linkImplCore(const LinkInput& input, const CaptureCode* captur
                 if (!objects || objects->getOp() != glslang::EOpLinkerObjects) continue;
                 for (TIntermNode* object : objects->getSequence()) {
                     glslang::TIntermSymbol* symbol = object->getAsSymbolNode();
-                    if (!symbol || !symbol->getQualifier().patch || symbol->getBasicType() != glslang::EbtBlock) continue;
+                    if (!symbol || !symbol->getQualifier().patch) continue;
+                    // A patch struct variable's fields ("v.a").
+                    if (symbol->getBasicType() != glslang::EbtBlock) {
+                        patchMembers.insert(unescapeName(symbol->getName().c_str()));
+                        continue;
+                    }
                     const glslang::TType& type = symbol->getType();
                     const bool anonymous = glslang::IsAnonymous(symbol->getName());
                     for (const glslang::TTypeLoc& member : *type.getStruct()) {
