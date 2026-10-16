@@ -72,6 +72,13 @@ inline constexpr const char* kEscapePrefix = "wmglK_";
 std::string escapeVulkanKeywords(const std::string& source);
 std::string unescapeName(std::string name);
 
+// Joins lines ending in a backslash with the next one, as the C
+// preprocessor does. GLSL has line continuation from 4.20 (and ES 3.00);
+// desktop drivers accept it in every version, and engines rely on it for
+// multi-line macros (Godot 3's GLES3 canvas shader, issue #31). Each joined
+// line's newlines follow it, so later lines keep their numbers in logs.
+std::string spliceLineContinuations(const std::string& source);
+
 // GLSL 1.30-3.30 keywords reserved for future use may not be used as
 // identifiers (they remain valid as layout qualifiers). Returns compile
 // errors in glslang's log format, or an empty string.

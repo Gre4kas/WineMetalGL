@@ -601,6 +601,32 @@ std::string unescapeName(std::string name) {
     return name;
 }
 
+std::string spliceLineContinuations(const std::string& source) {
+    if (source.find('\\') == std::string::npos) return source;
+    std::string out;
+    out.reserve(source.size());
+    int joined = 0;  // newlines removed from the current line
+    for (size_t i = 0; i < source.size(); ++i) {
+        const char c = source[i];
+        if (c == '\\') {
+            size_t j = i + 1;
+            if (j < source.size() && source[j] == '\r') ++j;
+            if (j < source.size() && source[j] == '\n') {
+                ++joined;
+                i = j;
+                continue;
+            }
+        }
+        out += c;
+        if (c == '\n' && joined) {
+            out.append(static_cast<size_t>(joined), '\n');
+            joined = 0;
+        }
+    }
+    out.append(static_cast<size_t>(joined), '\n');
+    return out;
+}
+
 std::string checkReservedWords(const std::string& source) {
     const GlslVersion version = parseGlslVersion(source);
     if (version.es || version.number < 130 || version.number >= 440) return "";
