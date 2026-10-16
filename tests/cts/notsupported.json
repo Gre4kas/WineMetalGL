@@ -237,9 +237,9 @@
    "reason": "KHR-GLES3 creates OpenGL ES 3.0 contexts; stencil texturing needs OpenGL ES 3.1."
   },
   {
-   "pattern": "KHR-GLES3.shaders.shader_integer_mix.*",
-   "kind": "extension",
-   "reason": "GL_EXT_shader_integer_mix is not advertised in OpenGL ES contexts."
+   "pattern": "KHR-GLES3.shaders.shader_integer_mix.prototypes",
+   "kind": "test-design",
+   "reason": "Without `#extension GL_EXT_shader_integer_mix` the case needs GLSL ES 3.10; KHR-GLES3 compiles it as GLSL ES 3.00 (glcShaderIntegerMixTests.cpp, ShaderIntegerMixPrototypesCase)."
   },
   {
    "pattern": "dEQP-GLES2.functional.fbo.completeness.attachment_combinations.*",
@@ -315,6 +315,126 @@
    "pattern": "dEQP-GLES3.functional.fragment_ops.scissor.framebuffer_blit_*",
    "kind": "test-design",
    "reason": "In the multisample configuration the default framebuffer is multisampled and OpenGL ES cannot blit into it, so the cases report NotSupported on every implementation (glsScissorTests.cpp)."
+  },
+  {
+   "pattern": "KHR-GLES31.core.sample_variables.*samples_8*",
+   "kind": "extension",
+   "reason": "The cases need 8 samples; GL_MAX_SAMPLES and the integer and float formats' sample counts are 4, the most Apple GPUs render with."
+  },
+  {
+   "pattern": "KHR-GLES31.core.shader_atomic_counters.advanced-usage-multidim-array-[ml]*",
+   "kind": "extension",
+   "reason": "The cases need more atomic counters per stage than GL_MAX_*_ATOMIC_COUNTERS allows; the test reports NotSupported below its array size."
+  },
+  {
+   "pattern": "KHR-GLES31.core.shader_group_vote.*",
+   "kind": "extension",
+   "reason": "GL_EXT_shader_group_vote is not advertised in OpenGL ES contexts."
+  },
+  {
+   "pattern": "KHR-GLES3[12].core.tessellation_shader.tessellation_shader_tessellation.max_in_out_attributes",
+   "kind": "extension",
+   "reason": "The case needs GL_MAX_VERTEX_OUTPUT_COMPONENTS to cover GL_MAX_TESS_CONTROL_INPUT_COMPONENTS (esextcTessellationShaderTessellation.cpp); WineMetalGL reports the OpenGL ES minimums."
+  },
+  {
+   "pattern": "KHR-GLES3[12].core.tessellation_shader.tessellation_shader_tessellation.TES",
+   "kind": "test-design",
+   "reason": "OpenGL ES requires a tessellation control shader with an evaluation shader; the case runs only where an evaluation shader may be used alone (esextcTessellationShaderTessellation.cpp)."
+  },
+  {
+   "pattern": "KHR-GLES*.viewport_array.viewport_index_subroutine",
+   "kind": "test-design",
+   "reason": "OpenGL ES has no shader subroutines; the case runs only on desktop GL (glcViewportArrayTests.cpp)."
+  },
+  {
+   "pattern": "KHR-GLESEXT.fragment_shading_rate.*",
+   "kind": "extension",
+   "reason": "GL_EXT_fragment_shading_rate is not advertised."
+  },
+  {
+   "pattern": "KHR-Single-GLES3[12].subgroups.*",
+   "kind": "extension",
+   "reason": "GL_KHR_shader_subgroup is not advertised."
+  },
+  {
+   "pattern": "dEQP-GLES31.functional.android_extension_pack.*",
+   "kind": "extension",
+   "reason": "GL_ANDROID_extension_pack_es31a is not advertised (it needs GL_KHR_texture_compression_astc_hdr and GL_EXT_shader_framebuffer_fetch, which are not)."
+  },
+  {
+   "pattern": "dEQP-GLES31.functional.copy_image.*texture3d*",
+   "kind": "extension",
+   "reason": "ASTC in 3D textures (GL_KHR_texture_compression_astc_sliced_3d, GL_KHR_texture_compression_astc_hdr or GL_OES_texture_compression_astc) is not advertised; the test reports every 3D target NotSupported without it."
+  },
+  {
+   "pattern": "dEQP-GLES31.functional.debug.*framebuffer_fetch*",
+   "kind": "extension",
+   "reason": "GL_EXT_shader_framebuffer_fetch is not advertised."
+  },
+  {
+   "pattern": "dEQP-GLES31.functional.shaders.framebuffer_fetch.*",
+   "kind": "extension",
+   "reason": "GL_EXT_shader_framebuffer_fetch is not advertised."
+  },
+  {
+   "pattern": "dEQP-GLES31.functional.draw_indirect.compute_interop.large.*",
+   "kind": "extension",
+   "reason": "The cases need a GL_MAX_SHADER_STORAGE_BLOCK_SIZE larger than the 2^27 bytes WineMetalGL reports (the OpenGL ES minimum)."
+  },
+  {
+   "pattern": "dEQP-GLES31.functional.fbo.srgb_write_control.*",
+   "kind": "extension",
+   "reason": "GL_EXT_sRGB_write_control is not advertised."
+  },
+  {
+   "pattern": "dEQP-GLES31.functional.geometry_shading.basic.output_256",
+   "kind": "extension",
+   "reason": "The case needs more geometry output components than GL_MAX_GEOMETRY_TOTAL_OUTPUT_COMPONENTS (the OpenGL ES minimum)."
+  },
+  {
+   "pattern": "dEQP-GLES31.functional.multisample.default_framebuffer.*",
+   "kind": "test-design",
+   "reason": "The cases need a multisample default framebuffer; mustpass configuration 1 has none."
+  },
+  {
+   "pattern": "dEQP-GLES31.functional.sample_shading.min_sample_shading.default_framebuffer_*",
+   "kind": "test-design",
+   "reason": "The cases need a multisample default framebuffer; mustpass configuration 1 has none."
+  },
+  {
+   "pattern": "dEQP-GLES31.functional.primitive_bounding_box.wide_lines.*",
+   "kind": "extension",
+   "reason": "Lines wider than 1 are optional in OpenGL ES; ALIASED_LINE_WIDTH_RANGE is 1 to 1 (Metal draws 1-pixel lines)."
+  },
+  {
+   "pattern": "dEQP-GLES31.functional.program_interface_query.*block_array.array.mat3x2",
+   "kind": "extension",
+   "reason": "Metal stage inputs and outputs cannot hold arrays of matrices (SPIRV-Cross), so the program does not link; the test reports a link failure as a limit NotSupported."
+  },
+  {
+   "pattern": "dEQP-GLES31.functional.shaders.opaque_type_indexing.atomic_counter.*tessellation_*",
+   "kind": "extension",
+   "reason": "GL_MAX_TESS_CONTROL_ATOMIC_COUNTERS and GL_MAX_TESS_EVALUATION_ATOMIC_COUNTERS are 0, the OpenGL ES minimum."
+  },
+  {
+   "pattern": "dEQP-GLES31.functional.shaders.*_8*",
+   "kind": "extension",
+   "reason": "The cases need 8 samples; GL_MAX_SAMPLES is 4, the most Apple GPUs render with."
+  },
+  {
+   "pattern": "dEQP-GLES31.functional.shaders.*_16",
+   "kind": "extension",
+   "reason": "The cases need 16 samples; GL_MAX_SAMPLES is 4, the most Apple GPUs render with."
+  },
+  {
+   "pattern": "dEQP-GLES31.functional.sample_shading.*samples_[1-9]*",
+   "kind": "extension",
+   "reason": "The cases need more than 4 samples; GL_MAX_SAMPLES is 4, the most Apple GPUs render with."
+  },
+  {
+   "pattern": "dEQP-GLES31.functional.texture.multisample.samples_*",
+   "kind": "extension",
+   "reason": "The cases need more than 4 samples (or more GL_MAX_SAMPLE_MASK_WORDS); Apple GPUs render with at most 4."
   }
  ]
 }

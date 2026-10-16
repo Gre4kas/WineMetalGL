@@ -229,7 +229,7 @@ FEATURE_NAMES = {
     "GL_ARB_transform_feedback_overflow_query": "Transform feedback overflow queries",
     "GL_KHR_no_error": "No-error contexts",
 }
-# OpenGL ES features by version: (feature, None if fully supported or what is missing).
+# OpenGL ES features by version: (feature, Yes / Partly / No, what is missing).
 # Hand-maintained from the ES results in tests/cts/baseline and docs/unsupported.md#opengl-es.
 ES_FEATURES = {
     "2.0": [
@@ -272,29 +272,30 @@ ES_FEATURES = {
     "3.1": [
         ("GLSL ES 3.10", "Yes", None),
         ("Compute shaders", "Yes", None),
-        ("Image load/store", "Partly", "Some dEQP-GLES31 cases fail"),
+        ("Image load/store", "Yes", None),
         ("Shader storage buffers", "Yes", None),
-        ("Atomic counters", "Yes", None),
+        ("Atomic counters", "Partly", "Arrays of atomic counters passed to functions do not compile"),
         ("Indirect draws and dispatches", "Yes", None),
-        ("Separate shader programs", "Partly", "Some dEQP-GLES31 cases fail"),
+        ("Separate shader programs", "Yes", None),
         ("Multisample textures", "Yes", None),
-        ("Vertex attribute bindings", "Partly", "Some dEQP-GLES31 cases fail"),
-        ("Program interface queries", "Partly",
-         "Some dEQP-GLES31 cases fail (resources of interface blocks and built-ins)"),
+        ("Vertex attribute bindings", "Yes", None),
+        ("Program interface queries", "Yes", None),
+        ("Arrays of matrices as stage inputs and outputs", "No",
+         "Metal stage inputs and outputs cannot hold them (SPIRV-Cross); such programs do not link"),
         ("Texture gather", "Yes", None),
         ("Stencil texturing", "Yes", None),
         ("Framebuffers without attachments", "Yes", None),
     ],
     "3.2": [
         ("GLSL ES 3.20", "Yes", None),
-        ("Geometry shaders", "Partly", "Struct varyings do not link"),
-        ("Tessellation shaders", "Partly", "Struct varyings do not link"),
+        ("Geometry shaders", "Yes", None),
+        ("Tessellation shaders", "Yes", None),
         ("Advanced blend equations", "Yes", None),
         ("ASTC LDR compressed textures", "Yes", None),
         ("ASTC HDR and 3D compressed textures", "No", "Not advertised; LDR ASTC only"),
         ("Texture buffers", "Yes", None),
         ("Cube map arrays", "Yes", None),
-        ("Debug output", "Partly", "Some dEQP-GLES31 cases fail"),
+        ("Debug output", "Yes", None),
         ("Robustness", "Yes", None),
         ("Per-sample shading", "Yes", None),
         ("Multisample 2D array textures", "Yes", None),

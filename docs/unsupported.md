@@ -111,10 +111,12 @@ version they report). What they leave out:
 |---|---|---|
 | Lines wider than 1 | `ALIASED_LINE_WIDTH_RANGE` is 1 to 1 | Optional in OpenGL ES; Metal draws 1-pixel lines only |
 | HDR ASTC (`GL_KHR_texture_compression_astc_hdr`), 3D ASTC | Not advertised | LDR ASTC only |
-| `GL_NV_fbo_color_attachments`, `GL_OVR_multiview`, `GL_EXT_multisampled_render_to_texture`, `GL_EXT_shader_integer_mix` | Not advertised | Not implemented yet; `GL_EXT_draw_buffers` covers several color attachments |
+| `GL_NV_fbo_color_attachments`, `GL_OVR_multiview`, `GL_EXT_multisampled_render_to_texture`, `GL_EXT_shader_framebuffer_fetch`, `GL_EXT_shader_group_vote`, `GL_EXT_sRGB_write_control`, `GL_EXT_fragment_shading_rate`, `GL_KHR_shader_subgroup`, `GL_ANDROID_extension_pack_es31a` | Not advertised | Not implemented yet; `GL_EXT_draw_buffers` covers several color attachments |
 | Separate depth and stencil attachments | `FRAMEBUFFER_UNSUPPORTED` | Metal keeps depth and stencil in one texture; OpenGL ES allows the combination to be unsupported |
 | More than 4 samples | `MAX_SAMPLES` is 4 | Apple GPUs render with 1, 2 or 4 samples |
-| Struct varyings in geometry and tessellation stages, some OpenGL ES 3.1 image and storage-buffer layouts | Link errors or wrong results | Not done yet: the OpenGL ES 3.1 and 3.2 results in [Conformance results](conformance.md#opengl-es) list them |
+| Arrays of matrices as shader stage inputs or outputs (`out mat3x2 m[2]`, in blocks too) | The program does not link | Metal stage inputs and outputs cannot hold them (SPIRV-Cross) |
+| Arrays of atomic counters passed to functions | The shader does not compile | Atomic counters are lowered to storage buffer words, which function parameters cannot reference |
+| Out-of-bounds reads of uniform block arrays in robust contexts | May return values from memory past the block instead of zero or in-range values | Metal does not bound these reads |
 
 Apple GPUs shade the 2x2 pixel quads along an edge that two triangles of an
 indexed draw share together, so derivatives (and the texture level of a
