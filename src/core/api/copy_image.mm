@@ -76,7 +76,10 @@ bool resolveImage(Context& ctx, GLuint name, GLenum target, GLint level, Image& 
 // Block (or texel) footprint and bytes of a format.
 void blockOf(const FormatInfo& f, uint32_t& w, uint32_t& h, uint32_t& bytes) {
     if (f.compressed) {
-        w = h = 4;
+        int bw, bh;
+        storageBlockSize(f.storage, bw, bh);
+        w = static_cast<uint32_t>(bw);
+        h = static_cast<uint32_t>(bh);
         bytes = storageBytes(f.storage);
     } else {
         w = h = 1;

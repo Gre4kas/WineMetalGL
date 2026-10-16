@@ -24,6 +24,7 @@
 #include "core/query.h"
 #include "core/texture_storage.h"
 #include "core/util/log.h"
+#include "gl_api.gen.h"
 
 namespace wmgl {
 
@@ -100,6 +101,14 @@ bool attachmentTarget(Context& ctx, const Attachment& a, RenderTargetDesc::Targe
     return false;
 }
 
+// Whether an attachment is multisample in GL's terms (samples > 0).
+bool multisampleAttachment(const Attachment& a) {
+    if (a.type == GL_RENDERBUFFER) return a.renderbuffer && a.renderbuffer->samples > 0;
+    const Texture* tex = a.texture.get();
+    return a.type == GL_TEXTURE && tex &&
+           (tex->target == GL_TEXTURE_2D_MULTISAMPLE || tex->target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY);
+}
+
 // Layers of a layered attachment (glFramebufferTexture on an array, cube or
 // 3D texture): the render target array length it gives a pass.
 uint32_t attachmentLayers(const Attachment& a) {
@@ -155,9 +164,11 @@ bool DrawState::drawTarget(RenderTargetDesc& target, TargetFormats& formats, boo
         Surface* surface = ctx_.drawSurface();
         if (!surface) return false;
         surface->describe(target);
-        if (!ctx_.state.framebufferSRGB) target.color[0].texture = surface->linearColor();
+        const bool srgb = ctx_.state.framebufferSRGB && ctx_.windowSrgb();
+        if (!srgb) target.color[0].texture = surface->linearColor();
         formats.color[0] = target.color[0].texture.pixelFormat;
-        formats.srgb[0] = surface->srgbCapable() && ctx_.state.framebufferSRGB;
+        formats.srgb[0] = surface->srgbCapable() && srgb;
+        formats.alphaIsOne[0] = surface->pixelFormat().alpha_bits == 0;
         if (target.depth.texture) formats.depth = target.depth.texture.pixelFormat;
         if (target.stencil.texture) formats.stencil = target.stencil.texture.pixelFormat;
         formats.depthAttached = surface->hasDepth();
@@ -226,6 +237,7 @@ bool DrawState::drawTarget(RenderTargetDesc& target, TargetFormats& formats, boo
         for (uint32_t s : {2u, 4u, 8u})
             if (static_cast<uint32_t>(fb->defaultSamples) > samples && Device::get().caps().sampleCountSupported[s]) samples = s;
         target.samples = samples;
+        target.multisampled = fb->defaultSamples > 0;
         if (fb->defaultLayers > 0) target.layers = static_cast<uint32_t>(fb->defaultLayers);
         return true;
     }
@@ -248,6 +260,8 @@ bool DrawState::drawTarget(RenderTargetDesc& target, TargetFormats& formats, boo
     target.width = width;
     target.height = height;
     target.samples = std::max(1u, samples);
+    target.multisampled = target.samples > 1 || multisampleAttachment(fb->depth) || multisampleAttachment(fb->stencil);
+    for (const Attachment& a : fb->color) target.multisampled |= multisampleAttachment(a);
     // A layered framebuffer (every attachment is layered, checked by
     // completeness) renders to the layers its attachments have in common.
     if (layers != UINT32_MAX) target.layers = layers;
@@ -262,7 +276,7 @@ id<MTLTexture> DrawState::readColorTexture(uint32_t& level, uint32_t& slice, GLe
         Surface* surface = ctx_.readSurface();
         if (!surface || ctx_.state.defaultReadBuffer == GL_NONE) return nil;
         surface->resolveForRead(ctx_.stream());
-        internalFormat = surface->srgbCapable() ? GL_SRGB8_ALPHA8 : GL_RGBA8;
+        internalFormat = surface->colorFormat(ctx_.windowSrgb());
         width = surface->width();
         height = surface->height();
         return surface->resolvedColor();
@@ -298,16 +312,14 @@ bool DrawState::readTarget(GLenum buffer, RenderTargetDesc::Target& out, const F
             if (ctx_.state.defaultReadBuffer == GL_NONE) return false;
             surface->resolveForRead(ctx_.stream());
             out.texture = surface->resolvedColor();
-            if (!ctx_.state.framebufferSRGB && linearFormat(out.texture.pixelFormat))
+            if ((!ctx_.state.framebufferSRGB || !ctx_.windowSrgb()) && linearFormat(out.texture.pixelFormat))
                 out.texture = [out.texture newTextureViewWithPixelFormat:linearFormat(out.texture.pixelFormat)];
-            info = formatInfo(surface->srgbCapable() ? GL_SRGB8_ALPHA8 : GL_RGBA8);
+            info = formatInfo(surface->colorFormat(ctx_.windowSrgb()));
             return true;
         }
         if ((buffer == GL_DEPTH && !surface->hasDepth()) || (buffer == GL_STENCIL && !surface->hasStencil())) return false;
         out.texture = surface->depthStencil();
-        info = formatInfo(surface->hasStencil() ? (surface->hasDepth() ? GL_DEPTH24_STENCIL8 : GL_STENCIL_INDEX8)
-                          : surface->pixelFormat().depth_bits == 16 ? GL_DEPTH_COMPONENT16
-                                                                    : GL_DEPTH_COMPONENT24);
+        info = formatInfo(surface->depthStencilFormat());
         return out.texture != nil;
     }
     const Attachment* a = nullptr;
@@ -351,13 +363,18 @@ bool DrawState::validateDraw(GLenum mode) {
     Program* program = ctx_.state.program.get();
     if (!program && ctx_.state.programPipeline) {
         // GL_ARB_separate_shader_objects: an invalid pipeline cannot draw.
-        if (!api::validateProgramPipeline(*ctx_.state.programPipeline)) {
+        if (!api::validateProgramPipeline(*ctx_.state.programPipeline, ctx_.isEs())) {
             ctx_.setError(GL_INVALID_OPERATION);
             return false;
         }
         LinkedProgram* lp = executable();
         if (!lp || !lp->link.stages[static_cast<int>(Stage::Vertex)].present) return false;
     } else if (!program) {
+        // OpenGL ES reports an incomplete framebuffer before a missing program.
+        if (ctx_.isEs() && api::CheckFramebufferStatus(ctx_, GL_DRAW_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+            ctx_.setError(GL_INVALID_FRAMEBUFFER_OPERATION);
+            return false;
+        }
         // Without a program, core profile draws are undefined but not an
         // error; the compatibility profile draws with fixed-function
         // processing (compat/fixed_function.h), or ARB assembly programs,
@@ -371,9 +388,29 @@ bool DrawState::validateDraw(GLenum mode) {
         ctx_.setError(GL_INVALID_OPERATION);
         return false;
     }
-    if (ctx_.isCore() && ctx_.state.vertexArray == ctx_.defaultVertexArray) {
+    // OpenGL ES draws from vertex array 0 (its indirect draws do not: api/draw.mm).
+    if (ctx_.isDesktopCore() && ctx_.state.vertexArray == ctx_.defaultVertexArray) {
         ctx_.setError(GL_INVALID_OPERATION);
         return false;
+    }
+    // KHR_blend_equation_advanced section 3.8.5: an advanced equation draws
+    // one buffer, with a fragment shader declaring support for it.
+    for (int i = 0; i < ContextState::kMaxDrawBuffers && ctx_.state.blendEnable; ++i) {
+        const int advanced = (ctx_.state.blendEnable >> i) & 1 ? advancedBlendIndex(ctx_.state.blend[i].equationRGB) : -1;
+        if (advanced < 0) continue;
+        const Framebuffer* fb = ctx_.state.drawFramebuffer.get();
+        int drawn = 0;
+        if (fb)
+            for (GLenum b : fb->drawBuffers) drawn += b != GL_NONE;
+        else
+            drawn = ctx_.state.defaultDrawBuffer == GL_FRONT_AND_BACK ? 2 : 1;
+        LinkedProgram* lp = executable();
+        const uint32_t support = lp ? lp->link.blendSupport : 0;
+        if (drawn > 1 || !(support & ((1u << advanced) | (1u << 15)))) {
+            ctx_.setError(GL_INVALID_OPERATION);
+            return false;
+        }
+        break;
     }
     // Mapped buffers may not be used by draws.
     for (const VertexAttrib& a : ctx_.state.vertexArray->attribs)
@@ -386,6 +423,12 @@ bool DrawState::validateDraw(GLenum mode) {
     LinkedProgram* executableNow = executable();
     const bool tessellated = executableNow && executableNow->hasStage(Stage::TessEval);
     if ((mode == GL_PATCHES) != tessellated) {
+        ctx_.setError(GL_INVALID_OPERATION);
+        return false;
+    }
+    // OpenGL ES tessellates only with a control shader too (section 11.1.2.1;
+    // desktop GL takes the default levels).
+    if (tessellated && ctx_.isEs() && !executableNow->hasStage(Stage::TessControl)) {
         ctx_.setError(GL_INVALID_OPERATION);
         return false;
     }
@@ -1348,7 +1391,8 @@ void DrawState::samplerBinding(LinkedProgram& program, size_t index, __strong id
                                  : nullptr;
     if (texture && textureComplete(ctx_, *texture, samplerObject ? &samplerObject->params : &texture->sampler)) {
         SamplerParams params = samplerObject ? samplerObject->params : texture->sampler;
-        view = samplingView(ctx_, *texture, params.srgbDecode == GL_SKIP_DECODE_EXT);
+        // OpenGL ES: texelFetch decodes sRGB whatever GL_TEXTURE_SRGB_DECODE_EXT says.
+        view = samplingView(ctx_, *texture, params.srgbDecode == GL_SKIP_DECODE_EXT && (slot.sampled || !ctx_.isEs()));
         params.lodBias += compat::textureUnitLodBias(ctx_, unit);  // glTexEnv(GL_TEXTURE_FILTER_CONTROL)
         sampler = samplerState(ctx_, *texture, params, slot.shadow);
         markSampled(*texture);
@@ -1604,7 +1648,8 @@ id<MTLRenderCommandEncoder> DrawState::prepare(GLenum mode, MTLPrimitiveType& pr
     // GL_SAMPLE_MASK and GL_SAMPLE_COVERAGE: the fragment function writes the
     // mask (a pipeline variant, so other draws keep Metal's fast paths).
     sampleMask_ = ~0u;
-    if (st.multisample && target.samples > 1 && (st.sampleMask || st.sampleCoverage)) {
+    const bool multisampled = target.samples > 1 || target.multisampled;
+    if (st.multisample && multisampled && (st.sampleMask || st.sampleCoverage)) {
         uint32_t mask = st.sampleMask ? st.sampleMaskValue : ~0u;
         if (st.sampleCoverage) {
             const uint32_t all = target.samples >= 32 ? ~0u : (1u << target.samples) - 1;
@@ -1621,7 +1666,7 @@ id<MTLRenderCommandEncoder> DrawState::prepare(GLenum mode, MTLPrimitiveType& pr
     // GL_SAMPLE_SHADING with more than one sample to shade: per-sample execution.
     key.sampleShading = st.multisample && st.sampleShading && target.samples > 1 &&
                         std::ceil(st.minSampleShading * static_cast<float>(target.samples)) > 1.0f;
-    key.ignoreSampleMask = !(st.multisample && target.samples > 1) && program->writesSampleMask();
+    key.ignoreSampleMask = !(st.multisample && multisampled) && program->writesSampleMask();
     key.rasterization = !st.rasterizerDiscard;
     // Metal requires the input topology class when the vertex function
     // writes the layer or viewport index; otherwise it stays unspecified.
@@ -1639,6 +1684,13 @@ id<MTLRenderCommandEncoder> DrawState::prepare(GLenum mode, MTLPrimitiveType& pr
     // fetch). GL_COPY needs no variant.
     if (st.colorLogicOp && st.logicOp != GL_COPY && program->fragmentVariant(false, st.logicOp - GL_CLEAR + 1, key.colorFormats))
         key.logicOp = static_cast<uint8_t>(st.logicOp - GL_CLEAR + 1);
+    // KHR_blend_equation_advanced: the fragment function blends draw buffer
+    // 0 (the only one drawn: validate()) with the attachment's value.
+    const int advanced = (st.blendEnable & 1) && formats.color[0] && !formats.integer[0]
+                             ? advancedBlendIndex(st.blend[0].equationRGB)
+                             : -1;
+    if (advanced >= 0 && program->fragmentVariant(false, static_cast<unsigned>(advanced + 17), key.colorFormats))
+        key.logicOp = static_cast<uint8_t>(advanced + 17);
     for (int i = 0; i < 8; ++i) {
         if (!formats.color[i]) continue;
         PipelineKey::Blend& b = key.blend[i];
@@ -1646,7 +1698,8 @@ id<MTLRenderCommandEncoder> DrawState::prepare(GLenum mode, MTLPrimitiveType& pr
         b.writeMask = static_cast<uint8_t>((mask[0] ? MTLColorWriteMaskRed : 0) | (mask[1] ? MTLColorWriteMaskGreen : 0) |
                                            (mask[2] ? MTLColorWriteMaskBlue : 0) |
                                            (mask[3] && !formats.alphaIsOne[i] ? MTLColorWriteMaskAlpha : 0));
-        b.enabled = (st.blendEnable >> i) & 1 && !formats.integer[i] && !(st.colorLogicOp && logicOpApplies(formats.color[i]));
+        b.enabled = (st.blendEnable >> i) & 1 && !formats.integer[i] && !(st.colorLogicOp && logicOpApplies(formats.color[i])) &&
+                    !(i == 0 && advanced >= 0);
         if (b.enabled) {
             b.srcRGB = static_cast<uint8_t>(mtlBlendFactor(st.blend[i].srcRGB));
             b.dstRGB = static_cast<uint8_t>(mtlBlendFactor(st.blend[i].dstRGB));
@@ -2822,6 +2875,42 @@ void DrawState::drawWideLines(GLenum mode, const std::vector<uint32_t>& vertices
     ctx_.markDirty(kDirtyRaster);
 }
 
+bool DrawState::clientVertexArrays(LinkedProgram& program) const {
+    const VertexArray& vao = *ctx_.state.vertexArray;
+    bool any = false;
+    for (const shader::StageOutput::VertexInput& input : program.stage(Stage::Vertex).vertexInputs) {
+        if (input.location < 0 || input.location >= VertexArray::kAttribSlots) continue;
+        const VertexAttrib& a = attribFor(vao, input.source());
+        if (!a.enabled || a.divisor) continue;
+        if (a.buffer) return false;
+        any = true;
+    }
+    return any;
+}
+
+void DrawState::drawGathered(const std::vector<uint32_t>& list, GLsizei instances) {
+    queriesCountPrimitives(ctx_, GL_TRIANGLES, static_cast<GLsizei>(list.size()), instances);
+    LinkedProgram* current = executable();
+    if (!current || list.empty()) return;
+    waitForCpuVertexReads(*current, true);
+    prepareSamplerStorage(*current);
+    MTLPrimitiveType primitive = MTLPrimitiveTypeTriangle;
+    id<MTLRenderCommandEncoder> encoder = prepare(GL_TRIANGLES, primitive);
+    if (!encoder) return;
+    queriesBeforeDraw(ctx_, encoder, instances);
+    PipelineKey key = lastKey_;
+    if (!bindVertexInputs(encoder, key, *current, 0, static_cast<GLsizei>(list.size()), instances, &list)) return;
+    id<MTLRenderPipelineState> pipeline = ctx_.share().pipelines().render(key, *current);
+    if (!pipeline) return;
+    stats::count(&stats::Frame::draws);
+    [encoder setRenderPipelineState:pipeline];
+    encoderState_.pipeline = nil;  // issue() sets its own again
+    bindDrawState(encoder, *current);
+    [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:list.size()
+              instanceCount:static_cast<NSUInteger>(std::max(1, instances)) baseInstance:baseInstance_];
+    ctx_.stream().noteDraw();
+}
+
 void DrawState::drawGeometry(GLenum mode, const std::vector<uint32_t>& vertices, GLsizei instances, uint32_t& primitiveBase,
                              bool assembled) {
     LinkedProgram& lp = *executable();
@@ -2834,6 +2923,7 @@ void DrawState::drawGeometry(GLenum mode, const std::vector<uint32_t>& vertices,
     // Kernel threads: one per input primitive and invocation (GS instancing).
     const uint64_t threads = total * static_cast<uint64_t>(std::max(1, g.invocations));
     queriesCountStatistic(ctx_, kStatGeometryShaderInvocations, threads);
+    if (g.maxVertices == 0) return;  // layout(max_vertices = 0): nothing is emitted
     const uint32_t maxV = static_cast<uint32_t>(g.maxVertices);
     const uint16_t borders = borderVariant(lp, static_cast<int>(Stage::Compute));  // the kernel's samplers
     id<MTLComputePipelineState> kernel =
@@ -3974,6 +4064,20 @@ void DrawState::drawElements(GLenum mode, GLsizei count, GLenum type, const void
     bool needsIndices = false;
     nativePrimitive(mode, needsIndices);
     const bool rotate = rotateProvoking(mode, *executable());
+    // Apple GPUs shade the 2x2 quads along an edge that two triangles of an
+    // indexed draw share (the same vertices) together, so derivatives there
+    // mix both triangles' attributes, and a texture lookup's level with them
+    // (perspective-correct attributes differ across the edge, as with
+    // projected texture coordinates). OpenGL ES draws whose per-vertex
+    // attributes are all client memory, converted on the CPU anyway, are
+    // drawn without indices instead, which keeps each triangle's quads apart.
+    if (ctx_.isEs() && topologyClass(mode) == MTLPrimitiveTopologyClassTriangle && !pointPolygons(mode) &&
+        !executable()->readsVertexId() && clientVertexArrays(*executable())) {
+        std::vector<uint32_t> list;
+        forEachSegment(bias, [&](const std::vector<uint32_t>& segment) { appendMetalList(mode, segment, rotate, list); });
+        drawGathered(list, instances);
+        return;
+    }
     // Metal always restarts at the type's largest index; GL only when asked.
     const uint32_t metalRestart = indexSize == 2 ? 0xffffu : 0xffffffffu;
     const bool drawnAsIs = !hasRestart && !needsIndices && !rotate && indexSize != 1 && offset % indexSize == 0 &&

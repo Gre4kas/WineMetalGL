@@ -78,6 +78,15 @@ Context::Context(RefPtr<ShareGroup> share, const ContextConfig& config, int pixe
     }
     draw_ = std::make_unique<DrawState>(*this);
     state.debugOutput = config_.debug;  // DEBUG_OUTPUT starts enabled in debug contexts
+    if (config_.es) {
+        // OpenGL ES has no switches for these: shaders' gl_PointSize sizes
+        // points, cube maps are seamless and sRGB framebuffers convert.
+        state.programPointSize = true;
+        state.textureCubeMapSeamless = true;
+        state.framebufferSRGB = true;
+        // Image units start with format R32UI in OpenGL ES 3.1 (R8 on desktop).
+        for (auto& unit : state.imageUnits) unit.format = GL_R32UI;
+    }
     initStrings();
 }
 
@@ -240,6 +249,10 @@ void Context::initStrings() {
     // targets (GL_ARB_framebuffer_sRGB) only with it.
     extensions_.push_back("GL_EXT_texture_sRGB_decode");
     if (version >= 40) extensions_.push_back("GL_EXT_texture_shadow_lod");
+    // Features gate on the desktop names (hasExtension); ES contexts
+    // advertise the OpenGL ES names instead.
+    featureExtensions_ = extensions_;
+    if (config_.es) initEsStrings();
     extensionString_.clear();
     for (const std::string& ext : extensions_) {
         if (!extensionString_.empty()) extensionString_ += ' ';
@@ -248,6 +261,10 @@ void Context::initStrings() {
 }
 
 bool Context::hasExtension(const char* name) const {
+    return std::find(featureExtensions_.begin(), featureExtensions_.end(), name) != featureExtensions_.end();
+}
+
+bool Context::advertises(const char* name) const {
     return std::find(extensions_.begin(), extensions_.end(), name) != extensions_.end();
 }
 

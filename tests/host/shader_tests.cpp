@@ -583,3 +583,190 @@ TEST(shader_bitcast_global_constants) {
     CHECK(compile(Stage::Fragment, "#version 440\nconst int n = 2;\nuniform vec4 v[n];\nout vec4 o;\n"
                                    "void main() { o = v[1]; }\n").ok);
 }
+
+// A sampler array inside a struct is one uniform of the array's size
+// (dEQP uniform_api.info_query.array_in_struct.sampler2D_samplerCube_both).
+TEST(shader_struct_sampler_array_size) {
+    LinkInput in;
+    in.shaders.push_back({Stage::Vertex, "#version 300 es\nin vec4 p; void main() { gl_Position = p; }\n"});
+    in.shaders.push_back({Stage::Fragment,
+                          "#version 300 es\nprecision mediump float;\n"
+                          "struct S { sampler2D m0; samplerCube m1; sampler2D m2[3]; };\n"
+                          "uniform S u_var; out vec4 color;\n"
+                          "void main() { color = texture(u_var.m0, vec2(0)) + texture(u_var.m1, vec3(0)) +\n"
+                          "  texture(u_var.m2[0], vec2(0)) + texture(u_var.m2[1], vec2(0)) + texture(u_var.m2[2], vec2(0)); }\n"});
+    LinkResult r = link(in);
+    CHECK(r.ok);
+    if (!r.ok) std::fprintf(stderr, "%s\n", r.log.c_str());
+    const UniformInfo* m2 = findUniform(r, "u_var.m2[0]");
+    CHECK(m2 && m2->size == 3);
+}
+
+// OpenGL ES contexts: GLSL ES 1.00 (no #version) compiles and links as the
+// desktop GLSL compileEs makes of it, with its extensions' names.
+TEST(shader_glsl_es_100) {
+    const char* vs = "attribute vec4 a_pos; attribute vec2 a_uv; varying mediump vec2 v_uv;\n"
+                     "void main() { v_uv = a_uv; gl_Position = a_pos; gl_PointSize = 1.0; }\n";
+    const char* fs = "#extension GL_EXT_shader_texture_lod : enable\n#extension GL_OES_standard_derivatives : enable\n"
+                     "precision mediump float; uniform sampler2D u_tex; varying vec2 v_uv;\n"
+                     "void main() { gl_FragColor = texture2DLodEXT(u_tex, v_uv, 0.0) + vec4(dFdx(v_uv.x));\n"
+                     "#if __VERSION__ == 100 && defined(GL_ES)\n gl_FragColor.a = 1.0;\n#endif\n}\n";
+    EsCompileResult v = compileEs(Stage::Vertex, vs);
+    EsCompileResult f = compileEs(Stage::Fragment, fs);
+    CHECK(v.ok);
+    CHECK(f.ok);
+    if (!f.ok) std::fprintf(stderr, "%s\n", f.log.c_str());
+    CHECK(f.desktop.find("gl_FragColor.a = 1.0") != std::string::npos);  // ES macros were expanded
+    LinkInput in;
+    in.shaders.push_back({Stage::Vertex, v.desktop});
+    in.shaders.push_back({Stage::Fragment, f.desktop});
+    LinkResult r = link(in);
+    CHECK(r.ok);
+    if (!r.ok) std::fprintf(stderr, "%s\n", r.log.c_str());
+    CHECK(findUniform(r, "u_tex") != nullptr);
+}
+
+// GLSL ES's own rules: no implicit int to float conversion, a default
+// float precision in fragment shaders, and no desktop #version.
+TEST(shader_glsl_es_rules) {
+    CHECK(!compileEs(Stage::Vertex, "void main() { float x = 1; gl_Position = vec4(x); }\n").ok);
+    CHECK(!compileEs(Stage::Fragment, "void main() { float x = 1.0; gl_FragColor = vec4(x); }\n").ok);
+    CHECK(!compileEs(Stage::Vertex, "#version 330\nvoid main() { gl_Position = vec4(0); }\n").ok);
+    CHECK(compileEs(Stage::Vertex, "#version 300 es\nin vec4 p; void main() { gl_Position = p; }\n").ok);
+}
+
+// Uniforms in several stages have one precision (GLSL ES 1.00 section 4.5.3).
+TEST(shader_glsl_es_uniform_precision) {
+    const char* vs = "uniform highp float u; void main() { gl_Position = vec4(u); }\n";
+    const char* fsSame = "precision mediump float; uniform highp float u; void main() { gl_FragColor = vec4(u); }\n";
+    const char* fsOther = "precision mediump float; uniform mediump float u; void main() { gl_FragColor = vec4(u); }\n";
+    CHECK(checkEsLink({{Stage::Vertex, vs}, {Stage::Fragment, fsSame}}).empty());
+    CHECK(!checkEsLink({{Stage::Vertex, vs}, {Stage::Fragment, fsOther}}).empty());
+}
+
+// KHR_blend_equation_advanced: the fragment shader's blend_support layouts
+// are reflected, and the blend variant reads color 0 by framebuffer fetch.
+TEST(shader_advanced_blend_support) {
+    EsCompileResult v = compileEs(Stage::Vertex, "#version 320 es\nin vec4 p; void main() { gl_Position = p; }\n");
+    EsCompileResult f = compileEs(Stage::Fragment, "#version 320 es\nprecision mediump float;\n"
+                                                   "layout(blend_support_multiply, blend_support_hsl_hue) out;\n"
+                                                   "layout(location = 0) out vec4 o; void main() { o = vec4(1.0); }\n");
+    CHECK(v.ok);
+    CHECK(f.ok);
+    if (!f.ok) std::fprintf(stderr, "%s\n", f.log.c_str());
+    LinkInput in;
+    in.shaders.push_back({Stage::Vertex, v.desktop});
+    in.shaders.push_back({Stage::Fragment, f.desktop});
+    LinkResult r = link(in);
+    CHECK(r.ok);
+    if (!r.ok) std::fprintf(stderr, "%s\n", r.log.c_str());
+    CHECK(r.blendSupport & 1u);          // MULTIPLY
+    CHECK(r.blendSupport & (1u << 11));  // HSL_HUE
+    CHECK(!(r.blendSupport & (1u << 1)));
+    const std::string msl = fragmentWithAdvancedBlend(r.stages[4].msl, 0);
+    CHECK(msl.find("[[color(0)]]") != std::string::npos);
+    CHECK(msl.find("wmgl_advanced_blend(out.") != std::string::npos);
+}
+
+// EXT_clip_cull_distance (no GLSL ES form in glslang): compiled as GLSL 4.50.
+TEST(shader_glsl_es_clip_cull_distance) {
+    EsCompileResult f = compileEs(Stage::Fragment,
+                                  "#version 310 es\n\n#extension GL_EXT_clip_cull_distance : enable\n\nprecision highp float;\n\n"
+                                  "flat in  int out_gs;\nout int out_fs;\n\nvoid main()\n{\n    if (out_gs == gl_MaxCullDistances)\n"
+                                  "    {\n        out_fs = gl_MaxCullDistances;\n    }\n    else\n    {\n        out_fs = -1;\n    }\n}\n");
+    CHECK(f.ok);
+    if (!f.ok) std::fprintf(stderr, "%s\n", f.log.c_str());
+    EsCompileResult v = compileEs(Stage::Vertex, "#version 300 es\n#extension GL_EXT_clip_cull_distance : require\n"
+                                                 "in vec4 p; void main() { gl_Position = p; gl_ClipDistance[0] = p.x;"
+                                                 " gl_CullDistance[0] = p.y; }\n");
+    CHECK(v.ok);
+    if (!v.ok) std::fprintf(stderr, "%s\n", v.log.c_str());
+}
+
+// Struct sampler array elements keep their own slots (each bound to its own
+// texture), and unused leading elements still count (u_var.m3[0], size 3).
+TEST(shader_struct_sampler_array_elements) {
+    LinkInput in;
+    in.shaders.push_back({Stage::Vertex, "#version 300 es\nin vec4 p; void main() { gl_Position = p; }\n"});
+    in.shaders.push_back({Stage::Fragment,
+                          "#version 300 es\nprecision mediump float;\n"
+                          "struct S { sampler2D m2[2]; samplerCube m3[3]; };\n"
+                          "uniform S u_var; out vec4 color;\n"
+                          "void main() { color = texture(u_var.m2[0], vec2(0)) + texture(u_var.m2[1], vec2(0)) +\n"
+                          "  texture(u_var.m3[2], vec3(0)); }\n"});
+    LinkResult r = link(in);
+    CHECK(r.ok);
+    const UniformInfo* m2 = findUniform(r, "u_var.m2[0]");
+    const UniformInfo* m3 = findUniform(r, "u_var.m3[0]");
+    CHECK(m2 && m2->size == 2);
+    CHECK(m3 && m3->size == 3);
+    CHECK(findUniform(r, "u_var.m3[2]") == nullptr);
+    if (m2 && m3) {
+        const int fs = static_cast<int>(Stage::Fragment);
+        const int t0 = r.samplers[m2->samplerSlot].stageTexture[fs], t1 = r.samplers[m2->samplerSlot + 1].stageTexture[fs];
+        CHECK(t0 >= 0 && t1 >= 0 && t0 != t1);
+        CHECK(r.samplers[m3->samplerSlot + 2].stageTexture[fs] >= 0);
+    }
+}
+
+// Transform feedback of a struct output's member ("s.member"), and stage
+// interfaces matched by location under different names (GLSL ES 3.10).
+TEST(shader_es_struct_feedback_and_location_matching) {
+    LinkInput in;
+    in.shaders.push_back({Stage::Vertex, compileEs(Stage::Vertex,
+                                                   "#version 310 es\nstruct S { highp float a; highp vec2 b; };\n"
+                                                   "out S target; layout(location = 3) out highp vec4 shaderOutput;\n"
+                                                   "void main() { target.a = 1.0; target.b = vec2(2.0); shaderOutput = vec4(3.0);"
+                                                   " gl_Position = vec4(0.0); }\n").desktop});
+    in.shaders.push_back({Stage::Fragment, compileEs(Stage::Fragment,
+                                                     "#version 310 es\nprecision mediump float;\n"
+                                                     "layout(location = 3) in highp vec4 shaderInput; out vec4 o;\n"
+                                                     "void main() { o = shaderInput; }\n").desktop});
+    in.transformFeedbackVaryings = {"target.a", "target.b"};
+    LinkResult r = link(in);
+    CHECK(r.ok);
+    if (!r.ok) std::fprintf(stderr, "%s\n", r.log.c_str());
+    CHECK_EQ(r.transformFeedback.size(), size_t(2));
+}
+
+// Struct sampler array elements seen out of order (another sampler between
+// them) still make one uniform of the array's size.
+TEST(shader_struct_sampler_array_interleaved) {
+    LinkInput in;
+    in.shaders.push_back({Stage::Vertex, "#version 300 es\nin vec4 p; void main() { gl_Position = p; }\n"});
+    in.shaders.push_back({Stage::Fragment,
+                          "#version 300 es\nprecision mediump float;\n"
+                          "struct S { sampler2D m0; samplerCube m3[3]; samplerCube m1; };\n"
+                          "uniform S u_var; out vec4 color;\n"
+                          "void main() { color = texture(u_var.m3[0], vec3(0)) + texture(u_var.m1, vec3(0)) +\n"
+                          "  texture(u_var.m3[2], vec3(0)) + texture(u_var.m0, vec2(0)); }\n"});
+    LinkResult r = link(in);
+    CHECK(r.ok);
+    const UniformInfo* m3 = findUniform(r, "u_var.m3[0]");
+    CHECK(m3 && m3->size == 3);
+    CHECK(findUniform(r, "u_var.m3[2]") == nullptr);
+}
+
+// A struct member of an interface block with an explicit location takes it
+// (dEQP-GLES31 program_input.location.interface_blocks.in.named_block.var_struct_explicit_location).
+TEST(shader_block_struct_member_location) {
+    LinkInput in;
+    in.separable = true;
+    const EsCompileResult f = compileEs(Stage::Fragment,
+                                        "#version 320 es\nprecision highp float;\n"
+                                        "struct S { highp vec4 target; highp vec2 more; };\n"
+                                        "in TargetInterface { layout(location = 2) S target; layout(location = 5) highp vec4 after; } inst;\n"
+                                        "layout(location = 0) out vec4 o;\n"
+                                        "void main() { o = inst.target.target + inst.after + inst.target.more.xyxy; }\n");
+    CHECK(f.ok);
+    if (!f.ok) std::fprintf(stderr, "%s\n", f.log.c_str());
+    in.shaders.push_back({Stage::Fragment, f.desktop});
+    LinkResult r = link(in);
+    CHECK(r.ok);
+    if (!r.ok) std::fprintf(stderr, "%s\n", r.log.c_str());
+    for (const InterfaceVariableInfo& v : r.programInputs) {
+        if (v.name == "TargetInterface.target.target") CHECK_EQ(v.location, 2);
+        if (v.name == "TargetInterface.target.more") CHECK_EQ(v.location, 3);
+        if (v.name == "TargetInterface.after") CHECK_EQ(v.location, 5);
+    }
+}

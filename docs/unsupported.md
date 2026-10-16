@@ -102,10 +102,35 @@ logged once.
 | Imaging subset (colour tables, convolution, histogram, colour matrix) | 1.2 | `GL_INVALID_OPERATION`; `GL_ARB_imaging` is not advertised. The colour matrix stack (`glMatrixMode(GL_COLOR)`, two deep) is kept and reads back, as the Steam overlay saves and restores it unchecked, but it does not transform pixels | Optional in the specification: it exists only when `GL_ARB_imaging` is advertised | Large, for almost no use |
 | Colour-index mode | 1.0 | Unreachable | Wine's macOS driver offers only RGBA pixel formats, so no program can create a colour-index context | Nothing worth doing |
 
+## OpenGL ES
+
+OpenGL ES contexts are OpenGL ES 3.2 (`WINEMETALGL_ES_VERSION` lowers the
+version they report). What they leave out:
+
+| Feature | Behaviour | Why |
+|---|---|---|
+| Lines wider than 1 | `ALIASED_LINE_WIDTH_RANGE` is 1 to 1 | Optional in OpenGL ES; Metal draws 1-pixel lines only |
+| HDR ASTC (`GL_KHR_texture_compression_astc_hdr`) | Not advertised | LDR ASTC only (including 3D textures, `GL_KHR_texture_compression_astc_sliced_3d`) |
+| Fragment shading rates other than 1x1 (`GL_EXT_fragment_shading_rate`) | `glGetFragmentShadingRatesEXT` reports only 1x1; every requested or combined rate clamps to it and `gl_ShadingRateEXT` reads 1x1 | Metal has no per-draw, per-primitive or attachment shading rates |
+| `GL_NV_fbo_color_attachments`, `GL_OVR_multiview`, `GL_EXT_multisampled_render_to_texture`, `GL_EXT_shader_framebuffer_fetch`, `GL_EXT_shader_group_vote`, `GL_EXT_sRGB_write_control`, `GL_KHR_shader_subgroup`, `GL_ANDROID_extension_pack_es31a` | Not advertised | Not implemented yet; `GL_EXT_draw_buffers` covers several color attachments |
+| Separate depth and stencil attachments | `FRAMEBUFFER_UNSUPPORTED` | Metal keeps depth and stencil in one texture; OpenGL ES allows the combination to be unsupported |
+| More than 4 samples | `MAX_SAMPLES` is 4 | Apple GPUs render with 1, 2 or 4 samples |
+| Arrays of matrices as shader stage inputs or outputs (`out mat3x2 m[2]`, in blocks too) | The program does not link | Metal stage inputs and outputs cannot hold them (SPIRV-Cross) |
+| Arrays of atomic counters passed to functions | The shader does not compile | Atomic counters are lowered to storage buffer words, which function parameters cannot reference |
+| Out-of-bounds reads of uniform block arrays in robust contexts | May return values from memory past the block instead of zero or in-range values | Metal does not bound these reads |
+
+Apple GPUs shade the 2x2 pixel quads along an edge that two triangles of an
+indexed draw share together, so derivatives (and the texture level of a
+lookup) next to the edge mix both triangles' attributes. OpenGL ES draws whose
+vertex attributes are all in client memory are drawn without indices, which
+keeps each triangle's quads apart; draws from buffer objects keep the
+hardware behaviour, which changes the level of a few pixels along such edges
+only where the attributes' derivatives differ across them.
+
 ## Conformance notes
 
 <!-- BEGIN GENERATED: totals-notes (scripts/docs/generate.py) -->
-**Unsupported %** (README conformance totals): cases the CTS reports NotSupported because WineMetalGL does not offer what they test (an extension it does not advertise, or a limit above the GL minimum), over the cases any implementation can run. Contexts are OpenGL 4.6, the newest version; the unsupported cases are optional extensions ([OpenGL 4.x](#opengl-4x)).
+**Unsupported %** ([conformance totals](conformance.md#conformance-totals)): cases the CTS reports NotSupported because WineMetalGL does not offer what they test (an extension it does not advertise, or a limit above the GL minimum), over the cases any implementation can run. Contexts are OpenGL 4.6, the newest version; the unsupported cases are optional extensions ([OpenGL 4.x](#opengl-4x)).
 
 Failing cases: `KHR-GL30.api.coverage`, `KHR-GL40.internalformat.renderbuffer.rgb9_e5`, `KHR-GL41.internalformat.renderbuffer.rgb9_e5`, `KHR-GL42.internalformat.renderbuffer.rgb9_e5`, `KHR-GL42.texture_view.view_sampling`, `KHR-GL43.clear_tex_image.negative_gl_clear_tex_and_sub_image_compressed_texture`, `KHR-GL43.internalformat.renderbuffer.rgb9_e5`, `KHR-GL43.texture_view.view_sampling`, `KHR-GL46.clear_tex_image.negative_gl_clear_tex_and_sub_image_compressed_texture`, `KHR-GL46.internalformat.renderbuffer.rgb9_e5`, `KHR-GL46.texture_view.view_sampling`. [Conformance results](conformance.md) gives the reason for each.
 <!-- END GENERATED: totals-notes -->
@@ -159,4 +184,54 @@ Every NotSupported case in a committed result matches one entry of `tests/cts/no
 | `KHR-GL4?.*sample_variables.*samples_8*` | extension | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 76 | The case needs 8 samples; GL_MAX_SAMPLES is 4, the most every color and depth format takes on the Metal device. |
 | `KHR-GL4?.tessellation_shader.tessellation_shader_tessellation.max_in_out_attributes` | extension | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | The case needs GL_MAX_VERTEX_OUTPUT_COMPONENTS to cover GL_MAX_TESS_CONTROL_INPUT_COMPONENTS (esextcTessellationShaderTessellation.cpp, TessellationShaderTessellationMaxInOut::initTest). WineMetalGL reports the GL minimums, 64 and 128. |
 | `KHR-GL4?.texture_cube_map_array.generate_mip_map_non_filterable_*` | test-design | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 2 | The cases run only in OpenGL ES contexts and report NotSupported on every desktop context (esextcTextureCubeMapArrayGenerateMipMap.cpp). |
+
+OpenGL ES lists (cases NotSupported in any list of the version):
+
+| Pattern | Kind | ES 2.0 | ES 3.0 | ES 3.1 | ES 3.2 | Reason |
+|---|---|---:|---:|---:|---:|---|
+| `KHR-GLES2.texture_3d.compressed_texture.*` | extension | 30 | 0 | 0 | 0 | The cases need HDR ASTC (GL_KHR_texture_compression_astc_hdr), which OpenGL ES contexts do not advertise (LDR ASTC only). |
+| `KHR-GLES2.core.internalformat.renderbuffer.stencil_index[14]_oes` | extension | 2 | 0 | 0 | 0 | GL_OES_stencil1 and GL_OES_stencil4 are not advertised. |
+| `KHR-GLES2.core.internalformat.copy_tex_image.rgb10` | test-design | 1 | 0 | 0 | 0 | OpenGL ES copies only into formats whose component sizes match the source's; the test reports NotSupported for a non-renderable format with other sizes on every implementation (glcInternalformatTests.cpp, CopyTexImageCase). |
+| `KHR-GLES3.cull_distance.functional_test_item_8_primitive_mode_[lt]*` | test-design | 0 | 16 | 0 | 0 | Item 8 fetches cull distances only for points; the test reports NotSupported for lines and triangles on every implementation (glcCullDistance.cpp, CullDistance::FunctionalTest::iterate). |
+| `KHR-GLES3.packed_depth_stencil.stencil_texturing.*` | version | 0 | 2 | 0 | 0 | KHR-GLES3 creates OpenGL ES 3.0 contexts; stencil texturing needs OpenGL ES 3.1. |
+| `KHR-GLES3.shaders.shader_integer_mix.prototypes` | test-design | 0 | 1 | 0 | 0 | Without `#extension GL_EXT_shader_integer_mix` the case needs GLSL ES 3.10; KHR-GLES3 compiles it as GLSL ES 3.00 (glcShaderIntegerMixTests.cpp, ShaderIntegerMixPrototypesCase). |
+| `dEQP-GLES2.functional.fbo.completeness.attachment_combinations.*` | extension | 54 | 0 | 0 | 0 | dEQP-GLES2 combines several color attachments only with GL_NV_fbo_color_attachments (es2fFboCompletenessTests.cpp), which is not advertised. |
+| `dEQP-GLES2.functional.multisample.*` | test-design | 16 | 0 | 0 | 0 | The cases render to the default framebuffer and need it multisampled; configuration 1 (`rgba8888d24s8ms0`) has no samples, so they report NotSupported on every implementation. |
+| `dEQP-GLES3.functional.multisample.[cd]*` | test-design | 0 | 16 | 0 | 0 | The cases need a multisampled default framebuffer; configuration 1 (`rgba8888d24s8ms0`) has none, so they report NotSupported on every implementation. |
+| `dEQP-GLES*.functional.rasterization.*wide*` | extension | 9 | 20 | 0 | 0 | OpenGL ES contexts support line widths up to 1 (ALIASED_LINE_WIDTH_RANGE); wider lines are optional. |
+| `dEQP-GLES*.functional.clipping.line.*wide*` | extension | 8 | 8 | 0 | 0 | OpenGL ES contexts support line widths up to 1 (ALIASED_LINE_WIDTH_RANGE); wider lines are optional. |
+| `dEQP-GLES[23].functional.shaders.fragdata.*` | test-design | 2 | 3 | 0 | 0 | Dynamic indexing of gl_FragData is optional in GLSL ES 1.00 (and the 3.00 cases use it through ES 1.00 shaders); the test reports NotSupported unless the implementation's own capability flag is set (glsShaderLibraryCase.cpp). |
+| `dEQP-GLES2.functional.multisampled_render_to_texture.*` | extension | 1 | 0 | 0 | 0 | GL_EXT_multisampled_render_to_texture is not advertised. |
+| `dEQP-GLES3.functional.transform_feedback.*` | extension | 0 | 333 | 0 | 0 | The cases capture more components than MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS / SEPARATE_COMPONENTS (the OpenGL ES minimums) allow. |
+| `dEQP-GLES3.functional.fbo.msaa.8_samples.*` | extension | 0 | 22 | 0 | 0 | MAX_SAMPLES is 4 (Apple GPUs render with 1, 2 or 4 samples). |
+| `dEQP-GLES3.functional.multisample.fbo_8_samples.*` | extension | 0 | 16 | 0 | 0 | MAX_SAMPLES is 4 (Apple GPUs render with 1, 2 or 4 samples). |
+| `dEQP-GLES3.functional.fbo.blit.depth_stencil.*stencil_index8*` | extension | 0 | 12 | 0 | 0 | Separate depth and stencil attachments are FRAMEBUFFER_UNSUPPORTED (Metal stores depth and stencil together); OpenGL ES allows reporting them unsupported. |
+| `dEQP-GLES3.functional.fbo.multiview.*` | extension | 0 | 3 | 0 | 0 | GL_OVR_multiview is not advertised. |
+| `dEQP-GLES3.functional.fragment_ops.scissor.clear_depth` | test-design | 0 | 1 | 0 | 0 | The RGB565 configuration has no depth buffer, so the case reports NotSupported on every implementation. |
+| `dEQP-GLES3.functional.fragment_ops.scissor.clear_stencil` | test-design | 0 | 1 | 0 | 0 | The RGB565 configuration has no stencil buffer, so the case reports NotSupported on every implementation. |
+| `dEQP-GLES3.functional.fragment_ops.scissor.framebuffer_blit_*` | test-design | 0 | 3 | 0 | 0 | In the multisample configuration the default framebuffer is multisampled and OpenGL ES cannot blit into it, so the cases report NotSupported on every implementation (glsScissorTests.cpp). |
+| `KHR-GLES31.core.sample_variables.*samples_8*` | extension | 0 | 0 | 38 | 0 | The cases need 8 samples; GL_MAX_SAMPLES and the integer and float formats' sample counts are 4, the most Apple GPUs render with. |
+| `KHR-GLES31.core.shader_atomic_counters.advanced-usage-multidim-array-[ml]*` | extension | 0 | 0 | 2 | 0 | The cases need more atomic counters per stage than GL_MAX_*_ATOMIC_COUNTERS allows; the test reports NotSupported below its array size. |
+| `KHR-GLES31.core.shader_group_vote.*` | extension | 0 | 0 | 5 | 0 | GL_EXT_shader_group_vote is not advertised in OpenGL ES contexts. |
+| `KHR-GLES3[12].core.tessellation_shader.tessellation_shader_tessellation.max_in_out_attributes` | extension | 0 | 0 | 1 | 1 | The case needs GL_MAX_VERTEX_OUTPUT_COMPONENTS to cover GL_MAX_TESS_CONTROL_INPUT_COMPONENTS (esextcTessellationShaderTessellation.cpp); WineMetalGL reports the OpenGL ES minimums. |
+| `KHR-GLES3[12].core.tessellation_shader.tessellation_shader_tessellation.TES` | test-design | 0 | 0 | 1 | 1 | OpenGL ES requires a tessellation control shader with an evaluation shader; the case runs only where an evaluation shader may be used alone (esextcTessellationShaderTessellation.cpp). |
+| `KHR-GLES*.viewport_array.viewport_index_subroutine` | test-design | 0 | 0 | 1 | 1 | OpenGL ES has no shader subroutines; the case runs only on desktop GL (glcViewportArrayTests.cpp). |
+| `KHR-GLESEXT.fragment_shading_rate.render_target.*` | extension | 0 | 0 | 0 | 15 | Every render target case needs GL_OVR_multiview (esextcFragmentShadingRateAttachmentTests.cpp, FragmentShadingRateAttachment::init), which is not advertised. |
+| `KHR-Single-GLES3[12].subgroups.*` | extension | 0 | 0 | 6053 | 6053 | GL_KHR_shader_subgroup is not advertised. |
+| `dEQP-GLES31.functional.android_extension_pack.*` | extension | 0 | 0 | 40 | 0 | GL_ANDROID_extension_pack_es31a is not advertised (it needs GL_KHR_texture_compression_astc_hdr and GL_EXT_shader_framebuffer_fetch, which are not). |
+| `dEQP-GLES31.functional.debug.*framebuffer_fetch*` | extension | 0 | 0 | 12 | 0 | GL_EXT_shader_framebuffer_fetch is not advertised. |
+| `dEQP-GLES31.functional.shaders.framebuffer_fetch.*` | extension | 0 | 0 | 44 | 0 | GL_EXT_shader_framebuffer_fetch is not advertised. |
+| `dEQP-GLES31.functional.draw_indirect.compute_interop.large.*` | extension | 0 | 0 | 18 | 0 | The cases need a GL_MAX_SHADER_STORAGE_BLOCK_SIZE larger than the 2^27 bytes WineMetalGL reports (the OpenGL ES minimum). |
+| `dEQP-GLES31.functional.fbo.srgb_write_control.*` | extension | 0 | 0 | 5 | 0 | GL_EXT_sRGB_write_control is not advertised. |
+| `dEQP-GLES31.functional.geometry_shading.basic.output_256` | extension | 0 | 0 | 1 | 0 | The case needs more geometry output components than GL_MAX_GEOMETRY_TOTAL_OUTPUT_COMPONENTS (the OpenGL ES minimum). |
+| `dEQP-GLES31.functional.multisample.default_framebuffer.*` | test-design | 0 | 0 | 8 | 0 | The cases need a multisample default framebuffer; mustpass configuration 1 has none. |
+| `dEQP-GLES31.functional.sample_shading.min_sample_shading.default_framebuffer_*` | test-design | 0 | 0 | 2 | 0 | The cases need a multisample default framebuffer; mustpass configuration 1 has none. |
+| `dEQP-GLES31.functional.primitive_bounding_box.wide_lines.*` | extension | 0 | 0 | 40 | 0 | Lines wider than 1 are optional in OpenGL ES; ALIASED_LINE_WIDTH_RANGE is 1 to 1 (Metal draws 1-pixel lines). |
+| `dEQP-GLES31.functional.program_interface_query.*block_array.array.mat3x2` | extension | 0 | 0 | 2 | 0 | Metal stage inputs and outputs cannot hold arrays of matrices (SPIRV-Cross), so the program does not link; the test reports a link failure as a limit NotSupported. |
+| `dEQP-GLES31.functional.shaders.opaque_type_indexing.atomic_counter.*tessellation_*` | extension | 0 | 0 | 8 | 0 | GL_MAX_TESS_CONTROL_ATOMIC_COUNTERS and GL_MAX_TESS_EVALUATION_ATOMIC_COUNTERS are 0, the OpenGL ES minimum. |
+| `dEQP-GLES31.functional.shaders.*_8*` | extension | 0 | 0 | 72 | 0 | The cases need 8 samples; GL_MAX_SAMPLES is 4, the most Apple GPUs render with. |
+| `dEQP-GLES31.functional.shaders.*_16` | extension | 0 | 0 | 52 | 0 | The cases need 16 samples; GL_MAX_SAMPLES is 4, the most Apple GPUs render with. |
+| `dEQP-GLES31.functional.sample_shading.*samples_[1-9]*` | extension | 0 | 0 | 8 | 0 | The cases need more than 4 samples; GL_MAX_SAMPLES is 4, the most Apple GPUs render with. |
+| `dEQP-GLES31.functional.texture.multisample.samples_*` | extension | 0 | 0 | 84 | 0 | The cases need more than 4 samples (or more GL_MAX_SAMPLE_MASK_WORDS); Apple GPUs render with at most 4. |
+| `dEQP-GLES31.functional.primitive_bounding_box.blit_fbo.blit_fbo_to_default` | test-design | 0 | 0 | 1 | 0 | The case needs a single-sample default framebuffer; the multisample list's configuration has a 4-sample one (es31fPrimitiveBoundingBoxTests.cpp). |
 <!-- END GENERATED: notsupported -->

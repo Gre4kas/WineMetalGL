@@ -465,7 +465,7 @@ void decodeStorage(Storage s, const uint8_t* p, Texel& t) {
     auto s32 = [&](int i) { int32_t v; std::memcpy(&v, p + 4 * i, 4); return v; };
     auto f32 = [&](int i) { float v; std::memcpy(&v, p + 4 * i, 4); return static_cast<double>(v); };
     switch (s) {
-    case Storage::R8Unorm: t.c[0] = u8(0) / 255.0; break;
+    case Storage::R8Unorm: case Storage::R8Unorm_sRGB: t.c[0] = u8(0) / 255.0; break;
     case Storage::R8Snorm: t.c[0] = snormToDouble(static_cast<int8_t>(p[0]), 8); break;
     case Storage::R8Uint: t.c[0] = u8(0); break;
     case Storage::R8Sint: t.c[0] = s8(0); break;
@@ -474,7 +474,7 @@ void decodeStorage(Storage s, const uint8_t* p, Texel& t) {
     case Storage::R16Uint: t.c[0] = u16(0); break;
     case Storage::R16Sint: t.c[0] = s16(0); break;
     case Storage::R16Float: t.c[0] = halfToFloat(u16(0)); break;
-    case Storage::RG8Unorm: t.c[0] = u8(0) / 255.0; t.c[1] = u8(1) / 255.0; break;
+    case Storage::RG8Unorm: case Storage::RG8Unorm_sRGB: t.c[0] = u8(0) / 255.0; t.c[1] = u8(1) / 255.0; break;
     case Storage::RG8Snorm: t.c[0] = snormToDouble(static_cast<int8_t>(p[0]), 8); t.c[1] = snormToDouble(static_cast<int8_t>(p[1]), 8); break;
     case Storage::RG8Uint: t.c[0] = u8(0); t.c[1] = u8(1); break;
     case Storage::RG8Sint: t.c[0] = s8(0); t.c[1] = s8(1); break;
@@ -532,7 +532,7 @@ void encodeStorage(Storage s, const Texel& t, uint8_t* p) {
     auto w32 = [&](int i, uint32_t v) { std::memcpy(p + 4 * i, &v, 4); };
     auto wf = [&](int i, double v) { const float f = static_cast<float>(v); std::memcpy(p + 4 * i, &f, 4); };
     switch (s) {
-    case Storage::R8Unorm: p[0] = static_cast<uint8_t>(doubleToUnorm(t.c[0], 8)); break;
+    case Storage::R8Unorm: case Storage::R8Unorm_sRGB: p[0] = static_cast<uint8_t>(doubleToUnorm(t.c[0], 8)); break;
     case Storage::R8Snorm: p[0] = static_cast<uint8_t>(doubleToSnorm(t.c[0], 8)); break;
     case Storage::R8Uint: p[0] = clampInt<uint8_t>(t.c[0]); break;
     case Storage::R8Sint: p[0] = static_cast<uint8_t>(clampInt<int8_t>(t.c[0])); break;
@@ -541,7 +541,7 @@ void encodeStorage(Storage s, const Texel& t, uint8_t* p) {
     case Storage::R16Uint: w16(0, clampInt<uint16_t>(t.c[0])); break;
     case Storage::R16Sint: w16(0, static_cast<uint16_t>(clampInt<int16_t>(t.c[0]))); break;
     case Storage::R16Float: w16(0, floatToHalf(static_cast<float>(t.c[0]))); break;
-    case Storage::RG8Unorm: for (int i = 0; i < 2; ++i) p[i] = static_cast<uint8_t>(doubleToUnorm(t.c[i], 8)); break;
+    case Storage::RG8Unorm: case Storage::RG8Unorm_sRGB: for (int i = 0; i < 2; ++i) p[i] = static_cast<uint8_t>(doubleToUnorm(t.c[i], 8)); break;
     case Storage::RG8Snorm: for (int i = 0; i < 2; ++i) p[i] = static_cast<uint8_t>(doubleToSnorm(t.c[i], 8)); break;
     case Storage::RG8Uint: for (int i = 0; i < 2; ++i) p[i] = clampInt<uint8_t>(t.c[i]); break;
     case Storage::RG8Sint: for (int i = 0; i < 2; ++i) p[i] = static_cast<uint8_t>(clampInt<int8_t>(t.c[i])); break;
@@ -729,7 +729,8 @@ bool identityTransfer(GLenum format, GLenum type, const FormatInfo& info) {
     if (!channels) return false;
     using S = Storage;
     switch (info.storage) {
-    case S::R8Unorm: case S::RG8Unorm: case S::RGBA8Unorm: case S::RGBA8Unorm_sRGB: return type == GL_UNSIGNED_BYTE;
+    case S::R8Unorm: case S::RG8Unorm: case S::RGBA8Unorm: case S::RGBA8Unorm_sRGB: case S::R8Unorm_sRGB:
+    case S::RG8Unorm_sRGB: return type == GL_UNSIGNED_BYTE;
     case S::R16Unorm: case S::RG16Unorm: case S::RGBA16Unorm: return type == GL_UNSIGNED_SHORT;
     case S::R8Uint: case S::RG8Uint: case S::RGBA8Uint: return type == GL_UNSIGNED_BYTE;
     case S::R8Sint: case S::RG8Sint: case S::RGBA8Sint: return type == GL_BYTE;
@@ -754,7 +755,7 @@ void unpackPixels(const void* src, GLenum format, GLenum type, int width, int he
     const TransferLayout l = transferLayout(format, type, width, height, depth, ps);
     const size_t texelBytes = storageBytes(info.storage);
     const bool integerDest = info.isInteger();
-    const bool clampDepth = info.isDepth() && info.type != ComponentType::Float;
+    const bool clampDepth = info.isDepth() && (info.type != ComponentType::Float || ps.clampFloatDepth);
     auto* dst = static_cast<uint8_t*>(out);
     const auto* base = static_cast<const uint8_t*>(src) + l.skipBytes;
     const bool swap = ps.swapBytes && typeBytes(type) > 1;
@@ -768,7 +769,7 @@ void unpackPixels(const void* src, GLenum format, GLenum type, int width, int he
     const bool rgba8 = info.storage == Storage::RGBA8Unorm || info.storage == Storage::RGBA8Unorm_sRGB;
     const size_t rowBytes = static_cast<size_t>(width) * texelBytes;
     auto rowAt = [&](int z, int y) { return base + static_cast<size_t>(z) * l.imageStride + static_cast<size_t>(y) * l.rowStride; };
-    if (!swap && l.groupBytes == texelBytes &&
+    if (!swap && l.groupBytes == texelBytes && !(ps.clampFloatDepth && info.isDepth()) &&
         (identityTransfer(format, byteType, info) || rawTransfer(format, type, info.storage))) {
         for (int z = 0; z < depth; ++z)
             for (int y = 0; y < height; ++y, dst += rowBytes) std::memcpy(dst, rowAt(z, y), rowBytes);
@@ -801,7 +802,7 @@ void unpackPixels(const void* src, GLenum format, GLenum type, int width, int he
             }
         return;
     }
-    const bool raw = rawTransfer(format, type, info.storage) && l.groupBytes == texelBytes;
+    const bool raw = rawTransfer(format, type, info.storage) && l.groupBytes == texelBytes && !(ps.clampFloatDepth && info.isDepth());
     const size_t rawComponent = type == GL_BYTE ? 1 : type == GL_HALF_FLOAT || type == GL_SHORT ? 2 : 4;
     for (int z = 0; z < depth; ++z)
         for (int y = 0; y < height; ++y) {
@@ -851,7 +852,7 @@ void packPixels(const void* storage, const FormatInfo& info, int width, int heig
                                                                                                            : type;
     const size_t rowBytes = static_cast<size_t>(width) * texelBytes;
     auto rowAt = [&](int z, int y) { return base + static_cast<size_t>(z) * l.imageStride + static_cast<size_t>(y) * l.rowStride; };
-    if (!swap && l.groupBytes == texelBytes &&
+    if (!swap && l.groupBytes == texelBytes && !(ps.clampFloatDepth && info.isDepth()) &&
         (identityTransfer(format, byteType, info) || rawTransfer(format, type, info.storage))) {
         for (int z = 0; z < depth; ++z)
             for (int y = 0; y < height; ++y, src += rowBytes) std::memcpy(rowAt(z, y), src, rowBytes);

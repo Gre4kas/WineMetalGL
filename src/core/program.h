@@ -40,7 +40,9 @@ struct LinkedProgram {
     // Fragment function variants: writing GL_SAMPLE_MASK / GL_SAMPLE_COVERAGE's
     // mask (shader::fragmentWithSampleMask), and applying logical operation
     // `logicOp` - 1 (0: none; shader::fragmentWithLogicOp) to attachments of
-    // `colorFormats` (MTLPixelFormat). Nil if the stage cannot have it.
+    // `colorFormats` (MTLPixelFormat), or above 16 advanced blend equation
+    // `logicOp` - 17 (shader::fragmentWithAdvancedBlend). Nil if the stage
+    // cannot have it.
     // `cull`: the drawing vertex function's cull distance count, 0 for none
     // (shader::fragmentWithCullDistances).
     // `borders`: the clamp-to-border emulation variant (shader::borderVariantId; 0: none).
@@ -180,7 +182,9 @@ void resetSubroutineSelections(Context& ctx);
 void applySubroutineSelections(Context& ctx, Program& program);
 namespace api {
 // Updates the pipeline's VALIDATE_STATUS and info log; true if it can draw.
-bool validateProgramPipeline(ProgramPipeline& pipeline);
+// `es`: OpenGL ES's rules too (section 7.4.1: separable programs' stage
+// interfaces must match).
+bool validateProgramPipeline(ProgramPipeline& pipeline, bool es = false);
 // Drops a destroyed context's use of its current program (which may then be
 // deleted, if deletion was pending).
 void releaseCurrentProgram(Context& ctx);

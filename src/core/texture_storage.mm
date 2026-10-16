@@ -58,6 +58,25 @@ void levelSize(GLenum target, GLsizei w0, GLsizei h0, GLsizei d0, int level, GLs
 // Level-0-equivalent dimensions of a texture from its lowest defined level.
 bool baseDimensions(const Texture& tex, GLsizei& w0, GLsizei& h0, GLsizei& d0, const FormatInfo*& format,
                     GLsizei& samples) {
+    // The chain of TEXTURE_BASE_LEVEL's image when it has one: levels left
+    // from earlier definitions that do not fit it are never sampled
+    // (a program can redefine a cube map's levels over another size's).
+    auto fromLevel = [&](int level) {
+        const TextureImage* defined = nullptr;
+        for (int face = 0; face < tex.faceCount() && !defined; ++face)
+            if (tex.image(face, level).defined()) defined = &tex.image(face, level);
+        if (!defined) return false;
+        const TextureImage& image = *defined;
+        format = image.format;
+        samples = image.samples;
+        w0 = image.width << level;
+        const bool oneDArray = tex.target == GL_TEXTURE_1D_ARRAY;
+        h0 = oneDArray || tex.target == GL_TEXTURE_1D ? image.height : image.height << level;
+        d0 = tex.target == GL_TEXTURE_3D ? image.depth << level : image.depth;
+        return true;
+    };
+    if (!tex.immutable && tex.baseLevel > 0 && tex.baseLevel < Texture::kMaxLevels && fromLevel(tex.baseLevel)) return true;
+    if (!tex.immutable && tex.baseLevel == 0 && fromLevel(0)) return true;
     for (int level = 0; level < Texture::kMaxLevels; ++level) {
         // Any cube face may be specified first.
         const TextureImage* defined = nullptr;
@@ -167,6 +186,34 @@ bool ensureViewStorage(Context& ctx, Texture& tex) {
 
 }  // namespace
 
+namespace {
+
+// Writes the images' pending contents (TextureImage::pending) that fit the
+// storage now; the others stay pending.
+void writePendingImages(Context& ctx, Texture& tex) {
+    if (tex.target != GL_TEXTURE_2D && tex.target != GL_TEXTURE_CUBE_MAP) return;
+    for (int face = 0; face < (tex.target == GL_TEXTURE_CUBE_MAP ? 6 : 1); ++face)
+        for (int level = 0; level < tex.mtlLevels && level < Texture::kMaxLevels; ++level) {
+            TextureImage& image = tex.image(face, level);
+            if (image.pending.empty()) continue;
+            const GLsizei w = std::max(1, tex.mtlWidth >> level), h = std::max(1, tex.mtlHeight >> level);
+            if (!image.format || image.format->storage != tex.storage || image.width != w || image.height != h) continue;
+            const size_t rowBytes = static_cast<size_t>(w) * storageBytes(tex.storage);
+            if (image.pending.size() == rowBytes * static_cast<size_t>(h)) {
+                id<MTLBuffer> staging = [Device::get().mtl() newBufferWithBytes:image.pending.data() length:image.pending.size()
+                                                                         options:MTLResourceStorageModeShared];
+                if (staging)
+                    [ctx.stream().blit() copyFromBuffer:staging sourceOffset:0 sourceBytesPerRow:rowBytes
+                                    sourceBytesPerImage:image.pending.size() sourceSize:MTLSizeMake(w, h, 1)
+                                              toTexture:tex.mtl destinationSlice:static_cast<NSUInteger>(face)
+                                       destinationLevel:static_cast<NSUInteger>(level) destinationOrigin:MTLOriginMake(0, 0, 0)];
+            }
+            image.pending.clear();
+        }
+}
+
+}  // namespace
+
 bool ensureTextureStorage(Context& ctx, Texture& tex) {
     if (tex.viewOf) return ensureViewStorage(ctx, tex);
     if (tex.mtl && !tex.storageDirty) return true;
@@ -201,6 +248,7 @@ bool ensureTextureStorage(Context& ctx, Texture& tex) {
         tex.mtlSamples == samples && tex.mtlLevels >= levels && (tex.mtl.usage & writeUsage) == writeUsage &&
         (tex.mtl.usage & viewUsage) == viewUsage) {
         tex.storageDirty = false;
+        writePendingImages(ctx, tex);
         return true;
     }
     MTLTextureDescriptor* desc = [MTLTextureDescriptor new];
@@ -267,6 +315,7 @@ bool ensureTextureStorage(Context& ctx, Texture& tex) {
     tex.storageDirty = false;
     tex.views.clear();
     if (!tex.label.empty()) texture.label = [NSString stringWithUTF8String:tex.label.c_str()];
+    writePendingImages(ctx, tex);
     return true;
 }
 
@@ -451,6 +500,8 @@ MTLPixelFormat withoutSrgb(MTLPixelFormat f) {
     switch (f) {
     case MTLPixelFormatRGBA8Unorm_sRGB: return MTLPixelFormatRGBA8Unorm;
     case MTLPixelFormatBGRA8Unorm_sRGB: return MTLPixelFormatBGRA8Unorm;
+    case MTLPixelFormatR8Unorm_sRGB: return MTLPixelFormatR8Unorm;
+    case MTLPixelFormatRG8Unorm_sRGB: return MTLPixelFormatRG8Unorm;
     case MTLPixelFormatBC1_RGBA_sRGB: return MTLPixelFormatBC1_RGBA;
     case MTLPixelFormatBC2_RGBA_sRGB: return MTLPixelFormatBC2_RGBA;
     case MTLPixelFormatBC3_RGBA_sRGB: return MTLPixelFormatBC3_RGBA;
@@ -661,6 +712,11 @@ id<MTLSamplerState> samplerState(Context& ctx, Texture& tex, const SamplerParams
         key.lodMax = 0;
         return ctx.share().pipelines().sampler(key);
     }
+    // OpenGL ES samples cube maps seamlessly, ignoring their wrap modes
+    // (section 8.13.1); Metal's repeat would still pick texels at face edges
+    // differently for cube map arrays.
+    if (ctx.isEs() && (tex.target == GL_TEXTURE_CUBE_MAP || tex.target == GL_TEXTURE_CUBE_MAP_ARRAY))
+        p.wrapS = p.wrapT = p.wrapR = GL_CLAMP_TO_EDGE;
     return samplerState(ctx, p, shadow);
 }
 

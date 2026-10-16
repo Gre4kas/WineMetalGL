@@ -300,11 +300,50 @@ std::string hexBits(uint32_t bits) {
 
 }  // namespace
 
+void BorderMsl::renameMetalFunctionObjects() {
+    // metal_functional's class templates.
+    static const char* const kNames[] = {"plus", "minus", "multiplies", "divides", "modulus", "negate", "equal_to",
+                                         "not_equal_to", "greater", "less", "greater_equal", "less_equal", "logical_and",
+                                         "logical_or", "logical_not", "bit_and", "bit_or", "bit_xor", "bit_not"};
+    auto rename = [](std::string& alias) {
+        // glslang names functions with their signature ("plus(").
+        const std::string base = alias.substr(0, alias.find('('));
+        for (const char* n : kNames)
+            if (base == n) {
+                alias = base + "0";
+                return;
+            }
+    };
+    ir.for_each_typed_id<spirv_cross::SPIRFunction>([&](uint32_t self, spirv_cross::SPIRFunction&) {
+        if (spirv_cross::Meta* meta = ir.find_meta(self)) rename(meta->decoration.alias);
+    });
+    ir.for_each_typed_id<spirv_cross::SPIRType>([&](uint32_t self, spirv_cross::SPIRType&) {
+        if (spirv_cross::Meta* meta = ir.find_meta(self)) rename(meta->decoration.alias);
+    });
+}
+
 std::string BorderMsl::to_texture_op(const spirv_cross::Instruction& i, bool sparse, bool* forward,
                                      spirv_cross::SmallVector<uint32_t>& inherited_expressions) {
     std::string expr = CompilerMSL::to_texture_op(i, sparse, forward, inherited_expressions);
-    if (sparse) return expr;
     const uint32_t* ops = stream(i);
+    // Apple GPUs take gradientcube's gradients wrongly on some faces (+Z with
+    // an x gradient samples level 0): textureGrad on cube maps samples the
+    // level of the gradients projected onto the face instead (GL 4.6 section
+    // 8.13, isotropically).
+    if (const size_t g = expr.find("gradientcube(");
+        g != std::string::npos && static_cast<spv::Op>(i.op) == spv::OpImageSampleExplicitLod && i.length >= 7) {
+        const uint32_t mask = ops[4];
+        if ((mask & spv::ImageOperandsGradMask) && !(mask & (spv::ImageOperandsBiasMask | spv::ImageOperandsLodMask))) {
+            const std::string args = to_expression(ops[5]) + ", " + to_expression(ops[6]) + ")";
+            if (expr.compare(g + 13, args.size(), args) == 0) {
+                const std::string p = to_enclosed_expression(ops[3]) + ".xyz";
+                expr.replace(g, 13 + args.size(),
+                             "level(wmgl_cube_lod(" + p + ", " + args.substr(0, args.size() - 1) + ", float(" +
+                                 to_expression(ops[2]) + ".get_width())))");
+            }
+        }
+    }
+    if (sparse) return expr;
     bool gather = false, dref = false, proj = false;
     switch (static_cast<spv::Op>(i.op)) {
     case spv::OpImageSampleImplicitLod: case spv::OpImageSampleExplicitLod: break;
@@ -368,6 +407,22 @@ std::string BorderMsl::to_texture_op(const spirv_cross::Instruction& i, bool spa
 }
 
 void addDefaultBorderMacros(std::string& msl) {
+    if (msl.find("wmgl_cube_lod(") != std::string::npos) {
+        // The level of cube-map gradients (BorderMsl::to_texture_op): the
+        // derivatives of the face coordinates (sc / |ma|, tc / |ma|).
+        static const char* const kCubeLod =
+            "\nstatic inline float wmgl_cube_lod(float3 p, float3 dx, float3 dy, float size) {\n"
+            "    const float3 a = abs(p);\n"
+            "    const bool xm = a.x >= a.y && a.x >= a.z, ym = !xm && a.y >= a.z;\n"
+            "    const float3 q = xm ? p.zyx : ym ? p.xzy : p;\n"
+            "    const float3 qx = xm ? dx.zyx : ym ? dx.xzy : dx, qy = xm ? dy.zyx : ym ? dy.xzy : dy;\n"
+            "    const float2 ux = (qx.xy * q.z - q.xy * qx.z) / (q.z * q.z), uy = (qy.xy * q.z - q.xy * qy.z) / (q.z * q.z);\n"
+            "    return log2(max(length(ux), length(uy)) * 0.5 * size);\n"
+            "}\n";
+        const std::string anchor = "using namespace metal;\n";
+        const size_t at = msl.find(anchor);
+        msl.insert(at == std::string::npos ? 0 : at + anchor.size(), kCubeLod);
+    }
     std::set<std::string> names;
     for (const char* prefix : {"wmgl_bcs_", "wmgl_bcg_"})
         for (size_t at = msl.find(prefix); at != std::string::npos; at = msl.find(prefix, at + 1)) {

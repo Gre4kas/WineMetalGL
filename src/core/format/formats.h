@@ -29,7 +29,11 @@ enum class Storage : uint8_t {
     BC6H_RGBFloat, BC6H_RGBUfloat, BC7_RGBAUnorm, BC7_RGBAUnorm_sRGB,
     ETC2_RGB8, ETC2_RGB8_sRGB, ETC2_RGB8A1, ETC2_RGB8A1_sRGB, EAC_RGBA8, EAC_RGBA8_sRGB,
     EAC_R11Unorm, EAC_R11Snorm, EAC_RG11Unorm, EAC_RG11Snorm,
+    // KHR_texture_compression_astc_ldr (OpenGL ES 3.2), native on Apple GPUs.
+    ASTC_4x4, ASTC_4x4_sRGB, ASTC_5x4, ASTC_5x4_sRGB, ASTC_5x5, ASTC_5x5_sRGB, ASTC_6x5, ASTC_6x5_sRGB, ASTC_6x6, ASTC_6x6_sRGB, ASTC_8x5, ASTC_8x5_sRGB, ASTC_8x6, ASTC_8x6_sRGB, ASTC_8x8, ASTC_8x8_sRGB, ASTC_10x5, ASTC_10x5_sRGB, ASTC_10x6, ASTC_10x6_sRGB, ASTC_10x8, ASTC_10x8_sRGB, ASTC_10x10, ASTC_10x10_sRGB, ASTC_12x10, ASTC_12x10_sRGB, ASTC_12x12, ASTC_12x12_sRGB,
     Depth16Unorm, Depth32Float, Stencil8, Depth32Float_Stencil8,
+    // EXT_texture_sRGB_R8 / RG8 (OpenGL ES; Apple GPUs).
+    R8Unorm_sRGB, RG8Unorm_sRGB,
     Count
 };
 
@@ -80,6 +84,11 @@ bool isValidTextureInternalFormat(GLenum internalFormat, bool compatibility, boo
 // Bytes per texel for uncompressed storage, or per 4x4 block for BC formats.
 uint32_t storageBytes(Storage storage);
 bool storageIsCompressed(Storage storage);
+bool storageIsAstc(Storage storage);
+// The block size of compressed storage (4x4 but for ASTC's), 1x1 otherwise.
+void storageBlockSize(Storage storage, int& width, int& height);
+// Blocks across `texels` texels for `storage` (texels for uncompressed storage).
+size_t storageBlocksAcross(Storage storage, size_t texels, bool vertical = false);
 const char* storageName(Storage storage);
 
 }  // namespace wmgl

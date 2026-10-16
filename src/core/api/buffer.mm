@@ -121,7 +121,7 @@ RefPtr<Buffer> bufferForBind(Context& ctx, GLuint name, bool& ok) {
     RefPtr<Buffer> buffer = ctx.share().buffers.getRef(name);
     if (buffer) return buffer;
     if (!ctx.share().buffers.isGenerated(name)) {
-        if (ctx.isCore()) {
+        if (ctx.isDesktopCore()) {  // OpenGL ES creates the object, as the compatibility profile
             ctx.setError(GL_INVALID_OPERATION);
             ok = false;
             return nullptr;
@@ -520,8 +520,9 @@ void* MapBufferRange(Context& ctx, GLenum target, GLintptr offset, GLsizeiptr le
         ctx.setError(GL_INVALID_VALUE);
         return nullptr;
     }
+    // A zero length: INVALID_VALUE in GL 4.6, INVALID_OPERATION in OpenGL ES 3.2 (section 6.3).
     if (length == 0) {
-        ctx.setError(GL_INVALID_VALUE);
+        ctx.setError(ctx.isEs() ? GL_INVALID_OPERATION : GL_INVALID_VALUE);
         return nullptr;
     }
     const bool read = access & GL_MAP_READ_BIT, write = access & GL_MAP_WRITE_BIT;
@@ -636,7 +637,8 @@ void GetBufferParameteri64v(Context& ctx, GLenum target, GLenum pname, GLint64* 
         *params = (buffer->mapAccess & GL_MAP_READ_BIT) && (buffer->mapAccess & GL_MAP_WRITE_BIT) ? GL_READ_WRITE
                   : (buffer->mapAccess & GL_MAP_READ_BIT)                                          ? GL_READ_ONLY
                                                                                                    : GL_WRITE_ONLY;
-        if (!buffer->mapped) *params = GL_READ_WRITE;
+        // OpenGL ES (GL_OES_mapbuffer) maps write-only, its initial value.
+        if (!buffer->mapped) *params = ctx.isEs() ? GL_WRITE_ONLY : GL_READ_WRITE;
         return;
     case GL_BUFFER_ACCESS_FLAGS: *params = buffer->mapped ? buffer->mapAccess : 0; return;
     case GL_BUFFER_MAPPED: *params = buffer->mapped ? GL_TRUE : GL_FALSE; return;

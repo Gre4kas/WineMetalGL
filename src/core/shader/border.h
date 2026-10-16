@@ -29,13 +29,18 @@ public:
     using CompilerMSL::CompilerMSL;
     // Metal texture index of each non-array sampled image variable.
     std::unordered_map<uint32_t, uint32_t> textureSlots;
+    // Renames the functions and structs named like the Metal standard
+    // library's function objects (plus, minus, less, ...), which MSL finds
+    // ambiguous with metal::plus once "using namespace metal" is in effect.
+    void renameMetalFunctionObjects();
 
 protected:
     std::string to_texture_op(const spirv_cross::Instruction& i, bool sparse, bool* forward,
                               spirv_cross::SmallVector<uint32_t>& inherited_expressions) override;
 };
 
-// Defines the wrapping macros the MSL uses (after "using namespace metal;").
+// Defines the wrapping macros the MSL uses (after "using namespace metal;"),
+// and the cube-map gradient level function (wmgl_cube_lod) when it is used.
 void addDefaultBorderMacros(std::string& msl);
 
 // One texture a draw samples with an emulated border.

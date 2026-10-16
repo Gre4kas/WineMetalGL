@@ -1,0 +1,5 @@
+# mustpass gles2-khr-noctx-main.txt config 1: --deqp-screen-rotation=unspecified --deqp-surface-width=64 --deqp-surface-height=64 --deqp-base-seed=1 --deqp-watchdog=disable
+# commit c56a900, path winemetalgl, 1 cases, 3 s
+# cts dEQP Core 1942832354c96f0de379f491519734256fbd4f9d
+# totals Pass=1
+KHR-NoContext.es2.no_error.create_context Pass

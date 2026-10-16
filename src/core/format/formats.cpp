@@ -90,6 +90,8 @@ std::unordered_map<GLenum, FormatInfo> buildTable() {
     add(Builder(GL_RGBA4, GL_RGBA, S::RGBA8Unorm, CT::UnsignedNormalized).rgba(4, 4, 4, 4).transfer(GL_RGBA, UB));
     add(Builder(GL_RGB5_A1, GL_RGBA, S::RGBA8Unorm, CT::UnsignedNormalized).rgba(5, 5, 5, 1).transfer(GL_RGBA, UB));
     add(Builder(GL_RGBA8, GL_RGBA, S::RGBA8Unorm, CT::UnsignedNormalized).rgba(8, 8, 8, 8).transfer(GL_RGBA, UB).rb());
+    // EXT_texture_format_BGRA8888's format (OpenGL ES): RGBA8 storage, BGRA data.
+    add(Builder(0x93A1 /* GL_BGRA8_EXT */, GL_RGBA, S::RGBA8Unorm, CT::UnsignedNormalized).rgba(8, 8, 8, 8).transfer(GL_BGRA, UB));
     add(Builder(GL_RGBA8_SNORM, GL_RGBA, S::RGBA8Snorm, CT::SignedNormalized).rgba(8, 8, 8, 8).transfer(GL_RGBA, B));
     add(Builder(GL_RGB10_A2, GL_RGBA, S::RGB10A2Unorm, CT::UnsignedNormalized).rgba(10, 10, 10, 2).transfer(GL_RGBA, GL_UNSIGNED_INT_2_10_10_10_REV).rb());
     add(Builder(GL_RGB10_A2UI, GL_RGBA, S::RGB10A2Uint, CT::UnsignedInt).rgba(10, 10, 10, 2).transfer(GL_RGBA_INTEGER, GL_UNSIGNED_INT_2_10_10_10_REV).rb());
@@ -180,6 +182,41 @@ std::unordered_map<GLenum, FormatInfo> buildTable() {
     add(Builder(GL_COMPRESSED_SIGNED_R11_EAC, GL_RED, S::EAC_R11Snorm, CT::SignedNormalized).rgba(11, 0, 0, 0).transfer(GL_RED, B));
     add(Builder(GL_COMPRESSED_RG11_EAC, GL_RG, S::EAC_RG11Unorm, CT::UnsignedNormalized).rgba(11, 11, 0, 0).transfer(GL_RG, UB));
     add(Builder(GL_COMPRESSED_SIGNED_RG11_EAC, GL_RG, S::EAC_RG11Snorm, CT::SignedNormalized).rgba(11, 11, 0, 0).transfer(GL_RG, B));
+    // EXT_texture_sRGB_R8 / RG8 (OpenGL ES): GL_SR8_EXT, GL_SRG8_EXT.
+    add(Builder(0x8FBD, GL_RED, S::R8Unorm_sRGB, CT::UnsignedNormalized).rgba(8, 0, 0, 0).transfer(GL_RED, UB).srgb());
+    add(Builder(0x8FBE, GL_RG, S::RG8Unorm_sRGB, CT::UnsignedNormalized).rgba(8, 8, 0, 0).transfer(GL_RG, UB).srgb());
+    // OES_compressed_ETC1_RGB8_texture (OpenGL ES): ETC1 blocks are ETC2 RGB8 blocks.
+    add(Builder(0x8D64 /* GL_ETC1_RGB8_OES */, GL_RGB, S::ETC2_RGB8, CT::UnsignedNormalized).rgba(8, 8, 8, 0).swz(SwzR, SwzG, SwzB, SwzOne).transfer(GL_RGB, UB));
+    // KHR_texture_compression_astc_ldr: GL_COMPRESSED_RGBA_ASTC_<w>x<h>_KHR
+    // (0x93B0...) and GL_COMPRESSED_SRGB8_ALPHA8_ASTC_<w>x<h>_KHR (0x93D0...).
+    add(Builder(0x93B0, GL_RGBA, S::ASTC_4x4, CT::UnsignedNormalized).rgba(8, 8, 8, 8).transfer(GL_RGBA, UB));
+    add(Builder(0x93D0, GL_RGBA, S::ASTC_4x4_sRGB, CT::UnsignedNormalized).rgba(8, 8, 8, 8).transfer(GL_RGBA, UB).srgb());
+    add(Builder(0x93B1, GL_RGBA, S::ASTC_5x4, CT::UnsignedNormalized).rgba(8, 8, 8, 8).transfer(GL_RGBA, UB));
+    add(Builder(0x93D1, GL_RGBA, S::ASTC_5x4_sRGB, CT::UnsignedNormalized).rgba(8, 8, 8, 8).transfer(GL_RGBA, UB).srgb());
+    add(Builder(0x93B2, GL_RGBA, S::ASTC_5x5, CT::UnsignedNormalized).rgba(8, 8, 8, 8).transfer(GL_RGBA, UB));
+    add(Builder(0x93D2, GL_RGBA, S::ASTC_5x5_sRGB, CT::UnsignedNormalized).rgba(8, 8, 8, 8).transfer(GL_RGBA, UB).srgb());
+    add(Builder(0x93B3, GL_RGBA, S::ASTC_6x5, CT::UnsignedNormalized).rgba(8, 8, 8, 8).transfer(GL_RGBA, UB));
+    add(Builder(0x93D3, GL_RGBA, S::ASTC_6x5_sRGB, CT::UnsignedNormalized).rgba(8, 8, 8, 8).transfer(GL_RGBA, UB).srgb());
+    add(Builder(0x93B4, GL_RGBA, S::ASTC_6x6, CT::UnsignedNormalized).rgba(8, 8, 8, 8).transfer(GL_RGBA, UB));
+    add(Builder(0x93D4, GL_RGBA, S::ASTC_6x6_sRGB, CT::UnsignedNormalized).rgba(8, 8, 8, 8).transfer(GL_RGBA, UB).srgb());
+    add(Builder(0x93B5, GL_RGBA, S::ASTC_8x5, CT::UnsignedNormalized).rgba(8, 8, 8, 8).transfer(GL_RGBA, UB));
+    add(Builder(0x93D5, GL_RGBA, S::ASTC_8x5_sRGB, CT::UnsignedNormalized).rgba(8, 8, 8, 8).transfer(GL_RGBA, UB).srgb());
+    add(Builder(0x93B6, GL_RGBA, S::ASTC_8x6, CT::UnsignedNormalized).rgba(8, 8, 8, 8).transfer(GL_RGBA, UB));
+    add(Builder(0x93D6, GL_RGBA, S::ASTC_8x6_sRGB, CT::UnsignedNormalized).rgba(8, 8, 8, 8).transfer(GL_RGBA, UB).srgb());
+    add(Builder(0x93B7, GL_RGBA, S::ASTC_8x8, CT::UnsignedNormalized).rgba(8, 8, 8, 8).transfer(GL_RGBA, UB));
+    add(Builder(0x93D7, GL_RGBA, S::ASTC_8x8_sRGB, CT::UnsignedNormalized).rgba(8, 8, 8, 8).transfer(GL_RGBA, UB).srgb());
+    add(Builder(0x93B8, GL_RGBA, S::ASTC_10x5, CT::UnsignedNormalized).rgba(8, 8, 8, 8).transfer(GL_RGBA, UB));
+    add(Builder(0x93D8, GL_RGBA, S::ASTC_10x5_sRGB, CT::UnsignedNormalized).rgba(8, 8, 8, 8).transfer(GL_RGBA, UB).srgb());
+    add(Builder(0x93B9, GL_RGBA, S::ASTC_10x6, CT::UnsignedNormalized).rgba(8, 8, 8, 8).transfer(GL_RGBA, UB));
+    add(Builder(0x93D9, GL_RGBA, S::ASTC_10x6_sRGB, CT::UnsignedNormalized).rgba(8, 8, 8, 8).transfer(GL_RGBA, UB).srgb());
+    add(Builder(0x93BA, GL_RGBA, S::ASTC_10x8, CT::UnsignedNormalized).rgba(8, 8, 8, 8).transfer(GL_RGBA, UB));
+    add(Builder(0x93DA, GL_RGBA, S::ASTC_10x8_sRGB, CT::UnsignedNormalized).rgba(8, 8, 8, 8).transfer(GL_RGBA, UB).srgb());
+    add(Builder(0x93BB, GL_RGBA, S::ASTC_10x10, CT::UnsignedNormalized).rgba(8, 8, 8, 8).transfer(GL_RGBA, UB));
+    add(Builder(0x93DB, GL_RGBA, S::ASTC_10x10_sRGB, CT::UnsignedNormalized).rgba(8, 8, 8, 8).transfer(GL_RGBA, UB).srgb());
+    add(Builder(0x93BC, GL_RGBA, S::ASTC_12x10, CT::UnsignedNormalized).rgba(8, 8, 8, 8).transfer(GL_RGBA, UB));
+    add(Builder(0x93DC, GL_RGBA, S::ASTC_12x10_sRGB, CT::UnsignedNormalized).rgba(8, 8, 8, 8).transfer(GL_RGBA, UB).srgb());
+    add(Builder(0x93BD, GL_RGBA, S::ASTC_12x12, CT::UnsignedNormalized).rgba(8, 8, 8, 8).transfer(GL_RGBA, UB));
+    add(Builder(0x93DD, GL_RGBA, S::ASTC_12x12_sRGB, CT::UnsignedNormalized).rgba(8, 8, 8, 8).transfer(GL_RGBA, UB).srgb());
 
     // Compatibility-profile luminance/alpha/intensity formats (sized).
     auto legacy = [&](GLenum internal, GLenum base, S storage, CT type, uint8_t lBits, uint8_t aBits, uint8_t iBits,
@@ -298,9 +335,9 @@ bool isValidTextureInternalFormat(GLenum internalFormat, bool compatibility, boo
 
 uint32_t storageBytes(Storage storage) {
     switch (storage) {
-    case S::R8Unorm: case S::R8Snorm: case S::R8Uint: case S::R8Sint: case S::Stencil8: return 1;
+    case S::R8Unorm: case S::R8Snorm: case S::R8Uint: case S::R8Sint: case S::Stencil8: case S::R8Unorm_sRGB: return 1;
     case S::R16Unorm: case S::R16Snorm: case S::R16Uint: case S::R16Sint: case S::R16Float:
-    case S::RG8Unorm: case S::RG8Snorm: case S::RG8Uint: case S::RG8Sint: case S::Depth16Unorm: return 2;
+    case S::RG8Unorm: case S::RG8Snorm: case S::RG8Uint: case S::RG8Sint: case S::Depth16Unorm: case S::RG8Unorm_sRGB: return 2;
     case S::R32Uint: case S::R32Sint: case S::R32Float: case S::RG16Unorm: case S::RG16Snorm: case S::RG16Uint:
     case S::RG16Sint: case S::RG16Float: case S::RGBA8Unorm: case S::RGBA8Unorm_sRGB: case S::RGBA8Snorm:
     case S::RGBA8Uint: case S::RGBA8Sint: case S::BGRA8Unorm: case S::RGB10A2Unorm: case S::RGB10A2Uint:
@@ -315,12 +352,33 @@ uint32_t storageBytes(Storage storage) {
     case S::BC2_RGBA: case S::BC2_RGBA_sRGB: case S::BC3_RGBA: case S::BC3_RGBA_sRGB: case S::BC5_RGUnorm:
     case S::BC5_RGSnorm: case S::BC6H_RGBFloat: case S::BC6H_RGBUfloat: case S::BC7_RGBAUnorm:
     case S::BC7_RGBAUnorm_sRGB: return 16;
-    default: return 0;
+    default: return storageIsAstc(storage) ? 16 : 0;
     }
 }
 
 bool storageIsCompressed(Storage storage) {
-    return storage >= S::BC1_RGBA && storage <= S::EAC_RG11Snorm;
+    return storage >= S::BC1_RGBA && storage <= S::ASTC_12x12_sRGB;
+}
+
+bool storageIsAstc(Storage storage) { return storage >= S::ASTC_4x4 && storage <= S::ASTC_12x12_sRGB; }
+
+void storageBlockSize(Storage storage, int& width, int& height) {
+    if (storageIsAstc(storage)) {
+        static const int kSizes[][2] = {{4, 4}, {5, 4}, {5, 5}, {6, 5},  {6, 6},   {8, 5},   {8, 6},
+                                        {8, 8}, {10, 5}, {10, 6}, {10, 8}, {10, 10}, {12, 10}, {12, 12}};
+        const int i = (static_cast<int>(storage) - static_cast<int>(S::ASTC_4x4)) / 2;
+        width = kSizes[i][0];
+        height = kSizes[i][1];
+        return;
+    }
+    width = height = storageIsCompressed(storage) ? 4 : 1;
+}
+
+size_t storageBlocksAcross(Storage storage, size_t texels, bool vertical) {
+    int w, h;
+    storageBlockSize(storage, w, h);
+    const size_t block = static_cast<size_t>(vertical ? h : w);
+    return (texels + block - 1) / block;
 }
 
 const char* storageName(Storage storage) {
@@ -333,7 +391,8 @@ const char* storageName(Storage storage) {
         "RGBA32Float", "BC1_RGBA", "BC1_RGBA_sRGB", "BC2_RGBA", "BC2_RGBA_sRGB", "BC3_RGBA", "BC3_RGBA_sRGB",
         "BC4_RUnorm", "BC4_RSnorm", "BC5_RGUnorm", "BC5_RGSnorm", "BC6H_RGBFloat", "BC6H_RGBUfloat", "BC7_RGBAUnorm",
         "BC7_RGBAUnorm_sRGB", "ETC2_RGB8", "ETC2_RGB8_sRGB", "ETC2_RGB8A1", "ETC2_RGB8A1_sRGB", "EAC_RGBA8",
-        "EAC_RGBA8_sRGB", "EAC_R11Unorm", "EAC_R11Snorm", "EAC_RG11Unorm", "EAC_RG11Snorm", "Depth16Unorm", "Depth32Float", "Stencil8", "Depth32Float_Stencil8"};
+        "EAC_RGBA8_sRGB", "EAC_R11Unorm", "EAC_R11Snorm", "EAC_RG11Unorm", "EAC_RG11Snorm",
+        "ASTC_4x4", "ASTC_4x4_sRGB", "ASTC_5x4", "ASTC_5x4_sRGB", "ASTC_5x5", "ASTC_5x5_sRGB", "ASTC_6x5", "ASTC_6x5_sRGB", "ASTC_6x6", "ASTC_6x6_sRGB", "ASTC_8x5", "ASTC_8x5_sRGB", "ASTC_8x6", "ASTC_8x6_sRGB", "ASTC_8x8", "ASTC_8x8_sRGB", "ASTC_10x5", "ASTC_10x5_sRGB", "ASTC_10x6", "ASTC_10x6_sRGB", "ASTC_10x8", "ASTC_10x8_sRGB", "ASTC_10x10", "ASTC_10x10_sRGB", "ASTC_12x10", "ASTC_12x10_sRGB", "ASTC_12x12", "ASTC_12x12_sRGB", "Depth16Unorm", "Depth32Float", "Stencil8", "Depth32Float_Stencil8", "R8Unorm_sRGB", "RG8Unorm_sRGB"};
     static_assert(sizeof(names) / sizeof(names[0]) == static_cast<size_t>(S::Count), "storage names");
     return names[static_cast<size_t>(storage)];
 }

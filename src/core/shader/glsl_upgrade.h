@@ -19,9 +19,20 @@ struct GlslVersion {
     int number = 110;            // 110 when there is no #version
     bool compatibility = false;  // "compatibility" profile (or implicit for <= 130)
     bool es = false;
+    bool declared = false;       // the shader has a #version directive
 };
 
 GlslVersion parseGlslVersion(const std::string& source);
+
+// GLSL ES shaders (OpenGL ES contexts) as the desktop GLSL the compiler
+// takes, from glslang's ES preprocessor output (macros such as __VERSION__,
+// GL_ES and the extensions' already expanded):
+//  - GLSL ES 1.00 becomes GLSL 1.20 (upgradeLegacyGlsl then makes it 1.40,
+//    whose rules take its precision qualifiers): its extensions' functions
+//    and variables become the desktop ones and its #extension lines go.
+//  - GLSL ES 3.x stays as it is (glslang compiles ES 3.x for codegen); 3.10
+//    and 3.20 enable implicit conversions, which glslang's own lowering needs.
+std::string esToDesktopGlsl(const std::string& preprocessed, int version);
 
 struct UpgradeResult {
     bool ok = true;

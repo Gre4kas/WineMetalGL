@@ -104,7 +104,15 @@ int arrayState(Context& ctx, Out& o, int slot, GLenum what) {
 }  // namespace
 
 int getFixedState(Context& ctx, GLenum pname, double* values, char& kind) {
-    if (!ctx.isCompat()) return 0;
+    if (!ctx.isCompat()) {
+        // OpenGL ES keeps the framebuffer's bit depths.
+        if (ctx.isEs() && (pname == GL_RED_BITS || pname == GL_GREEN_BITS || pname == GL_BLUE_BITS || pname == GL_ALPHA_BITS ||
+                           pname == GL_DEPTH_BITS || pname == GL_STENCIL_BITS)) {
+            Out o{values, kind};
+            return o.ints({static_cast<double>(framebufferBits(ctx, pname))});
+        }
+        return 0;
+    }
     const ContextState& s = ctx.state;
     const FixedState& f = s.fixed;
     Out o{values, kind};

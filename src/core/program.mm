@@ -273,7 +273,10 @@ int LinkedProgram::outputFlags() const {
         if (fs && fs->writesSampleMask()) flags |= kWritesSampleMask;
     } else {
         const shader::StageOutput& output = link.stages[static_cast<int>(shader::Stage::Fragment)];
-        if (output.present && output.msl.find("[[sample_mask]]") != std::string::npos) flags |= kWritesSampleMask;
+        // A [[sample_mask]] member of the output (a parameter is gl_SampleMaskIn).
+        const size_t structAt = output.present ? output.msl.find("struct main0_out\n{") : std::string::npos;
+        const size_t mask = structAt == std::string::npos ? std::string::npos : output.msl.find("[[sample_mask]]", structAt);
+        if (mask != std::string::npos && mask < output.msl.find("};", structAt)) flags |= kWritesSampleMask;
     }
     outputFlags_.store(flags, std::memory_order_relaxed);
     return flags;
@@ -303,7 +306,9 @@ id<MTLFunction> LinkedProgram::fragmentVariant(bool sampleMask, unsigned logicOp
     // Counted before the cull test is added, which then runs first: culled primitives have no fragments.
     if (!msl.empty() && countInvocations) msl = shader::fragmentCountingInvocations(msl);
     if (!msl.empty() && cull) msl = shader::fragmentWithCullDistances(msl, static_cast<int>(cull));
-    if (!msl.empty() && logicOp) {
+    if (!msl.empty() && logicOp > 16) {
+        msl = shader::fragmentWithAdvancedBlend(msl, logicOp - 17);
+    } else if (!msl.empty() && logicOp) {
         shader::LogicOpTarget targets[8];
         for (int i = 0; i < 8; ++i) targets[i] = logicOpTarget(static_cast<MTLPixelFormat>(colorFormats[i]));
         msl = shader::fragmentWithLogicOp(msl, logicOp - 1, targets);

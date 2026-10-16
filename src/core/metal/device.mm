@@ -22,6 +22,7 @@ Device::Device() {
     }
     std::strncpy(name_, device_.name.UTF8String, sizeof(name_) - 1);
     caps_.bcTextures = device_.supportsBCTextureCompression;
+    caps_.astcTextures = [device_ supportsFamily:MTLGPUFamilyApple2];
     caps_.depth24Stencil8 = device_.depth24Stencil8PixelFormatSupported;
     caps_.meshShaders = [device_ supportsFamily:MTLGPUFamilyMetal3];
     caps_.framebufferFetch = [device_ supportsFamily:MTLGPUFamilyApple1];

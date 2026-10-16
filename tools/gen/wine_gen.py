@@ -47,8 +47,8 @@ OPAQUE_POINTERS = {"GLeglImageOES", "GLeglClientBufferEXT", "GLsync", "GLDEBUGPR
 # Implemented by hand for 64-bit and 32-bit callers alike (src/wine/unix):
 # the core calls these callbacks on the unix side, where PE code cannot run,
 # and glGetPointerv reports them.
-MANUAL_UNIX = {"glDebugMessageCallback", "glDebugMessageCallbackARB", "glDebugMessageCallbackAMD", "glGetPointerv",
-               "glGetPointervEXT"}
+MANUAL_UNIX = {"glDebugMessageCallback", "glDebugMessageCallbackARB", "glDebugMessageCallbackAMD",
+               "glDebugMessageCallbackKHR", "glGetPointerv", "glGetPointervEXT", "glGetPointervKHR"}
 
 # Implemented by hand for 32-bit callers (src/wine/unix/unix_wow64.c):
 # strings the core returns are copied below 4 GB, sync objects become
@@ -58,12 +58,13 @@ MANUAL_UNIX = {"glDebugMessageCallback", "glDebugMessageCallbackARB", "glDebugMe
 MANUAL_WOW64 = {
     "glGetString", "glGetStringi",
     "glFenceSync", "glDeleteSync", "glIsSync", "glClientWaitSync", "glWaitSync", "glGetSynciv",
-    "glObjectPtrLabel", "glGetObjectPtrLabel",
+    "glObjectPtrLabel", "glGetObjectPtrLabel", "glObjectPtrLabelKHR", "glGetObjectPtrLabelKHR",
     "glShaderSource", "glShaderSourceARB", "glGetVertexAttribPointerv", "glGetVertexAttribPointervARB",
-    "glGetBufferPointerv", "glGetBufferPointervARB", "glGetNamedBufferPointerv",
+    "glGetBufferPointerv", "glGetBufferPointervARB", "glGetBufferPointervOES", "glGetNamedBufferPointerv",
     "glMultiDrawElements", "glMultiDrawElementsEXT", "glMultiDrawElementsBaseVertex",
+    "glMultiDrawElementsBaseVertexEXT",
     "glTransformFeedbackVaryings", "glTransformFeedbackVaryingsEXT", "glGetUniformIndices",
-    "glCreateShaderProgramv",
+    "glCreateShaderProgramv", "glCreateShaderProgramvEXT",
     "glBindBuffersRange", "glBindVertexBuffers", "glVertexArrayVertexBuffers",
 }
 

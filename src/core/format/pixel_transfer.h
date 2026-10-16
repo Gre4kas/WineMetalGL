@@ -21,6 +21,9 @@ struct Texel {
 struct PixelStoreParams {
     int alignment = 4, rowLength = 0, imageHeight = 0, skipPixels = 0, skipRows = 0, skipImages = 0;
     bool swapBytes = false;
+    // OpenGL ES clamps unpacked depth to [0, 1] for floating-point depth
+    // formats too (desktop GL keeps DEPTH_COMPONENT32F values as they are).
+    bool clampFloatDepth = false;
 };
 
 // True if (format, type) is a valid client pixel combination in GL 3.3.

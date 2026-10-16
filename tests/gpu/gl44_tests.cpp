@@ -100,7 +100,7 @@ GPU_TEST_VERSION(gpu_gl44_multi_bind, 44) {
     CHECK_EQ(binding, 24);
     CHECK_GL();
     // A range past the last unit binds nothing.
-    glBindTextures(79, 2, tex);
+    glBindTextures(95, 2, tex);
     CHECK_EQ(glGetError(), static_cast<GLenum>(GL_INVALID_OPERATION));
     glDeleteVertexArrays(1, &vao);
     glDeleteBuffers(3, buffers);

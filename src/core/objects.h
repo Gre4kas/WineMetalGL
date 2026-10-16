@@ -152,6 +152,10 @@ struct TextureImage {
     GLsizei width = 0, height = 0, depth = 0;  // depth = layers for arrays, 6 faces are separate images
     GLsizei samples = 0;
     bool fixedSampleLocations = true;
+    // Contents given while the image did not fit the texture's storage (a
+    // cube face re-specified in another format before the base face): its
+    // stored texels, written when the storage is rebuilt (texture_storage.mm).
+    std::vector<uint8_t> pending;
     bool defined() const { return format != nullptr; }
 };
 
@@ -265,6 +269,11 @@ public:
     // GL 4.3 framebuffers without attachments: GL_FRAMEBUFFER_DEFAULT_*.
     GLint defaultWidth = 0, defaultHeight = 0, defaultLayers = 0, defaultSamples = 0;
     bool defaultFixedSampleLocations = false;
+    // GL_EXT_fragment_shading_rate_attachment (glFramebufferShadingRateEXT).
+    // Kept for the state; the 1x1 rate, the only one, ignores the texels.
+    RefPtr<Texture> shadingRateTexture;
+    GLint shadingRateBaseLayer = 0;
+    GLsizei shadingRateLayers = 0, shadingRateTexelWidth = 0, shadingRateTexelHeight = 0;
     bool hasAttachments() const {
         for (const Attachment& a : color)
             if (a.attached()) return true;
@@ -345,6 +354,9 @@ public:
     bool compiled = false;   // glCompileShader has been called since the last source change
     bool compileStatus = false;
     std::string infoLog;
+    // OpenGL ES contexts: the GLSL ES source as desktop GLSL, which programs
+    // link (shader::compileEs).
+    std::string desktopSource;
     // GL_ARB_gl_spirv: the module glShaderBinary gave (SPIR_V_BINARY) and the
     // GLSL glSpecializeShader made of it (shader/spirv_input.h).
     bool spirv = false, specialized = false, spirvNamed = false;

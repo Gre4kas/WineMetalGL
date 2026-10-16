@@ -40,7 +40,19 @@ MUSTPASS_REL = "external/openglcts/data/gl_cts/data/mustpass/gl/khronos_mustpass
 SINGLE_MUSTPASS_REL = "external/openglcts/data/gl_cts/data/mustpass/gl/khronos_mustpass_single/main"
 
 
+GLES_MUSTPASS_REL = "external/openglcts/data/gl_cts/data/mustpass/gles/%s/main"
+
+
 def mustpass_dir(caselist_name):
+    # OpenGL ES lists: the Khronos ones (gles*-khr-*) and dEQP's (aosp_mustpass).
+    if caselist_name.startswith("gles"):
+        if caselist_name.endswith("-khr-single.txt"):
+            return GLES_MUSTPASS_REL % "khronos_mustpass_single"
+        if caselist_name.endswith("-khr-noctx-main.txt"):
+            return GLES_MUSTPASS_REL % "khronos_mustpass_noctx"
+        if "-khr-" in caselist_name:
+            return GLES_MUSTPASS_REL % "khronos_mustpass"
+        return GLES_MUSTPASS_REL % "aosp_mustpass"
     return SINGLE_MUSTPASS_REL if caselist_name.endswith("-khr-single.txt") else MUSTPASS_REL
 
 

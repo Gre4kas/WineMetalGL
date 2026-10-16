@@ -120,13 +120,18 @@ bool layoutTransformFeedback(const std::vector<std::string>& varyings, GLenum mo
         }
         std::string base;
         int index = -1;
-        if (!parseName(varying, base, index)) {
+        const StageOutputVar* out = nullptr;
+        // Members of arrays of structs are outputs of their own ("s[1].a").
+        for (const StageOutputVar& o : outputs)
+            if (o.name == varying) out = &o;
+        if (out) {
+            base = varying;
+        } else if (!parseName(varying, base, index)) {
             log += "error: '" + varying + "' is not a valid transform feedback varying name\n";
             return false;
         }
-        const StageOutputVar* out = nullptr;
         for (const StageOutputVar& o : outputs)
-            if (o.name == base) out = &o;
+            if (!out && o.name == base) out = &o;
         if (!out) {
             log += "error: transform feedback varying '" + varying + "' is not an output of the last vertex processing stage\n";
             return false;

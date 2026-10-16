@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
+#include <functional>
 #include <map>
 #include <regex>
 #include <set>
@@ -158,9 +159,50 @@ std::string renameArrayedBuiltin(const std::string& text, const std::string& arr
 // matches blocks by block name), else the variable name; GL names, so
 // identifiers escaped for codegen are restored.
 std::string varKey(const TessVar& v) {
-    if (!v.structType.empty()) return unescapeName(v.name + "." + v.member);
-    if (v.blockName.empty()) return unescapeName(v.name);
-    return unescapeName(v.blockName + "." + (v.member.empty() ? v.name : v.member));
+    if (v.blockName.empty()) return unescapeName(v.name + v.path);
+    const std::string element = v.instanceIndex >= 0 ? "[" + std::to_string(v.instanceIndex) + "]" : "";
+    return unescapeName(v.blockName + element + "." + (v.member.empty() ? v.name : v.member) + v.path);
+}
+
+using StructTable = std::map<std::string, std::vector<Declaration>>;
+
+// Appends one TessVar per leaf (non-struct field) of `base`, a variable or
+// block member of struct type `structType` with `structArray` elements (0:
+// not an array). False when a field is not supported.
+bool addStructLeaves(const StructTable& structs, const TessVar& base, const std::string& structType, int structArray,
+                     std::vector<TessVar>& out) {
+    std::vector<std::pair<std::string, Declaration>> leaves;  // (path, field)
+    std::function<bool(const std::string&, const std::string&, int)> walk = [&](const std::string& type,
+                                                                              const std::string& path, int depth) {
+        const auto it = structs.find(type);
+        if (it == structs.end() || depth > 8) return false;
+        for (const Declaration& f : it->second) {
+            if (f.dims.size() > 1) return false;
+            const int size = f.dims.empty() ? 0 : std::atoi(f.dims[0].c_str());
+            if (structs.count(f.type)) {
+                for (int e = 0; e < std::max(1, size); ++e)
+                    if (!walk(f.type, path + "." + f.name + (size ? "[" + std::to_string(e) + "]" : ""), depth + 1)) return false;
+            } else if (glslTypeFromName(f.type)) {
+                leaves.push_back({path + "." + f.name, f});
+            } else {
+                return false;
+            }
+        }
+        return true;
+    };
+    for (int e = 0; e < std::max(1, structArray); ++e)
+        if (!walk(structType, structArray ? "[" + std::to_string(e) + "]" : "", 0)) return false;
+    for (const auto& [path, f] : leaves) {
+        TessVar v = base;
+        v.glslType = f.type;
+        v.type = glslTypeFromName(f.type);
+        v.arraySize = f.dims.empty() ? 0 : std::atoi(f.dims[0].c_str());
+        v.structType = structType;
+        v.structArray = structArray;
+        v.path = path;
+        out.push_back(v);
+    }
+    return true;
 }
 
 int words(GLenum type) { return glTypeWords(type); }  // two per double component
@@ -249,27 +291,19 @@ bool parseTessellationGlsl(Stage stage, const std::string& glsl, TessStageInfo& 
             }
             const bool output = d.direction == "out";
             const bool arrayed = !d.patch && (control || !output);
-            if (auto st = structs.find(d.type); st != structs.end()) {
-                if (d.dims.size() > (arrayed ? 1u : 0u)) {
-                    log += "error: tessellation shader " + d.direction + "put '" + d.name + "' is an array of structs\n";
+            if (structs.count(d.type)) {
+                const size_t extraDim = arrayed ? 1 : 0;
+                TessVar base;
+                base.name = d.name;
+                base.patch = d.patch;
+                base.location = d.location;
+                base.declaration = flat;
+                if (d.dims.size() > extraDim + 1 ||
+                    !addStructLeaves(structs, base, d.type,
+                                     d.dims.size() > extraDim ? std::atoi(d.dims[extraDim].c_str()) : 0,
+                                     output ? info.outputs : info.inputs)) {
+                    log += "error: tessellation shader " + d.direction + "put '" + d.name + "' has an unsupported member\n";
                     return false;
-                }
-                for (const Declaration& m : st->second) {
-                    TessVar v;
-                    v.glslType = m.type;
-                    v.type = glslTypeFromName(m.type);
-                    if (!v.type || m.dims.size() > 1) {
-                        log += "error: tessellation shader " + d.direction + "put '" + d.name + "' has an unsupported member\n";
-                        return false;
-                    }
-                    v.name = d.name;
-                    v.member = m.name;
-                    v.structType = d.type;
-                    v.arraySize = m.dims.empty() ? 0 : std::atoi(m.dims[0].c_str());
-                    v.patch = d.patch;
-                    v.location = d.location;
-                    v.declaration = flat;
-                    (output ? info.outputs : info.inputs).push_back(v);
                 }
                 if (!control && output) info.outputDeclarations += flat + "\n";
                 continue;
@@ -314,7 +348,16 @@ bool parseTessellationGlsl(Stage stage, const std::string& glsl, TessStageInfo& 
         }
         const bool output = h.direction == "out";
         std::string instance = tail;
-        if (const size_t bracket = instance.find('['); bracket != std::string::npos) instance = instance.substr(0, bracket);
+        // An array of blocks: its size after the per-vertex array of arrayed
+        // stages (which the vertex index takes).
+        int instanceArray = 0;
+        if (const size_t bracket = instance.find('['); bracket != std::string::npos) {
+            const bool arrayedBlock = !h.patch && (control || !output);
+            size_t dims = bracket;
+            if (arrayedBlock) dims = instance.find('[', instance.find(']', bracket));
+            if (dims != std::string::npos) instanceArray = std::atoi(instance.c_str() + dims + 1);
+            instance = instance.substr(0, bracket);
+        }
         std::istringstream members(body);
         std::string member;
         if (blockName == "gl_PerVertex") {
@@ -335,7 +378,7 @@ bool parseTessellationGlsl(Stage stage, const std::string& glsl, TessStageInfo& 
             if (member.empty()) continue;
             const Declaration m = parseDeclaration(member + ";");
             const GLenum glType = glslTypeFromName(m.type);
-            if (!glType) {
+            if (!glType && !structs.count(m.type)) {
                 log += "error: tessellation shader block member '" + m.name + "' has an unsupported type\n";
                 return false;
             }
@@ -353,7 +396,23 @@ bool parseTessellationGlsl(Stage stage, const std::string& glsl, TessStageInfo& 
                 v.member.clear();
                 v.blockName = blockName;
             }
-            (output ? info.outputs : info.inputs).push_back(v);
+            // Each element of an array of blocks has the member.
+            v.instanceArray = instance.empty() ? 0 : instanceArray;
+            for (int k = 0; k < std::max(1, v.instanceArray); ++k) {
+                if (v.instanceArray) v.instanceIndex = k;
+                if (!glType) {
+                    // A struct-typed member, stored field by field.
+                    v.arraySize = 0;
+                    if (m.dims.size() > 1 ||
+                        !addStructLeaves(structs, v, m.type, m.dims.empty() ? 0 : std::atoi(m.dims[0].c_str()),
+                                         output ? info.outputs : info.inputs)) {
+                        log += "error: tessellation shader block member '" + m.name + "' has an unsupported type\n";
+                        return false;
+                    }
+                    continue;
+                }
+                (output ? info.outputs : info.inputs).push_back(v);
+            }
         }
     }
     if (control && info.verticesOut <= 0) {
@@ -413,24 +472,31 @@ std::string declareVars(const std::vector<TessVar>& vars, bool patch, int vertic
     std::string out;
     std::set<std::string> declaredBlocks;
     const std::string arrayed = vertices ? "[" + std::to_string(vertices) + "]" : "";
+    // The declared type and array dimension of a variable or member (struct
+    // fields declare their struct).
+    auto declared = [](const TessVar& v) {
+        const bool field = !v.path.empty();
+        const int size = field ? v.structArray : v.arraySize;
+        return std::make_pair(field ? v.structType : v.glslType, size ? "[" + std::to_string(size) + "]" : std::string());
+    };
     for (const TessVar& v : vars) {
         if (v.patch != patch) continue;
-        if (v.member.empty()) {
-            out += storage + v.glslType + " " + v.name + arrayed + (v.arraySize ? "[" + std::to_string(v.arraySize) + "]" : "") +
-                   ";\n";
-            continue;
-        }
         if (!declaredBlocks.insert(v.name).second) continue;
-        if (!v.structType.empty()) {
-            out += storage + v.structType + " " + v.name + arrayed + ";\n";
+        if (v.member.empty()) {
+            const auto [type, dims] = declared(v);
+            out += storage + type + " " + v.name + arrayed + dims + ";\n";
             continue;
         }
         const std::string structName = structPrefix + v.blockName;
         out += "struct " + structName + " {";
+        std::set<std::string> members;
         for (const TessVar& m : vars)
-            if (m.name == v.name && m.patch == patch)
-                out += " " + m.glslType + " " + m.member + (m.arraySize ? "[" + std::to_string(m.arraySize) + "]" : "") + ";";
-        out += " };\n" + storage + structName + " " + v.name + arrayed + ";\n";
+            if (m.name == v.name && m.patch == patch && members.insert(m.member).second) {
+                const auto [type, dims] = declared(m);
+                out += " " + type + " " + m.member + dims + ";";
+            }
+        out += " };\n" + storage + structName + " " + v.name + arrayed +
+               (v.instanceArray ? "[" + std::to_string(v.instanceArray) + "]" : "") + ";\n";
     }
     return out;
 }
@@ -438,7 +504,9 @@ std::string declareVars(const std::vector<TessVar>& vars, bool patch, int vertic
 // The GLSL access path of element `e` of `v` (vertex `vertex` if arrayed).
 std::string access(const TessVar& v, const std::string& vertex, int e) {
     std::string path = v.name + (vertex.empty() ? "" : "[" + vertex + "]");
+    if (v.instanceIndex >= 0) path += "[" + std::to_string(v.instanceIndex) + "]";
     if (!v.member.empty()) path += "." + v.member;
+    path += v.path;
     if (v.arraySize) path += "[" + std::to_string(e) + "]";
     return path;
 }
@@ -616,7 +684,7 @@ TessControlSources tessControlSources(const TessStageInfo& info, const LinkResul
     };
     makeLazy("wmgl_in_position", "vec4", GL_FLOAT_VEC4, captured("gl_Position"));
     for (const TessVar& v : info.inputs)
-        if (!v.patch && v.member.empty() && !v.arraySize) makeLazy(v.name, v.glslType, v.type, captured(varKey(v)));
+        if (!v.patch && v.member.empty() && v.path.empty() && !v.arraySize) makeLazy(v.name, v.glslType, v.type, captured(varKey(v)));
     std::vector<TessVar> arrayedInputs;
     for (const TessVar& v : info.inputs)
         if (!lazy.count(v.name)) arrayedInputs.push_back(v);

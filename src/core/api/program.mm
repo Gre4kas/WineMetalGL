@@ -359,10 +359,18 @@ void CompileShader(Context& ctx, GLuint shader) {
     const shader::Stage stage = s->stage;
     const std::string source = s->source;
     shader::CompileResult result;
+    std::string desktop;
     {
         ShareUnlock unlocked(ctx);
-        result = shader::compile(stage, source);
+        if (ctx.isEs()) {
+            shader::EsCompileResult es = shader::compileEs(stage, source);
+            desktop = std::move(es.desktop);
+            result = std::move(es);
+        } else {
+            result = shader::compile(stage, source);
+        }
     }
+    s->desktopSource = std::move(desktop);
     s->compiled = true;
     s->compileStatus = result.ok;
     s->infoLog = result.log;
@@ -527,7 +535,8 @@ void AttachShader(Context& ctx, GLuint program, GLuint shader) {
     Shader* s = shaderOrError(ctx, shader);
     if (!s) return;
     for (const RefPtr<Shader>& a : p->attached)
-        if (a.get() == s) return ctx.setError(GL_INVALID_OPERATION);
+        // OpenGL ES: one shader of each stage.
+        if (a.get() == s || (ctx.isEs() && a->stage == s->stage)) return ctx.setError(GL_INVALID_OPERATION);
     p->attached.push_back(RefPtr<Shader>(s));
     ++s->attachCount;
 }
@@ -664,7 +673,7 @@ void LinkProgram(Context& ctx, GLuint program) {
         }
         input.spirv |= s->spirv;
         input.spirvUnnamed |= s->spirv && !s->spirvNamed;
-        std::string source = s->spirv ? s->spirvGlsl : s->source;
+        std::string source = s->spirv ? s->spirvGlsl : !s->desktopSource.empty() ? s->desktopSource : s->source;
         if (s->spirv && s->stage != shader::Stage::Compute) {
             // Inputs match the outputs of the closest earlier stage.
             int previous = -1;
@@ -684,6 +693,55 @@ void LinkProgram(Context& ctx, GLuint program) {
     input.transformFeedbackVaryings = p->transformFeedbackVaryings;
     input.transformFeedbackMode = p->transformFeedbackMode;
     input.separable = p->separable;
+    input.es = ctx.isEs();
+    if (ctx.isEs() && ok && !input.spirv) {
+        // OpenGL ES 3.2 section 7.3: a program needs a vertex and a fragment
+        // shader (or only a compute shader), unless it is separable.
+        bool vertex = false, fragment = false, compute = false, control = false, evaluation = false, geometry = false;
+        std::vector<shader::ShaderSource> es;
+        for (const RefPtr<Shader>& s : p->attached) {
+            vertex |= s->stage == shader::Stage::Vertex;
+            fragment |= s->stage == shader::Stage::Fragment;
+            compute |= s->stage == shader::Stage::Compute;
+            control |= s->stage == shader::Stage::TessControl;
+            evaluation |= s->stage == shader::Stage::TessEval;
+            geometry |= s->stage == shader::Stage::Geometry;
+            es.push_back({s->stage, s->source});
+        }
+        if (!input.separable && !compute && !(vertex && fragment)) {
+            log += "error: an OpenGL ES program needs a vertex and a fragment shader\n";
+            ok = false;
+        }
+        // ... and its tessellation stages come together, unless it is
+        // separable (section 7.3).
+        if (!input.separable && control != evaluation) {
+            log += "error: an OpenGL ES program needs tessellation control and evaluation shaders together\n";
+            ok = false;
+        }
+        // Transform feedback captures the last vertex processing stage, which
+        // a tessellation control shader is not (section 11.1.2.1).
+        if (control && !evaluation && !geometry && !p->transformFeedbackVaryings.empty()) {
+            log += "error: transform feedback cannot capture a tessellation control shader\n";
+            ok = false;
+        }
+        const std::string errors = shader::checkEsLink(es);
+        if (!errors.empty()) {
+            log += errors;
+            ok = false;
+        }
+        // The interface a program pipeline matches against its other stages.
+        const shader::Stage order[] = {shader::Stage::Vertex, shader::Stage::TessControl, shader::Stage::TessEval,
+                                       shader::Stage::Geometry, shader::Stage::Fragment};
+        const shader::ShaderSource *first = nullptr, *last = nullptr;
+        for (shader::Stage stage : order)
+            for (const shader::ShaderSource& s : es)
+                if (s.stage == stage) {
+                    if (!first) first = &s;
+                    last = &s;
+                }
+        if (ok && first) input.esInputInterface = shader::compileEs(first->stage, first->source).inputInterface;
+        if (ok && last) input.esOutputInterface = shader::compileEs(last->stage, last->source).outputInterface;
+    }
     // Compatibility profile: a program without a vertex shader uses
     // fixed-function vertex processing (transform, colours, texture
     // coordinates and fog coordinate; lighting and texgen need the

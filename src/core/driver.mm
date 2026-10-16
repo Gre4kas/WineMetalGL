@@ -25,6 +25,8 @@ constexpr int kMajorVersion = 0x2091, kMinorVersion = 0x2092, kLayerPlane = 0x20
               kProfileMask = 0x9126, kResetStrategy = 0x8256, kNoError = 0x31B3, kReleaseBehavior = 0x2097;
 constexpr int kDebugBit = 0x1, kForwardCompatibleBit = 0x2, kRobustAccessBit = 0x4;
 constexpr int kCoreBit = 0x1, kCompatBit = 0x2;
+// WGL_EXT_create_context_es_profile (and es2_profile, the same bit).
+constexpr int kEsBit = 0x4;
 constexpr int kLoseContextOnReset = 0x8252;
 
 // The highest version this core implements completely.
@@ -40,6 +42,27 @@ void honestMaxVersion(int& major, int& minor) {
             minor = b;
         }
     }
+}
+
+// The highest OpenGL ES version ES contexts implement. ES contexts run on
+// the desktop 4.6 core underneath (Context::isEs). WINEMETALGL_ES_VERSION
+// lowers it ("3.0") to test a smaller version.
+constexpr int kEsMajor = 3, kEsMinor = 2;
+
+void esMaxVersion(int& major, int& minor) {
+    major = kEsMajor;
+    minor = kEsMinor;
+    if (const char* level = std::getenv("WINEMETALGL_ES_VERSION")) {
+        int a = 0, b = 0;
+        if (std::sscanf(level, "%d.%d", &a, &b) == 2 && a >= 2 && a * 10 + b <= kEsMajor * 10 + kEsMinor) {
+            major = a;
+            minor = b;
+        }
+    }
+}
+
+bool validEsVersion(int major, int minor) {
+    return (major == 2 && minor == 0) || (major == 3 && minor >= 0 && minor <= 2);
 }
 
 // The version contexts get: the honest one, unless the development override
@@ -160,6 +183,32 @@ WMGL_EXPORT wmgl_context* wmgl_context_create(int format, wmgl_context* share, c
             return nullptr;
         }
     }
+    if (profileGiven && profile == kEsBit) {
+        // WGL_EXT_create_context_es_profile: any OpenGL ES version this core
+        // implements, answered with the highest (backwards compatible) one.
+        // OpenGL ES 1.x is not implemented.
+        int esMajor, esMinor;
+        esMaxVersion(esMajor, esMinor);
+        if (!validEsVersion(requestedMajor, requestedMinor) || (flags & ~(kDebugBit | kRobustAccessBit)) ||
+            requestedMajor * 10 + requestedMinor > esMajor * 10 + esMinor) {
+            if (error) *error = WMGL_ERROR_INVALID_VERSION;
+            return nullptr;
+        }
+        int maxMajor, maxMinor;
+        honestMaxVersion(maxMajor, maxMinor);
+        config.es = true;
+        config.esMajor = esMajor;
+        config.esMinor = esMinor;
+        config.coreProfile = true;
+        config.debug = flags & kDebugBit;
+        config.robustAccess = flags & kRobustAccessBit;
+        config.major = maxMajor;
+        config.minor = maxMinor;
+        RefPtr<ShareGroup> group = share ? asContext(share)->shareRef() : makeRef<ShareGroup>();
+        auto* ctx = new Context(group, config, format);
+        WMGL_TRACE("context %p OpenGL ES %d.%d (requested %d.%d)", ctx, esMajor, esMinor, requestedMajor, requestedMinor);
+        return reinterpret_cast<wmgl_context*>(ctx);
+    }
     if (!validVersion(requestedMajor, requestedMinor)) {
         if (error) *error = WMGL_ERROR_INVALID_VERSION;
         return nullptr;
@@ -269,4 +318,11 @@ WMGL_EXPORT void wmgl_max_versions(int* coreMajor, int* coreMinor, int* compatMa
     if (coreMinor) *coreMinor = minor;
     if (compatMajor) *compatMajor = major;
     if (compatMinor) *compatMinor = minor;
+}
+
+WMGL_EXPORT void wmgl_max_es_version(int* major, int* minor) {
+    int a, b;
+    esMaxVersion(a, b);
+    if (major) *major = a;
+    if (minor) *minor = b;
 }

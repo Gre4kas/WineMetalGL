@@ -86,7 +86,12 @@ static vec<T, 4> wmgl_blit_read(Tex source, float2 s, constant BlitParams& b) {
 fragment float4 wmgl_blit_float_fs(ClearOut in [[stage_in]], texture2d<float> source [[texture(0)]],
                                    sampler linearSampler [[sampler(0)]], constant BlitParams& b [[buffer(0)]]) {
     float2 s = wmgl_blit_source(in.position.xy, b);
-    if (b.srcSize.z > 0.5) return source.sample(linearSampler, s / b.srcSize.xy);
+    if (b.srcSize.z > 0.5) {
+        // Destination pixels whose source is outside the read buffer stay as
+        // they are, as with GL_NEAREST (sampling at the edges clamps).
+        if (any(s < 0.0) || any(s >= b.srcSize.xy)) discard_fragment();
+        return source.sample(linearSampler, s / b.srcSize.xy);
+    }
     return wmgl_blit_read<float>(source, s, b);
 }
 fragment float4 wmgl_blit_float_ms_fs(ClearOut in [[stage_in]], texture2d_ms<float> source [[texture(0)]],

@@ -62,6 +62,8 @@ static const char wgl_extensions[] =
     "WGL_ARB_framebuffer_sRGB WGL_ARB_make_current_read WGL_ARB_multisample WGL_ARB_pbuffer WGL_ARB_pixel_format "
     "WGL_ARB_pixel_format_float WGL_ARB_render_texture WGL_ATI_pixel_format_float WGL_EXT_extensions_string "
     "WGL_EXT_framebuffer_sRGB WGL_EXT_swap_control WGL_WINE_pixel_format_passthrough WGL_WINE_query_renderer";
+/* OpenGL ES contexts, with a core that implements them (wmgl_max_es_version). */
+static const char wgl_es_extensions[] = " WGL_EXT_create_context_es2_profile WGL_EXT_create_context_es_profile";
 
 static pthread_mutex_t wgl_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct wmgl_pixel_format *formats;
@@ -358,6 +360,26 @@ NTSTATUS wmgl_unix_set_pixel_format( void *args )
     }
     pthread_mutex_unlock( &wgl_lock );
     return STATUS_SUCCESS;
+}
+
+/* The highest OpenGL ES version the core implements; FALSE for cores
+ * without OpenGL ES contexts. */
+static BOOL es_max_version( int *major, int *minor )
+{
+    static void (*max_es_version)( int *, int * );
+    static BOOL looked;
+    int a = 0, b = 0;
+
+    if (!looked)
+    {
+        *(void **)&max_es_version = wmgl_core_symbol( "wmgl_max_es_version" );
+        looked = TRUE;
+    }
+    if (!max_es_version) return FALSE;
+    max_es_version( &a, &b );
+    if (major) *major = a;
+    if (minor) *minor = b;
+    return a != 0;
 }
 
 /* --------------------------------------------------------------- contexts */
@@ -848,9 +870,12 @@ NTSTATUS wmgl_unix_query_renderer_integer( void *args )
         else
             value[0] = compat_major, value[1] = compat_minor;
         break;
-    case WGL_RENDERER_OPENGL_ES_PROFILE_VERSION_WINE:
-    case WGL_RENDERER_OPENGL_ES2_PROFILE_VERSION_WINE:
+    case WGL_RENDERER_OPENGL_ES_PROFILE_VERSION_WINE:  /* OpenGL ES 1.x */
         value[0] = value[1] = 0;
+        break;
+    case WGL_RENDERER_OPENGL_ES2_PROFILE_VERSION_WINE:
+        if (es_max_version( &major, &minor )) value[0] = major, value[1] = minor;
+        else value[0] = value[1] = 0;
         break;
     case WGL_RENDERER_PREFERRED_PROFILE_WINE: *value = WGL_CONTEXT_CORE_PROFILE_BIT_ARB; break;
     case WGL_RENDERER_VERSION_WINE:
@@ -893,7 +918,14 @@ NTSTATUS wmgl_unix_extensions_string( void *args )
     struct wmgl_extensions_string_params *params = args;
     char *buffer = (char *)(ULONG_PTR)params->buffer;
 
-    params->needed = sizeof(wgl_extensions);
-    if (buffer && params->size >= sizeof(wgl_extensions)) memcpy( buffer, wgl_extensions, sizeof(wgl_extensions) );
+    const char *es = es_max_version( NULL, NULL ) ? wgl_es_extensions : "";
+    size_t length = strlen( wgl_extensions ), es_length = strlen( es );
+
+    params->needed = length + es_length + 1;
+    if (buffer && params->size >= params->needed)
+    {
+        memcpy( buffer, wgl_extensions, length );
+        memcpy( buffer + length, es, es_length + 1 );
+    }
     return STATUS_SUCCESS;
 }

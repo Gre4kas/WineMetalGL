@@ -26,6 +26,17 @@ namespace wmgl {
 static_assert(std::tuple_size<decltype(ContextState::activeQueries)>::value == kQuerySlotCount);
 
 int queryTargetIndex(Context& ctx, GLenum target) {
+    if (ctx.isEs()) {
+        // OpenGL ES's (and EXT_disjoint_timer_query's TIME_ELAPSED).
+        switch (target) {
+        case GL_ANY_SAMPLES_PASSED: return kQueryAnySamplesPassed;
+        case GL_ANY_SAMPLES_PASSED_CONSERVATIVE: return kQueryAnySamplesPassedConservative;
+        case GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN: return kQueryXfbPrimitivesWritten;
+        case GL_TIME_ELAPSED: return kQueryTimeElapsed;
+        case GL_PRIMITIVES_GENERATED: return ctx.esVersion() >= 32 ? kQueryPrimitivesGenerated : -1;
+        default: return -1;
+        }
+    }
     const bool overflow = ctx.version() >= 46 || ctx.hasExtension("GL_ARB_transform_feedback_overflow_query");
     const int statistics = ctx.version() >= 46 || ctx.hasExtension("GL_ARB_pipeline_statistics_query") ? kQueryStatisticsFirst : -1;
     auto statistic = [&](PipelineStatistic s) { return statistics < 0 ? -1 : statistics + s; };
@@ -409,6 +420,10 @@ namespace {
 
 void beginQuery(Context& ctx, GLenum target, int index, GLuint name) {
     if (ctx.state.activeQueries[index]) return ctx.setError(GL_INVALID_OPERATION);
+    // OpenGL ES: the two occlusion query targets share one active query.
+    if (ctx.isEs() && ((index == kQueryAnySamplesPassed && ctx.state.activeQueries[kQueryAnySamplesPassedConservative]) ||
+                       (index == kQueryAnySamplesPassedConservative && ctx.state.activeQueries[kQueryAnySamplesPassed])))
+        return ctx.setError(GL_INVALID_OPERATION);
     if (name == 0 || !ctx.queries.isGenerated(name)) return ctx.setError(GL_INVALID_OPERATION);
     RefPtr<Query> q = ctx.queries.getRef(name);
     if (!q) {

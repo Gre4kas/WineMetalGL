@@ -71,10 +71,41 @@ struct CompileResult {
 // Parses a single shader for glCompileShader (status and info log only).
 CompileResult compile(Stage stage, const std::string& source);
 
+// glCompileShader in OpenGL ES contexts: the status and log under GLSL ES's
+// rules (no #version: GLSL ES 1.00), and `desktop`, the shader as the GLSL
+// the rest of the compiler takes (glsl_upgrade.h esToDesktopGlsl), which
+// programs link.
+struct EsCompileResult : CompileResult {
+    std::string desktop;
+    // Default-block uniforms' precision qualifiers (glslang's), for checkEsLink.
+    std::map<std::string, int> uniformPrecisions;
+    // Uniform and storage blocks' members (names, types, layouts), by block name.
+    std::map<std::string, std::string> blockSignatures;
+    // Each stage input's and output's interpolation and precision, by name
+    // ("Block.member" for block members), for checkEsLink and the program
+    // pipeline checks.
+    struct Varying {
+        bool flat = false;
+        int precision = 0;  // glslang's TPrecisionQualifier
+    };
+    std::map<std::string, Varying> inputs, outputs;
+    // The stage interface as program pipelines match it (OpenGL ES 3.2
+    // section 7.4.1): one entry per variable (keyed "@N" with an explicit
+    // location, else by name) or block ("block Name"), its value the type,
+    // precision, interpolation and layout, arrayed stages' vertex index aside.
+    std::map<std::string, std::string> inputInterface, outputInterface;
+};
+EsCompileResult compileEs(Stage stage, const std::string& source);
+
 struct ShaderSource {
     Stage stage;
     std::string source;
 };
+
+// OpenGL ES link rules the desktop GLSL the shaders became no longer shows:
+// a uniform declared in several stages has the same precision in each.
+// Returns the link errors ("" when there are none).
+std::string checkEsLink(const std::vector<ShaderSource>& esShaders);
 
 struct LinkInput {
     std::vector<ShaderSource> shaders;
@@ -83,6 +114,9 @@ struct LinkInput {
     std::vector<std::string> transformFeedbackVaryings;
     GLenum transformFeedbackMode = GL_INTERLEAVED_ATTRIBS;
     bool separable = false;
+    // An OpenGL ES program: its resource limits are enforced (desktop
+    // programs may use more image uniforms than MAX_*_IMAGE_UNIFORMS).
+    bool es = false;
     bool internal = false;  // a generated stage (geometry emulation): no separable-varying renumbering
     // transformFeedbackVaryings list the outputs an emulation captures: no
     // MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS limit.
@@ -90,6 +124,9 @@ struct LinkInput {
     // GL_ARB_gl_spirv: the shaders are SPIR-V modules translated to GLSL
     // (spirv_input.h); `spirvUnnamed`: one of them has no debug names.
     bool spirv = false, spirvUnnamed = false;
+    // OpenGL ES: the first stage's input interface and the last stage's
+    // output interface (EsCompileResult), which program pipelines compare.
+    std::map<std::string, std::string> esInputInterface, esOutputInterface;
 };
 
 struct UniformInfo {
@@ -207,6 +244,9 @@ struct SamplerSlotInfo {
     int textureTarget = -1;    // TextureTarget index the sampler reads (core/state.h)
     bool shadow = false;
     int stageTexture[kStageCount] = {-1, -1, -1, -1, -1, -1};  // Metal texture/sampler index per stage
+    // Read through filtering lookups (texture(), textureGather()...); a
+    // sampler only texelFetch reads ignores GL_SKIP_DECODE_EXT.
+    bool sampled = false;
 };
 
 struct StageOutput {
@@ -356,6 +396,9 @@ struct SubroutineStageInfo {
 struct LinkResult {
     bool ok = false;
     std::string log;
+    // KHR_blend_equation_advanced: the fragment shader's layout(blend_support_*)
+    // equations (bit i: equation i of fragmentWithAdvancedBlend; bit 15: all).
+    uint32_t blendSupport = 0;
     std::vector<UniformInfo> uniforms;
     // location -> (uniform index, array element)
     std::vector<std::pair<int, int>> locations;
@@ -431,10 +474,23 @@ struct LogicOpTarget {
 // framebuffer fetch (empty if the stage has no output struct).
 std::string fragmentWithLogicOp(const std::string& msl, unsigned op, const LogicOpTarget targets[8]);
 
+// KHR_blend_equation_advanced (OpenGL ES 3.2): the fragment function
+// blending its color output 0 with the attachment's value (framebuffer
+// fetch) by advanced equation `equation` (0..14: MULTIPLY_KHR ...
+// HSL_LUMINOSITY_KHR, glslang's TBlendEquationShift order). Empty if the
+// stage has no output struct.
+std::string fragmentWithAdvancedBlend(const std::string& msl, unsigned equation);
+
 // GL_SAMPLE_MASK / GL_SAMPLE_COVERAGE: the fragment function with a
-// [[sample_mask]] output, word 1 of buffer kSlotDriverUniforms (empty if the
-// stage has no output struct or writes the sample mask itself).
+// [[sample_mask]] output, word 1 of buffer kSlotDriverUniforms, ANDed into
+// the mask the shader writes (gl_SampleMask) if it does (empty if the stage
+// has no output struct).
 std::string fragmentWithSampleMask(const std::string& msl);
+
+// A fragment function run per sample (it takes [[sample_id]]) sees only its
+// own sample in gl_SampleMaskIn (GLSL ES 3.20 section 7.1.5); Metal gives
+// the pixel's coverage. Unchanged without both inputs.
+std::string fragmentSampleMaskInPerSample(const std::string& msl);
 
 // GL_SAMPLE_SHADING: the fragment function run once per sample (it takes
 // [[sample_id]]) with its interpolated inputs evaluated at the sample.

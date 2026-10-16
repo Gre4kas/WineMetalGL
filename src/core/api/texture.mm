@@ -14,6 +14,7 @@
 #include "core/context.h"
 #include "core/draw.h"
 #include "core/format/block_encode.h"
+#include "core/format/es_formats.h"
 #include "core/format/pixel_transfer.h"
 #include "core/limits.h"
 #include "core/metal/device.h"
@@ -59,14 +60,28 @@ using namespace wmgl::limits;
 
 // ------------------------------------------------------------ targets
 
+// OpenGL ES has no 1D or rectangle textures (nor proxies); the others come
+// with its versions (and the extensions ES 3.1 contexts advertise).
+bool esTargetSupported(Context& ctx, GLenum target) {
+    switch (target) {
+    case GL_TEXTURE_2D: case GL_TEXTURE_CUBE_MAP: case GL_TEXTURE_3D: return true;  // 3D: OES_texture_3D
+    case GL_TEXTURE_2D_ARRAY: return ctx.esVersion() >= 30;
+    case GL_TEXTURE_2D_MULTISAMPLE: case GL_TEXTURE_2D_MULTISAMPLE_ARRAY: case GL_TEXTURE_CUBE_MAP_ARRAY:
+    case GL_TEXTURE_BUFFER:
+        return ctx.esVersion() >= 31;
+    default: return false;
+    }
+}
+
 bool targetSupported(Context& ctx, GLenum target) {
+    if (ctx.isEs()) return esTargetSupported(ctx, target);
     if (target == GL_TEXTURE_CUBE_MAP_ARRAY) return ctx.version() >= 40;
     return textureTargetIndex(target) >= 0;
 }
 
 Texture* boundTexture(Context& ctx, GLenum target) {
     const int index = textureTargetIndex(target);
-    if (index < 0) return nullptr;
+    if (index < 0 || (ctx.isEs() && !esTargetSupported(ctx, target))) return nullptr;
     return ctx.state.textureUnits[ctx.state.activeTexture].bound[index].get();
 }
 
@@ -101,6 +116,7 @@ struct ImageTarget {
 // that the call does not accept.
 bool imageTarget(Context& ctx, GLenum target, int dims, bool allowProxy, ImageTarget& out) {
     GLenum base = target;
+    if (ctx.isEs() && !isCubeFace(target) && !esTargetSupported(ctx, target)) return ctx.setError(GL_INVALID_ENUM), false;
     if (allowProxy && proxyBase(target)) {
         base = proxyBase(target);
         out.proxy = true;
@@ -255,6 +271,10 @@ void defineImage(Context& ctx, Texture& tex, int face, int level, GLenum request
     TextureImage& image = tex.image(face, level);
     const bool reshaped = image.format != info || image.width != w || image.height != h || image.depth != d ||
                           image.samples != samples;
+    // Sampling views carry the format's swizzle (RGB8 and RGBA8 share a
+    // Metal format, and the storage may be kept).
+    if (image.format != info) tex.views.clear();
+    image.pending.clear();
     image.internalFormat = info ? info->internalFormat : 0;
     image.requestedFormat = requested;
     image.format = info;
@@ -273,16 +293,25 @@ void clearImage(TextureImage& image) { image = TextureImage(); }
 void uploadRegion(Context& ctx, Texture& tex, int face, int level, int x, int y, int z, int w, int h, int d,
                   GLenum format, GLenum type, const uint8_t* src) {
     if (!src || w <= 0 || h <= 0 || d <= 0) return;
-    const TextureImage& image = tex.image(face, level);
+    TextureImage& image = tex.image(face, level);
     if (!image.format) return;
+    const size_t texel = storageBytes(image.format->storage);
+    const size_t bytes = static_cast<size_t>(w) * h * d * texel;
+    PixelStoreParams ps = pixelStoreParams(ctx.state.unpack, threeDTarget(tex.target));
+    ps.clampFloatDepth = ctx.isEs();
     if (!imageHasStorage(ctx, tex, face, level)) {
+        // A whole 2D image or cube face waits for storage of its format
+        // (the base image is re-specified after it); other contents are lost.
+        if ((tex.target == GL_TEXTURE_2D || tex.target == GL_TEXTURE_CUBE_MAP) && !image.format->compressed && x == 0 &&
+            y == 0 && z == 0 && w == image.width && h == image.height && d == 1 && image.depth == 1) {
+            image.pending.resize(bytes);
+            unpackPixels(src, format, type, w, h, d, ps, *image.format, image.pending.data());
+            return;
+        }
         logOnce(LogLevel::Warn, "inconsistent-level", "texture %u level %d does not fit its mip chain; contents dropped",
                 tex.name, level);
         return;
     }
-    const size_t texel = storageBytes(image.format->storage);
-    const size_t bytes = static_cast<size_t>(w) * h * d * texel;
-    const PixelStoreParams ps = pixelStoreParams(ctx.state.unpack, threeDTarget(tex.target));
     if (tex.mtl && tex.mtl.pixelFormat != MTLPixelFormatDepth32Float_Stencil8) {
         // Converted straight into the staging memory the GPU copies from.
         TransientAllocation staging = ctx.draw().transient().allocate(bytes, ctx.stream().serial(), 16);
@@ -303,7 +332,8 @@ void uploadRegion(Context& ctx, Texture& tex, int face, int level, int x, int y,
 }
 
 size_t compressedSize(const FormatInfo& info, GLsizei w, GLsizei h, GLsizei d) {
-    const size_t blocksX = (static_cast<size_t>(w) + 3) / 4, blocksY = (static_cast<size_t>(h) + 3) / 4;
+    const size_t blocksX = storageBlocksAcross(info.storage, static_cast<size_t>(w));
+    const size_t blocksY = storageBlocksAcross(info.storage, static_cast<size_t>(h), true);
     return blocksX * blocksY * static_cast<size_t>(std::max(1, d)) * storageBytes(info.storage);
 }
 
@@ -325,19 +355,21 @@ CompressedLayout compressedLayout(const PixelStore& ps, const FormatInfo& info, 
     const size_t bytes = storageBytes(info.storage);
     // The parameters apply when set for every dimension of the call
     // (and only if they describe this format's 4x4 blocks).
+    int bw, bh;
+    storageBlockSize(info.storage, bw, bh);
     l.active = ps.blockSize > 0 && ps.blockWidth > 0 && (dims < 2 || ps.blockHeight > 0) && (dims < 3 || ps.blockDepth > 0) &&
-               static_cast<size_t>(ps.blockSize) == bytes && ps.blockWidth == 4 && (dims < 2 || ps.blockHeight == 4) &&
+               static_cast<size_t>(ps.blockSize) == bytes && ps.blockWidth == bw && (dims < 2 || ps.blockHeight == bh) &&
                (dims < 3 || ps.blockDepth == 1);
     if (!l.active) return l;
     l.blockBytes = bytes;
-    l.blocksX = (static_cast<size_t>(w) + 3) / 4;
-    l.blocksY = (static_cast<size_t>(h) + 3) / 4;
+    l.blocksX = storageBlocksAcross(info.storage, static_cast<size_t>(w));
+    l.blocksY = storageBlocksAcross(info.storage, static_cast<size_t>(h), true);
     l.depth = static_cast<size_t>(std::max(1, d));
-    const size_t rowBlocks = ps.rowLength > 0 ? (static_cast<size_t>(ps.rowLength) + 3) / 4 : l.blocksX;
-    const size_t imageRows = ps.imageHeight > 0 ? (static_cast<size_t>(ps.imageHeight) + 3) / 4 : l.blocksY;
+    const size_t rowBlocks = ps.rowLength > 0 ? storageBlocksAcross(info.storage, static_cast<size_t>(ps.rowLength)) : l.blocksX;
+    const size_t imageRows = ps.imageHeight > 0 ? storageBlocksAcross(info.storage, static_cast<size_t>(ps.imageHeight), true) : l.blocksY;
     l.rowStride = rowBlocks * bytes;
     l.imageStride = imageRows * l.rowStride;
-    l.start = static_cast<size_t>(ps.skipPixels / 4) * bytes + static_cast<size_t>(ps.skipRows / 4) * l.rowStride +
+    l.start = static_cast<size_t>(ps.skipPixels / bw) * bytes + static_cast<size_t>(ps.skipRows / bh) * l.rowStride +
               (dims == 3 ? static_cast<size_t>(ps.skipImages) * l.imageStride : 0);
     return l;
 }
@@ -356,6 +388,8 @@ std::vector<uint8_t> gatherBlocks(const CompressedLayout& l, const uint8_t* src)
 
 bool compressedFormatSupported(Context& ctx, const FormatInfo* info) {
     if (!info || !info->compressed) return false;
+    // KHR_texture_compression_astc_ldr: OpenGL ES contexts.
+    if (storageIsAstc(info->storage)) return ctx.isEs() && Device::get().caps().astcTextures;
     if (info->storage >= Storage::ETC2_RGB8 && info->storage <= Storage::EAC_RG11Snorm)
         return ctx.version() >= 43 || ctx.hasExtension("GL_ARB_ES3_compatibility");  // native on Apple GPUs
     if (!Device::get().caps().bcTextures) return false;
@@ -379,8 +413,8 @@ void uploadCompressed(Context& ctx, Texture& tex, int face, int level, int x, in
     if (!src || w <= 0 || h <= 0 || d <= 0) return;
     const TextureImage& image = tex.image(face, level);
     if (!imageHasStorage(ctx, tex, face, level)) return;
-    const size_t rowBytes = ((static_cast<size_t>(w) + 3) / 4) * storageBytes(image.format->storage);
-    const size_t imageBytes = rowBytes * ((static_cast<size_t>(h) + 3) / 4);
+    const size_t rowBytes = storageBlocksAcross(image.format->storage, static_cast<size_t>(w)) * storageBytes(image.format->storage);
+    const size_t imageBytes = rowBytes * storageBlocksAcross(image.format->storage, static_cast<size_t>(h), true);
     uploadTexels(ctx, tex, face, level, x, y, z, w, h, d, src, rowBytes, imageBytes);
     imageChanged(ctx, tex);
 }
@@ -444,26 +478,49 @@ bool formatAllowedOnTarget(const FormatInfo& info, GLenum target) {
     if (info.isDepthOrStencil())
         return target != GL_TEXTURE_3D;
     if (info.compressed)
+        // 3D: BPTC, and ASTC (GL_KHR_texture_compression_astc_sliced_3d: 2D
+        // blocks per slice, Metal's 3D ASTC textures).
         return target == GL_TEXTURE_2D || target == GL_TEXTURE_2D_ARRAY || target == GL_TEXTURE_CUBE_MAP ||
-               target == GL_TEXTURE_CUBE_MAP_ARRAY || (target == GL_TEXTURE_3D && info.storage >= Storage::BC6H_RGBFloat &&
-                                                       info.storage <= Storage::BC7_RGBAUnorm_sRGB);
+               target == GL_TEXTURE_CUBE_MAP_ARRAY ||
+               (target == GL_TEXTURE_3D && ((info.storage >= Storage::BC6H_RGBFloat && info.storage <= Storage::BC7_RGBAUnorm_sRGB) ||
+                                           storageIsAstc(info.storage)));
     return true;
+}
+
+// OpenGL ES client formats as the transfer code knows them: EXT_sRGB's
+// SRGB(_ALPHA) data is RGB(A) data.
+GLenum esTransferFormat(GLenum format) {
+    return format == GL_SRGB ? GL_RGB : format == GL_SRGB_ALPHA ? GL_RGBA : format;
 }
 
 void texImage(Context& ctx, int dims, GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height,
               GLsizei depth, GLint border, GLenum format, GLenum type, const void* pixels) {
     ImageTarget t;
     if (!imageTarget(ctx, target, dims, true, t)) return;
-    if (!checkFormatType(ctx, format, type)) return;
     const GLenum requested = static_cast<GLenum>(internalformat);
-    if (!isValidTextureInternalFormat(requested, ctx.isCompat(), stencilTextures(ctx))) return ctx.setError(GL_INVALID_VALUE);
+    const FormatInfo* info = nullptr;
     bool tooLarge;
-    if (!sizeAllowed(ctx, t, level, width, height, depth, border, tooLarge)) return;
-    const FormatInfo* info = formatInfo(resolveInternalFormat(requested, format, type));
-    if (!info) return ctx.setError(GL_INVALID_VALUE);
-    if (!formatAllowedOnTarget(*info, t.target)) return ctx.setError(GL_INVALID_OPERATION);
-    if (info->compressed && !compressedFormatSupported(ctx, info)) return ctx.setError(GL_INVALID_ENUM);
-    if (!textureTransferCompatible(format, type, *info)) return ctx.setError(GL_INVALID_OPERATION);
+    if (ctx.isEs()) {
+        // OpenGL ES 3.2 tables 8.2 and 8.3: the combinations listed, and the
+        // sized format each makes.
+        GLenum error;
+        const GLenum sized = es::texImageFormat(requested, format, type, error);
+        if (!sized) return ctx.setError(error);
+        if (!sizeAllowed(ctx, t, level, width, height, depth, border, tooLarge)) return;
+        info = formatInfo(sized);
+        if (!info) return ctx.setError(GL_INVALID_VALUE);
+        if (!formatAllowedOnTarget(*info, t.target)) return ctx.setError(GL_INVALID_OPERATION);
+        format = esTransferFormat(format);
+    } else {
+        if (!checkFormatType(ctx, format, type)) return;
+        if (!isValidTextureInternalFormat(requested, ctx.isCompat(), stencilTextures(ctx))) return ctx.setError(GL_INVALID_VALUE);
+        if (!sizeAllowed(ctx, t, level, width, height, depth, border, tooLarge)) return;
+        info = formatInfo(resolveInternalFormat(requested, format, type));
+        if (!info) return ctx.setError(GL_INVALID_VALUE);
+        if (!formatAllowedOnTarget(*info, t.target)) return ctx.setError(GL_INVALID_OPERATION);
+        if (info->compressed && !compressedFormatSupported(ctx, info)) return ctx.setError(GL_INVALID_ENUM);
+        if (!textureTransferCompatible(format, type, *info)) return ctx.setError(GL_INVALID_OPERATION);
+    }
     if (!t.proxy && t.tex->immutable) return ctx.setError(GL_INVALID_OPERATION);
     if (t.proxy) {
         TextureImage& image = t.tex->image(t.face, level);
@@ -495,11 +552,19 @@ void texSubImage(Context& ctx, int dims, GLenum target, GLint level, GLint x, GL
                  GLsizei d, GLenum format, GLenum type, const void* pixels) {
     ImageTarget t;
     if (!imageTarget(ctx, target, dims, false, t)) return;
-    if (!checkFormatType(ctx, format, type)) return;
+    if (ctx.isEs() && (!es::isFormat(format) || !es::isType(type))) return ctx.setError(GL_INVALID_ENUM);
+    if (!ctx.isEs() && !checkFormatType(ctx, format, type)) return;
     if (level < 0 || level > maxLevelFor(t.target)) return ctx.setError(GL_INVALID_VALUE);
     if (w < 0 || h < 0 || d < 0) return ctx.setError(GL_INVALID_VALUE);
     const TextureImage& image = t.tex->image(t.face, level);
     if (!image.defined()) return ctx.setError(GL_INVALID_OPERATION);
+    if (ctx.isEs()) {
+        // The (format, type) must be one the image's format takes (tables 8.2, 8.3).
+        GLenum error;
+        if (!image.format->compressed && !es::texSubImageCompatible(image.format->internalFormat, format, type, error))
+            return ctx.setError(error);
+        format = esTransferFormat(format);
+    }
     if (x < 0 || y < 0 || z < 0 || w > image.width - x || h > image.height - y || d > image.depth - z)
         return ctx.setError(GL_INVALID_VALUE);
     const bool rgtc = image.format->compressed && encodable(image.format->storage);
@@ -507,7 +572,7 @@ void texSubImage(Context& ctx, int dims, GLenum target, GLint level, GLint x, GL
     // Compressed regions must be block aligned, except where they reach the image edge (GL 3.3 section 3.8.4).
     if (rgtc && ((x % 4) || (y % 4) || ((w % 4) && x + w != image.width) || ((h % 4) && y + h != image.height)))
         return ctx.setError(GL_INVALID_OPERATION);
-    if (!textureTransferCompatible(format, type, *image.format)) return ctx.setError(GL_INVALID_OPERATION);
+    if (!ctx.isEs() && !textureTransferCompatible(format, type, *image.format)) return ctx.setError(GL_INVALID_OPERATION);
     const TransferLayout layout = transferLayout(format, type, w, h, d, pixelStoreParams(ctx.state.unpack, dims == 3));
     const uint8_t* src = nullptr;
     if (!unpackSource(ctx, pixels, w && h && d ? layout.bytesNeeded : 0, typeSize(type), src)) return;
@@ -562,13 +627,19 @@ void compressedTexSubImage(Context& ctx, int dims, GLenum target, GLint level, G
     if (level < 0 || level > maxLevelFor(t.target)) return ctx.setError(GL_INVALID_VALUE);
     if (w < 0 || h < 0 || d < 0) return ctx.setError(GL_INVALID_VALUE);
     const FormatInfo* info = formatInfo(format);
+    // OpenGL ES: a known format (sized, or an unsized one such as GL_RGB) that
+    // is not the image's compressed one is INVALID_OPERATION.
+    if (ctx.isEs() && (info ? !info->compressed || info->internalFormat != format : es::isFormat(format)))
+        return ctx.setError(GL_INVALID_OPERATION);
     if (!info || !info->compressed || info->internalFormat != format) return ctx.setError(GL_INVALID_ENUM);
     const TextureImage& image = t.tex->image(t.face, level);
     if (!image.defined() || image.format != info) return ctx.setError(GL_INVALID_OPERATION);
     if (x < 0 || y < 0 || z < 0 || w > image.width - x || h > image.height - y || d > image.depth - z)
         return ctx.setError(GL_INVALID_VALUE);
     // Regions must be block aligned, except where they reach the image edge.
-    if ((x % 4) || (y % 4) || ((w % 4) && x + w != image.width) || ((h % 4) && y + h != image.height))
+    int bw, bh;
+    storageBlockSize(info->storage, bw, bh);
+    if ((x % bw) || (y % bh) || ((w % bw) && x + w != image.width) || ((h % bh) && y + h != image.height))
         return ctx.setError(GL_INVALID_OPERATION);
     if (imageSize < 0 || static_cast<size_t>(imageSize) != compressedSize(*info, w, h, d))
         return ctx.setError(GL_INVALID_VALUE);
@@ -631,9 +702,7 @@ bool copySource(Context& ctx, bool depth, CopySource& out, bool stencil = false)
         if (!surface || !surface->hasDepth() || (stencil && !surface->hasStencil()))
             return ctx.setError(GL_INVALID_OPERATION), false;
         out.texture = surface->resolvedDepthStencil(ctx.stream());
-        out.info = formatInfo(surface->hasStencil()                  ? GL_DEPTH24_STENCIL8
-                              : surface->pixelFormat().depth_bits == 16 ? GL_DEPTH_COMPONENT16
-                                                                        : GL_DEPTH_COMPONENT24);
+        out.info = formatInfo(surface->depthStencilFormat());
         out.width = surface->width();
         out.height = surface->height();
     }
@@ -766,10 +835,29 @@ bool copyFormatsCompatible(const FormatInfo& src, const FormatInfo& dst) {
     return true;
 }
 
+// OpenGL ES 3.2 section 8.6: the new image's format comes from the
+// internal format and the read buffer's (es::copyTexImageFormat).
+void esCopyTexImage(Context& ctx, const ImageTarget& t, GLint level, GLenum internalformat, GLint x, GLint y,
+                    GLsizei width, GLsizei height, GLint border) {
+    bool tooLarge;
+    if (!sizeAllowed(ctx, t, level, width, height, 1, border, tooLarge)) return;
+    if (t.tex->immutable) return ctx.setError(GL_INVALID_OPERATION);
+    CopySource src;
+    if (!copySource(ctx, false, src)) return;
+    GLenum error;
+    const GLenum sized = es::copyTexImageFormat(*src.info, internalformat, error);
+    if (!sized) return ctx.setError(error);
+    const FormatInfo* info = formatInfo(sized);
+    if (!info) return ctx.setError(GL_INVALID_VALUE);
+    defineImage(ctx, *t.tex, t.face, level, internalformat, info, width, height, 1);
+    copyRegion(ctx, *t.tex, t.face, level, 0, 0, 0, x, y, width, height, src);
+}
+
 void copyTexImage(Context& ctx, int dims, GLenum target, GLint level, GLenum internalformat, GLint x, GLint y,
                   GLsizei width, GLsizei height, GLint border) {
     ImageTarget t;
     if (!imageTarget(ctx, target, dims, false, t)) return;
+    if (ctx.isEs()) return esCopyTexImage(ctx, t, level, internalformat, x, y, width, height, border);
     if (!isValidTextureInternalFormat(internalformat, ctx.isCompat(), stencilTextures(ctx))) return ctx.setError(GL_INVALID_VALUE);
     bool tooLarge;
     if (!sizeAllowed(ctx, t, level, width, dims == 1 ? 1 : height, 1, border, tooLarge)) return;
@@ -809,6 +897,7 @@ void copyTexSubImage(Context& ctx, int dims, GLenum target, GLint level, GLint x
     CopySource src;
     if (!copySource(ctx, image.format->isDepthOrStencil(), src)) return;
     if (!copyFormatsCompatible(*src.info, *image.format)) return ctx.setError(GL_INVALID_OPERATION);
+    if (ctx.isEs() && !es::copyTexSubImageCompatible(*src.info, *image.format)) return ctx.setError(GL_INVALID_OPERATION);
     copyRegion(ctx, *t.tex, t.face, level, xoffset, yoffset, zoffset, x, y, width, height, src);
 }
 
@@ -965,9 +1054,11 @@ void texParameter(Context& ctx, GLenum target, GLenum pname, const ParamValues& 
     switch (pname) {
     case GL_TEXTURE_BASE_LEVEL:
     case GL_TEXTURE_MAX_LEVEL: {
-        if (v.kind == ParamValues::Float && v.f[0] != std::floor(v.f[0])) return ctx.setError(GL_INVALID_VALUE);
-        if (v.i[0] < 0) return ctx.setError(GL_INVALID_VALUE);
-        const GLint value = static_cast<GLint>(std::min<int64_t>(v.i[0], std::numeric_limits<GLint>::max()));
+        // OpenGL ES rounds fractional levels (section 8.10); desktop GL rejects them.
+        if (v.kind == ParamValues::Float && v.f[0] != std::floor(v.f[0]) && !ctx.isEs()) return ctx.setError(GL_INVALID_VALUE);
+        const int64_t level = v.kind == ParamValues::Float && ctx.isEs() ? std::llround(v.f[0]) : v.i[0];
+        if (level < 0) return ctx.setError(GL_INVALID_VALUE);
+        const GLint value = static_cast<GLint>(std::min<int64_t>(level, std::numeric_limits<GLint>::max()));
         if (pname == GL_TEXTURE_BASE_LEVEL) {
             if ((multisample || target == GL_TEXTURE_RECTANGLE) && value != 0) return ctx.setError(GL_INVALID_OPERATION);
             tex->baseLevel = value;
@@ -1271,6 +1362,7 @@ void texStorage(Context& ctx, int dims, GLenum target, GLsizei levels, GLenum in
     const FormatInfo* info = formatInfo(internalformat);
     if (!info || info->internalFormat != internalformat) return ctx.setError(GL_INVALID_ENUM);
     if (info->compressed && !compressedFormatSupported(ctx, info)) return ctx.setError(GL_INVALID_ENUM);
+    if (ctx.isEs() && !info->compressed && !es::textureStorageFormat(internalformat)) return ctx.setError(GL_INVALID_ENUM);
     if (levels < 1 || width < 1 || height < 1 || depth < 1) return ctx.setError(GL_INVALID_VALUE);
     Texture* tex = proxy ? ctx.proxyTextures[textureTargetIndex(base)].get() : boundTexture(ctx, base);
     if (!tex || (!proxy && tex->name == 0)) return ctx.setError(GL_INVALID_OPERATION);
@@ -1324,9 +1416,13 @@ void unbindTextureEverywhere(Context& ctx, Texture* tex) {
     for (TextureUnit& unit : ctx.state.textureUnits)
         for (int i = 0; i < kTexTargetCount; ++i)
             if (unit.bound[i].get() == tex) unit.bound[i] = ctx.defaultTextures[i];
-    // A deleted texture's image units return to their default state.
+    // A deleted texture's image units return to their default state (format
+    // R32UI in OpenGL ES, as Context sets them up).
     for (ImageUnit& unit : ctx.state.imageUnits)
-        if (unit.texture.get() == tex) unit = ImageUnit{};
+        if (unit.texture.get() == tex) {
+            unit = ImageUnit{};
+            if (ctx.isEs()) unit.format = GL_R32UI;
+        }
     for (Framebuffer* fb : {ctx.state.drawFramebuffer.get(), ctx.state.readFramebuffer.get()}) {
         if (!fb) continue;
         bool changed = false;
@@ -1394,7 +1490,7 @@ void BindTexture(Context& ctx, GLenum target, GLuint name) {
         tex = ctx.share().textures.getRef(name);
         if (!tex) {
             if (!ctx.share().textures.isGenerated(name)) {
-                if (ctx.isCore()) return ctx.setError(GL_INVALID_OPERATION);
+                if (ctx.isDesktopCore()) return ctx.setError(GL_INVALID_OPERATION);  // OpenGL ES creates it
                 ctx.share().textures.reserve(name);
             }
             tex = makeRef<Texture>(name, target);
@@ -1895,6 +1991,7 @@ void GenerateMipmap(Context& ctx, GLenum target) {
         target != GL_TEXTURE_1D_ARRAY && target != GL_TEXTURE_2D_ARRAY && target != GL_TEXTURE_CUBE_MAP &&
         !(target == GL_TEXTURE_CUBE_MAP_ARRAY && ctx.version() >= 40))
         return ctx.setError(GL_INVALID_ENUM);
+    if (ctx.isEs() && !targetSupported(ctx, target)) return ctx.setError(GL_INVALID_ENUM);
     Texture* tex = boundTexture(ctx, target);
     if (!tex) return ctx.setError(GL_INVALID_OPERATION);
     // An immutable texture's levels are fixed by TexStorage: the base level is
@@ -1916,6 +2013,15 @@ void GenerateMipmap(Context& ctx, GLenum target) {
     // Desktop GL generates depth mipmaps too (stencil-only formats cannot).
     if (info->compressed || info->isInteger() || (info->isDepthOrStencil() && !info->depthBits))
         return ctx.setError(GL_INVALID_OPERATION);
+    // OpenGL ES 3.2 section 8.14.4: an unsized format, or one both
+    // color-renderable and filterable.
+    if (ctx.isEs()) {
+        const GLenum r = baseImage.requestedFormat;
+        const bool unsized = r == GL_RGBA || r == GL_RGB || r == GL_LUMINANCE_ALPHA || r == GL_LUMINANCE || r == GL_ALPHA ||
+                             r == GL_RED || r == GL_RG || r == GL_SRGB || r == GL_SRGB_ALPHA || r == es::kBgra;
+        if (!unsized && !(es::colorRenderable(info->internalFormat) && info->textureFilterable))
+            return ctx.setError(GL_INVALID_OPERATION);
+    }
     // Define every level from base + 1 to the end of the chain (or maxLevel).
     const bool oneD = target == GL_TEXTURE_1D || target == GL_TEXTURE_1D_ARRAY;
     GLsizei w = baseImage.width, h = baseImage.height, d = baseImage.depth;
@@ -1970,6 +2076,9 @@ void TexStorage2DMultisample(Context& ctx, GLenum target, GLsizei samples, GLenu
         return ctx.setError(GL_INVALID_ENUM);
     const FormatInfo* info = formatInfo(internalformat);
     if (!info || info->internalFormat != internalformat) return ctx.setError(GL_INVALID_ENUM);
+    // OpenGL ES: color-, depth- or stencil-renderable formats only.
+    if (ctx.isEs() && !es::colorRenderable(internalformat) && !es::depthOrStencilRenderable(internalformat))
+        return ctx.setError(GL_INVALID_ENUM);
     if (width < 1 || height < 1) return ctx.setError(GL_INVALID_VALUE);
     texImageMultisample(ctx, GL_TEXTURE_2D_MULTISAMPLE, target == GL_PROXY_TEXTURE_2D_MULTISAMPLE, samples,
                         internalformat, width, height, 1, fixedsamplelocations);
@@ -1986,6 +2095,8 @@ void TexStorage3DMultisample(Context& ctx, GLenum target, GLsizei samples, GLenu
         return ctx.setError(GL_INVALID_ENUM);
     const FormatInfo* info = formatInfo(internalformat);
     if (!info || info->internalFormat != internalformat) return ctx.setError(GL_INVALID_ENUM);
+    if (ctx.isEs() && !es::colorRenderable(internalformat) && !es::depthOrStencilRenderable(internalformat))
+        return ctx.setError(GL_INVALID_ENUM);
     if (width < 1 || height < 1 || depth < 1) return ctx.setError(GL_INVALID_VALUE);
     texImageMultisample(ctx, GL_TEXTURE_2D_MULTISAMPLE_ARRAY, target == GL_PROXY_TEXTURE_2D_MULTISAMPLE_ARRAY, samples,
                         internalformat, width, height, depth, fixedsamplelocations);
@@ -2147,8 +2258,8 @@ void GetCompressedTexImage(Context& ctx, GLenum target, GLint level, void* img) 
     if (!packDestination(ctx, img, layout.active ? layout.bytesNeeded() : size, 1, dst)) return;
     if (!dst || !imageHasStorage(ctx, *t.tex, t.face, level)) return;
     const size_t blockBytes = storageBytes(image.format->storage);
-    const size_t rowBytes = ((static_cast<size_t>(image.width) + 3) / 4) * blockBytes;
-    const size_t imageBytes = rowBytes * ((static_cast<size_t>(image.height) + 3) / 4);
+    const size_t rowBytes = storageBlocksAcross(image.format->storage, static_cast<size_t>(image.width)) * blockBytes;
+    const size_t imageBytes = rowBytes * storageBlocksAcross(image.format->storage, static_cast<size_t>(image.height), true);
     id<MTLBuffer> staging = [Device::get().mtl() newBufferWithLength:std::max<size_t>(1, size)
                                                              options:MTLResourceStorageModeShared];
     id<MTLBlitCommandEncoder> blit = ctx.stream().blit();
@@ -2313,9 +2424,11 @@ void GetCompressedTextureSubImage(Context& ctx, GLuint texture, GLint level, GLi
     Texture& tex = *sub.tex;
     const TextureImage& image = *sub.image;
     if (!image.defined() || !image.format->compressed) return ctx.setError(GL_INVALID_OPERATION);
-    // Whole 4x4 blocks, except where the region reaches the image's edge.
-    if (xoffset % 4 || yoffset % 4 || (width % 4 && xoffset + width != image.width) ||
-        (height % 4 && yoffset + height != image.height))
+    // Whole blocks, except where the region reaches the image's edge.
+    int bw, bh;
+    storageBlockSize(image.format->storage, bw, bh);
+    if (xoffset % bw || yoffset % bh || (width % bw && xoffset + width != image.width) ||
+        (height % bh && yoffset + height != image.height))
         return ctx.setError(GL_INVALID_OPERATION);
     const bool threeD = tex.target == GL_TEXTURE_3D || tex.target == GL_TEXTURE_2D_ARRAY || tex.target == GL_TEXTURE_CUBE_MAP ||
                         tex.target == GL_TEXTURE_CUBE_MAP_ARRAY;
@@ -2330,8 +2443,8 @@ void GetCompressedTextureSubImage(Context& ctx, GLuint texture, GLint level, GLi
     for (int f = 0; f < (tex.target == GL_TEXTURE_CUBE_MAP ? 6 : 1); ++f)
         if (!imageHasStorage(ctx, tex, f, level)) return;
     if (!dst) return;
-    const size_t rowBytes = ((static_cast<size_t>(width) + 3) / 4) * storageBytes(image.format->storage);
-    const size_t imageBytes = rowBytes * ((static_cast<size_t>(height) + 3) / 4);
+    const size_t rowBytes = storageBlocksAcross(image.format->storage, static_cast<size_t>(width)) * storageBytes(image.format->storage);
+    const size_t imageBytes = rowBytes * storageBlocksAcross(image.format->storage, static_cast<size_t>(height), true);
     id<MTLBuffer> staging = [Device::get().mtl() newBufferWithLength:std::max<size_t>(1, size)
                                                              options:MTLResourceStorageModeShared];
     id<MTLBlitCommandEncoder> blit = ctx.stream().blit();

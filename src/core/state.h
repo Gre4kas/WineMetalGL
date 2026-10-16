@@ -96,6 +96,16 @@ enum TextureTarget : uint8_t {
     kTex2DMultisample, kTex2DMultisampleArray, kTexCubeMapArray, kTexTargetCount
 };
 int textureTargetIndex(GLenum target);  // -1 if not a texture target
+
+// KHR_blend_equation_advanced: an advanced equation's index (MULTIPLY_KHR 0
+// ... HSL_LUMINOSITY_KHR 14, shader::fragmentWithAdvancedBlend), or -1.
+inline int advancedBlendIndex(GLenum mode) {
+    static const GLenum kModes[15] = {0x9294, 0x9295, 0x9296, 0x9297, 0x9298, 0x9299, 0x929A, 0x929B,
+                                      0x929C, 0x929E, 0x92A0, 0x92AD, 0x92AE, 0x92AF, 0x92B0};
+    for (int i = 0; i < 15; ++i)
+        if (kModes[i] == mode) return i;
+    return -1;
+}
 GLenum textureTargetEnum(int index);
 
 struct ContextState {
@@ -106,6 +116,14 @@ struct ContextState {
     static constexpr int kMaxViewports = 16;
     GLfloat viewports[kMaxViewports][4] = {};
     GLdouble depthRanges[kMaxViewports][2] = {};
+    // KHR_blend_equation_advanced_coherent's BLEND_ADVANCED_COHERENT_KHR (always coherent).
+    bool blendAdvancedCoherent = true;
+    // OpenGL ES 3.2 / EXT_primitive_bounding_box: a hint, kept for queries.
+    GLfloat primitiveBoundingBox[8] = {-1, -1, -1, 1, 1, 1, 1, 1};
+    // GL_EXT_fragment_shading_rate: the pipeline rate and the combiners. Only
+    // the 1x1 rate is supported, which every rate clamps to.
+    GLenum shadingRate = 0x96A6;                    // GL_SHADING_RATE_1X1_PIXELS_EXT
+    GLenum shadingRateCombiners[2] = {0x96D2, 0x96D2};  // GL_FRAGMENT_SHADING_RATE_COMBINER_OP_KEEP_EXT
     uint32_t scissorTests = 0;  // bit per viewport index
     GLint scissors[kMaxViewports][4] = {};
     bool cullFace = false;
@@ -202,7 +220,7 @@ struct ContextState {
     std::array<IndexedBufferBinding, kMaxShaderStorageBufferBindings> shaderStorageBufferBindings;
     static constexpr int kMaxImageUnits = 16;  // = limits::kMaxImageUnits
     std::array<ImageUnit, kMaxImageUnits> imageUnits;
-    static constexpr int kMaxTextureUnits = 80;
+    static constexpr int kMaxTextureUnits = 96;  // limits::kMaxCombinedTextureUnits (OpenGL ES 3.2: 96)
     std::array<TextureUnit, kMaxTextureUnits> textureUnits;
     GLuint activeTexture = 0;
     RefPtr<VertexArray> vertexArray;      // never null (default VAO in compatibility profile)

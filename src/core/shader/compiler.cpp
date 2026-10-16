@@ -15,6 +15,7 @@
 #include <list>
 #include <memory>
 #include <mutex>
+#include <regex>
 #include <set>
 #include <sstream>
 #include <unordered_map>
@@ -49,6 +50,9 @@ const TBuiltInResource* resources() {
         x.maxCombinedTextureImageUnits = L::kMaxCombinedTextureUnits;
         x.maxVaryingComponents = 64;
         x.maxVaryingVectors = 16;
+        // GLSL ES 3.00's gl_MaxVertexOutputVectors / gl_MaxFragmentInputVectors.
+        x.maxVertexOutputVectors = L::kMaxVertexOutputComponents / 4;
+        x.maxFragmentInputVectors = L::kMaxInterfaceComponents / 4;
         x.maxImageUnits = L::kMaxImageUnits;
         x.maxCombinedImageUnitsAndFragmentOutputs = x.maxCombinedShaderOutputResources = L::kMaxCombinedShaderOutputResources;
         x.maxImageSamples = 0;
@@ -383,6 +387,42 @@ std::string voidFragmentWithSampleMask(const std::string& msl) {
 
 }  // namespace
 
+namespace {
+
+// The fragment entry point's parameter with `attribute` (" [[sample_mask]]"):
+// its name, and where the function body starts (after its '{'). Empty if
+// there is none.
+std::string fragmentParameter(const std::string& msl, const char* attribute, size_t& body) {
+    for (const char* signature : {"fragment main0_out main0(", "fragment void main0("}) {
+        const size_t fn = msl.find(signature);
+        if (fn == std::string::npos) continue;
+        // The parameter list's closing parenthesis ([[buffer(N)]] has its own).
+        size_t close = fn + std::strlen(signature);
+        for (int depth = 1; close < msl.size() && depth; ++close) depth += msl[close] == '(' ? 1 : msl[close] == ')' ? -1 : 0;
+        const std::string parameters = msl.substr(fn, close - fn);
+        const size_t at = parameters.find(attribute);
+        if (at == std::string::npos) return std::string();
+        body = msl.find('{', close) + 1;
+        // The word before the attribute.
+        const size_t end = parameters.find_last_not_of(' ', at - 1) + 1;
+        const size_t begin = parameters.rfind(' ', end - 1) + 1;
+        return parameters.substr(begin, end - begin);
+    }
+    return std::string();
+}
+
+}  // namespace
+
+std::string fragmentSampleMaskInPerSample(const std::string& msl) {
+    size_t body = 0;
+    const std::string mask = fragmentParameter(msl, " [[sample_mask]]", body);
+    const std::string sample = fragmentParameter(msl, " [[sample_id]]", body);
+    if (mask.empty() || sample.empty()) return msl;
+    std::string out = msl;
+    out.insert(body, "\n    " + mask + " &= (1u << " + sample + ");");
+    return out;
+}
+
 std::string fragmentAtSampleRate(const std::string& msl) {
     std::string out = msl;
     // Interpolated (floating-point, not flat) inputs move to the sample.
@@ -417,7 +457,7 @@ std::string fragmentAtSampleRate(const std::string& msl) {
         const size_t open = fn + std::strlen(signature) - 1;
         const bool noParameters = out[open + 1] == ')';
         out.insert(open + 1, std::string("uint wmgl_sample_rate [[sample_id]]") + (noParameters ? "" : ", "));
-        return out;
+        return fragmentSampleMaskInPerSample(out);
     }
     return std::string();
 }
@@ -483,11 +523,22 @@ std::string fragmentCountingInvocations(const std::string& msl) {
 std::string fragmentWithSampleMask(const std::string& msl) {
     const std::string signature = "fragment main0_out main0(", member = "struct main0_out\n{\n";
     const size_t structAt = msl.find(member);
-    if (msl.find("[[sample_mask]]") != std::string::npos) return std::string();
+    // The shader's own mask output: a [[sample_mask]] member of main0_out (a
+    // [[sample_mask]] parameter is gl_SampleMaskIn).
+    const size_t structEnd = structAt == std::string::npos ? std::string::npos : msl.find("};", structAt);
+    size_t written = structAt == std::string::npos ? std::string::npos : msl.find(" [[sample_mask]]", structAt);
+    if (written != std::string::npos && written > structEnd) written = std::string::npos;
     if (structAt == std::string::npos || msl.find(signature) == std::string::npos || structAt > msl.find(signature))
         return voidFragmentWithSampleMask(msl);
     std::string out = msl;
-    out.insert(structAt + member.size(), "    uint wmgl_sample_mask [[sample_mask]];\n");
+    // A shader writing gl_SampleMask: the mask applies on top of it.
+    std::string maskMember = "wmgl_sample_mask";
+    if (written != std::string::npos) {
+        const size_t nameStart = msl.rfind(' ', written - 1) + 1;
+        maskMember = msl.substr(nameStart, written - nameStart);
+    } else {
+        out.insert(structAt + member.size(), "    uint wmgl_sample_mask [[sample_mask]];\n");
+    }
     const size_t fn = out.find(signature);
     if (out.find("wmgl_fs_driver [[buffer(") == std::string::npos) {
         const size_t open = fn + signature.size() - 1;
@@ -495,9 +546,14 @@ std::string fragmentWithSampleMask(const std::string& msl) {
         out.insert(open + 1, "constant uint* wmgl_fs_driver [[buffer(" + std::to_string(kSlotDriverUniforms) + ")]]" +
                                  (noParameters ? "" : ", "));
     }
-    const std::string assign = "out.wmgl_sample_mask = wmgl_fs_driver[1]; ";
+    const std::string assign = written != std::string::npos ? "out." + maskMember + " &= wmgl_fs_driver[1]; "
+                                                            : "out.wmgl_sample_mask = wmgl_fs_driver[1]; ";
     for (size_t at = out.find("return out;", fn); at != std::string::npos; at = out.find("return out;", at + assign.size() + 11))
         out.insert(at, assign);
+    // gl_SampleMaskIn holds no sample the mask removes.
+    size_t body = 0;
+    const std::string maskIn = fragmentParameter(out, " [[sample_mask]]", body);
+    if (!maskIn.empty()) out.insert(body, "\n    " + maskIn + " &= wmgl_fs_driver[1];");
     return out;
 }
 
@@ -588,6 +644,170 @@ std::string stripHashedLocations(const std::string& glsl) {
         out += ")";
     }
     out.append(glsl, i, std::string::npos);
+    return out;
+}
+
+// Buffer blocks a shader declares with the shared or std140 layout, which
+// are active even when unused: glslang compiles for SPIR-V, which drops
+// shared and packed, so the packing is read from the source. A block takes
+// the buffer default ("layout(std430) buffer;" sets it; shared otherwise).
+// imageAtomicExchange on an r32f image: Metal has texture atomics on 32-bit
+// integer textures only. The image becomes an r32ui one (its binding then
+// goes through an R32Uint view or shadow, imageView) and its loads, stores
+// and exchanges carry the float's bits. Images used any other way than
+// those and imageSize are left alone.
+// GL_EXT_fragment_shading_rate's built-ins with the 1x1 rate, the only one
+// (api/es.mm): gl_ShadingRateEXT reads 0 (1x1), gl_PrimitiveShadingRateEXT
+// writes go to a variable nothing reads, and the rate flags are their values.
+// Metal has no shading rate inputs or outputs to give SPIRV-Cross.
+std::string shadingRateBuiltinsAs1x1(const std::string& glsl) {
+    if (glsl.find("ShadingRate") == std::string::npos) return glsl;
+    std::string out = glsl;
+    auto replaceAll = [&](const std::string& word, const std::string& with) {
+        const std::regex r("\\b" + word + "\\b");
+        out = std::regex_replace(out, r, with);
+    };
+    out = std::regex_replace(out, std::regex(R"(#\s*extension\s+GL_EXT_fragment_shading_rate\s*:\s*\w+[^\n]*)"), "");
+    const bool primitive = std::regex_search(out, std::regex(R"(\bgl_PrimitiveShadingRateEXT\b)"));
+    replaceAll("gl_ShadingRateEXT", "0");
+    replaceAll("gl_PrimitiveShadingRateEXT", "wmgl_primitive_shading_rate");
+    replaceAll("gl_ShadingRateFlag2VerticalPixelsEXT", "1");
+    replaceAll("gl_ShadingRateFlag4VerticalPixelsEXT", "2");
+    replaceAll("gl_ShadingRateFlag2HorizontalPixelsEXT", "4");
+    replaceAll("gl_ShadingRateFlag4HorizontalPixelsEXT", "8");
+    if (primitive) {
+        // After the leading directives (#version, #extension).
+        size_t at = 0;
+        while (at < out.size()) {
+            const size_t first = out.find_first_not_of(" \t\r\n", at);
+            if (first == std::string::npos || out[first] != '#') break;
+            const size_t end = out.find('\n', first);
+            at = end == std::string::npos ? out.size() : end + 1;
+        }
+        out.insert(at, "highp int wmgl_primitive_shading_rate;\n");
+    }
+    return out;
+}
+
+// SPIRV-Cross fences a read_write texture after its writes but not after its
+// atomics: a thread that adds to a texel atomically and then reads it may
+// not see its own add on Apple GPUs (GL's coherent images and program order
+// require it). Each statement with a texture atomic gets the texture's fence.
+std::string fenceTextureAtomics(const std::string& msl) {
+    if (msl.find(".atomic_") == std::string::npos) return msl;
+    static const std::regex kAtomic(R"(\b(\w+)(\[[^\]]*\])?\.atomic_(fetch_\w+|exchange|compare_exchange_weak|store|load)\()");
+    std::string out;
+    size_t at = 0;
+    for (auto it = std::sregex_iterator(msl.begin(), msl.end(), kAtomic); it != std::sregex_iterator(); ++it) {
+        const size_t end = msl.find(";\n", static_cast<size_t>(it->position(0)));
+        if (end == std::string::npos || end < at) continue;
+        out.append(msl, at, end + 1 - at);
+        out += " " + (*it)[1].str() + (*it)[2].str() + ".fence();";
+        at = end + 1;
+    }
+    out.append(msl, at, std::string::npos);
+    return out;
+}
+
+std::string floatImageAtomicsAsUint(const std::string& glsl) {
+    if (glsl.find("imageAtomicExchange") == std::string::npos) return glsl;
+    static const std::regex kDecl(
+        R"(layout\s*\(([^)]*\br32f\b[^)]*)\)((?:\s*\w+)*?)\s+(image(?:2D|3D|Cube|2DArray|CubeArray|Buffer))\s+(\w+)\s*;)");
+    std::string out = glsl;
+    std::vector<std::string> names;
+    for (auto it = std::sregex_iterator(glsl.begin(), glsl.end(), kDecl); it != std::sregex_iterator(); ++it)
+        names.push_back((*it)[4]);
+    // The arguments of the call whose '(' is at `open`, and the index past its ')'.
+    auto arguments = [](const std::string& text, size_t open, std::vector<std::string>& args) {
+        args.clear();
+        int depth = 0;
+        size_t start = open + 1;
+        for (size_t i = open; i < text.size(); ++i) {
+            const char c = text[i];
+            if (c == '(' || c == '[') ++depth;
+            else if (c == ')' || c == ']') {
+                if (--depth == 0) {
+                    args.push_back(text.substr(start, i - start));
+                    return i + 1;
+                }
+            } else if (c == ',' && depth == 1) {
+                args.push_back(text.substr(start, i - start));
+                start = i + 1;
+            }
+        }
+        return std::string::npos;
+    };
+    for (const std::string& name : names) {
+        const std::regex use("\\b" + name + "\\b");
+        const std::regex call("\\b(imageAtomicExchange|imageLoad|imageStore|imageSize)\\s*\\(\\s*" + name + "\\b");
+        size_t uses = 0, calls = 0;
+        for (auto it = std::sregex_iterator(out.begin(), out.end(), use); it != std::sregex_iterator(); ++it) ++uses;
+        for (auto it = std::sregex_iterator(out.begin(), out.end(), call); it != std::sregex_iterator(); ++it) ++calls;
+        bool exchanged = false;
+        for (auto it = std::sregex_iterator(out.begin(), out.end(), call); it != std::sregex_iterator(); ++it)
+            exchanged |= (*it)[1] == "imageAtomicExchange";
+        if (!exchanged || uses != calls + 1) continue;  // the declaration, then only these calls
+        std::string rewritten;
+        size_t at = 0;
+        std::smatch m;
+        std::string rest = out;
+        while (std::regex_search(rest, m, call)) {
+            const size_t begin = at + static_cast<size_t>(m.position(0));
+            const size_t open = out.find('(', begin);
+            std::vector<std::string> args;
+            const size_t end = arguments(out, open, args);
+            if (end == std::string::npos) return glsl;
+            rewritten += out.substr(at, begin - at);
+            const std::string fn = m[1];
+            if (fn == "imageAtomicExchange" && args.size() == 3)
+                rewritten += "uintBitsToFloat(imageAtomicExchange(" + args[0] + "," + args[1] + ", floatBitsToUint(" + args[2] + ")))";
+            else if (fn == "imageLoad" && args.size() == 2)
+                rewritten += "vec4(uintBitsToFloat(imageLoad(" + args[0] + "," + args[1] + ").x), 0.0, 0.0, 1.0)";
+            else if (fn == "imageStore" && args.size() == 3)
+                rewritten += "imageStore(" + args[0] + "," + args[1] + ", uvec4(floatBitsToUint((" + args[2] + ").x)))";
+            else
+                rewritten += out.substr(begin, end - begin);
+            at = end;
+            rest = out.substr(at);
+        }
+        rewritten += out.substr(at);
+        out = rewritten;
+        // The declaration: r32ui, uimage, highp unless a precision is given.
+        const std::regex decl(
+            "layout\\s*\\(([^)]*)\\br32f\\b([^)]*)\\)((?:\\s*\\w+)*?)\\s+image(2D|3D|Cube|2DArray|CubeArray|Buffer)\\s+" + name +
+            "\\s*;");
+        std::smatch d;
+        if (!std::regex_search(out, d, decl)) return glsl;
+        const std::string qualifiers = d[3];
+        const bool precision = std::regex_search(qualifiers, std::regex("\\b(lowp|mediump|highp)\\b"));
+        out.replace(static_cast<size_t>(d.position(0)), static_cast<size_t>(d.length(0)),
+                    "layout(" + std::string(d[1]) + "r32ui" + std::string(d[2]) + ")" + qualifiers + (precision ? "" : " highp") +
+                        " uimage" + std::string(d[4]) + " " + name + ";");
+    }
+    return out;
+}
+
+std::set<std::string> sharedBufferBlocks(const std::string& source) {
+    std::set<std::string> out;
+    static const std::regex kDecl(R"(((?:layout\s*\(([^)]*)\)\s*)?)((?:\w+\s+)*?)buffer\s*(\w*)\s*(\{|;))");
+    std::string defaultPacking = "shared";
+    auto packingOf = [](const std::string& qualifiers, const std::string& fallback) {
+        std::string packing = fallback;
+        static const std::regex kPacking(R"(\b(shared|packed|std140|std430)\b)");
+        for (auto it = std::sregex_iterator(qualifiers.begin(), qualifiers.end(), kPacking); it != std::sregex_iterator(); ++it)
+            packing = (*it)[1];
+        return packing;
+    };
+    for (auto it = std::sregex_iterator(source.begin(), source.end(), kDecl); it != std::sregex_iterator(); ++it) {
+        const std::smatch& m = *it;
+        if (m[5] == ";" && m[4].length() == 0) {
+            defaultPacking = packingOf(m[2], defaultPacking);  // "layout(std430) buffer;"
+            continue;
+        }
+        if (m[5] != "{" || m[4].length() == 0) continue;
+        const std::string packing = packingOf(m[2], defaultPacking);
+        if (packing == "shared" || packing == "std140") out.insert(m[4]);
+    }
     return out;
 }
 
@@ -734,6 +954,55 @@ bool definesMain(const std::string& source) {
     return false;
 }
 
+// The GLSL version capture code is written for: GLSL ES shaders have
+// storage buffers (as GLSL 4.30's) from GLSL ES 3.10, which parseForCodegen
+// raises GLSL ES 3.00 to.
+int captureVersion(const std::string& source) {
+    const GlslVersion v = parseGlslVersion(source);
+    return v.es ? 430 : v.number;
+}
+
+// Compute limits glslang does not check: MAX_COMPUTE_WORK_GROUP_INVOCATIONS
+// and MAX_COMPUTE_SHARED_MEMORY_SIZE (shared variables at 4 bytes per
+// scalar component, booleans included; no padding counted).
+std::string checkComputeLimits(glslang::TShader& shader) {
+    const glslang::TIntermediate* intermediate = shader.getIntermediate();
+    if (!intermediate) return {};
+    const int64_t invocations = static_cast<int64_t>(intermediate->getLocalSize(0)) * intermediate->getLocalSize(1) *
+                                intermediate->getLocalSize(2);
+    if (invocations > limits::kMaxComputeWorkGroupInvocations)
+        return "ERROR: local work group size exceeds GL_MAX_COMPUTE_WORK_GROUP_INVOCATIONS\n";
+    std::function<int64_t(const glslang::TType&)> bytes = [&](const glslang::TType& t) -> int64_t {
+        int64_t n = 1;
+        if (t.isArray() && t.isSizedArray()) n = t.getArraySizes()->getCumulativeSize();
+        if (t.isStruct()) {
+            int64_t sum = 0;
+            for (const glslang::TTypeLoc& m : *t.getStruct()) sum += bytes(*m.type);
+            return n * sum;
+        }
+        const int64_t scalar = t.getBasicType() == glslang::EbtDouble || t.getBasicType() == glslang::EbtInt64 ||
+                                       t.getBasicType() == glslang::EbtUint64
+                                   ? 8
+                                   : 4;
+        const int64_t components = t.isMatrix() ? t.getMatrixCols() * t.getMatrixRows() : std::max(1, t.getVectorSize());
+        return n * components * scalar;
+    };
+    int64_t shared = 0;
+    glslang::TIntermAggregate* root = intermediate->getTreeRoot() ? intermediate->getTreeRoot()->getAsAggregate() : nullptr;
+    if (root)
+        for (TIntermNode* node : root->getSequence()) {
+            glslang::TIntermAggregate* objects = node->getAsAggregate();
+            if (!objects || objects->getOp() != glslang::EOpLinkerObjects) continue;
+            for (TIntermNode* object : objects->getSequence())
+                if (glslang::TIntermSymbol* symbol = object->getAsSymbolNode();
+                    symbol && symbol->getQualifier().storage == glslang::EvqShared)
+                    shared += bytes(symbol->getType());
+        }
+    if (shared > limits::kMaxComputeSharedMemorySize)
+        return "ERROR: shared variables exceed GL_MAX_COMPUTE_SHARED_MEMORY_SIZE\n";
+    return {};
+}
+
 bool parseForCodegen(Stage stage, const std::string& original, ParsedShader& out, std::string& log,
                      const CaptureCode* capture = nullptr, const UpgradeOptions& upgrade = {}) {
     const EShLanguage lang = language(stage);
@@ -752,8 +1021,17 @@ bool parseForCodegen(Stage stage, const std::string& original, ParsedShader& out
     out.source = escapeVulkanKeywords(upgraded.source);
     if (capture) {
         // Buffer blocks need a profile (GLSL 1.50+). Upgraded 1.40 code has no legacy built-ins left, so 1.50 core takes it.
-        int version = parseGlslVersion(out.source).number;
-        if (version < 150) {
+        // GLSL ES has them from 3.10, a superset of 3.00.
+        const GlslVersion parsedVersion = parseGlslVersion(out.source);
+        int version = parsedVersion.number;
+        if (parsedVersion.es) {
+            if (version < 310) {
+                const size_t at = out.source.find("#version");
+                const size_t end = out.source.find('\n', at);
+                out.source.replace(at, end == std::string::npos ? std::string::npos : end - at, "#version 310 es");
+            }
+            version = 430;
+        } else if (version < 150) {
             const size_t at = out.source.find("#version");
             if (at != std::string::npos) {
                 const size_t end = out.source.find('\n', at);
@@ -774,6 +1052,13 @@ bool parseForCodegen(Stage stage, const std::string& original, ParsedShader& out
                            static_cast<EShMessages>(kMessages | EShMsgRelaxedErrors))) {
         log += unescapeName(cleanLog(out.shader->getInfoLog(), out.shader->getInfoDebugLog()));
         return false;
+    }
+    if (stage == Stage::Compute) {
+        const std::string limitErrors = checkComputeLimits(*out.shader);
+        if (!limitErrors.empty()) {
+            log += limitErrors;
+            return false;
+        }
     }
     return true;
 }
@@ -1573,7 +1858,478 @@ CompileResult compileUncached(Stage stage, const std::string& original) {
 
 }  // namespace
 
+namespace {
+
+// The #version of a GLSL ES shader: 100 without one, 0 for versions OpenGL
+// ES does not have (desktop ones).
+int esVersionOf(const std::string& source) {
+    const GlslVersion v = parseGlslVersion(source);
+    if (!v.declared) return 100;
+    if (!v.es) return v.number == 100 ? 100 : 0;
+    return v.number == 300 || v.number == 310 || v.number == 320 ? v.number : 0;
+}
+
+void configureNoClient(glslang::TShader& shader, EShLanguage lang) {
+    shader.setEnvInput(glslang::EShSourceGlsl, lang, glslang::EShClientNone, 0);
+    shader.setEnvClient(glslang::EShClientNone, glslang::EShTargetClientVersion(0));
+    shader.setEnvTarget(glslang::EShTargetNone, glslang::EShTargetLanguageVersion(0));
+}
+
+// The uniform and storage blocks of a parsed shader: each member's type,
+// qualifiers and name, and the block's own layout.
+std::map<std::string, std::string> blockSignaturesOf(glslang::TShader& shader) {
+    std::map<std::string, std::string> out;
+    const glslang::TIntermediate* intermediate = shader.getIntermediate();
+    glslang::TIntermAggregate* root =
+        intermediate && intermediate->getTreeRoot() ? intermediate->getTreeRoot()->getAsAggregate() : nullptr;
+    if (!root) return out;
+    for (TIntermNode* node : root->getSequence()) {
+        glslang::TIntermAggregate* objects = node->getAsAggregate();
+        if (!objects || objects->getOp() != glslang::EOpLinkerObjects) continue;
+        for (TIntermNode* object : objects->getSequence()) {
+            glslang::TIntermSymbol* symbol = object->getAsSymbolNode();
+            if (!symbol) continue;
+            const glslang::TType& type = symbol->getType();
+            const glslang::TQualifier& q = type.getQualifier();
+            if (type.getBasicType() != glslang::EbtBlock || (q.storage != glslang::EvqUniform && q.storage != glslang::EvqBuffer))
+                continue;
+            const std::string name = type.getTypeName().c_str();
+            if (name.rfind("gl_", 0) == 0) continue;
+            std::string signature = q.storage == glslang::EvqBuffer ? "buffer" : "uniform";
+            signature += " packing " + std::to_string(q.layoutPacking) + " binding " +
+                         std::to_string(q.hasBinding() ? static_cast<int>(q.layoutBinding) : -1) + " {";
+            // Members' precisions may differ between stages (KHR-GLES3
+            // uniform_block.common.precision_matching).
+            for (const glslang::TTypeLoc& member : *type.getStruct()) {
+                signature += std::string(member.type->getCompleteString(true, true, false, true).c_str()) + " " +
+                             member.type->getFieldName().c_str();
+                // Array sizes, an unsized (runtime) array's as "[]".
+                if (const glslang::TArraySizes* arrays = member.type->getArraySizes())
+                    for (int d = 0; d < arrays->getNumDims(); ++d)
+                        signature += arrays->getDimSize(d) > 0 ? "[" + std::to_string(arrays->getDimSize(d)) + "]" : "[]";
+                signature += ";";
+            }
+            out[(q.storage == glslang::EvqBuffer ? "buffer " : "uniform ") + name] = signature + "}";
+        }
+    }
+    return out;
+}
+
+// The default-block uniforms of a parsed shader and their precisions.
+std::map<std::string, int> uniformPrecisionsOf(glslang::TShader& shader) {
+    std::map<std::string, int> out;
+    const glslang::TIntermediate* intermediate = shader.getIntermediate();
+    glslang::TIntermAggregate* root =
+        intermediate && intermediate->getTreeRoot() ? intermediate->getTreeRoot()->getAsAggregate() : nullptr;
+    if (!root) return out;
+    for (TIntermNode* node : root->getSequence()) {
+        glslang::TIntermAggregate* objects = node->getAsAggregate();
+        if (!objects || objects->getOp() != glslang::EOpLinkerObjects) continue;
+        for (TIntermNode* object : objects->getSequence()) {
+            glslang::TIntermSymbol* symbol = object->getAsSymbolNode();
+            if (!symbol) continue;
+            const glslang::TType& type = symbol->getType();
+            if (type.getQualifier().storage != glslang::EvqUniform || type.getBasicType() == glslang::EbtBlock) continue;
+            const std::string name = symbol->getName().c_str();
+            if (name.rfind("gl_", 0) == 0) continue;
+            // Struct uniforms: each member's precision (GLSL ES 3.00 section 4.5.3).
+            const std::function<void(const glslang::TType&, const std::string&)> add = [&](const glslang::TType& t,
+                                                                                           const std::string& path) {
+                if (t.isStruct()) {
+                    for (const glslang::TTypeLoc& member : *t.getStruct())
+                        add(*member.type, path + "." + member.type->getFieldName().c_str());
+                } else {
+                    out[path] = static_cast<int>(t.getQualifier().precision);
+                }
+            };
+            add(type, name);
+        }
+    }
+    return out;
+}
+
+// Each user stage input's (`input`) or output's interpolation and
+// precision, by name ("Block.member" for members of blocks).
+std::map<std::string, EsCompileResult::Varying> varyingsOf(glslang::TShader& shader, bool input) {
+    std::map<std::string, EsCompileResult::Varying> out;
+    const glslang::TIntermediate* intermediate = shader.getIntermediate();
+    glslang::TIntermAggregate* root =
+        intermediate && intermediate->getTreeRoot() ? intermediate->getTreeRoot()->getAsAggregate() : nullptr;
+    if (!root) return out;
+    const glslang::TStorageQualifier storage = input ? glslang::EvqVaryingIn : glslang::EvqVaryingOut;
+    for (TIntermNode* node : root->getSequence()) {
+        glslang::TIntermAggregate* objects = node->getAsAggregate();
+        if (!objects || objects->getOp() != glslang::EOpLinkerObjects) continue;
+        for (TIntermNode* object : objects->getSequence()) {
+            glslang::TIntermSymbol* symbol = object->getAsSymbolNode();
+            if (!symbol || symbol->getQualifier().storage != storage) continue;
+            const glslang::TType& type = symbol->getType();
+            const std::string name = symbol->getName().c_str();
+            if (type.getBasicType() == glslang::EbtBlock) {
+                const std::string block = type.getTypeName().c_str();
+                if (block.rfind("gl_", 0) == 0) continue;
+                for (const glslang::TTypeLoc& member : *type.getStruct())
+                    out[block + "." + member.type->getFieldName().c_str()] = {
+                        member.type->getQualifier().flat || type.getQualifier().flat,
+                        static_cast<int>(member.type->getQualifier().precision)};
+                continue;
+            }
+            if (name.rfind("gl_", 0) != 0) out[name] = {type.getQualifier().flat, static_cast<int>(type.getQualifier().precision)};
+        }
+    }
+    return out;
+}
+
+// A type as program pipeline interfaces compare it: basic type, sizes,
+// arrays, precision, flat, and a struct's or block's name and
+// members in order. `dropOuterArray`: the per-vertex array of an arrayed stage.
+std::string interfaceSignature(const glslang::TType& type, bool dropOuterArray) {
+    std::string s;
+    const glslang::TQualifier& q = type.getQualifier();
+    // Auxiliary qualifiers (centroid, sample) may differ.
+    if (q.flat) s += "flat ";
+    if (q.patch) s += "patch ";
+    if (type.getBasicType() != glslang::EbtBlock && type.getBasicType() != glslang::EbtStruct)
+        s += std::string(glslang::GetPrecisionQualifierString(q.precision)) + " ";
+    if (type.isStruct()) {
+        s += std::string(type.getBasicType() == glslang::EbtBlock ? "block " : "struct ") + type.getTypeName().c_str() + " {";
+        for (const glslang::TTypeLoc& member : *type.getStruct())
+            s += std::string(member.type->getFieldName().c_str()) + ": " + interfaceSignature(*member.type, false) + "; ";
+        s += "}";
+    } else {
+        s += type.getBasicTypeString().c_str();
+        if (type.isMatrix()) s += std::to_string(type.getMatrixCols()) + "x" + std::to_string(type.getMatrixRows());
+        else if (type.isVector()) s += std::to_string(type.getVectorSize());
+    }
+    if (const glslang::TArraySizes* arrays = type.getArraySizes())
+        for (int d = dropOuterArray ? 1 : 0; d < arrays->getNumDims(); ++d) s += "[" + std::to_string(arrays->getDimSize(d)) + "]";
+    return s;
+}
+
+// The pipeline interface of a stage's inputs (`input`) or outputs
+// (EsCompileResult::inputInterface).
+std::map<std::string, std::string> interfaceOf(glslang::TShader& shader, Stage stage, bool input) {
+    std::map<std::string, std::string> out;
+    const glslang::TIntermediate* intermediate = shader.getIntermediate();
+    glslang::TIntermAggregate* root =
+        intermediate && intermediate->getTreeRoot() ? intermediate->getTreeRoot()->getAsAggregate() : nullptr;
+    if (!root) return out;
+    const glslang::TStorageQualifier storage = input ? glslang::EvqVaryingIn : glslang::EvqVaryingOut;
+    // Per-vertex inputs of arrayed stages, and tessellation control outputs, have the vertex index outermost.
+    const bool arrayed = input ? stage == Stage::TessControl || stage == Stage::TessEval || stage == Stage::Geometry
+                               : stage == Stage::TessControl;
+    for (TIntermNode* node : root->getSequence()) {
+        glslang::TIntermAggregate* objects = node->getAsAggregate();
+        if (!objects || objects->getOp() != glslang::EOpLinkerObjects) continue;
+        for (TIntermNode* object : objects->getSequence()) {
+            glslang::TIntermSymbol* symbol = object->getAsSymbolNode();
+            if (!symbol || symbol->getQualifier().storage != storage) continue;
+            const glslang::TType& type = symbol->getType();
+            const bool block = type.getBasicType() == glslang::EbtBlock;
+            const std::string name = block ? type.getTypeName().c_str() : symbol->getName().c_str();
+            if (name.rfind("gl_", 0) == 0) continue;
+            const bool vertexArray = arrayed && !type.getQualifier().patch && type.isArray();
+            std::string key = block ? "block " + name : name;
+            std::string signature = interfaceSignature(type, vertexArray);
+            if (type.getQualifier().hasLocation()) {
+                if (!block) key = "@" + std::to_string(type.getQualifier().layoutLocation);
+                signature = "location " + std::to_string(type.getQualifier().layoutLocation) + " " + signature;
+            }
+            out[key] = signature;
+        }
+    }
+    return out;
+}
+
+}  // namespace
+
+namespace {
+
+EsCompileResult compileEsUncached(Stage stage, const std::string& source);
+
+}  // namespace
+
+EsCompileResult compileEs(Stage stage, const std::string& source) {
+    // Recent results by stage and source, as compile() keeps.
+    static std::mutex mutex;
+    static std::list<std::string> order;  // most recently used first
+    static std::unordered_map<std::string, std::pair<EsCompileResult, std::list<std::string>::iterator>> cache;
+    constexpr size_t kEntries = 512;
+    std::string key(1, static_cast<char>(stage));
+    key += source;
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        auto it = cache.find(key);
+        if (it != cache.end()) {
+            order.splice(order.begin(), order, it->second.second);
+            return it->second.first;
+        }
+    }
+    EsCompileResult result = compileEsUncached(stage, source);
+    std::lock_guard<std::mutex> lock(mutex);
+    if (!cache.count(key)) {
+        order.push_front(key);
+        cache.emplace(std::move(key), std::make_pair(result, order.begin()));
+        while (cache.size() > kEntries) {
+            cache.erase(order.back());
+            order.pop_back();
+        }
+    }
+    return result;
+}
+
+namespace {
+
+EsCompileResult compileEsUncached(Stage stage, const std::string& source) {
+    initGlslang();
+    EsCompileResult result;
+    const EShLanguage lang = language(stage);
+    const int version = esVersionOf(source);
+    if (!version) {
+        result.log = "ERROR: 0:1: '#version' : OpenGL ES shaders are GLSL ES 1.00, 3.00 es, 3.10 es or 3.20 es\n";
+        return result;
+    }
+    // Extensions glslang has no GLSL ES form of (EXT_clip_cull_distance,
+    // OES_viewport_array): the shader is checked and compiled as GLSL 4.50,
+    // which has their built-ins, without its ES extension directives (GLSL
+    // reserves GL_ macros: GL_ES and the extensions' are not defined).
+    if (version >= 300 && (source.find("GL_EXT_clip_cull_distance") != std::string::npos ||
+                           source.find("GL_OES_viewport_array") != std::string::npos)) {
+        std::string desktop = source;
+        const size_t at = desktop.find("#version");
+        const size_t end = desktop.find('\n', at);
+        desktop.replace(at, end - at, "#version 450 core");
+        for (size_t e = desktop.find("#extension"); e != std::string::npos; e = desktop.find("#extension", e + 1)) {
+            const size_t lineEnd = desktop.find('\n', e);
+            const std::string line = desktop.substr(e, lineEnd == std::string::npos ? std::string::npos : lineEnd - e);
+            if (line.find("GL_EXT_") != std::string::npos || line.find("GL_OES_") != std::string::npos)
+                desktop.replace(e, line.size(), "");
+        }
+        const CompileResult desktopResult = compile(stage, desktop);
+        result.ok = desktopResult.ok;
+        result.log = desktopResult.log;
+        result.desktop = desktop;
+        return result;
+    }
+    const char* text = source.c_str();
+    // 'defined' produced by macro expansion is undefined behaviour, which
+    // drivers evaluate: as compile() does, a shader whose only
+    // errors are that is accepted.
+    EShMessages messages = EShMsgDefault;
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        glslang::TShader shader(lang);
+        shader.setStrings(&text, 1);
+        configureNoClient(shader, lang);
+        result.ok = shader.parse(resources(), 100, EEsProfile, false, false, messages);
+        result.log = cleanLog(shader.getInfoLog(), shader.getInfoDebugLog());
+        if (result.ok) {
+            result.uniformPrecisions = uniformPrecisionsOf(shader);
+            result.blockSignatures = blockSignaturesOf(shader);
+            result.inputs = varyingsOf(shader, true);
+            result.outputs = varyingsOf(shader, false);
+            result.inputInterface = interfaceOf(shader, stage, true);
+            result.outputInterface = interfaceOf(shader, stage, false);
+            // compile()'s checks: block bindings within the limits, interface
+            // locations, reserved words.
+            std::string errors = checkBlockBindings(shader);
+            if (errors.empty()) errors = checkInterfaceLocations(shader, stage);
+            if (errors.empty()) errors = checkReservedWords(source);
+            if (!errors.empty()) {
+                result.ok = false;
+                result.log += errors;
+            }
+        }
+        if (result.ok || attempt ||
+            result.log.find("cannot use in preprocessor expression when expanded from macros") == std::string::npos)
+            break;
+        messages = EShMsgRelaxedErrors;
+    }
+    if (!result.ok) return result;
+    // The preprocessed shader, its macros expanded with GLSL ES's values.
+    glslang::TShader pre(lang);
+    pre.setStrings(&text, 1);
+    configureNoClient(pre, lang);
+    std::string preprocessed;
+    glslang::TShader::ForbidIncluder includer;
+    if (!pre.preprocess(resources(), 100, EEsProfile, false, false,
+                        static_cast<EShMessages>(EShMsgOnlyPreprocessor | messages), &preprocessed, includer)) {
+        result.ok = false;
+        result.log += cleanLog(pre.getInfoLog(), pre.getInfoDebugLog());
+        return result;
+    }
+    // GLSL ES 3.00 section 3.4: #extension directives come before any
+    // non-preprocessor token (glslang only enforces that for 1.00).
+    if (version >= 300) {
+        bool tokens = false;
+        size_t at = 0;
+        while (at < preprocessed.size()) {
+            size_t end = preprocessed.find('\n', at);
+            if (end == std::string::npos) end = preprocessed.size();
+            const size_t first = preprocessed.find_first_not_of(" \t\r", at);
+            if (first < end) {
+                if (preprocessed[first] != '#') tokens = true;
+                else if (tokens && preprocessed.compare(first, 10, "#extension") == 0) {
+                    result.ok = false;
+                    result.log += "ERROR: '#extension' : must occur before any non-preprocessor tokens\n";
+                    return result;
+                }
+            }
+            at = end + 1;
+        }
+    }
+    // GLSL ES 3.20 section 4.1.8: struct members take precision qualifiers
+    // only (glslang lets 'precise' through).
+    {
+        static const std::regex kPreciseMember(R"(\bstruct\b[^{;]*\{[^}]*\bprecise\b)");
+        if (std::regex_search(preprocessed, kPreciseMember)) {
+            result.ok = false;
+            result.log += "ERROR: 'precise' : not allowed on struct members\n";
+            return result;
+        }
+    }
+    // GLSL ES 3.10 section 7.1.3: gl_WorkGroupSize needs a fixed local size
+    // declared before its first use.
+    if (stage == Stage::Compute) {
+        static const std::regex kUse(R"(\bgl_WorkGroupSize\b)");
+        static const std::regex kLocalSize(R"(layout\s*\([^)]*\blocal_size_[xyz]\s*=[^)]*\)\s*in\s*;)");
+        std::smatch use, size;
+        if (std::regex_search(preprocessed, use, kUse) &&
+            (!std::regex_search(preprocessed, size, kLocalSize) || size.position(0) > use.position(0))) {
+            result.ok = false;
+            result.log += "ERROR: 'gl_WorkGroupSize' : used before a fixed local group size is declared\n";
+            return result;
+        }
+    }
+    result.desktop = esToDesktopGlsl(shadingRateBuiltinsAs1x1(floatImageAtomicsAsUint(preprocessed)), version);
+    // Make sure the shader translates (as compile() does).
+    ParsedShader parsed;
+    std::string log;
+    if (!parseForCodegen(stage, result.desktop, parsed, log)) {
+        result.ok = false;
+        result.log += log;
+    }
+    return result;
+}
+
+}  // namespace
+
+std::string checkEsLink(const std::vector<ShaderSource>& esShaders) {
+    // The precisions compileEs recorded (its results are cached: linking
+    // parses nothing again).
+    std::map<std::string, std::pair<int, Stage>> precisions;
+    std::map<std::string, std::pair<std::string, Stage>> blocks;
+    std::string errors;
+    // Interpolation qualifiers (flat or not) of a stage's inputs match the
+    // previous stage's outputs (GLSL ES 3.20 section 4.5; an auxiliary
+    // qualifier such as centroid may differ).
+    const Stage order[] = {Stage::Vertex, Stage::TessControl, Stage::TessEval, Stage::Geometry, Stage::Fragment};
+    std::map<std::string, EsCompileResult::Varying> previousOutputs;
+    bool havePrevious = false;
+    for (Stage stage : order)
+        for (const ShaderSource& s : esShaders) {
+            if (s.stage != stage) continue;
+            const EsCompileResult compiled = compileEs(s.stage, s.source);
+            if (havePrevious)
+                for (const auto& [name, in] : compiled.inputs)
+                    if (auto out = previousOutputs.find(name); out != previousOutputs.end() && out->second.flat != in.flat)
+                        errors += "error: '" + name + "' has different interpolation qualifiers in its stages\n";
+            previousOutputs = compiled.outputs;
+            havePrevious = true;
+            break;
+        }
+    for (const ShaderSource& s : esShaders) {
+        const EsCompileResult compiled = compileEs(s.stage, s.source);
+        for (const auto& [name, precision] : compiled.uniformPrecisions) {
+            auto [it, added] = precisions.emplace(name, std::make_pair(precision, s.stage));
+            if (!added && it->second.second != s.stage && it->second.first != precision)
+                errors += "error: uniform '" + name + "' has different precisions in its stages\n";
+        }
+        // A block of one name is declared alike in every stage (GLSL ES 3.10 section 4.3.9).
+        for (const auto& [name, signature] : compiled.blockSignatures) {
+            auto [it, added] = blocks.emplace(name, std::make_pair(signature, s.stage));
+            if (!added && it->second.second != s.stage && it->second.first != signature)
+                errors += "error: " + name + " block is declared differently in its stages\n";
+        }
+    }
+    return errors;
+}
+
 // ---------------------------------------------------------------- link
+
+std::string fragmentWithAdvancedBlend(const std::string& msl, unsigned equation) {
+    const std::string signature = "fragment main0_out main0(", member = "struct main0_out\n{\n";
+    const size_t structAt = msl.find(member);
+    const size_t fnAt = msl.find(signature);
+    if (structAt == std::string::npos || fnAt == std::string::npos || structAt > fnAt) return std::string();
+    // Color output 0: "    float4 <name> [[color(0)]];"
+    std::string name;
+    {
+        const size_t end = msl.find("};", structAt);
+        std::istringstream lines(msl.substr(structAt, end - structAt));
+        std::string line;
+        while (std::getline(lines, line)) {
+            if (line.find(" [[color(0)]]") == std::string::npos || line.find("float4") == std::string::npos) continue;
+            std::istringstream words(line);
+            std::string type;
+            words >> type >> name;
+        }
+    }
+    if (name.empty()) return msl;
+    // The KHR_blend_equation_advanced equations on unpremultiplied colors
+    // (section 3.8.5 table X.1 and X.2); the result is premultiplied.
+    static const char* const kSeparable[11] = {
+        "cs * cd",
+        "cs + cd - cs * cd",
+        "select(1.0 - 2.0 * (1.0 - cs) * (1.0 - cd), 2.0 * cs * cd, cd <= 0.5)",
+        "min(cs, cd)",
+        "max(cs, cd)",
+        "select(select(min(float3(1.0), cd / max(1.0 - cs, float3(1e-30))), float3(1.0), cs >= 1.0), float3(0.0), cd <= 0.0)",
+        "select(select(1.0 - min(float3(1.0), (1.0 - cd) / max(cs, float3(1e-30))), float3(0.0), cs <= 0.0), float3(1.0), cd >= 1.0)",
+        "select(1.0 - 2.0 * (1.0 - cs) * (1.0 - cd), 2.0 * cs * cd, cs <= 0.5)",
+        "select(select(cd + (2.0 * cs - 1.0) * (sqrt(cd) - cd), cd + (2.0 * cs - 1.0) * cd * ((16.0 * cd - 12.0) * cd + 3.0), "
+        "cd <= 0.25), cd - (1.0 - 2.0 * cs) * cd * (1.0 - cd), cs <= 0.5)",
+        "abs(cd - cs)",
+        "cs + cd - 2.0 * cs * cd",
+    };
+    static const char* const kNonSeparable[4] = {
+        "wmgl_set_lum_sat(cs, cd, cd)",  // HSL_HUE
+        "wmgl_set_lum_sat(cd, cs, cd)",  // HSL_SATURATION
+        "wmgl_set_lum(cs, cd)",          // HSL_COLOR
+        "wmgl_set_lum(cd, cs)",          // HSL_LUMINOSITY
+    };
+    if (equation > 14) return msl;
+    std::string helpers =
+        "static inline float wmgl_lum(float3 c) { return dot(c, float3(0.30, 0.59, 0.11)); }\n"
+        "static inline float3 wmgl_clip_color(float3 c) {\n"
+        "    float l = wmgl_lum(c), n = min(min(c.r, c.g), c.b), x = max(max(c.r, c.g), c.b);\n"
+        "    if (n < 0.0) c = l + (c - l) * l / (l - n);\n"
+        "    if (x > 1.0) c = l + (c - l) * (1.0 - l) / (x - l);\n"
+        "    return c;\n}\n"
+        "static inline float3 wmgl_set_lum(float3 cbase, float3 clum) { return wmgl_clip_color(cbase + (wmgl_lum(clum) - wmgl_lum(cbase))); }\n"
+        "static inline float3 wmgl_set_lum_sat(float3 cbase, float3 csat, float3 clum) {\n"
+        "    float mn = min(min(cbase.r, cbase.g), cbase.b), mx = max(max(cbase.r, cbase.g), cbase.b);\n"
+        "    float s = max(max(csat.r, csat.g), csat.b) - min(min(csat.r, csat.g), csat.b);\n"
+        "    float3 c = mx > mn ? (cbase - mn) * s / (mx - mn) : float3(0.0);\n"
+        "    return wmgl_set_lum(c, clum);\n}\n"
+        "static inline float4 wmgl_advanced_blend(float4 s, float4 d) {\n"
+        "    s = saturate(s); d = saturate(d);  // the premultiplied colors, clamped before dividing\n"
+        "    float3 cs = s.a > 0.0 ? s.rgb / s.a : float3(0.0);\n"
+        "    float3 cd = d.a > 0.0 ? d.rgb / d.a : float3(0.0);\n"
+        "    float3 f = " + std::string(equation < 11 ? kSeparable[equation] : kNonSeparable[equation - 11]) + ";\n"
+        "    float p0 = s.a * d.a, p1 = s.a * (1.0 - d.a), p2 = d.a * (1.0 - s.a);\n"
+        "    return float4(f * p0 + cs * p1 + cd * p2, p0 + p1 + p2);\n}\n\n";
+    std::string out = msl;
+    out.insert(fnAt, helpers);
+    const size_t fn = out.find(signature);
+    const size_t open = fn + signature.size() - 1;
+    std::string param = "float4 wmgl_dst0 [[color(0)]]";
+    if (out[open + 1] != ')') param += ", ";
+    out.insert(open + 1, param);
+    const std::string assign = "out." + name + " = wmgl_advanced_blend(out." + name + ", wmgl_dst0); ";
+    for (size_t at = out.find("return out;", fn); at != std::string::npos; at = out.find("return out;", at + assign.size() + 11))
+        out.insert(at, assign);
+    return out;
+}
 
 namespace {
 
@@ -1604,6 +2360,35 @@ GLenum glTypeOfAst(const glslang::TType& t) {
 std::vector<StageOutputVar> captureableOutputs(glslang::TIntermediate* intermediate) {
     std::vector<StageOutputVar> outputs;
     bool clipDistance = false;
+    // A struct's members, by "s.member" ("s[k].member" for an array of
+    // structs), recursively: `glName` names the struct, `expr` reads it.
+    std::function<void(const glslang::TType&, const std::string&, const std::string&)> structMembers =
+        [&](const glslang::TType& t, const std::string& glName, const std::string& expr) {
+            for (const glslang::TTypeLoc& member : *t.getStruct()) {
+                const glslang::TType& m = *member.type;
+                const std::string field = unescapeName(m.getFieldName().c_str());
+                const std::string n = glName + "." + field, e = expr + "." + m.getFieldName().c_str();
+                if (m.isStruct()) {
+                    if (m.isSizedArray())
+                        for (int k = 0; k < m.getOuterArraySize(); ++k) {
+                            glslang::TType element(m, 0);
+                            structMembers(element, n + "[" + std::to_string(k) + "]", e + "[" + std::to_string(k) + "]");
+                        }
+                    else
+                        structMembers(m, n, e);
+                    continue;
+                }
+                outputs.push_back({n, glTypeOfAst(m), m.isSizedArray() ? m.getOuterArraySize() : 0, e});
+            }
+        };
+    // A struct-typed variable or member (an array of structs element by element).
+    auto structVar = [&](const glslang::TType& t, const std::string& glName, const std::string& expr) {
+        if (!t.isSizedArray()) return structMembers(t, glName, expr);
+        for (int k = 0; k < t.getOuterArraySize(); ++k) {
+            glslang::TType element(t, 0);
+            structMembers(element, glName + "[" + std::to_string(k) + "]", expr + "[" + std::to_string(k) + "]");
+        }
+    };
     glslang::TIntermAggregate* root = intermediate && intermediate->getTreeRoot() ? intermediate->getTreeRoot()->getAsAggregate() : nullptr;
     if (root) {
         for (TIntermNode* node : root->getSequence()) {
@@ -1626,6 +2411,24 @@ std::vector<StageOutputVar> captureableOutputs(glslang::TIntermediate* intermedi
                         if (field == "gl_CullDistance" && m.isSizedArray())
                             outputs.push_back({"gl_CullDistance", GL_FLOAT, m.getOuterArraySize()});
                         if (blockName == "gl_PerVertex" || field.rfind("gl_", 0) == 0) continue;
+                        if (m.isStruct()) {
+                            // A struct-typed member: its members, "Block.member.field".
+                            if (type.isArray()) {
+                                if (anonymous || !type.isSizedArray()) continue;
+                                for (int k = 0; k < type.getOuterArraySize(); ++k) {
+                                    const std::string element = "[" + std::to_string(k) + "].";
+                                    structVar(m, blockName + element + field,
+                                              std::string(symbol->getName().c_str()) + element + m.getFieldName().c_str());
+                                }
+                                continue;
+                            }
+                            const std::string expression = anonymous ? m.getFieldName().c_str()
+                                                                     : std::string(symbol->getName().c_str()) + "." +
+                                                                           m.getFieldName().c_str();
+                            structVar(m, blockName + "." + field, expression);
+                            if (anonymous) structVar(m, field, expression);
+                            continue;
+                        }
                         if (type.isArray()) {
                             // An array of blocks: "Block[k].member" (GL 4.6 section 7.3.1.1).
                             if (anonymous || !type.isSizedArray()) continue;
@@ -1656,6 +2459,11 @@ std::vector<StageOutputVar> captureableOutputs(glslang::TIntermediate* intermedi
                 static const char* const kLegacy[] = {"wmgl_FrontColor", "wmgl_BackColor", "wmgl_FrontSecondaryColor",
                                                       "wmgl_BackSecondaryColor", "wmgl_TexCoord", "wmgl_FogFragCoord"};
                 const bool legacy = std::find(std::begin(kLegacy), std::end(kLegacy), name) != std::end(kLegacy);
+                // A struct (GLSL ES 3.00 allows them as outputs): its members (structMembers).
+                if (type.isStruct()) {
+                    structVar(type, name, codegenName);
+                    continue;
+                }
                 // The capture code reads the codegen name (escaped keywords keep their prefix there).
                 outputs.push_back({legacy ? "gl_" + name.substr(5) : name, glTypeOfAst(type),
                                    type.isSizedArray() ? type.getOuterArraySize() : 0,
@@ -1971,6 +2779,8 @@ static LinkResult linkImplCore(const LinkInput& input, const CaptureCode* captur
                              input.shaders[i].stage == Stage::Vertex ? vertexUpgrade : UpgradeOptions()))
             return result;
         stagePresent[static_cast<int>(input.shaders[i].stage)] = true;
+        if (input.shaders[i].stage == Stage::Fragment && parsed[i].shader->getIntermediate())
+            result.blendSupport |= parsed[i].shader->getIntermediate()->getBlendEquations();
     }
     if (stagePresent[static_cast<int>(Stage::Compute)]) {
         for (int s = 0; s < kStageCount; ++s)
@@ -2080,6 +2890,11 @@ static LinkResult linkImplCore(const LinkInput& input, const CaptureCode* captur
     std::set<std::string> liveBuffers;  // storage blocks (GL 4.3)
     for (int i = 0; i < program.getNumBufferBlocks(); ++i)
         liveBuffers.insert(unescapeName(topLevelName(program.getBufferBlock(i).name)));
+    // OpenGL ES: shared and std140 buffer blocks, unused ones too (GLSL ES
+    // 3.10 section 4.4.5).
+    if (input.es)
+        for (const ShaderSource& sh : input.shaders)
+            for (const std::string& name : sharedBufferBlocks(sh.source)) liveBuffers.insert(name);
     int defaultBlockReflectionIndex = -1;
     for (int i = 0; i < program.getNumUniformBlocks(); ++i) {
         const auto& block = program.getUniformBlock(i);
@@ -2207,6 +3022,45 @@ static LinkResult linkImplCore(const LinkInput& input, const CaptureCode* captur
                                static_cast<uint32_t>(v.stages), index, type && type->isArray(), type && type->getQualifier().patch,
                                type && type->getQualifier().hasComponent() ? static_cast<int>(type->getQualifier().layoutComponent)
                                                                            : 0});
+    }
+    // Members of "patch in" / "patch out" blocks and fields of patch struct
+    // variables are per patch too (reflection gives a member its own type,
+    // without the qualifier).
+    {
+        std::set<std::string> patchMembers;
+        for (int st = EShLangTessControl; st <= EShLangTessEvaluation; ++st) {
+            const glslang::TIntermediate* stage = program.getIntermediate(static_cast<EShLanguage>(st));
+            glslang::TIntermAggregate* root = stage && stage->getTreeRoot() ? stage->getTreeRoot()->getAsAggregate() : nullptr;
+            for (TIntermNode* node : root ? root->getSequence() : glslang::TIntermSequence()) {
+                glslang::TIntermAggregate* objects = node->getAsAggregate();
+                if (!objects || objects->getOp() != glslang::EOpLinkerObjects) continue;
+                for (TIntermNode* object : objects->getSequence()) {
+                    glslang::TIntermSymbol* symbol = object->getAsSymbolNode();
+                    if (!symbol || !symbol->getQualifier().patch) continue;
+                    // A patch struct variable's fields ("v.a").
+                    if (symbol->getBasicType() != glslang::EbtBlock) {
+                        patchMembers.insert(unescapeName(symbol->getName().c_str()));
+                        continue;
+                    }
+                    const glslang::TType& type = symbol->getType();
+                    const bool anonymous = glslang::IsAnonymous(symbol->getName());
+                    for (const glslang::TTypeLoc& member : *type.getStruct()) {
+                        const std::string field = unescapeName(member.type->getFieldName().c_str());
+                        patchMembers.insert(unescapeName(type.getTypeName().c_str()) + "." + field);
+                        if (anonymous) patchMembers.insert(field);
+                    }
+                }
+            }
+        }
+        auto inPatchBlock = [&](const std::string& name) {
+            for (size_t end = name.size(); end != std::string::npos && end > 0;) {
+                if (patchMembers.count(name.substr(0, end))) return true;
+                end = name.find_last_of(".[", end - 1);
+            }
+            return false;
+        };
+        for (std::vector<PipeVar>* vars : {&pipeInputs, &pipeOutputs})
+            for (PipeVar& v : *vars) v.patch = v.patch || inPatchBlock(v.name);
     }
     for (const PipeVar& v : pipeInputs)
         if (v.location != kNoLocation && !(v.stages & EShLangVertexMask)) explicitVaryings.insert(v.name);
@@ -2340,6 +3194,8 @@ static LinkResult linkImplCore(const LinkInput& input, const CaptureCode* captur
     // Default uniform block members.
     std::map<std::string, int> blockIndexByName;
     std::map<std::string, int> samplerUniformByName, imageUniformByName;
+    // A sampler variable's element within its uniform (struct sampler arrays, above).
+    std::map<std::string, int> samplerElement;
     std::map<std::string, int> samplerUniformCount;  // uniforms per sampler variable (arrays of arrays: several)
     std::map<std::string, int> imageUniformCount;    // likewise per image variable
     for (int s = 0; s < kStageCount; ++s) {
@@ -2417,6 +3273,18 @@ static LinkResult linkImplCore(const LinkInput& input, const CaptureCode* captur
                 for (int u : result.blocks[index].activeUniforms) result.uniforms[u].stageMask |= 1u << s;
             }
         }
+        // Struct sampler arrays moved out per element ("s.a[2]", below): how
+        // many elements each has in this stage (its highest element + 1).
+        std::map<std::string, int> elementCounts;
+        for (const auto& image : resources.sampled_images) {
+            const std::string n = unescapeName(compiler.get_name(image.id));
+            if (!compiler.get_type(image.type_id).array.empty() || n.size() < 4 || n.back() != ']') continue;
+            const size_t open = n.rfind('[');
+            const std::string digits = n.substr(open + 1, n.size() - open - 2);
+            if (digits.empty() || digits.size() > 4 || digits.find_first_not_of("0123456789") != std::string::npos) continue;
+            int& count = elementCounts[n.substr(0, open) + "[0]"];
+            count = std::max(count, std::stoi(digits) + 1);
+        }
         for (const auto& image : resources.sampled_images) {
             const spirv_cross::SPIRType& type = compiler.get_type(image.type_id);
             const spirv_cross::SPIRType& base = compiler.get_type(image.base_type_id);
@@ -2433,6 +3301,64 @@ static LinkResult linkImplCore(const LinkInput& input, const CaptureCode* captur
             uint32_t outer = 1;
             for (size_t d = 0; d + 1 < dims.size(); ++d) outer *= dims[d];
             auto it = samplerUniformByName.find(name);
+            // glslang moves a sampler array out of a struct as a variable
+            // per element ("s.a[2]"): the elements make one uniform "s.a[0]"
+            // of the array's size up to the last active element, each
+            // element at its offset from the first's slot.
+            if (it == samplerUniformByName.end() && type.array.empty() && name.size() > 3 && name.back() == ']') {
+                const size_t open = name.rfind('[');
+                const std::string digits = name.substr(open + 1, name.size() - open - 2);
+                const bool number = !digits.empty() && digits.size() < 5 && digits.find_first_not_of("0123456789") == std::string::npos;
+                if (number) {
+                    const int element = std::stoi(digits);
+                    const std::string headName = name.substr(0, open) + "[0]";
+                    auto head = samplerUniformByName.find(headName);
+                    auto addSlots = [&](int n) {
+                        for (int e = 0; e < n; ++e) {
+                            SamplerSlotInfo slot;
+                            slot.type = glType;
+                            slot.textureTarget = textureTargetForSampler(glType);
+                            slot.shadow = isShadowSampler(glType);
+                            result.samplers.push_back(slot);
+                        }
+                    };
+                    if (head == samplerUniformByName.end()) {
+                        // The first element seen: the uniform takes every
+                        // element's slot (earlier ones even if unused).
+                        const int count = std::max(element + 1, elementCounts[headName]);
+                        UniformInfo u;
+                        u.name = headName;
+                        u.type = glType;
+                        u.size = count;
+                        u.samplerSlot = static_cast<int>(result.samplers.size());
+                        u.stageMask = 1u << s;
+                        addSlots(count);
+                        samplerUniformByName[headName] = static_cast<int>(result.uniforms.size());
+                        samplerUniformCount[headName] = 1;
+                        samplerElement[headName] = 0;
+                        samplerUniformByName[name] = static_cast<int>(result.uniforms.size());
+                        samplerUniformCount[name] = 1;
+                        samplerElement[name] = element;
+                        result.uniforms.push_back(u);
+                        continue;
+                    }
+                    if (head != samplerUniformByName.end() && samplerUniformCount[head->first] == 1 && element > 0) {
+                        UniformInfo& u = result.uniforms[static_cast<size_t>(head->second)];
+                        const bool last = u.samplerSlot + u.size == static_cast<int>(result.samplers.size());
+                        if (u.type == glType && (element < u.size || last)) {
+                            if (element >= u.size) {
+                                addSlots(element + 1 - u.size);
+                                u.size = element + 1;
+                            }
+                            u.stageMask |= 1u << s;
+                            samplerUniformByName[name] = head->second;
+                            samplerUniformCount[name] = 1;
+                            samplerElement[name] = element;
+                            continue;
+                        }
+                    }
+                }
+            }
             if (it == samplerUniformByName.end()) {
                 samplerUniformByName[name] = static_cast<int>(result.uniforms.size());
                 samplerUniformCount[name] = static_cast<int>(outer);
@@ -2916,7 +3842,10 @@ static LinkResult linkImplCore(const LinkInput& input, const CaptureCode* captur
     // locations assigned above for vertex inputs and fragment outputs.
     auto interfaceVariable = [](const PipeVar& v) {
         InterfaceVariableInfo info;
-        info.name = v.array && v.name.find('.') == std::string::npos ? v.name + "[0]" : v.name;
+        // An array, block members' too, is named with "[0]" (GL 4.3 section
+        // 7.3.1.1: "TargetInterface.target[0]"); built-in block members keep their names.
+        const bool builtinMember = v.name.rfind("gl_", 0) == 0 && v.name.find('.') != std::string::npos;
+        info.name = v.array && !builtinMember && v.name.back() != ']' ? v.name + "[0]" : v.name;
         // The Vulkan rules rename these built-ins; GL reports its own names.
         if (info.name == "gl_VertexIndex") info.name = "gl_VertexID";
         if (info.name == "gl_InstanceIndex") info.name = "gl_InstanceID";
@@ -3001,6 +3930,7 @@ static LinkResult linkImplCore(const LinkInput& input, const CaptureCode* captur
                     flattenArraysOfArrays(cubeStorageImagesAs2DArrays(lowerGatherOffsets(rectImagesAs2D(stage.spirv)))));
             if (!lowerFp64(spirv, result.log)) return result;
             BorderMsl msl(std::move(spirv));
+            msl.renameMetalFunctionObjects();
             spirv_cross::CompilerMSL::Options mslOptions;
             mslOptions.disable_rasterization = noRaster;
             mslOptions.platform = spirv_cross::CompilerMSL::Options::macOS;
@@ -3163,6 +4093,7 @@ static LinkResult linkImplCore(const LinkInput& input, const CaptureCode* captur
             }
             // Samplers.
             uint32_t nextTexture = 0;
+            std::vector<std::pair<uint32_t, std::vector<int>>> samplerSlotsById;  // image id -> its slots
             for (const auto& image : resources.sampled_images) {
                 const std::string name = unescapeName(msl.get_name(image.id));
                 const spirv_cross::SPIRType& type = msl.get_type(image.type_id);
@@ -3179,8 +4110,11 @@ static LinkResult linkImplCore(const LinkInput& input, const CaptureCode* captur
                 if (type.array.empty()) msl.textureSlots[image.id] = nextTexture;
                 auto it = samplerUniformByName.find(name);
                 if (it != samplerUniformByName.end()) {
-                    const int first = result.uniforms[it->second].samplerSlot;
+                    const auto element = samplerElement.find(name);
+                    const int first = result.uniforms[it->second].samplerSlot + (element != samplerElement.end() ? element->second : 0);
                     for (uint32_t e = 0; e < count; ++e) result.samplers[first + e].stageTexture[s] = static_cast<int>(nextTexture + e);
+                    samplerSlotsById.push_back({image.id, {}});
+                    for (uint32_t e = 0; e < count; ++e) samplerSlotsById.back().second.push_back(first + static_cast<int>(e));
                 }
                 nextTexture += count;
                 if (nextTexture > kMaxStageSamplers) {
@@ -3294,8 +4228,14 @@ static LinkResult linkImplCore(const LinkInput& input, const CaptureCode* captur
                 instanceIdFromZero(stage.mslNoRaster);
                 continue;
             }
-            stage.msl = finishFp64Msl(msl.compile());
+            stage.msl = fenceTextureAtomics(finishFp64Msl(msl.compile()));
             addDefaultBorderMacros(stage.msl);
+            // Samplers read through filtering lookups (SamplerSlotInfo::sampled).
+            for (const auto& [id, slots] : samplerSlotsById) {
+                const std::regex lookup("\\b" + msl.get_name(id) + "(\\[[^\\]]*\\])*\\.(sample|gather)");
+                if (std::regex_search(stage.msl, lookup))
+                    for (int slot : slots) result.samplers[static_cast<size_t>(slot)].sampled = true;
+            }
             if (s == static_cast<int>(Stage::Vertex)) {
                 ensureVertexOutput(stage.msl);
                 addCullDistances(stage.msl);
@@ -3305,6 +4245,7 @@ static LinkResult linkImplCore(const LinkInput& input, const CaptureCode* captur
             if (s == static_cast<int>(Stage::Fragment)) {
                 stage.usesPointCoord = patchPointCoord(stage.msl);
                 stage.flatInputs = hasFlatInputs(stage.msl);
+                stage.msl = fragmentSampleMaskInPerSample(stage.msl);
             }
             // WINEMETALGL_DUMP_SHADERS=1 prints every generated MSL stage (debugging aid).
             static const bool dump = [] {
@@ -3320,6 +4261,34 @@ static LinkResult linkImplCore(const LinkInput& input, const CaptureCode* captur
         }
     }
 
+    // Resource limits glslang does not check, in OpenGL ES programs: image
+    // uniforms per stage and storage blocks over all stages (OpenGL ES 3.2
+    // sections 7.11.1 and 7.8).
+    if (input.es) {
+        int images[kStageCount] = {}, blocks = 0;
+        for (const UniformInfo& u : result.uniforms)
+            if (u.imageSlot >= 0)
+                for (int s = 0; s < kStageCount; ++s)
+                    if (u.stageMask & (1u << s)) images[s] += std::max(1, static_cast<int>(u.size));
+        for (int s = 0; s < kStageCount; ++s)
+            if (images[s] > limits::kMaxImageUniformsPerStage) {
+                result.log += "error: too many image uniforms in one stage\n";
+                return result;
+            }
+        // An array of blocks counts all its elements in a stage that uses any.
+        std::map<std::string, std::pair<int, uint32_t>> arrays;  // base name -> (elements, stages)
+        for (const StorageBlockInfo& b : result.storageBlocks) {
+            auto& a = arrays[b.name.substr(0, b.name.find('['))];
+            ++a.first;
+            a.second |= b.stageMask;
+        }
+        for (const auto& [name, a] : arrays)
+            for (int s = 0; s < kStageCount; ++s) blocks += ((a.second >> s) & 1) * a.first;
+        if (blocks > limits::kMaxCombinedStorageBlocks) {
+            result.log += "error: too many shader storage blocks in the program\n";
+            return result;
+        }
+    }
     hideFixedFunctionBlock(result);
     applyUniformInitializers(input.shaders, result);
     result.ok = true;
@@ -3365,7 +4334,7 @@ namespace {
 bool useVertexCapture(const LinkInput& input, const LinkResult& layout, LinkResult& result) {
     int version = 140;
     for (const ShaderSource& shader : input.shaders)
-        if (shader.stage == Stage::Vertex) version = std::max(version, parseGlslVersion(shader.source).number);
+        if (shader.stage == Stage::Vertex) version = std::max(version, captureVersion(shader.source));
     const CaptureCode code = vertexCaptureCode(layout, version);
     LinkInput again = input;
     again.transformFeedbackVaryings.clear();
@@ -3632,6 +4601,7 @@ std::string linkKey(const LinkInput& input) {
     addNumber(input.transformFeedbackVaryings.size());
     for (const std::string& varying : input.transformFeedbackVaryings) add(varying);
     addNumber(input.transformFeedbackMode);
+    addNumber(uint64_t{input.es});
     addNumber(uint64_t{input.separable} | uint64_t{input.internal} << 1 | uint64_t{input.captureLayout} << 2 |
               uint64_t{input.spirv} << 3 | uint64_t{input.spirvUnnamed} << 4);
     return key;
@@ -3731,7 +4701,7 @@ bool vertexCaptureLayout(const LinkInput& input, const std::vector<std::string>&
 bool relinkVertexCapture(const LinkInput& input, const LinkResult& layout, LinkResult& captured, std::string& log) {
     int version = 140;
     for (const ShaderSource& shader : input.shaders)
-        if (shader.stage == Stage::Vertex) version = std::max(version, parseGlslVersion(shader.source).number);
+        if (shader.stage == Stage::Vertex) version = std::max(version, captureVersion(shader.source));
     const CaptureCode code = vertexCaptureCode(layout, version);
     LinkInput again = input;
     again.transformFeedbackVaryings.clear();

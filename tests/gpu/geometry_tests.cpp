@@ -233,3 +233,64 @@ in vec4 o; out vec4 color; void main() { color = o; })";
     glDeleteProgram(p);
     CHECK_GL();
 }
+
+GPU_TEST(gpu_geometry_struct_inputs_and_outputs) {
+    // Struct-typed inputs, outputs and block members (nested, with arrays)
+    // are stored field by field.
+    const char* vs = R"(#version 330 core
+struct V { vec2 p; float k[2]; };
+in vec2 position;
+out V v;
+void main() { v.p = position; v.k[0] = 0.25; v.k[1] = 0.75; gl_Position = vec4(position, 0.0, 1.0); })";
+    const char* gs = R"(#version 330 core
+struct V { vec2 p; float k[2]; };
+struct Inner { float g; };
+struct C { float r; Inner inner[2]; };
+layout(points) in;
+layout(triangle_strip, max_vertices = 4) out;
+in V v[];
+out C c;
+out Blk { Inner b; } blk;
+void main() {
+    for (int i = 0; i < 4; ++i) {
+        c.r = v[0].k[1];
+        c.inner[0].g = 0.0;
+        c.inner[1].g = v[0].k[0];
+        blk.b.g = v[0].p.x;
+        vec2 corner = vec2(i % 2 == 0 ? -0.25 : 0.25, i < 2 ? -0.25 : 0.25);
+        gl_Position = gl_in[0].gl_Position + vec4(corner, 0.0, 0.0);
+        EmitVertex();
+    }
+    EndPrimitive();
+})";
+    const char* fs = R"(#version 330 core
+struct Inner { float g; };
+struct C { float r; Inner inner[2]; };
+in C c;
+in Blk { Inner b; } blk;
+out vec4 o;
+void main() { o = vec4(c.r, c.inner[1].g + c.inner[0].g, blk.b.g, 1.0); })";
+    GLuint p = linkWithGeometry(vs, gs, fs);
+    glUseProgram(p);
+    static const float point[] = {0.5f, 0.5f};
+    GLuint vao = 0, vbo = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(point), point, GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
+    glEnableVertexAttribArray(0);
+    glClearColor(0, 0, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glDrawArrays(GL_POINTS, 0, 1);
+    CHECK_GL();
+    const uint8_t want[4] = {191, 64, 128, 255};
+    const std::vector<uint8_t> got = gpu::readRGBA8(48, 48, 1, 1);
+    CHECK(gpu::near(got.data(), want, 2));
+    if (!gpu::near(got.data(), want, 2)) std::fprintf(stderr, "  got %d %d %d\n", got[0], got[1], got[2]);
+    glDeleteBuffers(1, &vbo);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
+    CHECK_GL();
+}

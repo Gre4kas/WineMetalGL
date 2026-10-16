@@ -1,47 +1,440 @@
 {
-  "comment": "Every NotSupported case in a committed baseline must match one entry (fnmatch pattern; the first match counts). scripts/docs/generate.py fails otherwise. 'kind' is 'extension' (a group for an extension or optional capability WineMetalGL does not offer), 'version' (the case needs a newer GL version than the context) or 'test-design' (the CTS reports NotSupported for this combination on every implementation; the reason cites the test code).",
-  "entries": [
-    {"pattern": "KHR-GL4?.sparse_texture_tests.*", "kind": "extension", "reason": "GL_ARB_sparse_texture is not advertised."},
-    {"pattern": "KHR-GL4?.sparse_buffer_tests.*", "kind": "extension", "reason": "GL_ARB_sparse_buffer is not advertised."},
-    {"pattern": "KHR-GL4?.blend_equation_advanced.*", "kind": "extension", "reason": "GL_KHR_blend_equation_advanced is not advertised."},
-    {"pattern": "KHR-GL4?.shader_ballot_tests.*", "kind": "extension", "reason": "GL_ARB_shader_ballot and GL_ARB_gpu_shader_int64 are not advertised."},
-    {"pattern": "KHR-GL4?.clear_tex_image.*", "kind": "version", "reason": "The cases need GL 4.4 or GL_ARB_clear_texture, which is not advertised."},
-    {"pattern": "KHR-GL4?.indirect_parameters_tests.*", "kind": "version", "reason": "The cases need GL 4.6 or GL_ARB_indirect_parameters, which is not advertised."},
-    {"pattern": "KHR-GL4?.texture_buffer_size_clamping.*", "kind": "version", "reason": "The cases need GL 4.5 or GL_ARB_direct_state_access, which is not advertised."},
-    {"pattern": "KHR-GL4?.texture_query_lod.*", "kind": "test-design", "reason": "The cases need a render target of at least 256 x 256 (gl4cTextureQueryLodTests.cpp, TextureQueryLodBaseTest::iterate); the mustpass configurations use 64 x 64 surfaces, so they report NotSupported on every implementation."},
-    {"pattern": "KHR-GL4?.fragment_shading_rate.*", "kind": "extension", "reason": "GL_EXT_fragment_shading_rate is not advertised."},
-    {"pattern": "KHR-GL4?.texture_view.*", "kind": "extension", "reason": "GL_ARB_texture_view (GL 4.3) is not advertised."},
-    {"pattern": "KHR-GL4?.texture_barrier_ARB.*", "kind": "extension", "reason": "GL_ARB_texture_barrier (GL 4.5) is not advertised."},
-    {"pattern": "KHR-GL4?.shader_subroutine.arrays_of_arrays_of_uniforms", "kind": "extension", "reason": "GL_ARB_arrays_of_arrays (GL 4.3) is not advertised."},
-    {"pattern": "KHR-GL4?.shader_image_load_store.basic-allFormats-loadStoreComputeStage", "kind": "version", "reason": "The case uses compute shaders (GL 4.3, GL_ARB_compute_shader), which are not advertised."},
-    {"pattern": "KHR-GL4?.shader_image_load_store.*-ms", "kind": "extension", "reason": "The case needs GL_MAX_IMAGE_SAMPLES of 4 or more. WineMetalGL reports 0, the GL minimum: Metal shaders cannot write multisample textures."},
-    {"pattern": "KHR-GL4?.shader_image_size.*-ms-*", "kind": "extension", "reason": "The case needs GL_MAX_IMAGE_SAMPLES of 4 or more. WineMetalGL reports 0, the GL minimum: Metal shaders cannot write multisample textures."},
-    {"pattern": "KHR-GL4?.shader_image_load_store.advanced-sso-perSample", "kind": "extension", "reason": "The case needs GL_MAX_IMAGE_SAMPLES of 4 or more. WineMetalGL reports 0, the GL minimum: Metal shaders cannot write multisample textures."},
-    {"pattern": "KHR-GL[34]?.shaders.shader_integer_mix.prototypes", "kind": "version", "reason": "Without `#extension GL_EXT_shader_integer_mix` the case needs GLSL 4.50 (glcShaderIntegerMixTests.cpp, ShaderIntegerMixPrototypesCase)."},
-    {"pattern": "KHR-GL4?.draw_elements_base_vertex_tests.valid_active_tf", "kind": "test-design", "reason": "The case applies only to OpenGL ES contexts and reports NotSupported on every desktop context (esextcDrawElementsBaseVertexTests.cpp, DrawElementsBaseVertexNegativeActiveTransformFeedbackTest)."},
-    {"pattern": "KHR-GL[34]?.cull_distance.*", "kind": "extension", "reason": "GL_ARB_cull_distance is not advertised."},
-    {"pattern": "KHR-GL[34]?.ext_texture_shadow_lod.*", "kind": "extension", "reason": "GL_EXT_texture_shadow_lod is not advertised."},
-    {"pattern": "KHR-GL[34]?.transform_feedback_overflow_query_ARB.*", "kind": "extension", "reason": "GL_ARB_transform_feedback_overflow_query is not advertised."},
-    {"pattern": "KHR-GL[34]?.pipeline_statistics_query_tests_ARB.*", "kind": "extension", "reason": "GL_ARB_pipeline_statistics_query is not advertised."},
-    {"pattern": "KHR-GL[34]?.texture_filter_minmax_tests.*", "kind": "extension", "reason": "GL_ARB_texture_filter_minmax is not advertised."},
-    {"pattern": "KHR-GL3?.transform_feedback2.*", "kind": "extension", "reason": "GL_ARB_transform_feedback2 is not advertised."},
-    {"pattern": "KHR-GL3?.transform_feedback3.*", "kind": "extension", "reason": "GL_ARB_transform_feedback3 is not advertised."},
-    {"pattern": "KHR-GL3?.gpu_shader5_gl.*", "kind": "extension", "reason": "GL_ARB_gpu_shader5 is not advertised."},
-    {"pattern": "KHR-GL3?.shaders.shader_integer_mix.*", "kind": "extension", "reason": "GL_EXT_shader_integer_mix is not advertised."},
-    {"pattern": "KHR-GL[34]?.pixelstoragemodes.compressedteximage*.rgba_astc_*", "kind": "extension", "reason": "ASTC formats need GL_KHR_texture_compression_astc_ldr, which is not advertised."},
-    {"pattern": "KHR-GL[34]?.packed_depth_stencil.stencil_texturing.*", "kind": "version", "reason": "Stencil texturing needs GL 4.3 (GL_ARB_stencil_texturing is not advertised)."},
-    {"pattern": "KHR-GL[34]?.CommonBugs.CommonBug_PerVertexValidation", "kind": "version", "reason": "The case runs only on OpenGL 4.1 or newer contexts."},
-    {"pattern": "KHR-GL[34]?.texture_swizzle.*", "kind": "test-design", "reason": "The case pairs a texture target with an access routine or format that the test marks invalid (gl3cTextureSwizzleTests.cpp isTargetSuppByAccess/isTargetSuppByFormat, or a format whose m_minimum_gl_context is above 3.3), so it reports NotSupported on every implementation."},
-    {"pattern": "KHR-GL3[012].frag_coord_conventions.multisample", "kind": "extension", "reason": "Below a GL 3.3 context the case needs GL_ARB_sample_shading (glcFragCoordConventionsTests.cpp), which is not advertised; KHR-GL33 runs it."},
-    {"pattern": "KHR-GL31.clip_distance.*", "kind": "test-design", "reason": "KHR-GL31 creates a forward-compatible 3.1 context, and glu::contextSupports (gluRenderContext.cpp) matches a forward-compatible context only against its exact version, so the case's check for a GL 3.0 context fails (glcClipDistance.cpp); KHR-GL30, KHR-GL32 and KHR-GL33 run it."},
-    {"pattern": "KHR-GL31.texture_lod_bias.texture_lod_bias_all", "kind": "test-design", "reason": "KHR-GL31 creates a forward-compatible 3.1 context, and glu::contextSupports (gluRenderContext.cpp) matches a forward-compatible context only against its exact version, so the case's check for a GL 3.0 context fails (glcTextureLodBiasTests.cpp); KHR-GL30, KHR-GL32 and KHR-GL33 run it."},
-    {"pattern": "KHR-GL4?.sparse_texture2_tests.*", "kind": "extension", "reason": "GL_ARB_sparse_texture2 is not advertised."},
-    {"pattern": "KHR-GL4?.sparse_texture_clamp_tests.*", "kind": "extension", "reason": "GL_ARB_sparse_texture_clamp is not advertised."},
-    {"pattern": "KHR-GL4?.negative_texture_lookup_functions_with_bias_tests.sparseTexture*", "kind": "extension", "reason": "The sparseTexture*ARB lookups need GL_ARB_sparse_texture2, which is not advertised."},
-    {"pattern": "KHR-GL4?.post_depth_coverage_tests.*", "kind": "extension", "reason": "GL_ARB_post_depth_coverage is not advertised: Metal has no post-depth-test sample coverage input."},
-    {"pattern": "KHR-GL4?.shader_texture_image_samples_tests.image_functional_test", "kind": "extension", "reason": "The case needs GL_MAX_IMAGE_SAMPLES above 0. WineMetalGL reports 0, the GL minimum: Metal shaders cannot write multisample textures."},
-    {"pattern": "KHR-GL4?.*sample_variables.*samples_8*", "kind": "extension", "reason": "The case needs 8 samples; GL_MAX_SAMPLES is 4, the most every color and depth format takes on the Metal device."},
-    {"pattern": "KHR-GL4?.tessellation_shader.tessellation_shader_tessellation.max_in_out_attributes", "kind": "extension", "reason": "The case needs GL_MAX_VERTEX_OUTPUT_COMPONENTS to cover GL_MAX_TESS_CONTROL_INPUT_COMPONENTS (esextcTessellationShaderTessellation.cpp, TessellationShaderTessellationMaxInOut::initTest). WineMetalGL reports the GL minimums, 64 and 128."},
-    {"pattern": "KHR-GL4?.texture_cube_map_array.generate_mip_map_non_filterable_*", "kind": "test-design", "reason": "The cases run only in OpenGL ES contexts and report NotSupported on every desktop context (esextcTextureCubeMapArrayGenerateMipMap.cpp)."}
-  ]
+ "comment": "Every NotSupported case in a committed baseline must match one entry (fnmatch pattern; the first match counts). scripts/docs/generate.py fails otherwise. 'kind' is 'extension' (a group for an extension or optional capability WineMetalGL does not offer), 'version' (the case needs a newer GL version than the context) or 'test-design' (the CTS reports NotSupported for this combination on every implementation; the reason cites the test code).",
+ "entries": [
+  {
+   "pattern": "KHR-GL4?.sparse_texture_tests.*",
+   "kind": "extension",
+   "reason": "GL_ARB_sparse_texture is not advertised."
+  },
+  {
+   "pattern": "KHR-GL4?.sparse_buffer_tests.*",
+   "kind": "extension",
+   "reason": "GL_ARB_sparse_buffer is not advertised."
+  },
+  {
+   "pattern": "KHR-GL4?.blend_equation_advanced.*",
+   "kind": "extension",
+   "reason": "GL_KHR_blend_equation_advanced is not advertised."
+  },
+  {
+   "pattern": "KHR-GL4?.shader_ballot_tests.*",
+   "kind": "extension",
+   "reason": "GL_ARB_shader_ballot and GL_ARB_gpu_shader_int64 are not advertised."
+  },
+  {
+   "pattern": "KHR-GL4?.clear_tex_image.*",
+   "kind": "version",
+   "reason": "The cases need GL 4.4 or GL_ARB_clear_texture, which is not advertised."
+  },
+  {
+   "pattern": "KHR-GL4?.indirect_parameters_tests.*",
+   "kind": "version",
+   "reason": "The cases need GL 4.6 or GL_ARB_indirect_parameters, which is not advertised."
+  },
+  {
+   "pattern": "KHR-GL4?.texture_buffer_size_clamping.*",
+   "kind": "version",
+   "reason": "The cases need GL 4.5 or GL_ARB_direct_state_access, which is not advertised."
+  },
+  {
+   "pattern": "KHR-GL4?.texture_query_lod.*",
+   "kind": "test-design",
+   "reason": "The cases need a render target of at least 256 x 256 (gl4cTextureQueryLodTests.cpp, TextureQueryLodBaseTest::iterate); the mustpass configurations use 64 x 64 surfaces, so they report NotSupported on every implementation."
+  },
+  {
+   "pattern": "KHR-GL4?.fragment_shading_rate.*",
+   "kind": "extension",
+   "reason": "GL_EXT_fragment_shading_rate is not advertised."
+  },
+  {
+   "pattern": "KHR-GL4?.texture_view.*",
+   "kind": "extension",
+   "reason": "GL_ARB_texture_view (GL 4.3) is not advertised."
+  },
+  {
+   "pattern": "KHR-GL4?.texture_barrier_ARB.*",
+   "kind": "extension",
+   "reason": "GL_ARB_texture_barrier (GL 4.5) is not advertised."
+  },
+  {
+   "pattern": "KHR-GL4?.shader_subroutine.arrays_of_arrays_of_uniforms",
+   "kind": "extension",
+   "reason": "GL_ARB_arrays_of_arrays (GL 4.3) is not advertised."
+  },
+  {
+   "pattern": "KHR-GL4?.shader_image_load_store.basic-allFormats-loadStoreComputeStage",
+   "kind": "version",
+   "reason": "The case uses compute shaders (GL 4.3, GL_ARB_compute_shader), which are not advertised."
+  },
+  {
+   "pattern": "KHR-GL4?.shader_image_load_store.*-ms",
+   "kind": "extension",
+   "reason": "The case needs GL_MAX_IMAGE_SAMPLES of 4 or more. WineMetalGL reports 0, the GL minimum: Metal shaders cannot write multisample textures."
+  },
+  {
+   "pattern": "KHR-GL4?.shader_image_size.*-ms-*",
+   "kind": "extension",
+   "reason": "The case needs GL_MAX_IMAGE_SAMPLES of 4 or more. WineMetalGL reports 0, the GL minimum: Metal shaders cannot write multisample textures."
+  },
+  {
+   "pattern": "KHR-GL4?.shader_image_load_store.advanced-sso-perSample",
+   "kind": "extension",
+   "reason": "The case needs GL_MAX_IMAGE_SAMPLES of 4 or more. WineMetalGL reports 0, the GL minimum: Metal shaders cannot write multisample textures."
+  },
+  {
+   "pattern": "KHR-GL[34]?.shaders.shader_integer_mix.prototypes",
+   "kind": "version",
+   "reason": "Without `#extension GL_EXT_shader_integer_mix` the case needs GLSL 4.50 (glcShaderIntegerMixTests.cpp, ShaderIntegerMixPrototypesCase)."
+  },
+  {
+   "pattern": "KHR-GL4?.draw_elements_base_vertex_tests.valid_active_tf",
+   "kind": "test-design",
+   "reason": "The case applies only to OpenGL ES contexts and reports NotSupported on every desktop context (esextcDrawElementsBaseVertexTests.cpp, DrawElementsBaseVertexNegativeActiveTransformFeedbackTest)."
+  },
+  {
+   "pattern": "KHR-GL[34]?.cull_distance.*",
+   "kind": "extension",
+   "reason": "GL_ARB_cull_distance is not advertised."
+  },
+  {
+   "pattern": "KHR-GL[34]?.ext_texture_shadow_lod.*",
+   "kind": "extension",
+   "reason": "GL_EXT_texture_shadow_lod is not advertised."
+  },
+  {
+   "pattern": "KHR-GL[34]?.transform_feedback_overflow_query_ARB.*",
+   "kind": "extension",
+   "reason": "GL_ARB_transform_feedback_overflow_query is not advertised."
+  },
+  {
+   "pattern": "KHR-GL[34]?.pipeline_statistics_query_tests_ARB.*",
+   "kind": "extension",
+   "reason": "GL_ARB_pipeline_statistics_query is not advertised."
+  },
+  {
+   "pattern": "KHR-GL[34]?.texture_filter_minmax_tests.*",
+   "kind": "extension",
+   "reason": "GL_ARB_texture_filter_minmax is not advertised."
+  },
+  {
+   "pattern": "KHR-GL3?.transform_feedback2.*",
+   "kind": "extension",
+   "reason": "GL_ARB_transform_feedback2 is not advertised."
+  },
+  {
+   "pattern": "KHR-GL3?.transform_feedback3.*",
+   "kind": "extension",
+   "reason": "GL_ARB_transform_feedback3 is not advertised."
+  },
+  {
+   "pattern": "KHR-GL3?.gpu_shader5_gl.*",
+   "kind": "extension",
+   "reason": "GL_ARB_gpu_shader5 is not advertised."
+  },
+  {
+   "pattern": "KHR-GL3?.shaders.shader_integer_mix.*",
+   "kind": "extension",
+   "reason": "GL_EXT_shader_integer_mix is not advertised."
+  },
+  {
+   "pattern": "KHR-GL[34]?.pixelstoragemodes.compressedteximage*.rgba_astc_*",
+   "kind": "extension",
+   "reason": "ASTC formats need GL_KHR_texture_compression_astc_ldr, which is not advertised."
+  },
+  {
+   "pattern": "KHR-GL[34]?.packed_depth_stencil.stencil_texturing.*",
+   "kind": "version",
+   "reason": "Stencil texturing needs GL 4.3 (GL_ARB_stencil_texturing is not advertised)."
+  },
+  {
+   "pattern": "KHR-GL[34]?.CommonBugs.CommonBug_PerVertexValidation",
+   "kind": "version",
+   "reason": "The case runs only on OpenGL 4.1 or newer contexts."
+  },
+  {
+   "pattern": "KHR-GL[34]?.texture_swizzle.*",
+   "kind": "test-design",
+   "reason": "The case pairs a texture target with an access routine or format that the test marks invalid (gl3cTextureSwizzleTests.cpp isTargetSuppByAccess/isTargetSuppByFormat, or a format whose m_minimum_gl_context is above 3.3), so it reports NotSupported on every implementation."
+  },
+  {
+   "pattern": "KHR-GL3[012].frag_coord_conventions.multisample",
+   "kind": "extension",
+   "reason": "Below a GL 3.3 context the case needs GL_ARB_sample_shading (glcFragCoordConventionsTests.cpp), which is not advertised; KHR-GL33 runs it."
+  },
+  {
+   "pattern": "KHR-GL31.clip_distance.*",
+   "kind": "test-design",
+   "reason": "KHR-GL31 creates a forward-compatible 3.1 context, and glu::contextSupports (gluRenderContext.cpp) matches a forward-compatible context only against its exact version, so the case's check for a GL 3.0 context fails (glcClipDistance.cpp); KHR-GL30, KHR-GL32 and KHR-GL33 run it."
+  },
+  {
+   "pattern": "KHR-GL31.texture_lod_bias.texture_lod_bias_all",
+   "kind": "test-design",
+   "reason": "KHR-GL31 creates a forward-compatible 3.1 context, and glu::contextSupports (gluRenderContext.cpp) matches a forward-compatible context only against its exact version, so the case's check for a GL 3.0 context fails (glcTextureLodBiasTests.cpp); KHR-GL30, KHR-GL32 and KHR-GL33 run it."
+  },
+  {
+   "pattern": "KHR-GL4?.sparse_texture2_tests.*",
+   "kind": "extension",
+   "reason": "GL_ARB_sparse_texture2 is not advertised."
+  },
+  {
+   "pattern": "KHR-GL4?.sparse_texture_clamp_tests.*",
+   "kind": "extension",
+   "reason": "GL_ARB_sparse_texture_clamp is not advertised."
+  },
+  {
+   "pattern": "KHR-GL4?.negative_texture_lookup_functions_with_bias_tests.sparseTexture*",
+   "kind": "extension",
+   "reason": "The sparseTexture*ARB lookups need GL_ARB_sparse_texture2, which is not advertised."
+  },
+  {
+   "pattern": "KHR-GL4?.post_depth_coverage_tests.*",
+   "kind": "extension",
+   "reason": "GL_ARB_post_depth_coverage is not advertised: Metal has no post-depth-test sample coverage input."
+  },
+  {
+   "pattern": "KHR-GL4?.shader_texture_image_samples_tests.image_functional_test",
+   "kind": "extension",
+   "reason": "The case needs GL_MAX_IMAGE_SAMPLES above 0. WineMetalGL reports 0, the GL minimum: Metal shaders cannot write multisample textures."
+  },
+  {
+   "pattern": "KHR-GL4?.*sample_variables.*samples_8*",
+   "kind": "extension",
+   "reason": "The case needs 8 samples; GL_MAX_SAMPLES is 4, the most every color and depth format takes on the Metal device."
+  },
+  {
+   "pattern": "KHR-GL4?.tessellation_shader.tessellation_shader_tessellation.max_in_out_attributes",
+   "kind": "extension",
+   "reason": "The case needs GL_MAX_VERTEX_OUTPUT_COMPONENTS to cover GL_MAX_TESS_CONTROL_INPUT_COMPONENTS (esextcTessellationShaderTessellation.cpp, TessellationShaderTessellationMaxInOut::initTest). WineMetalGL reports the GL minimums, 64 and 128."
+  },
+  {
+   "pattern": "KHR-GL4?.texture_cube_map_array.generate_mip_map_non_filterable_*",
+   "kind": "test-design",
+   "reason": "The cases run only in OpenGL ES contexts and report NotSupported on every desktop context (esextcTextureCubeMapArrayGenerateMipMap.cpp)."
+  },
+  {
+   "pattern": "KHR-GLES2.texture_3d.compressed_texture.*",
+   "kind": "extension",
+   "reason": "The cases need HDR ASTC (GL_KHR_texture_compression_astc_hdr), which OpenGL ES contexts do not advertise (LDR ASTC only)."
+  },
+  {
+   "pattern": "KHR-GLES2.core.internalformat.renderbuffer.stencil_index[14]_oes",
+   "kind": "extension",
+   "reason": "GL_OES_stencil1 and GL_OES_stencil4 are not advertised."
+  },
+  {
+   "pattern": "KHR-GLES2.core.internalformat.copy_tex_image.rgb10",
+   "kind": "test-design",
+   "reason": "OpenGL ES copies only into formats whose component sizes match the source's; the test reports NotSupported for a non-renderable format with other sizes on every implementation (glcInternalformatTests.cpp, CopyTexImageCase)."
+  },
+  {
+   "pattern": "KHR-GLES3.cull_distance.functional_test_item_8_primitive_mode_[lt]*",
+   "kind": "test-design",
+   "reason": "Item 8 fetches cull distances only for points; the test reports NotSupported for lines and triangles on every implementation (glcCullDistance.cpp, CullDistance::FunctionalTest::iterate)."
+  },
+  {
+   "pattern": "KHR-GLES3.packed_depth_stencil.stencil_texturing.*",
+   "kind": "version",
+   "reason": "KHR-GLES3 creates OpenGL ES 3.0 contexts; stencil texturing needs OpenGL ES 3.1."
+  },
+  {
+   "pattern": "KHR-GLES3.shaders.shader_integer_mix.prototypes",
+   "kind": "test-design",
+   "reason": "Without `#extension GL_EXT_shader_integer_mix` the case needs GLSL ES 3.10; KHR-GLES3 compiles it as GLSL ES 3.00 (glcShaderIntegerMixTests.cpp, ShaderIntegerMixPrototypesCase)."
+  },
+  {
+   "pattern": "dEQP-GLES2.functional.fbo.completeness.attachment_combinations.*",
+   "kind": "extension",
+   "reason": "dEQP-GLES2 combines several color attachments only with GL_NV_fbo_color_attachments (es2fFboCompletenessTests.cpp), which is not advertised."
+  },
+  {
+   "pattern": "dEQP-GLES2.functional.multisample.*",
+   "kind": "test-design",
+   "reason": "The cases render to the default framebuffer and need it multisampled; configuration 1 (`rgba8888d24s8ms0`) has no samples, so they report NotSupported on every implementation."
+  },
+  {
+   "pattern": "dEQP-GLES3.functional.multisample.[cd]*",
+   "kind": "test-design",
+   "reason": "The cases need a multisampled default framebuffer; configuration 1 (`rgba8888d24s8ms0`) has none, so they report NotSupported on every implementation."
+  },
+  {
+   "pattern": "dEQP-GLES*.functional.rasterization.*wide*",
+   "kind": "extension",
+   "reason": "OpenGL ES contexts support line widths up to 1 (ALIASED_LINE_WIDTH_RANGE); wider lines are optional."
+  },
+  {
+   "pattern": "dEQP-GLES*.functional.clipping.line.*wide*",
+   "kind": "extension",
+   "reason": "OpenGL ES contexts support line widths up to 1 (ALIASED_LINE_WIDTH_RANGE); wider lines are optional."
+  },
+  {
+   "pattern": "dEQP-GLES[23].functional.shaders.fragdata.*",
+   "kind": "test-design",
+   "reason": "Dynamic indexing of gl_FragData is optional in GLSL ES 1.00 (and the 3.00 cases use it through ES 1.00 shaders); the test reports NotSupported unless the implementation's own capability flag is set (glsShaderLibraryCase.cpp)."
+  },
+  {
+   "pattern": "dEQP-GLES2.functional.multisampled_render_to_texture.*",
+   "kind": "extension",
+   "reason": "GL_EXT_multisampled_render_to_texture is not advertised."
+  },
+  {
+   "pattern": "dEQP-GLES3.functional.transform_feedback.*",
+   "kind": "extension",
+   "reason": "The cases capture more components than MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS / SEPARATE_COMPONENTS (the OpenGL ES minimums) allow."
+  },
+  {
+   "pattern": "dEQP-GLES3.functional.fbo.msaa.8_samples.*",
+   "kind": "extension",
+   "reason": "MAX_SAMPLES is 4 (Apple GPUs render with 1, 2 or 4 samples)."
+  },
+  {
+   "pattern": "dEQP-GLES3.functional.multisample.fbo_8_samples.*",
+   "kind": "extension",
+   "reason": "MAX_SAMPLES is 4 (Apple GPUs render with 1, 2 or 4 samples)."
+  },
+  {
+   "pattern": "dEQP-GLES3.functional.fbo.blit.depth_stencil.*stencil_index8*",
+   "kind": "extension",
+   "reason": "Separate depth and stencil attachments are FRAMEBUFFER_UNSUPPORTED (Metal stores depth and stencil together); OpenGL ES allows reporting them unsupported."
+  },
+  {
+   "pattern": "dEQP-GLES3.functional.fbo.multiview.*",
+   "kind": "extension",
+   "reason": "GL_OVR_multiview is not advertised."
+  },
+  {
+   "pattern": "dEQP-GLES3.functional.fragment_ops.scissor.clear_depth",
+   "kind": "test-design",
+   "reason": "The RGB565 configuration has no depth buffer, so the case reports NotSupported on every implementation."
+  },
+  {
+   "pattern": "dEQP-GLES3.functional.fragment_ops.scissor.clear_stencil",
+   "kind": "test-design",
+   "reason": "The RGB565 configuration has no stencil buffer, so the case reports NotSupported on every implementation."
+  },
+  {
+   "pattern": "dEQP-GLES3.functional.fragment_ops.scissor.framebuffer_blit_*",
+   "kind": "test-design",
+   "reason": "In the multisample configuration the default framebuffer is multisampled and OpenGL ES cannot blit into it, so the cases report NotSupported on every implementation (glsScissorTests.cpp)."
+  },
+  {
+   "pattern": "KHR-GLES31.core.sample_variables.*samples_8*",
+   "kind": "extension",
+   "reason": "The cases need 8 samples; GL_MAX_SAMPLES and the integer and float formats' sample counts are 4, the most Apple GPUs render with."
+  },
+  {
+   "pattern": "KHR-GLES31.core.shader_atomic_counters.advanced-usage-multidim-array-[ml]*",
+   "kind": "extension",
+   "reason": "The cases need more atomic counters per stage than GL_MAX_*_ATOMIC_COUNTERS allows; the test reports NotSupported below its array size."
+  },
+  {
+   "pattern": "KHR-GLES31.core.shader_group_vote.*",
+   "kind": "extension",
+   "reason": "GL_EXT_shader_group_vote is not advertised in OpenGL ES contexts."
+  },
+  {
+   "pattern": "KHR-GLES3[12].core.tessellation_shader.tessellation_shader_tessellation.max_in_out_attributes",
+   "kind": "extension",
+   "reason": "The case needs GL_MAX_VERTEX_OUTPUT_COMPONENTS to cover GL_MAX_TESS_CONTROL_INPUT_COMPONENTS (esextcTessellationShaderTessellation.cpp); WineMetalGL reports the OpenGL ES minimums."
+  },
+  {
+   "pattern": "KHR-GLES3[12].core.tessellation_shader.tessellation_shader_tessellation.TES",
+   "kind": "test-design",
+   "reason": "OpenGL ES requires a tessellation control shader with an evaluation shader; the case runs only where an evaluation shader may be used alone (esextcTessellationShaderTessellation.cpp)."
+  },
+  {
+   "pattern": "KHR-GLES*.viewport_array.viewport_index_subroutine",
+   "kind": "test-design",
+   "reason": "OpenGL ES has no shader subroutines; the case runs only on desktop GL (glcViewportArrayTests.cpp)."
+  },
+  {
+   "pattern": "KHR-GLESEXT.fragment_shading_rate.render_target.*",
+   "kind": "extension",
+   "reason": "Every render target case needs GL_OVR_multiview (esextcFragmentShadingRateAttachmentTests.cpp, FragmentShadingRateAttachment::init), which is not advertised."
+  },
+  {
+   "pattern": "KHR-Single-GLES3[12].subgroups.*",
+   "kind": "extension",
+   "reason": "GL_KHR_shader_subgroup is not advertised."
+  },
+  {
+   "pattern": "dEQP-GLES31.functional.android_extension_pack.*",
+   "kind": "extension",
+   "reason": "GL_ANDROID_extension_pack_es31a is not advertised (it needs GL_KHR_texture_compression_astc_hdr and GL_EXT_shader_framebuffer_fetch, which are not)."
+  },
+  {
+   "pattern": "dEQP-GLES31.functional.debug.*framebuffer_fetch*",
+   "kind": "extension",
+   "reason": "GL_EXT_shader_framebuffer_fetch is not advertised."
+  },
+  {
+   "pattern": "dEQP-GLES31.functional.shaders.framebuffer_fetch.*",
+   "kind": "extension",
+   "reason": "GL_EXT_shader_framebuffer_fetch is not advertised."
+  },
+  {
+   "pattern": "dEQP-GLES31.functional.draw_indirect.compute_interop.large.*",
+   "kind": "extension",
+   "reason": "The cases need a GL_MAX_SHADER_STORAGE_BLOCK_SIZE larger than the 2^27 bytes WineMetalGL reports (the OpenGL ES minimum)."
+  },
+  {
+   "pattern": "dEQP-GLES31.functional.fbo.srgb_write_control.*",
+   "kind": "extension",
+   "reason": "GL_EXT_sRGB_write_control is not advertised."
+  },
+  {
+   "pattern": "dEQP-GLES31.functional.geometry_shading.basic.output_256",
+   "kind": "extension",
+   "reason": "The case needs more geometry output components than GL_MAX_GEOMETRY_TOTAL_OUTPUT_COMPONENTS (the OpenGL ES minimum)."
+  },
+  {
+   "pattern": "dEQP-GLES31.functional.multisample.default_framebuffer.*",
+   "kind": "test-design",
+   "reason": "The cases need a multisample default framebuffer; mustpass configuration 1 has none."
+  },
+  {
+   "pattern": "dEQP-GLES31.functional.sample_shading.min_sample_shading.default_framebuffer_*",
+   "kind": "test-design",
+   "reason": "The cases need a multisample default framebuffer; mustpass configuration 1 has none."
+  },
+  {
+   "pattern": "dEQP-GLES31.functional.primitive_bounding_box.wide_lines.*",
+   "kind": "extension",
+   "reason": "Lines wider than 1 are optional in OpenGL ES; ALIASED_LINE_WIDTH_RANGE is 1 to 1 (Metal draws 1-pixel lines)."
+  },
+  {
+   "pattern": "dEQP-GLES31.functional.program_interface_query.*block_array.array.mat3x2",
+   "kind": "extension",
+   "reason": "Metal stage inputs and outputs cannot hold arrays of matrices (SPIRV-Cross), so the program does not link; the test reports a link failure as a limit NotSupported."
+  },
+  {
+   "pattern": "dEQP-GLES31.functional.shaders.opaque_type_indexing.atomic_counter.*tessellation_*",
+   "kind": "extension",
+   "reason": "GL_MAX_TESS_CONTROL_ATOMIC_COUNTERS and GL_MAX_TESS_EVALUATION_ATOMIC_COUNTERS are 0, the OpenGL ES minimum."
+  },
+  {
+   "pattern": "dEQP-GLES31.functional.shaders.*_8*",
+   "kind": "extension",
+   "reason": "The cases need 8 samples; GL_MAX_SAMPLES is 4, the most Apple GPUs render with."
+  },
+  {
+   "pattern": "dEQP-GLES31.functional.shaders.*_16",
+   "kind": "extension",
+   "reason": "The cases need 16 samples; GL_MAX_SAMPLES is 4, the most Apple GPUs render with."
+  },
+  {
+   "pattern": "dEQP-GLES31.functional.sample_shading.*samples_[1-9]*",
+   "kind": "extension",
+   "reason": "The cases need more than 4 samples; GL_MAX_SAMPLES is 4, the most Apple GPUs render with."
+  },
+  {
+   "pattern": "dEQP-GLES31.functional.texture.multisample.samples_*",
+   "kind": "extension",
+   "reason": "The cases need more than 4 samples (or more GL_MAX_SAMPLE_MASK_WORDS); Apple GPUs render with at most 4."
+  },
+  {
+   "pattern": "dEQP-GLES31.functional.primitive_bounding_box.blit_fbo.blit_fbo_to_default",
+   "kind": "test-design",
+   "reason": "The case needs a single-sample default framebuffer; the multisample list's configuration has a 4-sample one (es31fPrimitiveBoundingBoxTests.cpp)."
+  }
+ ]
 }

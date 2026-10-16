@@ -11,12 +11,14 @@
 #include "core/context.h"
 #include "core/stats.h"
 #include "core/draw.h"
+#include "core/format/es_formats.h"
 #include "core/format/pixel_transfer.h"
 #include "core/limits.h"
 #include "core/metal/device.h"
 #include "core/metal/pixel_format.h"
 #include "core/texture_storage.h"
 #include "core/util/log.h"
+#include "core/api/read_format.h"
 #include "gl_api.gen.h"
 
 namespace wmgl::api {
@@ -53,10 +55,51 @@ const FormatInfo* attachmentFormat(const Attachment& a, GLsizei& width, GLsizei&
         width = image.width;
         height = a.texture->target == GL_TEXTURE_1D_ARRAY ? 1 : image.height;  // 1D array: height counts layers
         samples = image.samples;
-        fixedLocations = image.fixedSampleLocations;
+        // Single-sample images (and renderbuffers) have fixed locations.
+        fixedLocations = image.samples > 0 ? image.fixedSampleLocations : true;
         return image.format;
     }
     return nullptr;
+}
+
+// A cube map's six faces at `level` defined alike (square, one size and format).
+bool cubeComplete(const Texture& tex, int level) {
+    const TextureImage& first = tex.image(0, level);
+    if (!first.defined() || first.width != first.height) return false;
+    for (int face = 1; face < 6; ++face) {
+        const TextureImage& image = tex.image(face, level);
+        if (!image.defined() || image.width != first.width || image.height != first.height ||
+            image.internalFormat != first.internalFormat)
+            return false;
+    }
+    return true;
+}
+
+// Mipmap complete (OpenGL ES 3.2 section 8.17): the levels from the base to
+// the last of the base's chain (or MAX_LEVEL) are defined, each half the
+// one before, all of one format; for cube maps, every face.
+bool mipmapComplete(const Texture& tex) {
+    const int faces = tex.target == GL_TEXTURE_CUBE_MAP ? 6 : 1;
+    const int base = tex.baseLevel;
+    if (base < 0 || base >= Texture::kMaxLevels) return false;
+    const TextureImage& first = tex.image(0, base);
+    if (!first.defined()) return false;
+    const bool threeD = tex.target == GL_TEXTURE_3D;
+    int size = std::max(first.width, first.height);
+    if (threeD) size = std::max(size, first.depth);
+    int last = base;
+    while ((size >> (last - base)) > 1) ++last;
+    last = std::min({last, tex.maxLevel, Texture::kMaxLevels - 1});
+    for (int level = base; level <= last; ++level)
+        for (int face = 0; face < faces; ++face) {
+            const TextureImage& image = tex.image(face, level);
+            const int shift = level - base;
+            if (!image.defined() || image.internalFormat != first.internalFormat ||
+                image.width != std::max(1, first.width >> shift) || image.height != std::max(1, first.height >> shift) ||
+                (threeD && image.depth != std::max(1, first.depth >> shift)) || (!threeD && image.depth != first.depth))
+                return false;
+        }
+    return true;
 }
 
 GLenum completeness(Context& ctx, Framebuffer* fb) {
@@ -73,8 +116,31 @@ GLenum completeness(Context& ctx, Framebuffer* fb) {
         const FormatInfo* f = attachmentFormat(a, w, h, s, fixedLocations);
         if (!f || w <= 0 || h <= 0) return GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT;
         if (kind == 0 && !f->colorRenderable) return GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT;
+        // OpenGL ES's color-renderable formats are fewer (no RGB32F, RGB9_E5,
+        // luminance or RGB8_SNORM).
+        if (kind == 0 && ctx.isEs() && !es::colorRenderable(f->internalFormat)) return GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT;
+        // OES_texture_float's unsized float images are not color-renderable
+        // (EXT_color_buffer_float makes the sized formats renderable), nor
+        // are EXT_texture_type_2_10_10_10_REV's unsized RGBA images.
+        if (kind == 0 && ctx.isEs() && a.type == GL_TEXTURE && a.texture &&
+            ((f->isFloat() && f->redBits == 32) || f->internalFormat == GL_RGB10_A2)) {
+            const int face = a.cubeFace ? static_cast<int>(a.cubeFace - GL_TEXTURE_CUBE_MAP_POSITIVE_X) : 0;
+            const GLenum requested = a.texture->image(face, a.level).requestedFormat;
+            if (requested == GL_RGBA || requested == GL_RGB || requested == GL_RED || requested == GL_RG)
+                return GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT;
+        }
         if (kind == 1 && !f->depthRenderable) return GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT;
         if (kind == 2 && !f->stencilRenderable) return GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT;
+        // OpenGL ES 3.2 section 9.4.1: a cube map attached layered, or at a
+        // level other than a mutable texture's base level, is cube complete.
+        if (ctx.isEs() && a.type == GL_TEXTURE && a.texture && a.texture->target == GL_TEXTURE_CUBE_MAP &&
+            (a.layered || (!a.texture->immutable && a.level != a.texture->baseLevel)) && !cubeComplete(*a.texture, a.level))
+            return GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT;
+        // ... and any level other than a mutable texture's base level needs
+        // the texture mipmap complete.
+        if (ctx.isEs() && a.type == GL_TEXTURE && a.texture && !a.texture->immutable && a.level != a.texture->baseLevel &&
+            !mipmapComplete(*a.texture))
+            return GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT;
         if (a.type == GL_TEXTURE && a.texture) {
             const GLenum t = a.texture->target;
             if ((t == GL_TEXTURE_3D || t == GL_TEXTURE_2D_ARRAY || t == GL_TEXTURE_1D_ARRAY ||
@@ -90,7 +156,7 @@ GLenum completeness(Context& ctx, Framebuffer* fb) {
         if (samples < 0) samples = normalizedSamples;
         else if (samples != normalizedSamples) return GL_FRAMEBUFFER_INCOMPLETE_MULTISAMPLE;
         if (fixed < 0) fixed = fixedLocations;
-        else if (fixed != static_cast<int>(fixedLocations) && a.type == GL_TEXTURE) return GL_FRAMEBUFFER_INCOMPLETE_MULTISAMPLE;
+        else if (fixed != static_cast<int>(fixedLocations)) return GL_FRAMEBUFFER_INCOMPLETE_MULTISAMPLE;
         const int isLayered = a.layered ? 1 : 0;
         if (layered < 0) {
             layered = isLayered;
@@ -164,6 +230,8 @@ void attachTexture(Context& ctx, GLenum target, GLenum attachment, GLenum textar
     if (tex) {
         if (tex->target == GL_TEXTURE_BUFFER) return ctx.setError(GL_INVALID_OPERATION);
         if (level < 0 || level >= Texture::kMaxLevels) return ctx.setError(GL_INVALID_VALUE);
+        // OpenGL ES 3.2 section 9.2.8: a level past log2 of the largest size.
+        if (ctx.isEs() && level > (tex->target == GL_TEXTURE_3D ? 11 : 14)) return ctx.setError(GL_INVALID_VALUE);
         // An immutable texture has only its levels.
         if (tex->immutable && tex->immutableLevels > 0 && level >= tex->immutableLevels) return ctx.setError(GL_INVALID_VALUE);
         if (textarget) {
@@ -181,6 +249,8 @@ void attachTexture(Context& ctx, GLenum target, GLenum attachment, GLenum textar
                 t != GL_TEXTURE_CUBE_MAP_ARRAY && !cube)
                 return ctx.setError(GL_INVALID_OPERATION);
             if (layer < 0 || (cube && layer >= 6)) return ctx.setError(GL_INVALID_VALUE);
+            // A multisample array has level 0 only.
+            if (t == GL_TEXTURE_2D_MULTISAMPLE_ARRAY && level != 0) return ctx.setError(GL_INVALID_VALUE);
             if (cube) a.cubeFace = GL_TEXTURE_CUBE_MAP_POSITIVE_X + static_cast<GLenum>(layer);
             // A layer past the target's limit (MAX_3D_TEXTURE_SIZE or MAX_ARRAY_TEXTURE_LAYERS).
             if (layer >= (t == GL_TEXTURE_3D ? limits::kMax3DTextureSize : limits::kMaxArrayLayers))
@@ -283,7 +353,7 @@ void bindRenderbuffer(Context& ctx, GLenum target, GLuint name, bool createUnuse
 
 }  // namespace
 
-void BindFramebuffer(Context& ctx, GLenum target, GLuint name) { bindFramebuffer(ctx, target, name, !ctx.isCore()); }
+void BindFramebuffer(Context& ctx, GLenum target, GLuint name) { bindFramebuffer(ctx, target, name, !ctx.isDesktopCore()); }
 
 void BindFramebufferEXT(Context& ctx, GLenum target, GLuint name) { bindFramebuffer(ctx, target, name, true); }
 
@@ -455,11 +525,13 @@ void GetFramebufferAttachmentParameteriv(Context& ctx, GLenum target, GLenum att
             return;
         case GL_FRAMEBUFFER_ATTACHMENT_COMPONENT_TYPE:
             if (!present) return ctx.setError(GL_INVALID_OPERATION);
-            *params = color || depth ? GL_UNSIGNED_NORMALIZED : GL_INDEX;
+            *params = color ? GL_UNSIGNED_NORMALIZED
+                      : depth ? (surface->pixelFormat().depth_bits == 32 ? GL_FLOAT : GL_UNSIGNED_NORMALIZED)
+                              : GL_INDEX;
             return;
         case GL_FRAMEBUFFER_ATTACHMENT_COLOR_ENCODING:
             if (!present) return ctx.setError(GL_INVALID_OPERATION);
-            *params = color && surface->srgbCapable() ? GL_SRGB : GL_LINEAR;
+            *params = color && surface->srgbCapable() && ctx.windowSrgb() ? GL_SRGB : GL_LINEAR;
             return;
         default: return ctx.setError(present ? GL_INVALID_ENUM : GL_INVALID_OPERATION);
         }
@@ -564,7 +636,7 @@ GLboolean IsRenderbuffer(Context& ctx, GLuint renderbuffer) {
     return ctx.share().renderbuffers.exists(renderbuffer) ? GL_TRUE : GL_FALSE;
 }
 
-void BindRenderbuffer(Context& ctx, GLenum target, GLuint name) { bindRenderbuffer(ctx, target, name, !ctx.isCore()); }
+void BindRenderbuffer(Context& ctx, GLenum target, GLuint name) { bindRenderbuffer(ctx, target, name, !ctx.isDesktopCore()); }
 
 void BindRenderbufferEXT(Context& ctx, GLenum target, GLuint name) { bindRenderbuffer(ctx, target, name, true); }
 
@@ -573,19 +645,25 @@ void RenderbufferStorageMultisample(Context& ctx, GLenum target, GLsizei samples
     if (target != GL_RENDERBUFFER) return ctx.setError(GL_INVALID_ENUM);
     Renderbuffer* rb = ctx.state.renderbuffer.get();
     if (!rb) return ctx.setError(GL_INVALID_OPERATION);
+    // EXT_texture_format_BGRA8888: GL_BGRA_EXT is BGRA8_EXT's unsized name.
+    if (ctx.isEs() && internalformat == es::kBgra) internalformat = 0x93A1;  // GL_BGRA8_EXT
     const GLenum resolved = resolveInternalFormat(internalformat, 0, 0);
     const FormatInfo* f = formatInfo(resolved);
     if (!f || f->compressed || (!f->colorRenderable && !f->isDepthOrStencil())) return ctx.setError(GL_INVALID_ENUM);
+    if (ctx.isEs() && !es::renderbufferFormat(internalformat)) return ctx.setError(GL_INVALID_ENUM);
     if (width < 0 || height < 0 || samples < 0) return ctx.setError(GL_INVALID_VALUE);
     if (width > 16384 || height > 16384) return ctx.setError(GL_INVALID_VALUE);
     const auto& caps = Device::get().caps();
-    if (samples > static_cast<GLsizei>(caps.maxSamples)) return ctx.setError(GL_INVALID_VALUE);  // GL 3.3 section 4.4.2.1
+    // OpenGL ES 3.2 section 9.2.4: more samples than the format supports is INVALID_OPERATION.
+    if (samples > static_cast<GLsizei>(caps.maxSamples)) return ctx.setError(ctx.isEs() ? GL_INVALID_OPERATION : GL_INVALID_VALUE);
     if (f->isInteger() && samples > 0) {
         // GL 3.3: MAX_INTEGER_SAMPLES; Metal supports multisampled integer targets.
     }
-    // Round the sample count up to one Metal supports.
+    // Round the sample count up to one Metal supports. OpenGL ES rounds a
+    // request for one sample up too, as multisample textures do (Metal's
+    // have two at least): the two then match for framebuffer completeness.
     GLsizei actual = samples;
-    if (actual > 1) {
+    if (actual > 1 || (actual == 1 && ctx.isEs())) {
         actual = 2;
         while (actual < samples) actual *= 2;
         while (actual <= 8 && !caps.sampleCountSupported[actual]) actual *= 2;
@@ -646,7 +724,10 @@ void GetRenderbufferParameteriv(Context& ctx, GLenum target, GLenum pname, GLint
     switch (pname) {
     case GL_RENDERBUFFER_WIDTH: *params = rb->width; return;
     case GL_RENDERBUFFER_HEIGHT: *params = rb->height; return;
-    case GL_RENDERBUFFER_INTERNAL_FORMAT: *params = static_cast<GLint>(rb->internalFormat); return;
+    case GL_RENDERBUFFER_INTERNAL_FORMAT:
+        // A renderbuffer without storage: GL_RGBA, OpenGL ES's GL_RGBA4.
+        *params = static_cast<GLint>(ctx.isEs() && !rb->format ? GL_RGBA4 : rb->internalFormat);
+        return;
     case GL_RENDERBUFFER_SAMPLES: *params = rb->samples > 1 ? rb->samples : 0; return;
     case GL_RENDERBUFFER_RED_SIZE: *params = f ? f->redBits : 0; return;
     case GL_RENDERBUFFER_GREEN_SIZE: *params = f ? f->greenBits : 0; return;
@@ -715,23 +796,56 @@ void DrawBuffer(Context& ctx, GLenum buf) {
 void ReadBuffer(Context& ctx, GLenum src) {
     Framebuffer* fb = ctx.state.readFramebuffer.get();
     if (!fb) {
+        // OpenGL ES's default framebuffer has only GL_BACK.
+        if (ctx.isEs() && src != GL_NONE && src != GL_BACK)
+            return ctx.setError(src >= GL_COLOR_ATTACHMENT0 && src < GL_COLOR_ATTACHMENT0 + 32 ? GL_INVALID_OPERATION : GL_INVALID_ENUM);
         if (src != GL_NONE && src != GL_BACK && src != GL_FRONT && src != GL_LEFT && src != GL_BACK_LEFT && src != GL_FRONT_LEFT)
             return ctx.setError(src >= GL_COLOR_ATTACHMENT0 && src < GL_COLOR_ATTACHMENT0 + 32 ? GL_INVALID_OPERATION : GL_INVALID_ENUM);
         ctx.state.defaultReadBuffer = src;
         return;
     }
     if (src != GL_NONE && (src < GL_COLOR_ATTACHMENT0 || src >= GL_COLOR_ATTACHMENT0 + Framebuffer::kMaxColor))
-        return ctx.setError(src >= GL_COLOR_ATTACHMENT0 && src < GL_COLOR_ATTACHMENT0 + 32 ? GL_INVALID_VALUE
-                            : (src == GL_BACK || src == GL_FRONT || src == GL_LEFT) ? GL_INVALID_OPERATION
-                                                                                     : GL_INVALID_ENUM);
+        // (OpenGL ES 3.2 section 16.1.1: INVALID_OPERATION for attachments
+        // past MAX_COLOR_ATTACHMENTS; desktop GL 4.6 says INVALID_VALUE.)
+        return ctx.setError(src >= GL_COLOR_ATTACHMENT0 && src < GL_COLOR_ATTACHMENT0 + 32
+                                ? (ctx.isEs() ? GL_INVALID_OPERATION : GL_INVALID_VALUE)
+                            : (src == GL_BACK || (!ctx.isEs() && (src == GL_FRONT || src == GL_LEFT))) ? GL_INVALID_OPERATION
+                                                                                                       : GL_INVALID_ENUM);
     fb->readBuffer = src;
     framebufferChanged(ctx, *fb);
 }
 
 // ------------------------------------------------------------ ReadPixels
 
+namespace {
+
+// OpenGL ES 3.2 section 16.1.2: RGBA with the read buffer's component type
+// (table 16.1 and the extensions' formats), or the implementation's read
+// format and type. Returns false with the GL error set.
+bool esReadFormat(Context& ctx, GLenum format, GLenum& type) {
+    if (format == GL_DEPTH_COMPONENT || format == GL_STENCIL_INDEX || format == GL_DEPTH_STENCIL ||
+        (!es::isFormat(format) && format != GL_BGRA) || !es::isType(type))
+        return ctx.setError(GL_INVALID_ENUM), false;
+    if (type == es::kHalfFloatOes) type = GL_HALF_FLOAT;
+    if (completeness(ctx, ctx.state.readFramebuffer.get()) != GL_FRAMEBUFFER_COMPLETE)
+        return ctx.setError(GL_INVALID_FRAMEBUFFER_OPERATION), false;
+    GLenum implFormat = 0, implType = 0;
+    if (implementationReadFormat(ctx, implFormat, implType) && format == implFormat && type == implType) return true;
+    uint32_t level, slice;
+    GLenum internalFormat = 0;
+    int w, h;
+    if (!ctx.draw().readColorTexture(level, slice, internalFormat, w, h)) return true;  // no read buffer: below
+    if (es::readPixelsCompatible(internalFormat, format, type)) return true;
+    // EXT_read_format_bgra
+    if (format == GL_BGRA && type == GL_UNSIGNED_BYTE && !formatInfo(internalFormat)->isInteger()) return true;
+    return ctx.setError(GL_INVALID_OPERATION), false;
+}
+
+}  // namespace
+
 void ReadPixels(Context& ctx, GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, void* pixels) {
     if (width < 0 || height < 0) return ctx.setError(GL_INVALID_VALUE);
+    if (ctx.isEs() && !esReadFormat(ctx, format, type)) return;
     // GL 3.3 section 4.3.2: DEPTH_STENCIL takes only the packed depth/stencil types.
     if (format == GL_DEPTH_STENCIL && type != GL_UNSIGNED_INT_24_8 && type != GL_FLOAT_32_UNSIGNED_INT_24_8_REV)
         return ctx.setError(GL_INVALID_ENUM);
@@ -775,7 +889,7 @@ void ReadPixels(Context& ctx, GLint x, GLint y, GLsizei width, GLsizei height, G
                 (depthStencil && !(surface->hasDepth() && surface->hasStencil())))
                 return ctx.setError(GL_INVALID_OPERATION);
             source = surface->resolvedDepthStencil(ctx.stream());
-            internalFormat = surface->hasStencil() ? GL_DEPTH24_STENCIL8 : surface->pixelFormat().depth_bits == 16 ? GL_DEPTH_COMPONENT16 : GL_DEPTH_COMPONENT24;
+            internalFormat = surface->depthStencilFormat();
             levelWidth = surface->width();
             levelHeight = surface->height();
         }
@@ -919,12 +1033,13 @@ void GetMultisamplefv(Context& ctx, GLenum pname, GLuint index, GLfloat* val) {
     RenderTargetDesc target;
     TargetFormats formats;
     if (!ctx.draw().drawTarget(target, formats, false)) {
-        if (index >= 1) return ctx.setError(GL_INVALID_VALUE);
+        if (index >= 1 || ctx.isEs()) return ctx.setError(GL_INVALID_VALUE);
         val[0] = val[1] = 0.5f;
         return;
     }
     const uint32_t samples = std::max(1u, target.samples);
-    if (index >= samples) return ctx.setError(GL_INVALID_VALUE);
+    // OpenGL ES: index must be below SAMPLES, which is 0 without multisampling.
+    if (index >= samples || (ctx.isEs() && target.samples <= 1)) return ctx.setError(GL_INVALID_VALUE);
     if (samples == 1) {
         val[0] = val[1] = 0.5f;
         return;

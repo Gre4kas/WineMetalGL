@@ -10,6 +10,7 @@ namespace wmgl {
 
 struct DeviceCaps {
     bool bcTextures = false;            // BC1-7 (S3TC, RGTC, BPTC)
+    bool astcTextures = false;          // ASTC LDR (Apple GPUs)
     bool depth24Stencil8 = false;       // never on Apple GPUs; emulated with D32F_S8
     bool meshShaders = false;           // Metal 3 mesh pipelines (geometry-shader emulation)
     bool framebufferFetch = false;      // programmable blending (logic op emulation)

@@ -41,9 +41,33 @@ bool validBlendEquation(GLenum e) {
     return e == GL_FUNC_ADD || e == GL_FUNC_SUBTRACT || e == GL_FUNC_REVERSE_SUBTRACT || e == GL_MIN || e == GL_MAX;
 }
 
+// The capabilities OpenGL ES has (with the extensions ES contexts advertise).
+// Its point size from shaders, seamless cube maps and sRGB conversion are
+// always on (Context::Context).
+bool esCapability(Context& ctx, GLenum cap) {
+    switch (cap) {
+    case GL_BLEND: case GL_CULL_FACE: case GL_DEPTH_TEST: case GL_STENCIL_TEST: case GL_SCISSOR_TEST:
+    case GL_POLYGON_OFFSET_FILL: case GL_DITHER: case GL_SAMPLE_ALPHA_TO_COVERAGE: case GL_SAMPLE_COVERAGE:
+    case GL_DEBUG_OUTPUT: case GL_DEBUG_OUTPUT_SYNCHRONOUS:
+    case GL_DEPTH_CLAMP:  // EXT_depth_clamp
+        return true;
+    case GL_RASTERIZER_DISCARD: case GL_PRIMITIVE_RESTART_FIXED_INDEX: return ctx.esVersion() >= 30;
+    case GL_SAMPLE_MASK: return ctx.esVersion() >= 31;
+    case 0x9285:  // GL_BLEND_ADVANCED_COHERENT_KHR
+        return ctx.advertises("GL_KHR_blend_equation_advanced_coherent");
+    case GL_SAMPLE_SHADING: return ctx.esVersion() >= 31;  // OES_sample_shading
+    default:
+        // EXT_clip_cull_distance
+        return ctx.esVersion() >= 30 && cap >= GL_CLIP_DISTANCE0 && cap < GL_CLIP_DISTANCE0 + 8;
+    }
+}
+
 // Returns true if handled; false means the capability is unknown.
 bool setCapability(Context& ctx, GLenum cap, bool on) {
     ContextState& s = ctx.state;
+    if (ctx.isEs() && !esCapability(ctx, cap)) return false;
+    // Framebuffer fetch is coherent either way: only the state is kept.
+    if (cap == 0x9285 && ctx.isEs()) { s.blendAdvancedCoherent = on; return true; }
     switch (cap) {
     case GL_BLEND: s.blendEnable = on ? 0xff : 0; ctx.markDirty(kDirtyBlend); return true;
     case GL_CULL_FACE: s.cullFace = on; ctx.markDirty(kDirtyRaster); return true;
@@ -92,6 +116,8 @@ bool setCapability(Context& ctx, GLenum cap, bool on) {
 
 bool getCapability(Context& ctx, GLenum cap, bool& value) {
     const ContextState& s = ctx.state;
+    if (ctx.isEs() && !esCapability(ctx, cap)) return false;
+    if (cap == 0x9285 && ctx.isEs()) { value = s.blendAdvancedCoherent; return true; }
     switch (cap) {
     case GL_BLEND: value = s.blendEnable & 1; return true;
     case GL_CULL_FACE: value = s.cullFace; return true;
@@ -509,7 +535,9 @@ void blendFunc(Context& ctx, int buffer, GLenum srcRGB, GLenum dstRGB, GLenum sr
 
 void blendEquation(Context& ctx, int buffer, GLenum modeRGB, GLenum modeAlpha) {
     if (buffer >= ContextState::kMaxDrawBuffers) return ctx.setError(GL_INVALID_VALUE);
-    if (!validBlendEquation(modeRGB) || !validBlendEquation(modeAlpha)) return ctx.setError(GL_INVALID_ENUM);
+    // KHR_blend_equation_advanced: glBlendEquation(i) only (both parts).
+    const bool advanced = modeRGB == modeAlpha && advancedBlendIndex(modeRGB) >= 0 && ctx.advertises("GL_KHR_blend_equation_advanced");
+    if (!advanced && (!validBlendEquation(modeRGB) || !validBlendEquation(modeAlpha))) return ctx.setError(GL_INVALID_ENUM);
     for (int i = 0; i < ContextState::kMaxDrawBuffers; ++i) {
         if (buffer >= 0 && i != buffer) continue;
         ctx.state.blend[i].equationRGB = modeRGB;
@@ -526,7 +554,10 @@ void BlendFuncSeparate(Context& ctx, GLenum srcRGB, GLenum dstRGB, GLenum srcAlp
 
 void BlendFunc(Context& ctx, GLenum sfactor, GLenum dfactor) { blendFunc(ctx, -1, sfactor, dfactor, sfactor, dfactor); }
 
-void BlendEquationSeparate(Context& ctx, GLenum modeRGB, GLenum modeAlpha) { blendEquation(ctx, -1, modeRGB, modeAlpha); }
+void BlendEquationSeparate(Context& ctx, GLenum modeRGB, GLenum modeAlpha) {
+    if (advancedBlendIndex(modeRGB) >= 0 || advancedBlendIndex(modeAlpha) >= 0) return ctx.setError(GL_INVALID_ENUM);
+    blendEquation(ctx, -1, modeRGB, modeAlpha);
+}
 
 void BlendEquation(Context& ctx, GLenum mode) { blendEquation(ctx, -1, mode, mode); }
 
@@ -544,6 +575,7 @@ void BlendEquationi(Context& ctx, GLuint buf, GLenum mode) {
 }
 
 void BlendEquationSeparatei(Context& ctx, GLuint buf, GLenum modeRGB, GLenum modeAlpha) {
+    if (advancedBlendIndex(modeRGB) >= 0 || advancedBlendIndex(modeAlpha) >= 0) return ctx.setError(GL_INVALID_ENUM);
     blendEquation(ctx, static_cast<int>(std::min<GLuint>(buf, 1024)), modeRGB, modeAlpha);
 }
 
@@ -610,12 +642,15 @@ void ClampColor(Context& ctx, GLenum target, GLenum clamp) {
 void Hint(Context& ctx, GLenum target, GLenum mode) {
     if (mode != GL_FASTEST && mode != GL_NICEST && mode != GL_DONT_CARE) return ctx.setError(GL_INVALID_ENUM);
     switch (target) {
-    case GL_LINE_SMOOTH_HINT: ctx.state.hintLineSmooth = mode; return;
-    case GL_POLYGON_SMOOTH_HINT: ctx.state.hintPolygonSmooth = mode; return;
-    case GL_TEXTURE_COMPRESSION_HINT: ctx.state.hintTextureCompression = mode; return;
+    case GL_LINE_SMOOTH_HINT: case GL_POLYGON_SMOOTH_HINT: case GL_TEXTURE_COMPRESSION_HINT:
+        if (ctx.isEs()) break;  // OpenGL ES has only the mipmap and derivative hints
+        (target == GL_LINE_SMOOTH_HINT      ? ctx.state.hintLineSmooth
+         : target == GL_POLYGON_SMOOTH_HINT ? ctx.state.hintPolygonSmooth
+                                            : ctx.state.hintTextureCompression) = mode;
+        return;
     case GL_FRAGMENT_SHADER_DERIVATIVE_HINT: ctx.state.hintFragmentShaderDerivative = mode; return;
     case GL_GENERATE_MIPMAP_HINT:
-        if (ctx.isCompat()) { ctx.state.hintGenerateMipmap = mode; return; }
+        if (ctx.isCompat() || ctx.isEs()) { ctx.state.hintGenerateMipmap = mode; return; }
         break;
     case GL_PERSPECTIVE_CORRECTION_HINT: case GL_POINT_SMOOTH_HINT: case GL_FOG_HINT:  // compatibility profile
         if (!ctx.isCompat()) break;
@@ -700,7 +735,7 @@ const GLubyte* GetString(Context& ctx, GLenum name) {
     case GL_VERSION: return reinterpret_cast<const GLubyte*>(ctx.versionString().c_str());
     case GL_SHADING_LANGUAGE_VERSION: return reinterpret_cast<const GLubyte*>(ctx.glslVersionString().c_str());
     case GL_EXTENSIONS:
-        if (ctx.isCore()) break;  // core profile: only glGetStringi
+        if (ctx.isDesktopCore()) break;  // core profile: only glGetStringi
         return reinterpret_cast<const GLubyte*>(ctx.extensionString().c_str());
     case GL_PROGRAM_ERROR_STRING_ARB:  // the last glProgramStringARB's error (empty after a load)
         if (ctx.isCore()) break;
@@ -727,7 +762,7 @@ const GLubyte* GetStringi(Context& ctx, GLenum name, GLuint index) {
         }
         return reinterpret_cast<const GLubyte*>(extensions[index]);
     }
-    if (name == GL_SHADING_LANGUAGE_VERSION && ctx.version() >= 43) {
+    if (name == GL_SHADING_LANGUAGE_VERSION && ctx.version() >= 43 && !ctx.isEs()) {
         // "4N0 core" for every 4.N up to the context's, then the 3.x and 1.x
         // versions; "" is GLSL 1.10 without a #version directive; "300 es"
         // is GLSL ES 3.00 (GL_ARB_ES3_compatibility) and "310 es" GLSL ES
