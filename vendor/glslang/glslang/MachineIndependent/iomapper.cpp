@@ -1314,7 +1314,9 @@ void TDefaultGlslIoResolver::reserverStorageSlot(TVarEntryInfo& ent, TInfoSink& 
             TVarSlotMap& varSlotMap = storageSlotMap[storageKey];
             TVarSlotMap::iterator iter = varSlotMap.find(name);
             if (iter == varSlotMap.end()) {
-                int numLocations = TIntermediate::computeTypeUniformLocationSize(type);
+                // WineMetalGL: a varying's locations (a matrix takes one per
+                // column), not a uniform's, so implicit varyings avoid them.
+                int numLocations = computeTypeLocationSize(type, currentStage);
                 reserveSlot(storageKey, location, numLocations);
                 varSlotMap[name] = location;
             } else {

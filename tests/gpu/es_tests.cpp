@@ -1386,3 +1386,90 @@ GPU_TEST_ES(gpu_es31_sample_mask_in_half_rate, 31) {
     glDeleteVertexArrays(1, &vao);
     glDeleteProgram(prog);
 }
+
+// Separable programs pass varyings matched by location (different names),
+// matrices among them, and by name.
+GPU_TEST_ES(gpu_es_pipeline_varyings_by_location, 31) {
+    const char* vsSource =
+        "#version 310 es\n"
+        "layout(location=0) smooth out highp vec3 vtxVar0;\n"
+        "layout(location=1) centroid out highp mat3x4 vtxVar1;\n"
+        "layout(location=4) flat out highp uvec3 vtxVar2;\n"
+        "out highp vec4 var3;\n"
+        "const vec2 corners[4] = vec2[4](vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(-1.0, 1.0), vec2(1.0, 1.0));\n"
+        "void main() {\n"
+        "    gl_Position = vec4(corners[gl_VertexID], 0.0, 1.0);\n"
+        "    vtxVar0 = vec3(0.25, 0.5, 0.75);\n"
+        "    vtxVar1 = mat3x4(0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 0.0, 0.5);\n"
+        "    vtxVar2 = uvec3(10u, 20u, 30u);\n"
+        "    var3 = vec4(0.125, 0.375, 0.625, 0.875);\n"
+        "}\n";
+    const char* fsSource =
+        "#version 310 es\nprecision highp float;\n"
+        "layout(location = 0) out vec4 o[4];\n"
+        "layout(location=0) in highp vec3 frgVar0;\n"
+        "layout(location=1) centroid in highp mat3x4 frgVar1;\n"
+        "layout(location=4) flat in highp uvec3 frgVar2;\n"
+        "centroid in highp vec4 var3;\n"
+        "void main() {\n"
+        "    o[0] = vec4(frgVar0, 1.0);\n"
+        "    o[1] = vec4(frgVar1[0].x, frgVar1[1].y, frgVar1[2].z, frgVar1[2].w);\n"
+        "    o[2] = vec4(vec3(frgVar2) / 255.0, 1.0);\n"
+        "    o[3] = var3;\n"
+        "}\n";
+    GLuint vs = glCreateShaderProgramv(GL_VERTEX_SHADER, 1, &vsSource);
+    GLuint fs = glCreateShaderProgramv(GL_FRAGMENT_SHADER, 1, &fsSource);
+    GLuint pipeline = 0, fb = 0, textures[4] = {}, vao = 0;
+    glGenProgramPipelines(1, &pipeline);
+    glUseProgramStages(pipeline, GL_VERTEX_SHADER_BIT, vs);
+    glUseProgramStages(pipeline, GL_FRAGMENT_SHADER_BIT, fs);
+    glGenFramebuffers(1, &fb);
+    glBindFramebuffer(GL_FRAMEBUFFER, fb);
+    glGenTextures(4, textures);
+    const GLenum buffers[4] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2, GL_COLOR_ATTACHMENT3};
+    for (int i = 0; i < 4; ++i) {
+        glBindTexture(GL_TEXTURE_2D, textures[i]);
+        glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, 8, 8);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, buffers[i], GL_TEXTURE_2D, textures[i], 0);
+    }
+    glDrawBuffers(4, buffers);
+    glViewport(0, 0, 8, 8);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glUseProgram(0);
+    glBindProgramPipeline(pipeline);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    CHECK_GL();
+    const uint8_t want[4][4] = {{64, 128, 191, 255}, {26, 153, 0, 128}, {10, 20, 30, 255}, {32, 96, 159, 223}};
+    for (int i = 0; i < 4; ++i) {
+        glReadBuffer(buffers[i]);
+        const std::vector<uint8_t> got = readRGBA8(4, 4, 1, 1);
+        CHECK(near(got.data(), want[i], 3));
+        if (!near(got.data(), want[i], 3)) std::fprintf(stderr, "  output %d: %d %d %d %d\n", i, got[0], got[1], got[2], got[3]);
+    }
+    glBindProgramPipeline(0);
+    // The same stages linked into one program match the same way.
+    GLuint whole = program(vsSource, fsSource);
+    glUseProgram(whole);
+    glClearColor(0, 0, 0, 0);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    CHECK_GL();
+    for (int i = 0; i < 4; ++i) {
+        glReadBuffer(buffers[i]);
+        const std::vector<uint8_t> got = readRGBA8(4, 4, 1, 1);
+        CHECK(near(got.data(), want[i], 3));
+        if (!near(got.data(), want[i], 3))
+            std::fprintf(stderr, "  program output %d: %d %d %d %d\n", i, got[0], got[1], got[2], got[3]);
+    }
+    glUseProgram(0);
+    glDeleteProgram(whole);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glViewport(0, 0, 64, 64);
+    glDeleteFramebuffers(1, &fb);
+    glDeleteTextures(4, textures);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgramPipelines(1, &pipeline);
+    glDeleteProgram(vs);
+    glDeleteProgram(fs);
+}
