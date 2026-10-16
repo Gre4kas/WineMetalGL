@@ -1,0 +1,53 @@
+# commit c57a9ed
+# cts 1942832354c96f0de379f491519734256fbd4f9d
+# type es3
+# conformant True
+# configs 22 WGL window pixel formats: 1 to 10 (no samples, no sRGB), 31 to 40 (sRGB-capable), 61 and 62 (RGB565)
+config-gles2-main-cfg-1-run-0-width-256-height-256-wgl.qpa Passed=17066 Failed=0 NotSupported=90 Warnings=9 Waived=0 DeviceLost=0 Executed=17165
+config-gles3-main-cfg-1-run-1-width-256-height-256-wgl.qpa Passed=44315 Failed=0 NotSupported=433 Warnings=20 Waived=0 DeviceLost=0 Executed=44768
+config-gles3-multisample-cfg-1-run-2-width-256-height-256-wgl.qpa Passed=4615 Failed=0 NotSupported=20 Warnings=0 Waived=0 DeviceLost=0 Executed=4635
+config-gles2-khr-noctx-main-cfg-1-run-0-width-64-height-64-seed-1-wgl.qpa Passed=1 Failed=0 NotSupported=0 Warnings=0 Waived=0 DeviceLost=0 Executed=1
+config-gles2-khr-main-cfg-1-run-0-width-64-height-64-seed-1-wgl.qpa Passed=440 Failed=0 NotSupported=33 Warnings=0 Waived=0 DeviceLost=0 Executed=473
+config-gles3-khr-main-cfg-1-run-1-width-64-height-64-seed-1-wgl.qpa Passed=6479 Failed=0 NotSupported=19 Warnings=0 Waived=0 DeviceLost=0 Executed=6498
+config-gles2-khr-main-cfg-2-run-0-width-64-height-64-seed-1-wgl.qpa Passed=440 Failed=0 NotSupported=33 Warnings=0 Waived=0 DeviceLost=0 Executed=473
+config-gles3-khr-main-cfg-2-run-1-width-64-height-64-seed-1-wgl.qpa Passed=6479 Failed=0 NotSupported=19 Warnings=0 Waived=0 DeviceLost=0 Executed=6498
+config-gles2-khr-main-cfg-3-run-0-width-64-height-64-seed-1-wgl.qpa Passed=440 Failed=0 NotSupported=33 Warnings=0 Waived=0 DeviceLost=0 Executed=473
+config-gles3-khr-main-cfg-3-run-1-width-64-height-64-seed-1-wgl.qpa Passed=6479 Failed=0 NotSupported=19 Warnings=0 Waived=0 DeviceLost=0 Executed=6498
+config-gles2-khr-main-cfg-4-run-0-width-64-height-64-seed-1-wgl.qpa Passed=440 Failed=0 NotSupported=33 Warnings=0 Waived=0 DeviceLost=0 Executed=473
+config-gles3-khr-main-cfg-4-run-1-width-64-height-64-seed-1-wgl.qpa Passed=6479 Failed=0 NotSupported=19 Warnings=0 Waived=0 DeviceLost=0 Executed=6498
+config-gles2-khr-main-cfg-5-run-0-width-64-height-64-seed-1-wgl.qpa Passed=440 Failed=0 NotSupported=33 Warnings=0 Waived=0 DeviceLost=0 Executed=473
+config-gles3-khr-main-cfg-5-run-1-width-64-height-64-seed-1-wgl.qpa Passed=6479 Failed=0 NotSupported=19 Warnings=0 Waived=0 DeviceLost=0 Executed=6498
+config-gles2-khr-main-cfg-6-run-0-width-64-height-64-seed-1-wgl.qpa Passed=440 Failed=0 NotSupported=33 Warnings=0 Waived=0 DeviceLost=0 Executed=473
+config-gles3-khr-main-cfg-6-run-1-width-64-height-64-seed-1-wgl.qpa Passed=6479 Failed=0 NotSupported=19 Warnings=0 Waived=0 DeviceLost=0 Executed=6498
+config-gles2-khr-main-cfg-7-run-0-width-64-height-64-seed-1-wgl.qpa Passed=440 Failed=0 NotSupported=33 Warnings=0 Waived=0 DeviceLost=0 Executed=473
+config-gles3-khr-main-cfg-7-run-1-width-64-height-64-seed-1-wgl.qpa Passed=6461 Failed=0 NotSupported=37 Warnings=0 Waived=0 DeviceLost=0 Executed=6498
+config-gles2-khr-main-cfg-8-run-0-width-64-height-64-seed-1-wgl.qpa Passed=440 Failed=0 NotSupported=33 Warnings=0 Waived=0 DeviceLost=0 Executed=473
+config-gles3-khr-main-cfg-8-run-1-width-64-height-64-seed-1-wgl.qpa Passed=6461 Failed=0 NotSupported=37 Warnings=0 Waived=0 DeviceLost=0 Executed=6498
+config-gles2-khr-main-cfg-9-run-0-width-64-height-64-seed-1-wgl.qpa Passed=440 Failed=0 NotSupported=33 Warnings=0 Waived=0 DeviceLost=0 Executed=473
+config-gles3-khr-main-cfg-9-run-1-width-64-height-64-seed-1-wgl.qpa Passed=6479 Failed=0 NotSupported=19 Warnings=0 Waived=0 DeviceLost=0 Executed=6498
+config-gles2-khr-main-cfg-10-run-0-width-64-height-64-seed-1-wgl.qpa Passed=440 Failed=0 NotSupported=33 Warnings=0 Waived=0 DeviceLost=0 Executed=473
+config-gles3-khr-main-cfg-10-run-1-width-64-height-64-seed-1-wgl.qpa Passed=6479 Failed=0 NotSupported=19 Warnings=0 Waived=0 DeviceLost=0 Executed=6498
+config-gles2-khr-main-cfg-31-run-0-width-64-height-64-seed-1-wgl.qpa Passed=440 Failed=0 NotSupported=33 Warnings=0 Waived=0 DeviceLost=0 Executed=473
+config-gles3-khr-main-cfg-31-run-1-width-64-height-64-seed-1-wgl.qpa Passed=6479 Failed=0 NotSupported=19 Warnings=0 Waived=0 DeviceLost=0 Executed=6498
+config-gles2-khr-main-cfg-32-run-0-width-64-height-64-seed-1-wgl.qpa Passed=440 Failed=0 NotSupported=33 Warnings=0 Waived=0 DeviceLost=0 Executed=473
+config-gles3-khr-main-cfg-32-run-1-width-64-height-64-seed-1-wgl.qpa Passed=6479 Failed=0 NotSupported=19 Warnings=0 Waived=0 DeviceLost=0 Executed=6498
+config-gles2-khr-main-cfg-33-run-0-width-64-height-64-seed-1-wgl.qpa Passed=440 Failed=0 NotSupported=33 Warnings=0 Waived=0 DeviceLost=0 Executed=473
+config-gles3-khr-main-cfg-33-run-1-width-64-height-64-seed-1-wgl.qpa Passed=6479 Failed=0 NotSupported=19 Warnings=0 Waived=0 DeviceLost=0 Executed=6498
+config-gles2-khr-main-cfg-34-run-0-width-64-height-64-seed-1-wgl.qpa Passed=440 Failed=0 NotSupported=33 Warnings=0 Waived=0 DeviceLost=0 Executed=473
+config-gles3-khr-main-cfg-34-run-1-width-64-height-64-seed-1-wgl.qpa Passed=6479 Failed=0 NotSupported=19 Warnings=0 Waived=0 DeviceLost=0 Executed=6498
+config-gles2-khr-main-cfg-35-run-0-width-64-height-64-seed-1-wgl.qpa Passed=440 Failed=0 NotSupported=33 Warnings=0 Waived=0 DeviceLost=0 Executed=473
+config-gles3-khr-main-cfg-35-run-1-width-64-height-64-seed-1-wgl.qpa Passed=6479 Failed=0 NotSupported=19 Warnings=0 Waived=0 DeviceLost=0 Executed=6498
+config-gles2-khr-main-cfg-36-run-0-width-64-height-64-seed-1-wgl.qpa Passed=440 Failed=0 NotSupported=33 Warnings=0 Waived=0 DeviceLost=0 Executed=473
+config-gles3-khr-main-cfg-36-run-1-width-64-height-64-seed-1-wgl.qpa Passed=6479 Failed=0 NotSupported=19 Warnings=0 Waived=0 DeviceLost=0 Executed=6498
+config-gles2-khr-main-cfg-37-run-0-width-64-height-64-seed-1-wgl.qpa Passed=440 Failed=0 NotSupported=33 Warnings=0 Waived=0 DeviceLost=0 Executed=473
+config-gles3-khr-main-cfg-37-run-1-width-64-height-64-seed-1-wgl.qpa Passed=6461 Failed=0 NotSupported=37 Warnings=0 Waived=0 DeviceLost=0 Executed=6498
+config-gles2-khr-main-cfg-38-run-0-width-64-height-64-seed-1-wgl.qpa Passed=440 Failed=0 NotSupported=33 Warnings=0 Waived=0 DeviceLost=0 Executed=473
+config-gles3-khr-main-cfg-38-run-1-width-64-height-64-seed-1-wgl.qpa Passed=6461 Failed=0 NotSupported=37 Warnings=0 Waived=0 DeviceLost=0 Executed=6498
+config-gles2-khr-main-cfg-39-run-0-width-64-height-64-seed-1-wgl.qpa Passed=440 Failed=0 NotSupported=33 Warnings=0 Waived=0 DeviceLost=0 Executed=473
+config-gles3-khr-main-cfg-39-run-1-width-64-height-64-seed-1-wgl.qpa Passed=6479 Failed=0 NotSupported=19 Warnings=0 Waived=0 DeviceLost=0 Executed=6498
+config-gles2-khr-main-cfg-40-run-0-width-64-height-64-seed-1-wgl.qpa Passed=440 Failed=0 NotSupported=33 Warnings=0 Waived=0 DeviceLost=0 Executed=473
+config-gles3-khr-main-cfg-40-run-1-width-64-height-64-seed-1-wgl.qpa Passed=6479 Failed=0 NotSupported=19 Warnings=0 Waived=0 DeviceLost=0 Executed=6498
+config-gles2-khr-main-cfg-61-run-0-width-64-height-64-seed-1-wgl.qpa Passed=440 Failed=0 NotSupported=33 Warnings=0 Waived=0 DeviceLost=0 Executed=473
+config-gles3-khr-main-cfg-61-run-1-width-64-height-64-seed-1-wgl.qpa Passed=6461 Failed=0 NotSupported=37 Warnings=0 Waived=0 DeviceLost=0 Executed=6498
+config-gles2-khr-main-cfg-62-run-0-width-64-height-64-seed-1-wgl.qpa Passed=440 Failed=0 NotSupported=33 Warnings=0 Waived=0 DeviceLost=0 Executed=473
+config-gles3-khr-main-cfg-62-run-1-width-64-height-64-seed-1-wgl.qpa Passed=6461 Failed=0 NotSupported=37 Warnings=0 Waived=0 DeviceLost=0 Executed=6498
