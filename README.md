@@ -9,6 +9,8 @@
 WineMetalGL is an OpenGL implementation on Metal for Wine on macOS 15 or newer. It installs into an unmodified Wine 11.x as a Wine module of its own, and gives Windows programs OpenGL 4.6 contexts, core or compatibility profile, instead of Apple's OpenGL: It runs x86_64 and i386 Windows programs together in a WoW64 prefix. Wine's Direct3D 10 and 11
 (wined3d), which draw through OpenGL, get feature level 11_1 on it
 
+WineMetalGL is in it's early development stages. Please report any issues with an attached log and / or screenshot when problems arrive. 
+
 ([Test suite](docs/testing.md#direct3d-through-wined3d))
 
 It also gives OpenGL ES 2.0, 3.0, 3.1 and 3.2 contexts
