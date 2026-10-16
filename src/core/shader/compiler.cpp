@@ -387,6 +387,31 @@ std::string voidFragmentWithSampleMask(const std::string& msl) {
 
 }  // namespace
 
+std::string fragmentSampleMaskInPerSample(const std::string& msl) {
+    for (const char* signature : {"fragment main0_out main0(", "fragment void main0("}) {
+        const size_t fn = msl.find(signature);
+        if (fn == std::string::npos) continue;
+        // The parameter list's closing parenthesis ([[buffer(N)]] has its own).
+        size_t close = fn + std::strlen(signature);
+        for (int depth = 1; close < msl.size() && depth; ++close) depth += msl[close] == '(' ? 1 : msl[close] == ')' ? -1 : 0;
+        const std::string parameters = msl.substr(fn, close - fn);
+        // A parameter's name: the word before its attribute.
+        auto named = [&](const char* attribute) {
+            const size_t at = parameters.find(attribute);
+            if (at == std::string::npos) return std::string();
+            const size_t end = parameters.find_last_not_of(' ', at - 1) + 1;
+            const size_t begin = parameters.rfind(' ', end - 1) + 1;
+            return parameters.substr(begin, end - begin);
+        };
+        const std::string mask = named(" [[sample_mask]]"), sample = named(" [[sample_id]]");
+        if (mask.empty() || sample.empty()) return msl;
+        std::string out = msl;
+        out.insert(out.find('{', close) + 1, "\n    " + mask + " &= (1u << " + sample + ");");
+        return out;
+    }
+    return msl;
+}
+
 std::string fragmentAtSampleRate(const std::string& msl) {
     std::string out = msl;
     // Interpolated (floating-point, not flat) inputs move to the sample.
@@ -421,7 +446,7 @@ std::string fragmentAtSampleRate(const std::string& msl) {
         const size_t open = fn + std::strlen(signature) - 1;
         const bool noParameters = out[open + 1] == ')';
         out.insert(open + 1, std::string("uint wmgl_sample_rate [[sample_id]]") + (noParameters ? "" : ", "));
-        return out;
+        return fragmentSampleMaskInPerSample(out);
     }
     return std::string();
 }
@@ -487,8 +512,11 @@ std::string fragmentCountingInvocations(const std::string& msl) {
 std::string fragmentWithSampleMask(const std::string& msl) {
     const std::string signature = "fragment main0_out main0(", member = "struct main0_out\n{\n";
     const size_t structAt = msl.find(member);
-    const size_t written = msl.find(" [[sample_mask]]");
-    if (written != std::string::npos && (structAt == std::string::npos || written < structAt)) return std::string();
+    // The shader's own mask output: a [[sample_mask]] member of main0_out (a
+    // [[sample_mask]] parameter is gl_SampleMaskIn).
+    const size_t structEnd = structAt == std::string::npos ? std::string::npos : msl.find("};", structAt);
+    size_t written = structAt == std::string::npos ? std::string::npos : msl.find(" [[sample_mask]]", structAt);
+    if (written != std::string::npos && written > structEnd) written = std::string::npos;
     if (structAt == std::string::npos || msl.find(signature) == std::string::npos || structAt > msl.find(signature))
         return voidFragmentWithSampleMask(msl);
     std::string out = msl;
@@ -3979,6 +4007,7 @@ static LinkResult linkImplCore(const LinkInput& input, const CaptureCode* captur
             if (s == static_cast<int>(Stage::Fragment)) {
                 stage.usesPointCoord = patchPointCoord(stage.msl);
                 stage.flatInputs = hasFlatInputs(stage.msl);
+                stage.msl = fragmentSampleMaskInPerSample(stage.msl);
             }
             // WINEMETALGL_DUMP_SHADERS=1 prints every generated MSL stage (debugging aid).
             static const bool dump = [] {

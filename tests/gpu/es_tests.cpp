@@ -1269,3 +1269,120 @@ GPU_TEST_ES(gpu_es_sample_mask_with_shader_mask, 32) {
     glDeleteVertexArrays(1, &vao);
     glDeleteProgram(prog);
 }
+
+// A fragment shader run per sample sees only its own sample in
+// gl_SampleMaskIn, both when it reads gl_SampleID and under
+// GL_SAMPLE_SHADING.
+GPU_TEST_ES(gpu_es_sample_mask_in_per_sample, 32) {
+    const char* vs = "#version 320 es\nlayout(location = 0) in vec2 p;\nvoid main() { gl_Position = vec4(p, 0.0, 1.0); }\n";
+    GLuint bySampleId = program(vs, "#version 320 es\nprecision mediump float;\nlayout(location = 0) out vec4 o;\n"
+                                    "void main() { highp float id = float(gl_SampleID);\n"
+                                    "    o = vec4(bitCount(gl_SampleMaskIn[0]) == 1 ? 0.0 : 1.0, 1.0, id * 0.0, 1.0); }\n");
+    GLuint byShading = program(vs, "#version 320 es\nprecision mediump float;\nlayout(location = 0) out vec4 o;\n"
+                                   "void main() { o = vec4(bitCount(gl_SampleMaskIn[0]) == 1 ? 0.0 : 1.0, 1.0, 0.0, 1.0); }\n");
+    GLuint vao = quad();
+    GLuint ms = 0, single = 0, msFb = 0, singleFb = 0;
+    glGenRenderbuffers(1, &ms);
+    glBindRenderbuffer(GL_RENDERBUFFER, ms);
+    glRenderbufferStorageMultisample(GL_RENDERBUFFER, 4, GL_RGBA8, 16, 16);
+    glGenFramebuffers(1, &msFb);
+    glGenRenderbuffers(1, &single);
+    glBindRenderbuffer(GL_RENDERBUFFER, single);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8, 16, 16);
+    glGenFramebuffers(1, &singleFb);
+    glBindFramebuffer(GL_FRAMEBUFFER, singleFb);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, single);
+    for (const bool shading : {false, true}) {
+        glBindFramebuffer(GL_FRAMEBUFFER, msFb);
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, ms);
+        glViewport(0, 0, 16, 16);
+        glClearColor(0, 0, 0, 1);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glUseProgram(shading ? byShading : bySampleId);
+        if (shading) {
+            glEnable(GL_SAMPLE_SHADING);
+            reinterpret_cast<PFN_glMinSampleShading>(wmgl_get_proc_address("glMinSampleShading"))(0.5f);
+        }
+        glBindVertexArray(vao);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        glDisable(GL_SAMPLE_SHADING);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, singleFb);
+        glBlitFramebuffer(0, 0, 16, 16, 0, 0, 16, 16, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, singleFb);
+        const uint8_t green[4] = {0, 255, 0, 255};
+        const std::vector<uint8_t> got = readRGBA8(8, 8, 1, 1);
+        CHECK(near(got.data(), green, 2));
+        if (!near(got.data(), green, 2)) std::fprintf(stderr, "  shading=%d: %d %d %d\n", shading, got[0], got[1], got[2]);
+        CHECK_GL();
+    }
+    // Reading gl_SampleMaskIn is not writing a mask: single-sample targets draw too.
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glViewport(0, 0, 64, 64);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glUseProgram(byShading);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    const uint8_t green[4] = {0, 255, 0, 255};
+    CHECK(near(readRGBA8(32, 32, 1, 1).data(), green, 2));
+    glDeleteFramebuffers(1, &msFb);
+    glDeleteFramebuffers(1, &singleFb);
+    glDeleteRenderbuffers(1, &ms);
+    glDeleteRenderbuffers(1, &single);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(bySampleId);
+    glDeleteProgram(byShading);
+}
+
+// OpenGL ES 3.1 with GL_OES_sample_shading at 0.5: each invocation covers
+// at most numSamples - ceil(numSamples / 2) + 1 samples.
+GPU_TEST_ES(gpu_es31_sample_mask_in_half_rate, 31) {
+    GLuint prog = program("#version 310 es\nlayout(location = 0) in vec2 p;\nvoid main() { gl_Position = vec4(p, 0.0, 1.0); }\n",
+                          "#version 310 es\n#extension GL_OES_sample_variables : require\n"
+                          "layout(location = 0) out mediump vec4 fragColor;\n"
+                          "uniform highp int u_minBitCount;\nuniform highp int u_maxBitCount;\n"
+                          "void main (void)\n{\n    mediump int maskBitCount = 0;\n"
+                          "    for (int i = 0; i < 32; ++i)\n"
+                          "        if (((gl_SampleMaskIn[0] >> i) & 0x01) == 0x01)\n            ++maskBitCount;\n"
+                          "    if (maskBitCount < u_minBitCount || maskBitCount > u_maxBitCount)\n"
+                          "        fragColor = vec4(1.0, 0.0, 0.0, 1.0);\n    else\n"
+                          "        fragColor = vec4(0.0, 1.0, 0.0, 1.0);\n}\n");
+    GLuint vao = quad();
+    GLuint ms = 0, single = 0, msFb = 0, singleFb = 0;
+    glGenRenderbuffers(1, &ms);
+    glBindRenderbuffer(GL_RENDERBUFFER, ms);
+    glRenderbufferStorageMultisample(GL_RENDERBUFFER, 4, GL_RGBA8, 16, 16);
+    glGenFramebuffers(1, &msFb);
+    glBindFramebuffer(GL_FRAMEBUFFER, msFb);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, ms);
+    glViewport(0, 0, 16, 16);
+    glClearColor(0, 0, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glUseProgram(prog);
+    glUniform1i(glGetUniformLocation(prog, "u_minBitCount"), 1);
+    glUniform1i(glGetUniformLocation(prog, "u_maxBitCount"), 3);
+    glEnable(GL_SAMPLE_SHADING);
+    reinterpret_cast<PFN_glMinSampleShading>(wmgl_get_proc_address("glMinSampleShadingOES"))(0.5f);
+    glBindVertexArray(vao);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glDisable(GL_SAMPLE_SHADING);
+    glGenRenderbuffers(1, &single);
+    glBindRenderbuffer(GL_RENDERBUFFER, single);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8, 16, 16);
+    glGenFramebuffers(1, &singleFb);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, singleFb);
+    glFramebufferRenderbuffer(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, single);
+    glBlitFramebuffer(0, 0, 16, 16, 0, 0, 16, 16, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, singleFb);
+    const uint8_t green[4] = {0, 255, 0, 255};
+    const std::vector<uint8_t> got = readRGBA8(8, 8, 1, 1);
+    CHECK(near(got.data(), green, 2));
+    if (!near(got.data(), green, 2)) std::fprintf(stderr, "  got %d %d %d\n", got[0], got[1], got[2]);
+    CHECK_GL();
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glViewport(0, 0, 64, 64);
+    glDeleteFramebuffers(1, &msFb);
+    glDeleteFramebuffers(1, &singleFb);
+    glDeleteRenderbuffers(1, &ms);
+    glDeleteRenderbuffers(1, &single);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(prog);
+}

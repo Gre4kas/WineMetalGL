@@ -484,6 +484,11 @@ std::string fragmentWithAdvancedBlend(const std::string& msl, unsigned equation)
 // has no output struct).
 std::string fragmentWithSampleMask(const std::string& msl);
 
+// A fragment function run per sample (it takes [[sample_id]]) sees only its
+// own sample in gl_SampleMaskIn (GLSL ES 3.20 section 7.1.5); Metal gives
+// the pixel's coverage. Unchanged without both inputs.
+std::string fragmentSampleMaskInPerSample(const std::string& msl);
+
 // GL_SAMPLE_SHADING: the fragment function run once per sample (it takes
 // [[sample_id]]) with its interpolated inputs evaluated at the sample.
 std::string fragmentAtSampleRate(const std::string& msl);
