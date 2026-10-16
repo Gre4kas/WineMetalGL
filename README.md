@@ -39,26 +39,35 @@ WineMetalGL module: an OpenGL 4.6 compatibility context on an Apple M4.
 <!-- BEGIN GENERATED: totals (scripts/docs/generate.py) -->
 ## Conformance totals
 
-| OpenGL | Conformance % | Unsupported % |
-|---|---:|---:|
-| 3.0 | 99.88% | 2.28% |
-| 3.1 | 100% | 2.38% |
-| 3.2 | 100% | 0.69% |
-| 3.3 | 100% | 1.11% |
-| 4.0 | 99.99% | 10.11% |
-| 4.1 | 99.99% | 10.08% |
-| 4.2 | 99.98% | 9.74% |
-| 4.3 | 99.97% | 15.60% |
-| 4.4 | covered by KHR-GL46 | - |
-| 4.5 | covered by KHR-GL46 | - |
-| 4.6 | 99.98% | 22.33% |
-
-| GLES | Conformance % | Unsupported % |
-|---|---:|---:|
-| 2.0 | 100% | 0.60% |
-| 3.0 | 100% | 0.83% |
-| 3.1 | 99.98% | 1.24% |
-| 3.2 | 99.95% | 0.64% |
+<table>
+<tr>
+<td valign="top">
+<table>
+<tr><th align="left">OpenGL</th><th align="right">Conformance %</th><th align="right">Unsupported %</th></tr>
+<tr><td>3.0</td><td align="right">99.88%</td><td align="right">2.28%</td></tr>
+<tr><td>3.1</td><td align="right">100%</td><td align="right">2.38%</td></tr>
+<tr><td>3.2</td><td align="right">100%</td><td align="right">0.69%</td></tr>
+<tr><td>3.3</td><td align="right">100%</td><td align="right">1.11%</td></tr>
+<tr><td>4.0</td><td align="right">99.99%</td><td align="right">10.11%</td></tr>
+<tr><td>4.1</td><td align="right">99.99%</td><td align="right">10.08%</td></tr>
+<tr><td>4.2</td><td align="right">99.98%</td><td align="right">9.74%</td></tr>
+<tr><td>4.3</td><td align="right">99.97%</td><td align="right">15.60%</td></tr>
+<tr><td>4.4</td><td align="right">covered by KHR-GL46</td><td align="right">-</td></tr>
+<tr><td>4.5</td><td align="right">covered by KHR-GL46</td><td align="right">-</td></tr>
+<tr><td>4.6</td><td align="right">99.98%</td><td align="right">22.33%</td></tr>
+</table>
+</td>
+<td valign="top">
+<table>
+<tr><th align="left">GLES</th><th align="right">Conformance %</th><th align="right">Unsupported %</th></tr>
+<tr><td>2.0</td><td align="right">100%</td><td align="right">0.60%</td></tr>
+<tr><td>3.0</td><td align="right">100%</td><td align="right">0.83%</td></tr>
+<tr><td>3.1</td><td align="right">99.98%</td><td align="right">1.24%</td></tr>
+<tr><td>3.2</td><td align="right">99.95%</td><td align="right">0.64%</td></tr>
+</table>
+</td>
+</tr>
+</table>
 
 **Conformance %**: passing cases over applicable cases (cases that are not NotSupported) of the version's Khronos CTS mustpass lists (OpenGL: the worst of its runs; GLES: its lists together). **Unsupported %**: cases the CTS reports NotSupported because WineMetalGL does not offer what they test. Each version's features, what is supported and every run: [Conformance results](docs/conformance.md#conformance-totals).
 
