@@ -1,8 +1,10 @@
-# WineMetalGL
+<h1 align="center">WineMetalGL</h1>
 
-[![Metal](https://github.com/metalsharp/WineMetalGL/actions/workflows/metal.yml/badge.svg)](https://github.com/metalsharp/WineMetalGL/actions/workflows/metal.yml)
-[![Build](https://github.com/metalsharp/WineMetalGL/actions/workflows/build.yml/badge.svg)](https://github.com/metalsharp/WineMetalGL/actions/workflows/build.yml)
-[![CodeQL](https://github.com/metalsharp/WineMetalGL/actions/workflows/codeql.yml/badge.svg)](https://github.com/metalsharp/WineMetalGL/actions/workflows/codeql.yml)
+<p align="center">
+  <a href="https://github.com/metalsharp/WineMetalGL/actions/workflows/metal.yml"><img alt="Metal" src="https://img.shields.io/github/actions/workflow/status/metalsharp/WineMetalGL/metal.yml?branch=main&label=Metal&color=purple"></a>
+  <a href="https://github.com/metalsharp/WineMetalGL/actions/workflows/build.yml"><img alt="WineMetalGL build" src="https://img.shields.io/github/actions/workflow/status/metalsharp/WineMetalGL/build.yml?branch=main&label=WineMetalGL&color=lightblue"></a>
+  <a href="https://github.com/metalsharp/WineMetalGL/actions/workflows/codeql.yml"><img alt="CodeQL" src="https://img.shields.io/github/actions/workflow/status/metalsharp/WineMetalGL/codeql.yml?branch=main&label=CodeQL&color=white"></a>
+</p>
 
 WineMetalGL is an OpenGL implementation on Metal for Wine on macOS 15 or newer. It installs into an unmodified Wine 11.x as a Wine module of its own, and gives Windows programs OpenGL 4.6 contexts, core or compatibility profile, instead of Apple's OpenGL: It runs x86_64 and i386 Windows programs together in a WoW64 prefix. Wine's Direct3D 10 and 11
 (wined3d), which draw through OpenGL, get feature level 11_1 on it
