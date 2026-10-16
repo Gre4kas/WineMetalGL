@@ -44,7 +44,8 @@ void Context::initEsStrings() {
          "GL_EXT_texture_sRGB_RG8", "GL_EXT_texture_norm16",
          "GL_EXT_render_snorm", "GL_EXT_texture_mirror_clamp_to_edge",
          "GL_EXT_depth_clamp", "GL_EXT_texture_shadow_lod"});
-    if (Device::get().caps().astcTextures) add({"GL_KHR_texture_compression_astc_ldr"});
+    if (Device::get().caps().astcTextures)
+        add({"GL_KHR_texture_compression_astc_ldr", "GL_KHR_texture_compression_astc_sliced_3d"});
     // Advanced blending in the fragment function (framebuffer fetch, which
     // sees every earlier fragment's result: coherent).
     if (Device::get().caps().framebufferFetch)

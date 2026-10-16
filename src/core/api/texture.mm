@@ -478,9 +478,12 @@ bool formatAllowedOnTarget(const FormatInfo& info, GLenum target) {
     if (info.isDepthOrStencil())
         return target != GL_TEXTURE_3D;
     if (info.compressed)
+        // 3D: BPTC, and ASTC (GL_KHR_texture_compression_astc_sliced_3d: 2D
+        // blocks per slice, Metal's 3D ASTC textures).
         return target == GL_TEXTURE_2D || target == GL_TEXTURE_2D_ARRAY || target == GL_TEXTURE_CUBE_MAP ||
-               target == GL_TEXTURE_CUBE_MAP_ARRAY || (target == GL_TEXTURE_3D && info.storage >= Storage::BC6H_RGBFloat &&
-                                                       info.storage <= Storage::BC7_RGBAUnorm_sRGB);
+               target == GL_TEXTURE_CUBE_MAP_ARRAY ||
+               (target == GL_TEXTURE_3D && ((info.storage >= Storage::BC6H_RGBFloat && info.storage <= Storage::BC7_RGBAUnorm_sRGB) ||
+                                           storageIsAstc(info.storage)));
     return true;
 }
 

@@ -1610,3 +1610,47 @@ GPU_TEST_ES(gpu_es_image_atomic_exchange_r32f, 31) {
     glDeleteProgram(prog);
     glDeleteShader(shader);
 }
+
+// GL_KHR_texture_compression_astc_sliced_3d: ASTC 3D textures, 2D blocks per
+// slice (Metal's 3D ASTC textures).
+GPU_TEST_ES(gpu_es_astc_sliced_3d, 32) {
+    // ASTC void-extent blocks: one LDR color each (16-bit RGBA after the header).
+    auto block = [](uint16_t r, uint16_t g, uint16_t b, uint16_t a) {
+        std::vector<uint8_t> v = {0xFC, 0xFD, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+        for (uint16_t c : {r, g, b, a}) v.push_back(static_cast<uint8_t>(c & 0xff)), v.push_back(static_cast<uint8_t>(c >> 8));
+        return v;
+    };
+    std::vector<uint8_t> data;
+    for (int slice = 0; slice < 2; ++slice)
+        for (int i = 0; i < 4; ++i) {
+            const std::vector<uint8_t> b = slice == 0 ? block(0xffff, 0, 0, 0xffff) : block(0, 0xffff, 0, 0xffff);
+            data.insert(data.end(), b.begin(), b.end());
+        }
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_3D, tex);
+    glTexStorage3D(GL_TEXTURE_3D, 1, 0x93B0 /* GL_COMPRESSED_RGBA_ASTC_4x4_KHR */, 8, 8, 2);
+    CHECK_GL();
+    reinterpret_cast<PFN_glCompressedTexSubImage3D>(wmgl_get_proc_address("glCompressedTexSubImage3D"))(
+        GL_TEXTURE_3D, 0, 0, 0, 0, 8, 8, 2, 0x93B0, static_cast<GLsizei>(data.size()), data.data());
+    CHECK_GL();
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    GLuint prog = program("#version 320 es\nlayout(location = 0) in vec2 p;\nvoid main() { gl_Position = vec4(p, 0.0, 1.0); }\n",
+                          "#version 320 es\nprecision highp float;\nuniform highp sampler3D s;\nuniform float z;\nout vec4 o;\n"
+                          "void main() { o = texture(s, vec3(0.5, 0.5, z)); }\n");
+    GLuint vao = quad();
+    glUseProgram(prog);
+    for (const float z : {0.25f, 0.75f}) {
+        glUniform1f(glGetUniformLocation(prog, "z"), z);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        const uint8_t want[4] = {static_cast<uint8_t>(z < 0.5f ? 255 : 0), static_cast<uint8_t>(z < 0.5f ? 0 : 255), 0, 255};
+        const std::vector<uint8_t> got = readRGBA8(32, 32, 1, 1);
+        CHECK(near(got.data(), want, 2));
+        if (!near(got.data(), want, 2)) std::fprintf(stderr, "  z %g: %d %d %d %d\n", z, got[0], got[1], got[2], got[3]);
+    }
+    CHECK_GL();
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(prog);
+    glDeleteTextures(1, &tex);
+}
