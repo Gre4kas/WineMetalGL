@@ -689,6 +689,26 @@ std::string shadingRateBuiltinsAs1x1(const std::string& glsl) {
     return out;
 }
 
+// SPIRV-Cross fences a read_write texture after its writes but not after its
+// atomics: a thread that adds to a texel atomically and then reads it may
+// not see its own add on Apple GPUs (GL's coherent images and program order
+// require it). Each statement with a texture atomic gets the texture's fence.
+std::string fenceTextureAtomics(const std::string& msl) {
+    if (msl.find(".atomic_") == std::string::npos) return msl;
+    static const std::regex kAtomic(R"(\b(\w+)(\[[^\]]*\])?\.atomic_(fetch_\w+|exchange|compare_exchange_weak|store|load)\()");
+    std::string out;
+    size_t at = 0;
+    for (auto it = std::sregex_iterator(msl.begin(), msl.end(), kAtomic); it != std::sregex_iterator(); ++it) {
+        const size_t end = msl.find(";\n", static_cast<size_t>(it->position(0)));
+        if (end == std::string::npos || end < at) continue;
+        out.append(msl, at, end + 1 - at);
+        out += " " + (*it)[1].str() + (*it)[2].str() + ".fence();";
+        at = end + 1;
+    }
+    out.append(msl, at, std::string::npos);
+    return out;
+}
+
 std::string floatImageAtomicsAsUint(const std::string& glsl) {
     if (glsl.find("imageAtomicExchange") == std::string::npos) return glsl;
     static const std::regex kDecl(
@@ -4208,7 +4228,7 @@ static LinkResult linkImplCore(const LinkInput& input, const CaptureCode* captur
                 instanceIdFromZero(stage.mslNoRaster);
                 continue;
             }
-            stage.msl = finishFp64Msl(msl.compile());
+            stage.msl = fenceTextureAtomics(finishFp64Msl(msl.compile()));
             addDefaultBorderMacros(stage.msl);
             // Samplers read through filtering lookups (SamplerSlotInfo::sampled).
             for (const auto& [id, slots] : samplerSlotsById) {

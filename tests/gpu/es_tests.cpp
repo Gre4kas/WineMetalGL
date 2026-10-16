@@ -1719,3 +1719,60 @@ GPU_TEST_ES(gpu_es_fragment_shading_rate_1x1, 32) {
     glDeleteVertexArrays(1, &vao);
     glDeleteProgram(prog);
 }
+
+// A compute invocation that stores to a texel, adds to it atomically and
+// reads it back sees its own store and add (texture fences between them).
+GPU_TEST_ES(gpu_es_image_store_atomic_load_same_texel, 31) {
+    const char* source =
+        "#version 310 es\n#extension GL_OES_shader_image_atomic : enable\n"
+        "layout(local_size_x = 8, local_size_y = 8) in;\n"
+        "layout(r32ui, binding=0) coherent uniform mediump uimage2D g_image1;\n"
+        "layout(r32ui, binding=1) uniform mediump uimage2D g_image2;\n"
+        "void main() {\n"
+        "  uvec4 color = uvec4(gl_GlobalInvocationID.x + gl_GlobalInvocationID.y);\n"
+        "  imageStore(g_image1, ivec2(gl_GlobalInvocationID), uvec4(0));\n"
+        "  imageAtomicAdd(g_image1, ivec2(gl_GlobalInvocationID), color.x);\n"
+        "  uvec4 c = imageLoad(g_image1, ivec2(gl_GlobalInvocationID));\n"
+        "  imageStore(g_image2, ivec2(gl_GlobalInvocationID), c);\n"
+        "}\n";
+    GLuint shader = glCreateShader(GL_COMPUTE_SHADER);
+    glShaderSource(shader, 1, &source, nullptr);
+    glCompileShader(shader);
+    GLuint prog = glCreateProgram();
+    glAttachShader(prog, shader);
+    glLinkProgram(prog);
+    GLint linked = 0;
+    glGetProgramiv(prog, GL_LINK_STATUS, &linked);
+    CHECK_EQ(linked, GL_TRUE);
+    GLuint tex[2] = {};
+    glGenTextures(2, tex);
+    for (GLuint t : tex) {
+        glBindTexture(GL_TEXTURE_2D, t);
+        glTexStorage2D(GL_TEXTURE_2D, 1, GL_R32UI, 64, 64);
+    }
+    glBindImageTexture(0, tex[0], 0, GL_FALSE, 0, GL_READ_WRITE, GL_R32UI);
+    glBindImageTexture(1, tex[1], 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_R32UI);
+    glUseProgram(prog);
+    int bad = 0;
+    for (int run = 0; run < 20 && !bad; ++run) {
+        glDispatchCompute(8, 8, 1);
+        glMemoryBarrier(GL_ALL_BARRIER_BITS);
+        GLuint fb = 0;
+        glGenFramebuffers(1, &fb);
+        glBindFramebuffer(GL_FRAMEBUFFER, fb);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex[1], 0);
+        std::vector<GLuint> px(64 * 64 * 4);
+        glReadPixels(0, 0, 64, 64, GL_RGBA_INTEGER, GL_UNSIGNED_INT, px.data());
+        for (int y = 0; y < 64; ++y)
+            for (int x = 0; x < 64; ++x)
+                if (px[static_cast<size_t>((y * 64 + x) * 4)] != static_cast<GLuint>(x + y) && bad++ < 3)
+                    std::fprintf(stderr, "  run %d (%d, %d): %u, want %d\n", run, x, y, px[static_cast<size_t>((y * 64 + x) * 4)], x + y);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glDeleteFramebuffers(1, &fb);
+    }
+    CHECK_EQ(bad, 0);
+    CHECK_GL();
+    glDeleteTextures(2, tex);
+    glDeleteProgram(prog);
+    glDeleteShader(shader);
+}
