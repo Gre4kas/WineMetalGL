@@ -927,13 +927,24 @@ def render(suites, es_suites):
     blocks[("docs/testing.md", "cts-times")] = "\n".join(t)
 
     # ---- README.md: conformance totals (the full tables are in docs/conformance.md).
-    lines = ["## Conformance totals", "", "| OpenGL | Conformance % | Unsupported % |", "|---|---:|---:|"]
-    lines += ["| %s | %s | %s |" % (version, conformance_cell, unsupported_cell)
-              for version, conformance_cell, _, unsupported_cell in gl_rows]
-    lines += ["", "| GLES | Conformance % | Unsupported % |", "|---|---:|---:|"]
-    lines += ["| %s | %s | %s |" % (version, conformance_cell, unsupported_cell)
-              for version, conformance_cell, _, unsupported_cell in es_rows]
-    lines += ["",
+    # The OpenGL and GLES tables side by side: HTML tables in a two-cell
+    # layout table, as Markdown tables inside HTML render on GitHub but not
+    # in every Markdown viewer.
+    def totals_table(api, rows):
+        out = ["<table>",
+               '<tr><th align="left">%s</th><th align="right">Conformance %%</th>'
+               '<th align="right">Unsupported %%</th></tr>' % api]
+        out += ['<tr><td>%s</td><td align="right">%s</td><td align="right">%s</td></tr>'
+                % (version, conformance_cell, unsupported_cell)
+                for version, conformance_cell, _, unsupported_cell in rows]
+        return out + ["</table>"]
+
+    lines = ["## Conformance totals", "", "<table>", "<tr>", '<td valign="top">']
+    lines += totals_table("OpenGL", gl_rows)
+    lines += ["</td>", '<td valign="top">']
+    lines += totals_table("GLES", es_rows)
+    lines += ["</td>", "</tr>", "</table>",
+              "",
               "**Conformance %**: passing cases over applicable cases (cases that are not NotSupported) of the "
               "version's Khronos CTS mustpass lists (OpenGL: the worst of its runs; GLES: its lists together). "
               "**Unsupported %**: cases the CTS "
