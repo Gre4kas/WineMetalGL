@@ -52,6 +52,11 @@ final class Installations: ObservableObject {
 
     var bottles: [WineTarget] { targets.filter { $0.kind == .crossover } }
     var anyInstalled: Bool { targets.contains { $0.installed } }
+    /// An install button shows only until that kind of install exists: a
+    /// bottle with WineMetalGL hides Install into CrossOver (as does having no
+    /// bottles), a prefix with it Install Normally.
+    var offersCrossOver: Bool { !bottles.isEmpty && !bottles.contains { $0.installed } }
+    var offersNormal: Bool { !targets.contains { $0.kind == .prefix && $0.installed } }
 
     init() { refresh() }
 
@@ -260,30 +265,34 @@ struct InstallationsCard: View {
                 }
                 .frame(height: min(CGFloat(installations.targets.count) * 40, 168))
             }
-            HStack(spacing: 8) {
-                Menu {
-                    ForEach(installations.bottles) { bottle in
-                        Button(bottle.installed ? "\(bottle.name) (again)" : bottle.name) {
-                            installations.installCrossOver(bottle)
+            if installations.offersCrossOver || installations.offersNormal {
+                HStack(spacing: 8) {
+                    if installations.offersCrossOver {
+                        Menu {
+                            ForEach(installations.bottles) { bottle in
+                                Button(bottle.name) { installations.installCrossOver(bottle) }
+                            }
+                        } label: {
+                            Label("Install into CrossOver", systemImage: "wineglass")
                         }
+                        .glassButton(prominent: !installations.anyInstalled)
+                        .fixedSize()
+                        .disabled(installations.installer == nil || installations.busy != nil)
+                        .help("Choose a bottle.")
                     }
-                } label: {
-                    Label("Install into CrossOver", systemImage: "wineglass")
+                    if installations.offersNormal {
+                        Button {
+                            installations.installNormally()
+                        } label: {
+                            Label("Install Normally", systemImage: "square.and.arrow.down")
+                        }
+                        .glassButton(prominent: !installations.anyInstalled)
+                        .disabled(installations.installer == nil || installations.busy != nil)
+                        .help("Choose a Wine and a prefix.")
+                    }
                 }
-                .glassButton(prominent: !installations.anyInstalled)
-                .fixedSize()
-                .disabled(installations.installer == nil || installations.bottles.isEmpty || installations.busy != nil)
-                .help(installations.bottles.isEmpty ? "No CrossOver bottles found." : "Choose a bottle.")
-                Button {
-                    installations.installNormally()
-                } label: {
-                    Label("Install Normally", systemImage: "square.and.arrow.down")
-                }
-                .glassButton(prominent: !installations.anyInstalled)
-                .disabled(installations.installer == nil || installations.busy != nil)
-                .help("Choose a Wine and a prefix.")
             }
-            if installations.installer == nil {
+            if installations.installer == nil && (installations.offersCrossOver || installations.offersNormal) {
                 Text("This build of WineMetalGL Settings carries no WineMetalGL to install.")
                     .font(.footnote)
                     .foregroundStyle(.tertiary)
