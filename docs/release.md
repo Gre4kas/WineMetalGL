@@ -59,6 +59,9 @@ two archives, the install scripts and `SHA256SUMS.txt`:
   OUTPUT`, the arm64 core with the driver ABI header. Its evidence is the
   native runs (the core built for the build machine); the Wine module is
   built for x86_64 Wine only, so it has not yet run inside an arm64 Wine.
+- `WineMetalGL-Settings-<version>.zip`: WineMetalGL Settings.app, signed and
+  notarized, built on macOS 26 by the workflow's `settings-app` job with the
+  x86_64 release inside it (see `docs/building.md`, WineMetalGL Settings).
 
 The two cores are not interchangeable: a library of the other architecture
 does not load.
