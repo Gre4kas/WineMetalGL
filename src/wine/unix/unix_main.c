@@ -64,6 +64,7 @@ static BOOL load_core(void)
     LOAD(max_versions, "wmgl_max_versions");
 #undef LOAD
     *(void **)&wmgl.version = dlsym( handle, "wmgl_version" );
+    *(void **)&wmgl.surface_set_output = dlsym( handle, "wmgl_surface_set_output" );
     if (!dlsym( handle, "wmgl_log_write" ))
         WMGL_ERR( "this WineMetalGL core is older than the module (it has no log): messages go to stderr\n" );
     if (wmgl.initialize( WMGL_DRIVER_ABI_VERSION ))

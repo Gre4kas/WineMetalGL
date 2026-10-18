@@ -353,17 +353,35 @@ void dumpFrame(CommandStream& stream, id<MTLTexture> color, int width, int heigh
 
 void Surface::sizeDrawable() {
     if (!layer_) return;
-    layer_.drawableSize = CGSizeMake(std::lround(width_ * upscale_), std::lround(height_ * upscale_));
+    const int width = outputWidth_ > 0 ? outputWidth_ : width_, height = outputHeight_ > 0 ? outputHeight_ : height_;
+    layer_.drawableSize = CGSizeMake(std::lround(width * upscale_), std::lround(height * upscale_));
+}
+
+void Surface::setOutputSize(int width, int height) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (width == outputWidth_ && height == outputHeight_) return;
+    WMGL_INFO(Surface, "output %dx%d for a %dx%d back buffer", width, height, width_, height_);
+    outputWidth_ = width;
+    outputHeight_ = height;
+    sizeDrawable();
 }
 
 // Called by the thread presenting (the mailbox presenter for interval 0).
-id<MTLTexture> Surface::upscale(id<MTLCommandBuffer> commandBuffer, id<MTLTexture> source) {
-    if (upscale_ <= 1.0f || upscaleFailed_) return source;
-    const NSUInteger outWidth = static_cast<NSUInteger>(std::lround(source.width * upscale_));
-    const NSUInteger outHeight = static_cast<NSUInteger>(std::lround(source.height * upscale_));
+id<MTLTexture> Surface::upscale(id<MTLCommandBuffer> commandBuffer, id<MTLTexture> source, NSUInteger outWidth,
+                                NSUInteger outHeight) {
+    if (upscaleFailed_ || (outWidth == source.width && outHeight == source.height)) return source;
+    // MetalFX only scales up.
+    if (outWidth < source.width || outHeight < source.height) return source;
+    static const bool supported = [MTLFXSpatialScalerDescriptor supportsDevice:Device::get().mtl()];
+    if (!supported) {
+        WMGL_WARN(Surface, "MetalFX spatial upscaling is not supported on this device; frames are stretched");
+        upscaleFailed_ = true;
+        return source;
+    }
     id<MTLFXSpatialScaler> scaler = upscaler_;
     if (!scaler || scaler.inputWidth != source.width || scaler.inputHeight != source.height ||
-        scaler.colorTextureFormat != source.pixelFormat || scaler.outputWidth != outWidth) {
+        scaler.colorTextureFormat != source.pixelFormat || scaler.outputWidth != outWidth ||
+        scaler.outputHeight != outHeight) {
         MTLFXSpatialScalerDescriptor* desc = [MTLFXSpatialScalerDescriptor new];
         desc.inputWidth = source.width;
         desc.inputHeight = source.height;
@@ -416,7 +434,9 @@ void Surface::ensurePresentPipeline() {
     presentPipeline_ = [Device::get().mtl() newRenderPipelineStateWithDescriptor:desc error:&error];
     if (!presentPipeline_) WMGL_ERR(Pipeline, "present pipeline: %s", error.localizedDescription.UTF8String);
     MTLSamplerDescriptor* s = [MTLSamplerDescriptor new];
-    s.minFilter = s.magFilter = MTLSamplerMinMagFilterNearest;
+    // Linear: a back buffer MetalFX did not scale is stretched over the
+    // drawable (the same pixels when the sizes match).
+    s.minFilter = s.magFilter = MTLSamplerMinMagFilterLinear;
     presentSampler_ = [Device::get().mtl() newSamplerStateWithDescriptor:s];
 }
 
@@ -425,7 +445,7 @@ void Surface::encodePresent(id<MTLCommandBuffer> commandBuffer, id<MTLTexture> s
     // bytes unchanged.
     if (source.pixelFormat == MTLPixelFormatRGBA8Unorm_sRGB)
         source = [source newTextureViewWithPixelFormat:MTLPixelFormatRGBA8Unorm];
-    source = upscale(commandBuffer, source);
+    source = upscale(commandBuffer, source, drawable.texture.width, drawable.texture.height);
     MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
     pass.colorAttachments[0].texture = drawable.texture;
     pass.colorAttachments[0].loadAction = MTLLoadActionDontCare;

@@ -196,6 +196,7 @@ src/core/util/version.h
 src/core/version.mm
 src/wine/include/wmgl_gltypes.h
 src/wine/include/wmgl_wine.h
+src/wine/pe/upscalegl.c
 src/wine/pe/wgl_fonts.c
 src/wine/pe/wgl_formats.c
 src/wine/pe/winemetalgl.c
@@ -466,6 +467,7 @@ tests/wine/opengl_transform_varying.c
 tests/wine/opengl_transform.c
 tests/wine/opengl_ubo.c
 tests/wine/opengl_uniform_matrix.c
+tests/wine/opengl_upscale.c
 tests/wine/opengl_wgl_modern.c
 tests/wine/probe-opengl-wow64.sh
 third_party/khronos/gl.xml

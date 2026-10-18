@@ -343,6 +343,7 @@ BOOL WINAPI DllMain( HINSTANCE instance, DWORD reason, LPVOID reserved )
             WMGL_ERR( "the WineMetalGL core did not start (libwinemetalgl.dylib)\n" );
             return FALSE;
         }
+        upscalegl_init( instance );
         break;
     case DLL_THREAD_DETACH:
     {
@@ -456,6 +457,8 @@ static void hwnd_placement( HWND hwnd, HWND gone, struct wmgl_window_placement *
     placement->y = client.top;
     placement->width = client.right - client.left;
     placement->height = client.bottom - client.top;
+    upscalegl_render_size( hwnd, placement->width, placement->height, &placement->render_width,
+                           &placement->render_height );
     placement->top_level_width = around.right;
     placement->top_level_height = around.bottom;
     placement->screen_width = GetSystemMetrics( SM_CXSCREEN );
