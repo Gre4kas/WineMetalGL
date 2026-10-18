@@ -138,6 +138,37 @@ TEST(shader_legacy_macros) {
     CHECK(r.ok);
 }
 
+// GL_EXT_gpu_shader4 in GLSL 1.20, as OpenMW's shaders require it (issue
+// #42): integers, bitwise operators and the extension's texel fetches, with
+// the compatibility built-ins and the line numbers of the original.
+TEST(shader_legacy_gpu_shader4) {
+    LinkInput in;
+    in.shaders.push_back({Stage::Vertex,
+                          "#version 120\n\n#if 1\n    #extension GL_EXT_gpu_shader4: require\n#endif\n"
+                          "varying vec2 uv;\n"
+                          "void main() { uv = gl_MultiTexCoord0.xy; gl_Position = gl_ModelViewProjectionMatrix * gl_Vertex; }\n"});
+    in.shaders.push_back({Stage::Fragment,
+                          "#version 120\n#extension GL_EXT_gpu_shader4 : enable\n"
+                          "uniform sampler2D t; uniform isampler2D it; uniform sampler2DArray ta; varying vec2 uv;\n"
+                          "void main() {\n"
+                          "#ifdef GL_EXT_gpu_shader4\n"
+                          "    vec2 textureSize = textureSize2D(t, 0);\n"  // OpenMW's alpha.glsl names a variable so
+                          "    ivec2 size = ivec2(textureSize);\n"
+                          "    int bits = (int(uv.x * 255.0) & 0xf0) >> 4;\n"
+                          "    gl_FragData[0] = texelFetch2D(t, ivec2(uv * vec2(size)), 0) * float(bits)\n"
+                          "        + vec4(texelFetch2DOffset(it, ivec2(0), 0, ivec2(1)))\n"
+                          "        + texture2DArray(ta, vec3(uv, 1.0)) + texture2DLodOffset(t, uv, 1.0, ivec2(-1, 1));\n"
+                          "#endif\n"
+                          "}\n"});
+    LinkResult r = link(in);
+    if (!r.ok) std::fprintf(stderr, "%s\n", r.log.c_str());
+    CHECK(r.ok);
+    CompileResult bad = compile(Stage::Fragment, "#version 120\n#extension GL_EXT_gpu_shader4 : require\n\nvoid main() { undeclared = 1; }\n");
+    CHECK(!bad.ok);
+    CHECK(bad.log.find("0:4:") != std::string::npos);
+    if (bad.log.find("0:4:") == std::string::npos) std::fprintf(stderr, "%s\n", bad.log.c_str());
+}
+
 // GLSL 1.10's texture functions in core GLSL 1.40+, which drivers accept
 // (SpaceEngine's #version 460 core atmosphere shaders call texture2D, issue
 // #35), with bias in fragment shaders and shadow lookups as vec4. A shader

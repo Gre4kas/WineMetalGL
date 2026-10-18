@@ -31,6 +31,10 @@ docs/unsupported.md
 Game Specific Patched Files/SpaceEngine/README.md
 Game Specific Patched Files/SpaceEngine/winemac-stale-modifiers.patch
 Game Specific Patched Files/SpaceEngine/winemac.so
+Game Specific Patched Files/The Elder Scrolls III Morrowind (OpenMW)/gen_stubs.py
+Game Specific Patched Files/The Elder Scrolls III Morrowind (OpenMW)/glue.m
+Game Specific Patched Files/The Elder Scrolls III Morrowind (OpenMW)/install.sh
+Game Specific Patched Files/The Elder Scrolls III Morrowind (OpenMW)/README.md
 Game Specific Patched Files/Wolfenstein The New Order/faudio-resample-and-callback-fixes.patch
 Game Specific Patched Files/Wolfenstein The New Order/README.md
 Game Specific Patched Files/Wolfenstein The New Order/xaudio2_7.dll
