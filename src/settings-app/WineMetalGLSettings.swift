@@ -1,4 +1,5 @@
-// WineMetalGL Settings: UpscaleGL's preset and logging, for programs
+// WineMetalGL Settings: where WineMetalGL is installed (Installations.swift),
+// and UpscaleGL's preset and logging, for programs
 // launched without a way to set their environment. Both go to the settings
 // file the core reads when it loads (src/core/util/settings.h); the
 // environment still wins, and a change applies to games started afterwards.
@@ -136,6 +137,7 @@ extension View {
 
 struct SettingsView: View {
     @StateObject private var store = SettingsStore()
+    @StateObject private var installations = Installations()
 
     private var version: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
@@ -157,6 +159,8 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
             .padding(.top, 4)
+
+            InstallationsCard(installations: installations)
 
             VStack(alignment: .leading, spacing: 10) {
                 Label("UpscaleGL", systemImage: "arrow.up.left.and.arrow.down.right")

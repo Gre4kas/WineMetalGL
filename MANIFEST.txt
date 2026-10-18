@@ -197,6 +197,7 @@ src/core/util/settings.cpp
 src/core/util/settings.h
 src/core/util/version.h
 src/core/version.mm
+src/settings-app/Installations.swift
 src/settings-app/MetalSharp.icon/Assets/metalsharp-transparent.png
 src/settings-app/MetalSharp.icon/icon.json
 src/settings-app/WineMetalGLSettings.swift

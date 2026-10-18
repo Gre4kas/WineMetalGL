@@ -2,7 +2,12 @@
 # Builds "WineMetalGL Settings.app" (src/settings-app): UpscaleGL's preset
 # and logging, written to the settings file the core reads.
 #
-#   scripts/build-settings-app.sh [OUTDIR]
+#   [PAYLOAD=DIR] scripts/build-settings-app.sh [OUTDIR]
+#
+# PAYLOAD is a staged x86_64 release (scripts/stage-release.sh: its module
+# directory): the app carries it with the install scripts
+# (Contents/Resources/Installer) to install WineMetalGL into CrossOver bottles
+# and Wines. Without it, the app only switches and configures installs.
 #
 # A universal (arm64, x86_64) app for macOS 14 and later; its Liquid Glass
 # needs the macOS 26 SDK (Xcode 26) to build, and macOS 26 to show. The
@@ -23,10 +28,16 @@ rm -rf "$APP" "$OUT/obj"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$OUT/obj"
 
 for arch in arm64 x86_64; do
-    xcrun swiftc -O -parse-as-library -target "$arch-apple-macos14.0" "$SRC/WineMetalGLSettings.swift" \
-        -o "$OUT/obj/settings-$arch"
+    xcrun swiftc -O -parse-as-library -target "$arch-apple-macos14.0" "$SRC"/*.swift -o "$OUT/obj/settings-$arch"
 done
 lipo -create "$OUT/obj/settings-arm64" "$OUT/obj/settings-x86_64" -output "$APP/Contents/MacOS/WineMetalGL Settings"
+
+if test -n "${PAYLOAD:-}"; then
+    test -f "$PAYLOAD/module/x86_64-unix/libwinemetalgl.dylib" || { echo "no staged release in $PAYLOAD" >&2; exit 1; }
+    mkdir -p "$APP/Contents/Resources/Installer"
+    cp -R "$PAYLOAD/module" "$APP/Contents/Resources/Installer/"
+    cp "$ROOT/scripts/install-wine-module.sh" "$ROOT/scripts/install-crossover.sh" "$APP/Contents/Resources/Installer/"
+fi
 
 # The logo at the top of the window: the icon's artwork.
 sips -Z 256 "$SRC/MetalSharp.icon/Assets/metalsharp-transparent.png" --out "$APP/Contents/Resources/MetalSharpLogo.png" >/dev/null
