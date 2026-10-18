@@ -445,12 +445,31 @@ void Surface::encodePresent(id<MTLCommandBuffer> commandBuffer, id<MTLTexture> s
     // bytes unchanged.
     if (source.pixelFormat == MTLPixelFormatRGBA8Unorm_sRGB)
         source = [source newTextureViewWithPixelFormat:MTLPixelFormatRGBA8Unorm];
-    source = upscale(commandBuffer, source, drawable.texture.width, drawable.texture.height);
+    // Shown at another size (setOutputSize): in the largest rectangle of the
+    // back buffer's shape, centred, black around it (a 4:3 mode on a 16:9
+    // screen), as a display's scaler keeps a mode's shape.
+    const NSUInteger drawableWidth = drawable.texture.width, drawableHeight = drawable.texture.height;
+    NSUInteger width = drawableWidth, height = drawableHeight;
+    if (outputWidth_ > 0 && outputHeight_ > 0 && source.width && source.height) {
+        const double shape = static_cast<double>(source.width) / source.height;
+        const double screen = static_cast<double>(drawableWidth) / drawableHeight;
+        if (std::fabs(shape / screen - 1.0) > 0.01) {
+            if (shape < screen) width = static_cast<NSUInteger>(std::lround(drawableHeight * shape));
+            else height = static_cast<NSUInteger>(std::lround(drawableWidth / shape));
+        }
+    }
+    source = upscale(commandBuffer, source, width, height);
     MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
     pass.colorAttachments[0].texture = drawable.texture;
-    pass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+    const bool bars = width != drawableWidth || height != drawableHeight;
+    pass.colorAttachments[0].loadAction = bars ? MTLLoadActionClear : MTLLoadActionDontCare;
+    pass.colorAttachments[0].clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 1.0);
     pass.colorAttachments[0].storeAction = MTLStoreActionStore;
     id<MTLRenderCommandEncoder> encoder = [commandBuffer renderCommandEncoderWithDescriptor:pass];
+    if (bars)
+        [encoder setViewport:(MTLViewport){static_cast<double>((drawableWidth - width) / 2),
+                                           static_cast<double>((drawableHeight - height) / 2), static_cast<double>(width),
+                                           static_cast<double>(height), 0.0, 1.0}];
     [encoder setRenderPipelineState:presentPipeline_];
     // No flip in the shader: the drawable's top row samples the back buffer's
     // last row, which is GL's top row (GL row 0 = Metal row 0 = window bottom).
