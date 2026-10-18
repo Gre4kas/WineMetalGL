@@ -1029,12 +1029,12 @@ bool DrawState::bindVertexInputs(id<MTLRenderCommandEncoder> encoder, PipelineKe
         key.layouts[l].stepRate = layout.constant ? 0 : std::max(1u, layout.divisor);
         const NSUInteger index = shader::kSlotFirstVertexBuffer + l;
         if (l < knownSlots && e.vertexBuffers[l] == layout.buffer) {
-            if (e.vertexOffsets[l] != layout.offset) [encoder setVertexBufferOffset:layout.offset atIndex:index];
+            if (e.vertexBufferOffsets[l] != layout.offset) [encoder setVertexBufferOffset:layout.offset atIndex:index];
         } else {
             [encoder setVertexBuffer:layout.buffer offset:layout.offset atIndex:index];
             e.vertexBuffers[l] = layout.buffer;
         }
-        e.vertexOffsets[l] = layout.offset;
+        e.vertexBufferOffsets[l] = layout.offset;
     }
     // Slots past these keep what they had, still known up to the old count.
     e.vertexBuffersSet = static_cast<uint8_t>(std::max(layouts.size(), knownSlots));

@@ -469,7 +469,7 @@ private:
         // The vertex buffers bindVertexInputs set in layout slots 0 to
         // vertexBuffersSet - 1 (0: unknown, as for the pipeline).
         id<MTLBuffer> vertexBuffers[13];
-        NSUInteger vertexOffsets[13];
+        NSUInteger vertexBufferOffsets[13];
         uint8_t vertexBuffersSet = 0;
         // Driver uniforms and each stage's (vertex, fragment) default uniforms
         // set by bindUniforms: the owner program, its link, uniformVersion and size.
