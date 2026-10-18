@@ -39,9 +39,18 @@ driver ABI, that `winemetalgl.dll` is marked as a Wine builtin and
 
 ## The release
 
-After the development branch merges, `main` is tagged
-`winemetalgl-<version>` (the `project()` version in `CMakeLists.txt`) and
-released with two archives and `SHA256SUMS.txt`:
+A release is cut by bumping the `project()` version in `CMakeLists.txt`.
+When that change reaches `main`, the release workflow
+(`.github/workflows/release.yml`) sees a version with no
+`winemetalgl-<version>` tag. It then stages, signs and notarizes the release,
+tags `main` and publishes it. It runs only for commits on `main`, never for
+pull requests, so a pull request's code never sees the signing secrets. A
+version that is already tagged releases nothing, and the workflow can be run
+again by hand (from `main`) when a step failed.
+
+The notes come from `docs/release-notes/<version>.md` when that file exists,
+and are otherwise generated from the merged pull requests. Each release has
+two archives, the install scripts and `SHA256SUMS.txt`:
 
 - `winemetalgl-<version>-x86_64.tar.gz`: the staged release above, with the
   evidence directory, for x86_64 Wine 11.x (under Rosetta). Its Wine evidence
@@ -57,12 +66,19 @@ does not load.
 ## Signing and notarization
 
 Both staging scripts sign ad hoc unless `WINEMETALGL_SIGN_IDENTITY` names a
-Developer ID Application identity; releases set it, which signs the Mach-O
-libraries (`libwinemetalgl.dylib`, `winemetalgl.so`) with the hardened
-runtime and a secure timestamp, and `verify-release.sh` then checks that
-authority. The libraries are notarized as a zip of the staged Mach-O files
-(`xcrun notarytool submit --wait`); loose libraries cannot be stapled, so
-Gatekeeper checks the ticket online. The Windows DLLs are PE files and carry
+Developer ID Application identity. The release workflow sets it, after
+importing the certificate from the repository secrets into a temporary
+keychain:
+
+- `MACOS_CERTIFICATE_P12` (base64) and `MACOS_CERTIFICATE_PASSWORD`, to sign;
+- `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD` and `APPLE_TEAM_ID`, to notarize.
+
+The identity signs the Mach-O libraries (`libwinemetalgl.dylib`,
+`winemetalgl.so`) with the hardened runtime and a secure timestamp, and
+`verify-release.sh` then checks that authority. The libraries of both
+packages are notarized together as a zip (`xcrun notarytool submit --wait`),
+and a release whose submission is not accepted is not published. Loose
+libraries cannot be stapled, so Gatekeeper checks the ticket online. The Windows DLLs are PE files and carry
 no Apple signature. `install-wine-module.sh` keeps a valid signature on the
 copies it installs and signs ad hoc only those without one.
 

@@ -9,6 +9,7 @@
 .github/workflows/codeql.yml
 .github/workflows/gl33-conformance.yml
 .github/workflows/metal.yml
+.github/workflows/release.yml
 .gitignore
 CMakeLists.txt
 CMakePresets.json
