@@ -32,6 +32,7 @@ struct wmgl_core
     void (*surface_destroy)( void *surface );
     void (*surface_flush)( void *surface, unsigned int flags, int width, int height, int interval );
     int (*surface_swap)( void *surface );
+    void (*surface_set_output)( void *surface, int width, int height );  /* NULL: an older core */
     void *(*context_create)( int format, void *share, const int *attribs, int *error );
     void (*context_destroy)( void *context );
     int (*make_current)( void *context, void *draw, void *read );

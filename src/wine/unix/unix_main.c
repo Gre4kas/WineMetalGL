@@ -64,6 +64,7 @@ static BOOL load_core(void)
     LOAD(max_versions, "wmgl_max_versions");
 #undef LOAD
     *(void **)&wmgl.version = dlsym( handle, "wmgl_version" );
+    *(void **)&wmgl.surface_set_output = dlsym( handle, "wmgl_surface_set_output" );
     if (!dlsym( handle, "wmgl_log_write" ))
         WMGL_ERR( "this WineMetalGL core is older than the module (it has no log): messages go to stderr\n" );
     if (wmgl.initialize( WMGL_DRIVER_ABI_VERSION ))
@@ -88,6 +89,14 @@ static void load_core_once(void)
 
 extern NTSTATUS wmgl_unix_init_formats( void *args );
 
+/* UpscaleGL's preset for the PE side (upscalegl.c): the PE side's environment
+ * was copied before the core added the settings file's (settings.h). */
+static void copy_upscale( struct wmgl_init_params *params )
+{
+    const char *upscale = getenv( "WINEMETALGL_UPSCALE" );
+    snprintf( params->upscale, sizeof(params->upscale), "%s", upscale ? upscale : "" );
+}
+
 /* The first call of the PE side (DllMain): loads the core, then reports the
  * pixel formats (unix_wgl.c). */
 NTSTATUS wmgl_unix_init( void *args )
@@ -104,9 +113,11 @@ NTSTATUS wmgl_unix_init( void *args )
     {
         memset( params, 0, sizeof(*params) );
         params->log_level = wmgl_pe_log_level();
+        copy_upscale( params );
         return STATUS_SUCCESS;
     }
     params->log_level = wmgl_pe_log_level();
+    copy_upscale( params );
     return wmgl_unix_init_formats( args );
 }
 

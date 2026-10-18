@@ -70,6 +70,9 @@ wmgl_surface *wmgl_surface_create_pbuffer(int format, int width, int height);
 void wmgl_surface_destroy(wmgl_surface *surface);
 void wmgl_surface_flush(wmgl_surface *surface, unsigned int flags, int width, int height, int interval);
 int wmgl_surface_swap(wmgl_surface *surface);
+/* The size a window surface is shown at, in device pixels (0, 0: its own):
+ * the back buffer is scaled up to it (MetalFX spatial) when it is larger. */
+void wmgl_surface_set_output(wmgl_surface *surface, int width, int height);
 
 /* attribs: WGL_CONTEXT_* name/value pairs terminated by 0, may be NULL. */
 wmgl_context *wmgl_context_create(int format, wmgl_context *share, const int *attribs, int *error);

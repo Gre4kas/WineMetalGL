@@ -102,6 +102,7 @@ add_library(wmgl_portable STATIC
     src/core/util/crash.cpp
     src/core/util/log.cpp
     src/core/util/metalfx_config.cpp
+    src/core/util/settings.cpp
     vendor/tessellator/tessellator.cpp
 )
 add_dependencies(wmgl_portable wmgl_generated)
@@ -165,7 +166,7 @@ install(TARGETS winemetalgl_core LIBRARY DESTINATION lib)
 
 # Host tests (no GPU, no Wine).
 add_executable(wmgl_host_tests tests/host/main.cpp tests/host/shader_tests.cpp tests/host/format_tests.cpp
-    tests/host/fp64_tests.cpp tests/host/metalfx_tests.cpp tests/host/arb_program_tests.cpp tests/host/log_tests.cpp)
+    tests/host/fp64_tests.cpp tests/host/metalfx_tests.cpp tests/host/arb_program_tests.cpp tests/host/log_tests.cpp tests/host/settings_tests.cpp)
 target_link_libraries(wmgl_host_tests PRIVATE wmgl_portable)
 
 # GPU tests: drive the core through the driver ABI on pbuffers (Metal, no Wine).

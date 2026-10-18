@@ -13,6 +13,7 @@ static DWORD tls_index = TLS_OUT_OF_INDEXES;
 static char *wgl_extensions;
 /* Messages go to winemetalgl.so once it answers (init_pixel_formats). */
 static BOOL log_ready;
+static char upscale_setting[32];  /* WINEMETALGL_UPSCALE as the unix side found it */
 
 void wmgl_log( int level, const char *format, ... )
 {
@@ -301,6 +302,8 @@ static BOOL init_pixel_formats(void)
     if (wmgl_unix_call( unix_wmgl_init, &init )) return FALSE;
     wmgl_log_max = init.log_level;
     log_ready = TRUE;
+    memcpy( upscale_setting, init.upscale, sizeof(upscale_setting) );
+    upscale_setting[sizeof(upscale_setting) - 1] = 0;
     WMGL_INFO( "winemetalgl.dll (%d-bit) in %s\n", (int)sizeof(void *) * 8, program );
 #ifdef _WIN64
     log_all_exceptions = getenv( "WINEMETALGL_EXCEPTIONS" ) && !strcmp( getenv( "WINEMETALGL_EXCEPTIONS" ), "1" );
@@ -343,6 +346,7 @@ BOOL WINAPI DllMain( HINSTANCE instance, DWORD reason, LPVOID reserved )
             WMGL_ERR( "the WineMetalGL core did not start (libwinemetalgl.dylib)\n" );
             return FALSE;
         }
+        upscalegl_init( instance, upscale_setting );
         break;
     case DLL_THREAD_DETACH:
     {
@@ -456,6 +460,8 @@ static void hwnd_placement( HWND hwnd, HWND gone, struct wmgl_window_placement *
     placement->y = client.top;
     placement->width = client.right - client.left;
     placement->height = client.bottom - client.top;
+    upscalegl_render_size( hwnd, placement->width, placement->height, &placement->render_width,
+                           &placement->render_height );
     placement->top_level_width = around.right;
     placement->top_level_height = around.bottom;
     placement->screen_width = GetSystemMetrics( SM_CXSCREEN );
