@@ -55,10 +55,12 @@ static HMONITOR primary_monitor;
 static LONG real_width, real_height;        /* the real primary display mode */
 static LONG desktop_width, desktop_height;  /* what the program sees of it */
 static LONG mode_width, mode_height;        /* the mode it set, else the desktop */
-/* The real modes, each scaled down, in their order: a program that saved a
- * mode as its place in the list (DOOM (2016)'s r_mode) gets the same mode
- * scaled, its usual resolution the preset's. */
-static struct mode modes[1024];
+/* The modes listed: the preset's size alone, at the refresh rates of the
+ * real screen's size. The preset is the resolution: with smaller modes
+ * listed, a program that does not find its saved one takes the first it
+ * accepts (DOOM (2016) passes over those under 640x480 and took 668x501, a
+ * 4:3 frame, where Balanced's 1114x626 was meant). */
+static struct mode modes[64];
 static unsigned int mode_count;
 
 /* Real coordinates to the program's (the mode it set) and back. */
@@ -130,6 +132,12 @@ static double preset_ratio( const char *value )
 
 static void add_mode( DWORD width, DWORD height, DWORD bits, DWORD frequency )
 {
+    unsigned int i;
+
+    for (i = 0; i < mode_count; i++)
+        if (modes[i].width == width && modes[i].height == height && modes[i].bits == bits &&
+            modes[i].frequency == frequency)
+            return;
     if (mode_count == ARRAY_SIZE(modes)) return;
     modes[mode_count].width = width;
     modes[mode_count].height = height;
@@ -1144,14 +1152,14 @@ void upscalegl_init( HMODULE module )
     real_height = mode.dmPelsHeight;
     desktop_width = mode_width = max( 1, (LONG)lround( real_width * ratio ) );
     desktop_height = mode_height = max( 1, (LONG)lround( real_height * ratio ) );
-    for (i = 0; i < ARRAY_SIZE(modes); i++)
+    for (i = 0; i < 4096 && mode_count < ARRAY_SIZE(modes); i++)
     {
         DEVMODEW other;
         memset( &other, 0, sizeof(other) );
         other.dmSize = sizeof(other);
         if (!EnumDisplaySettingsW( NULL, i, &other )) break;
-        add_mode( max( 1, (LONG)lround( other.dmPelsWidth * ratio ) ), max( 1, (LONG)lround( other.dmPelsHeight * ratio ) ),
-                  other.dmBitsPerPel, other.dmDisplayFrequency );
+        if (other.dmPelsWidth == (DWORD)real_width && other.dmPelsHeight == (DWORD)real_height)
+            add_mode( desktop_width, desktop_height, other.dmBitsPerPel, other.dmDisplayFrequency );
     }
     if (!has_mode( desktop_width, desktop_height ))
         add_mode( desktop_width, desktop_height, mode.dmBitsPerPel, mode.dmDisplayFrequency );
