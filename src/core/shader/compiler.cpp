@@ -123,7 +123,7 @@ const EShMessages kMessages = static_cast<EShMessages>(EShMsgSpvRules | EShMsgVu
 
 // Macros of extensions glslang implements without knowing their names
 // (raiseComputeVersion), predefined like its own.
-constexpr const char* kPreamble = "#define GL_ARB_cull_distance 1\n";
+constexpr const char* kPreamble = "#define GL_ARB_cull_distance 1\n#define GL_EXT_gpu_shader4 1\n";
 
 // Configures a shader for codegen: relaxed Vulkan rules, one default block.
 void configure(glslang::TShader& shader, EShLanguage lang) {
@@ -1621,22 +1621,148 @@ std::string relaxBitcastConstants(const std::string& source) {
     return out;
 }
 
+// GL_EXT_gpu_shader4's sampling functions that `source` calls, defined
+// over GLSL 1.30's for float, int and unsigned samplers, or as macros for
+// the ones with texel offsets (rectangle and
+// buffer samplers, and shadow comparisons, which return vec4 under GLSL
+// 1.20's rules, are left out).
+std::string gpuShader4Functions(const std::string& source) {
+    struct Dim {
+        const char* name;
+        const char* coord;   // texture coordinates
+        const char* icoord;  // texel coordinates (nullptr: no texel fetch)
+        const char* size;
+        const char* deriv;
+        const char* proj[2];
+        const char* offset;  // nullptr: no offsets
+        bool array;
+    };
+    static const Dim kDims[] = {
+        {"1D", "float", "int", "int", "float", {"vec2", "vec4"}, "int", false},
+        {"2D", "vec2", "ivec2", "ivec2", "vec2", {"vec3", "vec4"}, "ivec2", false},
+        {"3D", "vec3", "ivec3", "ivec3", "vec3", {"vec4", nullptr}, "ivec3", false},
+        {"Cube", "vec3", nullptr, "ivec2", "vec3", {nullptr, nullptr}, nullptr, false},
+        {"1DArray", "vec2", "ivec2", "ivec2", "float", {nullptr, nullptr}, "int", true},
+        {"2DArray", "vec3", "ivec3", "ivec3", "vec2", {nullptr, nullptr}, "ivec2", true},
+    };
+    auto identStart = [](char c) { return std::isalpha(static_cast<unsigned char>(c)) || c == '_'; };
+    auto ident = [](char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; };
+    std::set<std::string> used;
+    for (size_t i = 0; i < source.size();) {
+        if (!identStart(source[i])) {
+            ++i;
+            continue;
+        }
+        size_t end = i;
+        while (end < source.size() && ident(source[end])) ++end;
+        used.insert(source.substr(i, end - i));
+        i = end;
+    }
+    std::string out;
+    // One function, for each sampler type: "R" is its return type ("G": the
+    // sampler's vec4), "S" the sampler, "A" the parameters after it, "C" the
+    // call's arguments after the sampler.
+    auto define = [&](const std::string& name, const std::string& ret, const std::string& params, const std::string& call,
+                      const std::string& builtin, const char* dim) {
+        if (!used.count(name)) return;
+        // Texel offsets must be constant expressions, which parameters are
+        // not: the offset functions are GLSL 1.30's under another name.
+        if (builtin.find("Offset") != std::string::npos) {
+            const std::string alias = "#define " + name + " " + builtin + "\n";
+            if (out.find(alias) == std::string::npos) out += alias;
+            return;
+        }
+        for (const char* prefix : {"", "i", "u"}) {
+            const std::string vec4 = std::string(prefix) + "vec4";
+            out += (ret == "G" ? vec4 : ret) + " " + name + "(" + prefix + "sampler" + dim + " wmgl_s" + params + ") { return " +
+                   builtin + "(wmgl_s" + call + "); }\n";
+        }
+    };
+    for (const Dim& d : kDims) {
+        const std::string D = d.name, coord = d.coord, deriv = d.deriv;
+        if (d.icoord) {
+            define("texelFetch" + D, "G", std::string(", ") + d.icoord + " wmgl_p, int wmgl_l", ", wmgl_p, wmgl_l", "texelFetch", d.name);
+            define("texelFetch" + D + "Offset", "G", std::string(", ") + d.icoord + " wmgl_p, int wmgl_l, " + d.offset + " wmgl_o",
+                   ", wmgl_p, wmgl_l, wmgl_o", "texelFetchOffset", d.name);
+        }
+        define("textureSize" + D, d.size, ", int wmgl_l", ", wmgl_l", "textureSize", d.name);
+        define("texture" + D + "Grad", "G", ", " + coord + " wmgl_p, " + deriv + " wmgl_x, " + deriv + " wmgl_y",
+               ", wmgl_p, wmgl_x, wmgl_y", "textureGrad", d.name);
+        if (d.array) {
+            define("texture" + D, "G", ", " + coord + " wmgl_p", ", wmgl_p", "texture", d.name);
+            define("texture" + D, "G", ", " + coord + " wmgl_p, float wmgl_b", ", wmgl_p, wmgl_b", "texture", d.name);
+            define("texture" + D + "Lod", "G", ", " + coord + " wmgl_p, float wmgl_l", ", wmgl_p, wmgl_l", "textureLod", d.name);
+            continue;
+        }
+        if (!d.offset) continue;
+        const std::string off = std::string(", ") + d.offset + " wmgl_o";
+        define("texture" + D + "Offset", "G", ", " + coord + " wmgl_p" + off, ", wmgl_p, wmgl_o", "textureOffset", d.name);
+        define("texture" + D + "Offset", "G", ", " + coord + " wmgl_p" + off + ", float wmgl_b", ", wmgl_p, wmgl_o, wmgl_b",
+               "textureOffset", d.name);
+        define("texture" + D + "LodOffset", "G", ", " + coord + " wmgl_p, float wmgl_l" + off, ", wmgl_p, wmgl_l, wmgl_o",
+               "textureLodOffset", d.name);
+        define("texture" + D + "GradOffset", "G", ", " + coord + " wmgl_p, " + deriv + " wmgl_x, " + deriv + " wmgl_y" + off,
+               ", wmgl_p, wmgl_x, wmgl_y, wmgl_o", "textureGradOffset", d.name);
+        for (const char* proj : d.proj) {
+            if (!proj) continue;
+            const std::string P = proj;
+            define("texture" + D + "ProjOffset", "G", ", " + P + " wmgl_p" + off, ", wmgl_p, wmgl_o", "textureProjOffset", d.name);
+            define("texture" + D + "ProjOffset", "G", ", " + P + " wmgl_p" + off + ", float wmgl_b", ", wmgl_p, wmgl_o, wmgl_b",
+                   "textureProjOffset", d.name);
+            define("texture" + D + "ProjLodOffset", "G", ", " + P + " wmgl_p, float wmgl_l" + off, ", wmgl_p, wmgl_l, wmgl_o",
+                   "textureProjLodOffset", d.name);
+            define("texture" + D + "ProjGrad", "G", ", " + P + " wmgl_p, " + deriv + " wmgl_x, " + deriv + " wmgl_y",
+                   ", wmgl_p, wmgl_x, wmgl_y", "textureProjGrad", d.name);
+            define("texture" + D + "ProjGradOffset", "G",
+                   ", " + P + " wmgl_p, " + deriv + " wmgl_x, " + deriv + " wmgl_y" + off,
+                   ", wmgl_p, wmgl_x, wmgl_y, wmgl_o", "textureProjGradOffset", d.name);
+        }
+    }
+    return out;
+}
+
 std::string raiseComputeVersion(Stage stage, const std::string& source) {
     std::string raised = source;
     // GL_ARB_cull_distance (GLSL 4.50 core): glslang has gl_CullDistance in
     // GLSL 4.50 only and no such extension, so the #extension line goes
     // (kPreamble defines the macro) and the shader becomes GLSL 4.50.
     const GlslVersion version = parseGlslVersion(source);
-    bool cull = false;
+    bool cull = false, gpuShader4 = false;
     for (size_t at = raised.find("#extension"); at != std::string::npos; at = raised.find("#extension", at + 1)) {
         const size_t end = raised.find('\n', at);
         const std::string line = raised.substr(at, end == std::string::npos ? std::string::npos : end - at);
         std::istringstream words(line.substr(10));
         std::string name;
         words >> name;
+        if (!name.empty() && name.back() == ':') name.pop_back();
+        if (name == "GL_EXT_gpu_shader4" && !version.es) {
+            raised.replace(at, line.size(), "");
+            gpuShader4 = version.number < 130;
+            continue;
+        }
         if (name != "GL_ARB_cull_distance") continue;
         raised.replace(at, line.size(), "");
         cull = true;
+    }
+    // GL_EXT_gpu_shader4 (GLSL 1.10/1.20): GLSL 1.30's integers, bitwise
+    // operators and texel fetches, under the extension's function names.
+    // glslang does not know it: the #extension line goes (kPreamble defines
+    // the macro), and a shader before GLSL 1.30 becomes GLSL 1.30 (still the
+    // compatibility profile) with the functions it calls defined over GLSL
+    // 1.30's (functions, not macros: shaders may name variables after GLSL
+    // 1.30's built-ins, as OpenMW's textureSize). OpenSceneGraph takes GL 3.0
+    // for the extension, and OpenMW requires it in its shaders (issue #42).
+    if (gpuShader4) {
+        const size_t at = raised.find("#version");
+        std::string head = "#version 130\n", body = raised;
+        if (at != std::string::npos) {
+            const size_t end = raised.find('\n', at);
+            head = raised.substr(0, at) + "#version 130";
+            body = end == std::string::npos ? std::string() : raised.substr(end);
+        } else {
+            body = "\n" + raised;
+        }
+        raised = insertAfterDirectives(head + body, gpuShader4Functions(raised), 130);
     }
     if (cull && version.number < 450 && !version.es) {
         const size_t at = raised.find("#version");

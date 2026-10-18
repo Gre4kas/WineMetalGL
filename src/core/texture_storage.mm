@@ -526,6 +526,21 @@ id<MTLTexture> samplingView(Context& ctx, Texture& tex, bool skipSrgbDecode) {
     while (top > base && !tex.image(0, top).defined()) --top;
     const NSUInteger levelCount = static_cast<NSUInteger>(std::max(1, top - base + 1));
     GLenum swizzle[4] = {tex.swizzle[0], tex.swizzle[1], tex.swizzle[2], tex.swizzle[3]};
+    // Compatibility profile: depth reads as GL_DEPTH_TEXTURE_MODE's texel
+    // before the GL swizzle, which then selects among (d, d, d, 1) and the like.
+    if (ctx.isCompat() && format && format->isDepth() && tex.depthStencilMode != GL_STENCIL_INDEX &&
+        tex.depthTextureMode != GL_RED) {
+        for (GLenum& s : swizzle) {
+            const bool alpha = s == GL_ALPHA, color = s == GL_RED || s == GL_GREEN || s == GL_BLUE;
+            if (!alpha && !color) continue;  // GL_ZERO, GL_ONE
+            switch (tex.depthTextureMode) {
+            case GL_LUMINANCE: s = color ? GL_RED : GL_ONE; break;
+            case GL_INTENSITY: s = GL_RED; break;
+            case GL_ALPHA: s = color ? GL_ZERO : GL_RED; break;
+            default: break;
+            }
+        }
+    }
     MTLPixelFormat viewFormat = tex.mtl.pixelFormat;
     // Depth/stencil textures sample depth by default; stencil sampling (GL 4.3) uses the stencil view.
     if (viewFormat == MTLPixelFormatDepth32Float_Stencil8 && tex.depthStencilMode == GL_STENCIL_INDEX)

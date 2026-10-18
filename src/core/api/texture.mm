@@ -112,6 +112,8 @@ struct ImageTarget {
     bool proxy = false;
 };
 
+void generateMipmapsAfterChange(Context& ctx, const ImageTarget& t, GLint level);
+
 // dims: 1, 2 or 3 (TexImage1D/2D/3D); generates GL_INVALID_ENUM for targets
 // that the call does not accept.
 bool imageTarget(Context& ctx, GLenum target, int dims, bool allowProxy, ImageTarget& out) {
@@ -547,6 +549,7 @@ void texImage(Context& ctx, int dims, GLenum target, GLint level, GLint internal
         return;
     }
     uploadRegion(ctx, *t.tex, t.face, level, 0, 0, 0, width, height, depth, format, type, src);
+    generateMipmapsAfterChange(ctx, t, level);
 }
 
 void texSubImage(Context& ctx, int dims, GLenum target, GLint level, GLint x, GLint y, GLint z, GLsizei w, GLsizei h,
@@ -582,6 +585,7 @@ void texSubImage(Context& ctx, int dims, GLenum target, GLint level, GLint x, GL
         return;
     }
     uploadRegion(ctx, *t.tex, t.face, level, x, y, z, w, h, d, format, type, src);
+    generateMipmapsAfterChange(ctx, t, level);
 }
 
 void compressedTexImage(Context& ctx, int dims, GLenum target, GLint level, GLenum internalformat, GLsizei width,
@@ -881,6 +885,7 @@ void copyTexImage(Context& ctx, int dims, GLenum target, GLint level, GLenum int
     defineImage(ctx, *t.tex, t.face, level, internalformat, info, width, h, 1);
     if (info->compressed) return;
     copyRegion(ctx, *t.tex, t.face, level, 0, 0, 0, x, y, width, h, src);
+    generateMipmapsAfterChange(ctx, t, level);
 }
 
 void copyTexSubImage(Context& ctx, int dims, GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint zoffset,
@@ -900,6 +905,7 @@ void copyTexSubImage(Context& ctx, int dims, GLenum target, GLint level, GLint x
     if (!copyFormatsCompatible(*src.info, *image.format)) return ctx.setError(GL_INVALID_OPERATION);
     if (ctx.isEs() && !es::copyTexSubImageCompatible(*src.info, *image.format)) return ctx.setError(GL_INVALID_OPERATION);
     copyRegion(ctx, *t.tex, t.face, level, xoffset, yoffset, zoffset, x, y, width, height, src);
+    generateMipmapsAfterChange(ctx, t, level);
 }
 
 // ------------------------------------------------------------ parameters
@@ -1085,6 +1091,21 @@ void texParameter(Context& ctx, GLenum target, GLenum pname, const ParamValues& 
         for (int i = 0; i < 4; ++i) tex->swizzle[i] = static_cast<GLenum>(v.i[i]);
         ctx.markDirty(kDirtyTextures);
         return;
+    case GL_GENERATE_MIPMAP:
+        // Compatibility profile only (OpenSceneGraph sets it, issue #42).
+        if (!ctx.isCompat() || multisample || target == GL_TEXTURE_RECTANGLE) return ctx.setError(GL_INVALID_ENUM);
+        if (v.kind == ParamValues::Float ? v.f[0] != 0.0 && v.f[0] != 1.0 : v.i[0] != GL_FALSE && v.i[0] != GL_TRUE)
+            return ctx.setError(GL_INVALID_VALUE);
+        tex->generateMipmap = v.kind == ParamValues::Float ? v.f[0] != 0.0 : v.i[0] != 0;
+        return;
+    case GL_DEPTH_TEXTURE_MODE:
+        // Compatibility profile only (OpenSceneGraph sets it on depth textures, issue #42).
+        if (!ctx.isCompat() || multisample) return ctx.setError(GL_INVALID_ENUM);
+        if (v.i[0] != GL_LUMINANCE && v.i[0] != GL_INTENSITY && v.i[0] != GL_ALPHA && v.i[0] != GL_RED)
+            return ctx.setError(GL_INVALID_ENUM);
+        tex->depthTextureMode = static_cast<GLenum>(v.i[0]);
+        ctx.markDirty(kDirtyTextures);
+        return;
     case GL_DEPTH_STENCIL_TEXTURE_MODE:
         if (ctx.version() < 43) return ctx.setError(GL_INVALID_ENUM);
         if (v.i[0] != GL_DEPTH_COMPONENT && v.i[0] != GL_STENCIL_INDEX) return ctx.setError(GL_INVALID_ENUM);
@@ -1201,6 +1222,14 @@ void getTexParameter(Context& ctx, GLenum target, GLenum pname, T* params, Param
                                     : pname == GL_TEXTURE_VIEW_NUM_LEVELS ? tex->viewNumLevels
                                     : pname == GL_TEXTURE_VIEW_MIN_LAYER  ? tex->viewMinLayer
                                                                           : tex->viewNumLayers);
+        break;
+    case GL_DEPTH_TEXTURE_MODE:
+        if (!ctx.isCompat() || multisample) return ctx.setError(GL_INVALID_ENUM);
+        v.i[0] = static_cast<GLint>(tex->depthTextureMode);
+        break;
+    case GL_GENERATE_MIPMAP:
+        if (!ctx.isCompat() || multisample || target == GL_TEXTURE_RECTANGLE) return ctx.setError(GL_INVALID_ENUM);
+        v.i[0] = tex->generateMipmap ? GL_TRUE : GL_FALSE;
         break;
     case GL_DEPTH_STENCIL_TEXTURE_MODE:
         if (ctx.version() < 43) return ctx.setError(GL_INVALID_ENUM);
@@ -2058,6 +2087,35 @@ void GenerateMipmap(Context& ctx, GLenum target) {
     [ctx.stream().blit() generateMipmapsForTexture:view ? view : tex->mtl];
     imageChanged(ctx, *tex);
 }
+
+namespace {
+
+// GL_GENERATE_MIPMAP: a change to the base level of a texture that has it
+// regenerates the levels below, as glGenerateMipmap would, without errors
+// for textures it cannot (compatibility profile, GL 2.1 section 3.8.8).
+void generateMipmapsAfterChange(Context& ctx, const ImageTarget& t, GLint level) {
+    Texture& tex = *t.tex;
+    if (!ctx.isCompat() || !tex.generateMipmap || level != tex.baseLevel) return;
+    switch (t.target) {
+    case GL_TEXTURE_1D: case GL_TEXTURE_2D: case GL_TEXTURE_3D: case GL_TEXTURE_1D_ARRAY: case GL_TEXTURE_2D_ARRAY:
+    case GL_TEXTURE_CUBE_MAP: break;
+    default: return;
+    }
+    const TextureImage& base = tex.image(t.face, level);
+    if (!base.defined() || !base.format || base.format->compressed || base.format->isInteger() ||
+        (base.format->isDepthOrStencil() && !base.format->depthBits))
+        return;
+    if (t.target == GL_TEXTURE_CUBE_MAP)
+        for (int face = 0; face < 6; ++face) {
+            const TextureImage& image = tex.image(face, level);
+            if (!image.defined() || image.width != base.width || image.height != base.height ||
+                image.internalFormat != base.internalFormat || image.width != image.height)
+                return;
+        }
+    GenerateMipmap(ctx, t.target);
+}
+
+}  // namespace
 
 void TexStorage1D(Context& ctx, GLenum target, GLsizei levels, GLenum internalformat, GLsizei width) {
     texStorage(ctx, 1, target, levels, internalformat, width, 1, 1);

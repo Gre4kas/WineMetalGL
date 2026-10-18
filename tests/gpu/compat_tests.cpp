@@ -1259,3 +1259,104 @@ GPU_TEST_VERSION(gpu_texture_latc_is_compatibility_only, 46) {
     glDeleteTextures(1, &tex);
     CHECK_GL();
 }
+
+// GL_DEPTH_TEXTURE_MODE (compatibility profile): depth samples as luminance
+// by default, or as intensity, alpha or red. OpenSceneGraph sets it on
+// OpenMW's shadow maps and depth copies (issue #42).
+COMPAT_TEST(compat_depth_texture_mode) {
+    GLuint p = gpu::program(R"(#version 120
+void main() { gl_Position = ftransform(); })",
+                            R"(#version 120
+uniform sampler2D tex;
+void main() { gl_FragColor = texture2D(tex, vec2(0.5)); })");
+    glUseProgram(p);
+    pixelProjection();
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    float depth[16];
+    for (float& d : depth) d = 0.5f;
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32F, 4, 4, 0, GL_DEPTH_COMPONENT, GL_FLOAT, depth);
+    GLint mode = 0;
+    glGetTexParameteriv(GL_TEXTURE_2D, GL_DEPTH_TEXTURE_MODE, &mode);
+    CHECK_EQ(mode, GL_LUMINANCE);
+    struct Case { GLenum mode; uint8_t want[4]; };
+    const Case cases[] = {
+        {GL_LUMINANCE, {128, 128, 128, 255}}, {GL_INTENSITY, {128, 128, 128, 128}},
+        {GL_ALPHA, {0, 0, 0, 128}},           {GL_RED, {128, 0, 0, 255}},
+    };
+    for (const Case& c : cases) {
+        glTexParameteri(GL_TEXTURE_2D, GL_DEPTH_TEXTURE_MODE, static_cast<GLint>(c.mode));
+        CHECK_GL();
+        glGetTexParameteriv(GL_TEXTURE_2D, GL_DEPTH_TEXTURE_MODE, &mode);
+        CHECK_EQ(mode, static_cast<GLint>(c.mode));
+        clear();
+        glRectf(0, 0, 64, 64);
+        CHECK(pixel(32, 32, c.want));
+    }
+    glTexParameteri(GL_TEXTURE_2D, GL_DEPTH_TEXTURE_MODE, GL_RGBA);
+    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_INVALID_ENUM));
+    glDeleteTextures(1, &tex);
+    glUseProgram(0);
+    glDeleteProgram(p);
+    CHECK_GL();
+}
+
+// Not in the core profile.
+GPU_TEST_VERSION(gpu_depth_texture_mode_is_compatibility_only, 46) {
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexParameteri(GL_TEXTURE_2D, GL_DEPTH_TEXTURE_MODE, GL_LUMINANCE);
+    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_INVALID_ENUM));
+    glDeleteTextures(1, &tex);
+    CHECK_GL();
+}
+
+// GL_GENERATE_MIPMAP (compatibility profile): uploads to the base level
+// regenerate the smaller levels (OpenSceneGraph sets it, issue #42).
+COMPAT_TEST(compat_generate_mipmap_parameter) {
+    GLuint p = gpu::program(R"(#version 120
+void main() { gl_Position = ftransform(); })",
+                            R"(#version 120
+uniform sampler2D tex;
+void main() { gl_FragColor = texture2D(tex, vec2(0.5)); })");
+    glUseProgram(p);
+    pixelProjection();
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MIN_LOD, 2.0f);  // samples the 1x1 level
+    GLint generate = -1;
+    glGetTexParameteriv(GL_TEXTURE_2D, GL_GENERATE_MIPMAP, &generate);
+    CHECK_EQ(generate, GL_FALSE);
+    glTexParameteri(GL_TEXTURE_2D, GL_GENERATE_MIPMAP, GL_TRUE);
+    glGetTexParameteriv(GL_TEXTURE_2D, GL_GENERATE_MIPMAP, &generate);
+    CHECK_EQ(generate, GL_TRUE);
+    std::vector<uint8_t> red(4 * 4 * 4), green(4 * 4 * 4);
+    for (size_t i = 0; i < red.size(); i += 4) {
+        std::memcpy(&red[i], kRed, 4);
+        std::memcpy(&green[i], kGreen, 4);
+    }
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 4, 4, 0, GL_RGBA, GL_UNSIGNED_BYTE, red.data());
+    GLint width = 0;
+    glGetTexLevelParameteriv(GL_TEXTURE_2D, 2, GL_TEXTURE_WIDTH, &width);
+    CHECK_EQ(width, 1);
+    clear();
+    glRectf(0, 0, 64, 64);
+    CHECK(pixel(32, 32, kRed));
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 4, 4, GL_RGBA, GL_UNSIGNED_BYTE, green.data());
+    clear();
+    glRectf(0, 0, 64, 64);
+    CHECK(pixel(32, 32, kGreen));
+    glTexParameteri(GL_TEXTURE_2D, GL_GENERATE_MIPMAP, 2);
+    CHECK_EQ(glGetError(), static_cast<GLenum>(GL_INVALID_VALUE));
+    glDeleteTextures(1, &tex);
+    glUseProgram(0);
+    glDeleteProgram(p);
+    CHECK_GL();
+}

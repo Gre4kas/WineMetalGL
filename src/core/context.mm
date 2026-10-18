@@ -171,8 +171,11 @@ void Context::initStrings() {
         extensions_.push_back(name);
     // Texture format extensions core GL 3.0 subsumes, which format queries
     // (and the CTS internalformat cases) test for in core contexts too.
+    // OpenSceneGraph tests GL_ARB_depth_buffer_float by name before using
+    // floating-point depth (OpenMW turns off reversed-Z's precision and its
+    // post-processing without it, issue #42).
     for (const char* name : {"GL_ARB_depth_texture", "GL_ARB_texture_float", "GL_EXT_texture_shared_exponent",
-                             "GL_EXT_texture_integer"})
+                             "GL_EXT_texture_integer", "GL_ARB_depth_buffer_float"})
         if (!hasExtension(name)) extensions_.push_back(name);
     extensions_.push_back("GL_ARB_draw_buffers_blend");
     extensions_.push_back("GL_ARB_base_instance");
