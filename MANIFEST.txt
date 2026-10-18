@@ -28,6 +28,9 @@ docs/performance.md
 docs/release.md
 docs/testing.md
 docs/unsupported.md
+Game Specific Patched Files/Wolfenstein The New Order/faudio-resample-and-callback-fixes.patch
+Game Specific Patched Files/Wolfenstein The New Order/README.md
+Game Specific Patched Files/Wolfenstein The New Order/xaudio2_7.dll
 include/winemetalgl/driver.h
 LICENSE
 LICENSES/glslang.txt
