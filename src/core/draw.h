@@ -313,6 +313,15 @@ private:
     // The plan waitForCpuVertexReads made, for the same draw's bindVertexInputs
     // (plannedFor_: drawCount_ of that draw, 0: none).
     VertexInputPlan plannedInputs_;
+    // bindVertexInputs' working lists, kept to save allocations per draw.
+    struct VertexLayoutUse {
+        __unsafe_unretained id<MTLBuffer> buffer;  // held by its owner for the draw
+        NSUInteger offset;
+        uint32_t stride;
+        uint32_t divisor;
+        bool constant;
+    };
+    std::vector<VertexLayoutUse> layoutScratch_;
     uint64_t plannedFor_ = 0;
     const LinkedProgram* plannedProgram_ = nullptr;
     bool plannedGather_ = false;
@@ -457,6 +466,11 @@ private:
         id<MTLDepthStencilState> depthStencil = nil;
         // The pipeline issue() set (nil: another draw path set one since).
         id<MTLRenderPipelineState> pipeline = nil;
+        // The vertex buffers bindVertexInputs set in layout slots 0 to
+        // vertexBuffersSet - 1 (0: unknown, as for the pipeline).
+        id<MTLBuffer> vertexBuffers[13];
+        NSUInteger vertexOffsets[13];
+        uint8_t vertexBuffersSet = 0;
         // Driver uniforms and each stage's (vertex, fragment) default uniforms
         // set by bindUniforms: the owner program, its link, uniformVersion and size.
         uint8_t driver[16];
