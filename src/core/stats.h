@@ -12,6 +12,8 @@
 // current on.
 #pragma once
 
+#include <atomic>
+
 #include <cstdint>
 #include <string>
 
@@ -19,6 +21,9 @@ namespace wmgl::stats {
 
 // Counting: WINEMETALGL_STATS set, or turned on by wmgl_stats_enable (tests).
 extern bool g_enabled;
+// Process-wide totals of the background pipeline work (not per frame):
+// pipelines predicted, and added to the binary archive.
+extern std::atomic<uint64_t> g_pipelinesPredicted, g_pipelinesArchived;
 // Logging the counters and descriptions: WINEMETALGL_STATS set.
 extern const bool g_reporting;
 
@@ -43,6 +48,9 @@ enum IndirectCpu : uint8_t {
 
 struct Frame {
     uint64_t calls = 0, draws = 0, passes = 0, pipelineMisses = 0, programLinks = 0, transientBytes = 0, waits = 0;
+    // Pipelines created from the binary archive, and waits for a pipeline a
+    // background prediction was creating (pipeline_cache.h).
+    uint64_t pipelineArchiveHits = 0, pipelineWaits = 0;
     uint64_t glNanos = 0, pipelineNanos = 0, linkNanos = 0, waitNanos = 0;
     uint64_t lockNanos = 0;  // waiting for the share group's lock inside GL calls
     uint64_t presentNanos = 0, drawableNanos = 0;  // SwapBuffers, and waiting for a drawable inside it

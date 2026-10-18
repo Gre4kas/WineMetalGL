@@ -48,6 +48,7 @@ double ms(uint64_t nanos) { return static_cast<double>(nanos) / 1e6; }
 
 const bool g_reporting = enabledFromEnvironment();
 bool g_enabled = g_reporting;
+std::atomic<uint64_t> g_pipelinesPredicted{0}, g_pipelinesArchived{0};
 
 Frame& frame() { return thread().frame; }
 
@@ -156,7 +157,7 @@ static uint64_t takeGpuBusyNanos() {
 bool counter(const char* name, uint64_t& value) {
 #define WMGL_COUNTER(field) {#field, &Frame::field}
     static const std::pair<const char*, uint64_t Frame::*> fields[] = {
-        WMGL_COUNTER(calls), WMGL_COUNTER(draws), WMGL_COUNTER(passes), WMGL_COUNTER(pipelineMisses),
+        WMGL_COUNTER(calls), WMGL_COUNTER(draws), WMGL_COUNTER(passes), WMGL_COUNTER(pipelineMisses), WMGL_COUNTER(pipelineArchiveHits), WMGL_COUNTER(pipelineWaits),
         WMGL_COUNTER(programLinks), WMGL_COUNTER(waits), WMGL_COUNTER(convertedVertices), WMGL_COUNTER(cpuIndexDraws),
         WMGL_COUNTER(tessCpu), WMGL_COUNTER(tessMetal), WMGL_COUNTER(tessMetalFlat), WMGL_COUNTER(tessMdiGpu), WMGL_COUNTER(positionOnlyPipelines), WMGL_COUNTER(indirectGpu),
         WMGL_COUNTER(indirectGpuBatches),
@@ -167,6 +168,9 @@ bool counter(const char* name, uint64_t& value) {
     static const char* const passEnds[8] = {"other", "target", "blit", "compute", "visibility", "commit", "barrier", "clear"};
     const Frame& f = frame();
     const std::string n = name ? name : "";
+    // Process-wide totals.
+    if (n == "pipelinesPredicted") return value = g_pipelinesPredicted.load(), true;
+    if (n == "pipelinesArchived") return value = g_pipelinesArchived.load(), true;
     // Not a frame counter: the bytes the Metal device has allocated (all of
     // the process's buffers, textures and heaps), for leak checks.
     if (n == "deviceAllocatedBytes") return value = Device::get().mtl().currentAllocatedSize, true;
@@ -223,7 +227,7 @@ void endFrame() {
     const Frame& f = t.frame;
     logRawFormat(LogCategory::Perf,
                  "winemetalgl:stats: frame %llu %.2f ms | gl %.2f ms in %llu calls | present %.2f ms (drawable %.2f ms) | "
-                 "draws %llu passes %llu | pipelines %llu (%.2f ms) links %llu (%.2f ms) | transient %llu KiB | "
+                 "draws %llu passes %llu | pipelines %llu (%.2f ms) archive %llu waited %llu predicted %llu archived %llu | links %llu (%.2f ms) | transient %llu KiB | "
                  "waits %llu (%.2f ms) | lock %.2f ms | converted %llu vertices, %llu reused (client %llu format %llu "
                  "[0x%llx] other %llu) | cpu indices %llu | tessellation cpu %llu metal %llu (flat %llu, prelude %llu, mdi gpu %llu commands %llu) | indirect gpu %llu (batches %llu) cpu %llu (empty %llu waits %llu; commands %llu "
                  "stage %llu capture %llu query %llu primitive %llu parameters %llu converted %llu index type %llu "
@@ -235,7 +239,11 @@ void endFrame() {
                  static_cast<unsigned long long>(f.calls), ms(f.presentNanos), ms(f.drawableNanos),
                  static_cast<unsigned long long>(f.draws),
                  static_cast<unsigned long long>(f.passes), static_cast<unsigned long long>(f.pipelineMisses),
-                 ms(f.pipelineNanos), static_cast<unsigned long long>(f.programLinks), ms(f.linkNanos),
+                 ms(f.pipelineNanos), static_cast<unsigned long long>(f.pipelineArchiveHits),
+                 static_cast<unsigned long long>(f.pipelineWaits),
+                 static_cast<unsigned long long>(g_pipelinesPredicted.load(std::memory_order_relaxed)),
+                 static_cast<unsigned long long>(g_pipelinesArchived.load(std::memory_order_relaxed)),
+                 static_cast<unsigned long long>(f.programLinks), ms(f.linkNanos),
                  static_cast<unsigned long long>(f.transientBytes / 1024), static_cast<unsigned long long>(f.waits),
                  ms(f.waitNanos), ms(f.lockNanos), static_cast<unsigned long long>(f.convertedVertices),
                  static_cast<unsigned long long>(f.convertedReused), static_cast<unsigned long long>(f.convertedClient),

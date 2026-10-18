@@ -5,10 +5,16 @@
 
 #import <Metal/Metal.h>
 
+#include <atomic>
 #include <cstdint>
 #include <cstring>
+#include <future>
+#include <memory>
 #include <mutex>
+#include <string>
 #include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 #include "core/objects.h"
 
@@ -78,13 +84,40 @@ struct SamplerKey {
     float lodBias;  // TEXTURE_LOD_BIAS (macOS 26+)
 };
 
+// Render pipelines are created against a binary archive on disk, one per
+// program (WINEMETALGL_PIPELINE_CACHE, pipeline_cache.mm), so a pipeline
+// compiles once ever rather than once per run. And they are predicted: the
+// render state of each new pipeline (formats, blending, vertex layout) is
+// built in the background for the other programs with the same vertex inputs
+// and fragment outputs, and a program that links gets the states seen so far,
+// so an effect's first draw usually finds its pipeline made
+// (WINEMETALGL_PREDICT_PIPELINES=0 turns that off).
 class PipelineCache {
 public:
+    PipelineCache();
+    ~PipelineCache();  // waits for the background predictions under way
+    PipelineCache(const PipelineCache&) = delete;
+    PipelineCache& operator=(const PipelineCache&) = delete;
+
     id<MTLRenderPipelineState> render(const PipelineKey& key, LinkedProgram& program);
     id<MTLDepthStencilState> depthStencil(const DepthStencilKey& key);
     id<MTLSamplerState> sampler(const SamplerKey& key);
+    // A program that linked: the render states seen so far are predicted for it.
+    void linked(const std::shared_ptr<LinkedProgram>& program);
 
 private:
+    using Future = std::shared_future<id<MTLRenderPipelineState>>;
+    // Creates and caches the pipeline (one creation per key: a creation in
+    // progress is waited for). `predicted`: a background guess, which logs
+    // no failure and caches none.
+    id<MTLRenderPipelineState> build(const PipelineKey& key, LinkedProgram& program, bool predicted);
+    // A pipeline a draw created: its render state, if new, is predicted for
+    // the programs it suits.
+    void learn(const PipelineKey& key, LinkedProgram& program);
+    // The descriptor of a key's pipeline (nil when the program has no vertex function).
+    MTLRenderPipelineDescriptor* describe(const PipelineKey& key, LinkedProgram& program);
+    void predict(const PipelineKey& key, const std::shared_ptr<LinkedProgram>& program);
+
     template <class K>
     struct Hash {
         size_t operator()(const K& k) const;
@@ -95,6 +128,18 @@ private:
     };
     std::mutex mutex_;
     std::unordered_map<PipelineKey, id<MTLRenderPipelineState>, Hash<PipelineKey>, Equal<PipelineKey>> render_;
+    std::unordered_map<PipelineKey, Future, Hash<PipelineKey>, Equal<PipelineKey>> building_;
+    // Prediction (under predictMutex_): render states by the interface
+    // signature of the programs they suit, the linked programs by theirs,
+    // and the keys already predicted.
+    std::mutex predictMutex_;
+    std::unordered_set<PipelineKey, Hash<PipelineKey>, Equal<PipelineKey>> states_;
+    std::unordered_map<std::string, std::vector<PipelineKey>> statesBySignature_;
+    std::unordered_map<std::string, std::vector<std::weak_ptr<LinkedProgram>>> programsBySignature_;
+    std::unordered_set<PipelineKey, Hash<PipelineKey>, Equal<PipelineKey>> predicted_;
+    size_t nextQueue_ = 0;
+    dispatch_group_t predictions_;
+    std::atomic<bool> closing_{false};
     std::unordered_map<DepthStencilKey, id<MTLDepthStencilState>, Hash<DepthStencilKey>, Equal<DepthStencilKey>> depth_;
     std::unordered_map<SamplerKey, id<MTLSamplerState>, Hash<SamplerKey>, Equal<SamplerKey>> samplers_;
 };

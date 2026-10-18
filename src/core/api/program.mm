@@ -11,6 +11,7 @@
 
 #include "core/context.h"
 #include "core/limits.h"
+#include "core/metal/pipeline_cache.h"
 #include "core/program.h"
 #include "core/shader/spirv_input.h"
 #include "core/stats.h"
@@ -645,6 +646,7 @@ void linkFrom(Context& ctx, Program* p, shader::LinkInput input, std::string log
     }
     p->linked = std::move(linked);
     prewarmFunctions(p->linked);
+    ctx.share().pipelines().linked(p->linked);
     ++p->uniformVersion;
     if (ctx.state.program.get() == p) ctx.markDirty(kDirtyProgram | kDirtyUniforms | kDirtyTextures | kDirtyVertexInput);
 }

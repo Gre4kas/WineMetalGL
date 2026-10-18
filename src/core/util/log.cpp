@@ -485,6 +485,12 @@ void logRawFormat(LogCategory category, const char* fmt, ...) {
     logRaw(category, text.c_str());
 }
 
+std::string logProgramName() {
+    State& s = state();
+    std::lock_guard<std::mutex> lock(s.mutex);
+    return programName(s);
+}
+
 void logSetHost(const char* program, const char* hostVersion) {
     State& s = state();
     std::lock_guard<std::mutex> lock(s.mutex);
