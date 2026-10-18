@@ -127,6 +127,7 @@ no `opengl32=native` override, and the program got Wine's own OpenGL.
 | `WINEMETALGL_LOG=1..3` | Log warnings, information or traces, everywhere or per category (`shader:3,gpu:2`); see [Logging](logging.md). Errors go to stderr and warnings to a log file in `~/Library/Logs/WineMetalGL` by default. Warnings include each GL error the first time a command raises it, with the call's arguments |
 | `WINEMETALGL_LOG_FILE=<path>` | Write the log file there (a directory, or a file where `%p` is the process ID); `0` writes none |
 | `WINEMETALGL_LOG_MAX_MB=<n>` | Stop the log file at `n` MiB (default 64) |
+| `WINEMETALGL_EXCEPTIONS=1` | Also log Windows access violations, illegal instructions and division by zero with a backtrace (invalid handles, stack overflows and heap corruption always are); see [Logging](logging.md#windows-exceptions) |
 | `WINEMETALGL_CRASH_HANDLER=0` | Do not write crash reports (they go to the log file, with the recent history, when WineMetalGL's code faults or the process aborts) |
 | `WINEMETALGL_TRACE=1` | Log every GL call |
 | `WINEMETALGL_STATS=1` | Log per-frame statistics: frame and GL time, draws, passes and why they ended, command buffers, pipeline compiles, CPU conversions, readbacks, indirect draw commands read by the GPU or (after a wait) the CPU, and why the CPU reads them (each reason described once per program), and the memory the Metal device has allocated (growing while a scene stands still means GPU resources are retained); every 60 frames, the costliest commands |

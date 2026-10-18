@@ -21,6 +21,9 @@
 
 #include "core/util/log.h"
 
+// libdyld exports it (dyld_priv.h): the shared cache's address and size.
+extern "C" const void* _dyld_get_shared_cache_range(size_t* length);
+
 namespace wmgl {
 namespace {
 
@@ -54,6 +57,36 @@ void addRange(const mach_header* header) {
     if (count >= kMaxRanges) return;
     g_ranges[count] = {start, start + size};
     g_rangeCount.store(count + 1, std::memory_order_release);
+}
+
+// Code that runs with the host's thread state: macOS's shared cache and every
+// image dyld loaded (Wine's unix libraries, WineMetalGL, Metal's plugins).
+// Windows code is in none of them: Wine maps PE images itself, and runs them
+// with GSBASE at the TEB in some processes, where anything reading the
+// pthread TSD (errno, pthread_self, Mach calls) reads or writes the TEB.
+constexpr int kMaxHostRanges = 2048;
+Range g_hostRanges[kMaxHostRanges];
+std::atomic<int> g_hostRangeCount{0};
+uintptr_t g_sharedCacheStart, g_sharedCacheEnd;
+
+void addHostImage(const mach_header* header, intptr_t) {
+    unsigned long size = 0;
+    const uint8_t* text = getsegmentdata(reinterpret_cast<const mach_header_64*>(header), "__TEXT", &size);
+    const int count = g_hostRangeCount.load();
+    if (!text || !size || count >= kMaxHostRanges) return;
+    g_hostRanges[count] = {reinterpret_cast<uintptr_t>(text), reinterpret_cast<uintptr_t>(text) + size};
+    g_hostRangeCount.store(count + 1, std::memory_order_release);
+}
+
+bool ours(uintptr_t address);
+
+bool hostCode(uintptr_t pc) {
+    if (pc >= g_sharedCacheStart && pc < g_sharedCacheEnd) return true;
+    if (ours(pc)) return true;
+    const int count = g_hostRangeCount.load(std::memory_order_acquire);
+    for (int i = 0; i < count; ++i)
+        if (pc >= g_hostRanges[i].start && pc < g_hostRanges[i].end) return true;
+    return false;
 }
 
 bool ours(uintptr_t address) {
@@ -263,9 +296,15 @@ void chain(int sig, siginfo_t* info, void* context) {
 }
 
 void onSignal(int sig, siginfo_t* info, void* context) {
-    const int savedErrno = errno;
     uintptr_t pc, fp, sp, lr;
     registersOf(context, pc, fp, sp, lr);
+    // Windows code: not WineMetalGL's, and the thread state may be the TEB's.
+    // Wine's handler, next, sorts out GSBASE; nothing here may run first.
+    if (!hostCode(pc)) {
+        chain(sig, info, context);
+        return;
+    }
+    const int savedErrno = errno;
     uintptr_t frames[48];
     int frameCount = 0;
     if (lr) frames[frameCount++] = lr;
@@ -350,6 +389,12 @@ void installCrashHandlers() {
             const char* name = _dyld_get_image_name(i);
             if (name && strcasestr(name, "winemetalgl")) addRange(_dyld_get_image_header(i));
         }
+        size_t cacheSize = 0;
+        if (const void* cache = _dyld_get_shared_cache_range(&cacheSize)) {
+            g_sharedCacheStart = reinterpret_cast<uintptr_t>(cache);
+            g_sharedCacheEnd = g_sharedCacheStart + cacheSize;
+        }
+        _dyld_register_func_for_add_image(addHostImage);  // also called for the images loaded now
         logFilePath();  // chosen (and its directory made) now: the handler cannot
         struct sigaction action = {};
         action.sa_sigaction = onSignal;

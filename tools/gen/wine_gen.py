@@ -162,6 +162,22 @@ def main():
         for require in feature.findall("require"):
             for cmd in require.findall("command"):
                 version_of.setdefault(cmd.get("name"), feature.get("number"))
+    # A command several extensions provide is offered when the context has
+    # any of them: glGetQueryObjectui64vEXT is GL_EXT_timer_query's on
+    # desktop contexts and GL_EXT_disjoint_timer_query's on OpenGL ES ones.
+    providers = {}
+    wanted = set(ext_names)
+    for ext in root.find("extensions").findall("extension"):
+        if ext.get("name") not in wanted:
+            continue
+        for require in ext.findall("require"):
+            for cmd in require.findall("command"):
+                providers.setdefault(cmd.get("name"), set()).add(ext.get("name"))
+
+    def source_of(cmd):
+        if cmd in version_of:
+            return version_of[cmd]
+        return " ".join(sorted(providers.get(cmd, set()) | {selected[cmd]}))
 
     def params_of(cmd):
         return commands[cmd]["params"]
@@ -241,8 +257,7 @@ def main():
             out.write("}\n\n")
         out.write("const struct wmgl_proc wmgl_procs[] =\n{\n")
         for cmd in names:
-            source = version_of.get(cmd) or selected[cmd]
-            out.write('    {"%s", (PROC)%s, "%s"},\n' % (cmd, cmd, source))
+            out.write('    {"%s", (PROC)%s, "%s"},\n' % (cmd, cmd, source_of(cmd)))
         out.write("};\nconst unsigned int wmgl_proc_count = %d;\n" % len(names))
 
     # ------------------------------------------------------------------ unix

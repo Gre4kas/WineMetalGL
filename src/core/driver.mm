@@ -2,10 +2,14 @@
 
 #include "winemetalgl/driver.h"
 
+#include <dlfcn.h>
+#include <execinfo.h>
+
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <string>
 
 #include "core/context.h"
 #include "core/metal/device.h"
@@ -115,6 +119,38 @@ Surface* asSurface(wmgl_surface* s) { return reinterpret_cast<Surface*>(s); }
 WMGL_EXPORT int wmgl_initialize(unsigned int abi_version) {
     CallPool pool;  // see CallPool (context.h)
     installCrashHandlers();
+    // One GL front end per process. The core keeps one current context per
+    // thread, so a second front end (another library of the host, such as a
+    // Wine display driver's own OpenGL) would make its contexts current on the
+    // first one's threads and the application's GL calls would land in them.
+    // The first library to initialize the core owns it; another is refused.
+    static std::mutex ownerLock;
+    static const void* owner = nullptr;
+    static std::string ownerName;
+    Dl_info caller;
+    const bool known = dladdr(__builtin_return_address(0), &caller) && caller.dli_fbase;
+    const char* by = known && caller.dli_fname ? caller.dli_fname : "?";
+    {
+        std::lock_guard<std::mutex> lock(ownerLock);
+        if (!owner) {
+            owner = known ? caller.dli_fbase : reinterpret_cast<const void*>(1);
+            ownerName = by;
+            WMGL_INFO(Driver, "initialized by %s", by);
+        } else if (known && caller.dli_fbase != owner) {
+            WMGL_WARN(Driver, "refused a second GL front end, %s: %s owns this process's GL", by, ownerName.c_str());
+            void* frames[24];
+            const int count = backtrace(frames, 24);
+            for (int i = 1; i < count; ++i) {
+                Dl_info info;
+                if (!dladdr(frames[i], &info) || !info.dli_fname) continue;
+                const char* image = std::strrchr(info.dli_fname, '/');
+                WMGL_INFO(Driver, "  #%d %s+0x%lx %s", i, image ? image + 1 : info.dli_fname,
+                          static_cast<unsigned long>(static_cast<char*>(frames[i]) - static_cast<char*>(info.dli_fbase)),
+                          info.dli_sname ? info.dli_sname : "");
+            }
+            return -1;
+        }
+    }
     static std::once_flag objcOnce;
     std::call_once(objcOnce, [] {
         if (const char* v = std::getenv("WINEMETALGL_CRASH_HANDLER"); v && !std::strcmp(v, "0")) return;
