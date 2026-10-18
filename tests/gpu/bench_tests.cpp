@@ -12,6 +12,7 @@
 #include <string>
 
 #include "gpu.h"
+#include "../wine/doom_frame.h"
 
 namespace {
 
@@ -321,4 +322,41 @@ TEST(bench_copy_tex_sub_image_4k) {
         glDeleteFramebuffers(1, &fb);
         glDeleteTextures(2, tex);
     }
+}
+
+TEST(bench_doom_frame) {
+    // WMGL_BENCH (frames, default 300): tests/wine/doom_frame.h's stand-in
+    // for a DOOM (2016) frame on the core directly, for profiling the draw
+    // path (tests/wine/opengl_doom_bench.c runs it through the Wine module).
+    const char* env = std::getenv("WMGL_BENCH");
+    if (!env) return;
+    const int frames = std::atoi(env) > 0 ? std::atoi(env) : 300;
+    gpu::Fixture fixture(1920, 1080, false, 46);
+    CHECK(fixture.ok);
+    if (!fixture.ok) return;
+    DoomGL gl;
+    const char* missing = doom_gl_load(&gl, [](const char* name) { return wmgl_get_proc_address(name); });
+    CHECK(missing == nullptr);
+    if (missing) return;
+    static DoomFrame frame;
+    doom_setup(&frame, &gl, 1920, 1080);
+    using Clock = std::chrono::steady_clock;
+    for (int i = 0; i < 30; ++i) {
+        doom_run_frame(&frame);
+        gl.Finish();
+    }
+    double cpuMs = 0;
+    const auto begin = Clock::now();
+    for (int i = 0; i < frames; ++i) {
+        const auto start = Clock::now();
+        doom_run_frame(&frame);
+        gl.Flush();
+        cpuMs += std::chrono::duration<double, std::milli>(Clock::now() - start).count();
+        if (i % 2 == 1) gl.Finish();  // at most a couple of frames queued, as swaps keep
+    }
+    gl.Finish();
+    const double wall = std::chrono::duration<double, std::milli>(Clock::now() - begin).count();
+    std::fprintf(stderr, "  bench: doom frame: %d frames x %d draws: %.2f ms CPU per frame (%.2f us per draw), %.2f ms wall per frame\n",
+                 frames, frame.draws, cpuMs / frames, cpuMs * 1000.0 / frames / frame.draws, wall / frames);
+    CHECK_EQ(gl.GetError(), static_cast<GLenum>(GL_NO_ERROR));
 }
