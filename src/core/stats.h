@@ -103,6 +103,10 @@ struct Frame {
     uint32_t barrierBits = 0;  // glMemoryBarrier's bits, all the frame's
     uint64_t prepareQueriesNanos = 0, prepareTargetNanos = 0, prepareBordersNanos = 0, prepareScissorsNanos = 0,
              prepareEncoderNanos = 0, prepareKeyNanos = 0, passStartNanos = 0;
+    // Parts of passStartNanos: ending the encoder before, the command buffer
+    // (a new one after a commit), the encoder, its label (stats only), the
+    // wait for earlier shader writes.
+    uint64_t passEndNanos = 0, passBufferNanos = 0, passEncoderNanos = 0, passLabelNanos = 0, passFenceNanos = 0;
 };
 
 // GPU time of completed command buffers (any thread; reported and reset per frame).

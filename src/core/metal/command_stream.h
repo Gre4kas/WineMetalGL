@@ -131,10 +131,6 @@ public:
     // buffer's pass on its target) instead of running as a pass of its own:
     // for commits WineMetalGL makes itself, which nothing outside sees.
     uint64_t flush(bool keepPendingClear = false);
-    // Commits the work when the render pass in progress ends, for whatever
-    // reason (now, when none is): for what needs the command buffer's
-    // completion soon but not the pass cut short (timer queries).
-    void commitAtPassEnd();
     // Nanoseconds (stats::nowNanos) of the last commit.
     uint64_t lastCommitNanos() const { return lastCommitNanos_; }
     // Commits and waits for all work from this stream to complete.
@@ -185,7 +181,6 @@ private:
     Queue& queue_;
     id<MTLCommandBuffer> buffer_ = nil;
     uint64_t serial_ = 0;
-    bool commitAtPassEnd_ = false;
     uint64_t lastCommitted_ = 0;
     uint64_t lastCommitNanos_ = 0;
     id<MTLRenderCommandEncoder> render_ = nil;

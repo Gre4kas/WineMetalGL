@@ -235,7 +235,7 @@ void endFrame() {
                  "pass ends: target %llu blit %llu compute %llu visibility %llu commit %llu barrier %llu clear %llu "
                  "other %llu | reads async %llu waiting %llu | client waits %llu (signaled %llu, %.2f ms) | gpu %.2f ms busy %.2f ms | metal %.1f MiB | draw cpu: samplers %.2f vertex %.2f "
                  "prepare %.2f pipeline %.2f bind %.2f encode %.2f index %.2f ms | prepare: queries %.2f target %.2f borders "
-                 "%.2f scissors %.2f encoder %.2f (pass starts %.2f) key %.2f ms | barriers 0x%x | background compiles %.0f ms total\n",
+                 "%.2f scissors %.2f encoder %.2f (pass starts %.2f: end %.2f buffer %.2f encoder %.2f label %.2f fence %.2f) key %.2f ms | barriers 0x%x | background compiles %.0f ms total\n",
                  static_cast<unsigned long long>(t.index), t.lastPresent ? ms(now - t.lastPresent) : 0.0, ms(f.glNanos),
                  static_cast<unsigned long long>(f.calls), ms(f.presentNanos), ms(f.drawableNanos),
                  static_cast<unsigned long long>(f.draws),
@@ -281,7 +281,8 @@ void endFrame() {
                  ms(f.drawSamplersNanos), ms(f.drawVertexNanos), ms(f.drawPrepareNanos), ms(f.drawPipelineNanos),
                  ms(f.drawBindNanos), ms(f.drawEncodeNanos), ms(f.drawIndexNanos), ms(f.prepareQueriesNanos),
                  ms(f.prepareTargetNanos), ms(f.prepareBordersNanos), ms(f.prepareScissorsNanos), ms(f.prepareEncoderNanos),
-                 ms(f.passStartNanos), ms(f.prepareKeyNanos), f.barrierBits, ms(g_predictNanos.load(std::memory_order_relaxed)));
+                 ms(f.passStartNanos), ms(f.passEndNanos), ms(f.passBufferNanos), ms(f.passEncoderNanos),
+                 ms(f.passLabelNanos), ms(f.passFenceNanos), ms(f.prepareKeyNanos), f.barrierBits, ms(g_predictNanos.load(std::memory_order_relaxed)));
     if (t.index % 60 == 59) printProfile(60);
     t.frame = Frame();
     t.lastPresent = now;

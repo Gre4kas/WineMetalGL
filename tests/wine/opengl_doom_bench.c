@@ -5,7 +5,9 @@
  *
  *   opengl_doom_bench.exe [frames] [width height]
  *
- * WMGL_DOOM_SKIP leaves parts of the frame out (doom_frame.h). Prints the
+ * WMGL_DOOM_SKIP leaves parts of the frame out (doom_frame.h). WMGL_DOOM_BUSY=N
+ * runs N threads that spin through the run, as a game's worker threads load
+ * every core. Prints the
  * CPU wall time between presents (swap interval 0): mean, median and 95th
  * percentile, frames per second, and the time spent building a frame
  * (before SwapBuffers) and per draw, then
@@ -37,6 +39,16 @@ static void *lookup(const char *name)
 }
 
 static LRESULT CALLBACK proc(HWND h, UINT m, WPARAM w, LPARAM l) { return DefWindowProcA(h, m, w, l); }
+
+static volatile LONG stop;
+
+static DWORD WINAPI spin(void *arg)
+{
+    volatile unsigned x = 0;
+    (void)arg;
+    while (!stop) x = x * 1664525u + 1013904223u;
+    return 0;
+}
 
 static int compare(const void *a, const void *b)
 {
@@ -90,6 +102,8 @@ int main(int argc, char **argv)
     if ((interval = (SwapInterval)wglGetProcAddress("wglSwapIntervalEXT"))) interval(0);
     doom_setup(&frame, &gl, width, height);
 
+    if (getenv("WMGL_DOOM_BUSY"))
+        for (f = atoi(getenv("WMGL_DOOM_BUSY")); f > 0; --f) CreateThread(NULL, 0, spin, NULL, 0, NULL);
     QueryPerformanceFrequency(&freq);
     for (f = -warmup; f < frames; ++f) {
         MSG msg;
@@ -111,6 +125,7 @@ int main(int argc, char **argv)
     }
     gl.Finish();
     QueryPerformanceCounter(&now);
+    stop = 1;
     for (f = 0; f < frames; ++f) sum += times[f];
     qsort(times, (size_t)frames, sizeof(double), compare);
     printf("BENCH doom frames=%d draws=%d mean=%.2f p50=%.2f p95=%.2f fps=%.1f cpu=%.2f cpu_us_per_draw=%.2f error=0x%x\n",

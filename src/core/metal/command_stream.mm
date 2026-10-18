@@ -42,13 +42,7 @@ uint64_t CommandStream::serialSlow() {
 static_assert(static_cast<size_t>(CommandStream::PassEnd::Count) == sizeof(stats::Frame::passEnds) / sizeof(uint64_t),
               "stats::Frame::passEnds has a counter per PassEnd");
 
-void CommandStream::commitAtPassEnd() {
-    if (render_) commitAtPassEnd_ = true;
-    else flush();
-}
-
 void CommandStream::endEncoder(PassEnd cause) {
-    const bool rendering = render_ != nil;
     if (render_ && stats::g_enabled) ++stats::frame().passEnds[static_cast<int>(cause)];
     if (shaderWrites_ && (render_ || compute_)) {
         if (!writesFence_) writesFence_ = [Device::get().mtl() newFence];
@@ -70,9 +64,6 @@ void CommandStream::endEncoder(PassEnd cause) {
         [compute_ endEncoding];
         compute_ = nil;
     }
-    // The pass a commit waited for (commitAtPassEnd) ended: commit, keeping
-    // the next pass's clear for it.
-    if (rendering && commitAtPassEnd_ && cause != PassEnd::Commit) flush(true);
 }
 
 void CommandStream::waitForShaderWrites(id<MTLCommandEncoder> encoder, bool render) {
@@ -93,7 +84,10 @@ void CommandStream::waitForShaderWrites(id<MTLCommandEncoder> encoder, bool rend
 
 void CommandStream::startRender(const RenderTargetDesc& target) {
     stats::Timer timer(&stats::Frame::passStartNanos);
-    endEncoder(PassEnd::Target);
+    {
+        stats::Timer end(&stats::Frame::passEndNanos);
+        endEncoder(PassEnd::Target);
+    }
     MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
     const bool clearsApply = pending_.any() && pendingTarget_ == target;
     for (size_t i = 0; i < target.color.size(); ++i) {
@@ -153,8 +147,17 @@ void CommandStream::startRender(const RenderTargetDesc& target) {
         passVisibility_ = true;
     }
     if (clearsApply) pending_ = PendingClear();
-    render_ = [commandBuffer() renderCommandEncoderWithDescriptor:pass];
+    id<MTLCommandBuffer> buffer;
+    {
+        stats::Timer t(&stats::Frame::passBufferNanos);
+        buffer = commandBuffer();
+    }
+    {
+        stats::Timer t(&stats::Frame::passEncoderNanos);
+        render_ = [buffer renderCommandEncoderWithDescriptor:pass];
+    }
     if (stats::g_enabled) {
+        stats::Timer t(&stats::Frame::passLabelNanos);
         // Pass names in Metal System Trace: target size, colour attachments,
         // depth, and the pass number in the frame.
         int colors = 0;
@@ -163,7 +166,10 @@ void CommandStream::startRender(const RenderTargetDesc& target) {
                                                    target.width, target.height, colors, target.depth.texture ? " d" : "",
                                                    clearsApply ? " clear" : ""];
     }
-    waitForShaderWrites(render_, true);
+    {
+        stats::Timer t(&stats::Frame::passFenceNanos);
+        waitForShaderWrites(render_, true);
+    }
     stats::passStarted(target.width, target.height);
     target_ = target;
     drawsInPass_ = false;
@@ -327,7 +333,6 @@ uint64_t CommandStream::flush(bool keepPendingClear) {
     endEncoder(PassEnd::Commit);
     commitPrelude();
     if (!buffer_) return lastCommitted_;
-    commitAtPassEnd_ = false;
     stats::count(&stats::Frame::commits);
     lastCommitNanos_ = stats::nowNanos();
     drawsSinceCommit_ = 0;

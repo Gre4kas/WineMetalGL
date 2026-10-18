@@ -192,6 +192,8 @@ src/core/util/metalfx_config.cpp
 src/core/util/metalfx_config.h
 src/core/util/name_table.h
 src/core/util/ref.h
+src/core/util/thread_qos.cpp
+src/core/util/thread_qos.h
 src/core/util/version.h
 src/core/version.mm
 src/wine/include/wmgl_gltypes.h
