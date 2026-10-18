@@ -13,6 +13,10 @@
  * render size of wmgl_window_placement), and the core shows it over the
  * whole window.
  *
+ * The program sees one display, the primary one: with others listed, a
+ * program that picks the display with the most pixels (DOOM (2016) beside a
+ * MacBook's own display) would leave the one UpscaleGL scales.
+ *
  * The functions are replaced in the import address tables of the program's
  * modules (not Wine's builtin DLLs, nor this one, whose own calls reach the
  * real functions) as they load, and GetProcAddress returns the replacements.
@@ -47,6 +51,7 @@ struct mode
 };
 
 static WCHAR primary_device[CCHDEVICENAME];
+static HMONITOR primary_monitor;
 static LONG real_width, real_height;        /* the real primary display mode */
 static LONG desktop_width, desktop_height;  /* what the program sees of it */
 static LONG mode_width, mode_height;        /* the mode it set, else the desktop */
@@ -189,6 +194,11 @@ static LONG change_mode( const DWORD *fields, const DWORD *width, const DWORD *h
     X(user32, BOOL, GetMonitorInfoW, (HMONITOR monitor, MONITORINFO *info)) \
     X(user32, BOOL, EnumDisplayMonitors, (HDC hdc, const RECT *clip, MONITORENUMPROC proc, LPARAM param)) \
     X(user32, BOOL, ShowWindow, (HWND hwnd, int command)) \
+    X(user32, BOOL, EnumDisplayDevicesA, (LPCSTR device, DWORD index, DISPLAY_DEVICEA *info, DWORD flags)) \
+    X(user32, BOOL, EnumDisplayDevicesW, (LPCWSTR device, DWORD index, DISPLAY_DEVICEW *info, DWORD flags)) \
+    X(user32, HMONITOR, MonitorFromWindow, (HWND hwnd, DWORD flags)) \
+    X(user32, HMONITOR, MonitorFromPoint, (POINT point, DWORD flags)) \
+    X(user32, HMONITOR, MonitorFromRect, (const RECT *rect, DWORD flags)) \
     X(gdi32, int, GetDeviceCaps, (HDC hdc, int index)) \
     X(user32, HWND, CreateWindowExA, (DWORD ex_style, LPCSTR class_name, LPCSTR name, DWORD style, int x, int y, \
                                       int width, int height, HWND parent, HMENU menu, HINSTANCE instance, void *param)) \
@@ -452,7 +462,8 @@ static void place_window( HWND hwnd, int *x, int *y, int *cx, int *cy, UINT flag
 
 static BOOL WINAPI hook_EnumDisplaySettingsExW( LPCWSTR device, DWORD index, DEVMODEW *mode, DWORD flags )
 {
-    if (!enabled || !is_primary( device )) return EnumDisplaySettingsExW( device, index, mode, flags );
+    if (!enabled) return EnumDisplaySettingsExW( device, index, mode, flags );
+    if (!is_primary( device )) return FALSE;  /* one display */
     if (index == ENUM_CURRENT_SETTINGS || index == ENUM_REGISTRY_SETTINGS)
     {
         if (!EnumDisplaySettingsExW( device, index, mode, flags )) return FALSE;
@@ -471,7 +482,8 @@ static BOOL WINAPI hook_EnumDisplaySettingsExW( LPCWSTR device, DWORD index, DEV
 
 static BOOL WINAPI hook_EnumDisplaySettingsExA( LPCSTR device, DWORD index, DEVMODEA *mode, DWORD flags )
 {
-    if (!enabled || !is_primary_a( device )) return EnumDisplaySettingsExA( device, index, mode, flags );
+    if (!enabled) return EnumDisplaySettingsExA( device, index, mode, flags );
+    if (!is_primary_a( device )) return FALSE;  /* one display */
     if (index == ENUM_CURRENT_SETTINGS || index == ENUM_REGISTRY_SETTINGS)
     {
         if (!EnumDisplaySettingsExA( device, index, mode, flags )) return FALSE;
@@ -500,16 +512,24 @@ static BOOL WINAPI hook_EnumDisplaySettingsA( LPCSTR device, DWORD index, DEVMOD
 
 static LONG WINAPI hook_ChangeDisplaySettingsExW( LPCWSTR device, DEVMODEW *mode, HWND hwnd, DWORD flags, void *param )
 {
-    if (enabled && !is_primary( device )) LOG_CALL( "display mode change on %ls\n", device );
-    if (!enabled || !is_primary( device )) return ChangeDisplaySettingsExW( device, mode, hwnd, flags, param );
+    if (!enabled) return ChangeDisplaySettingsExW( device, mode, hwnd, flags, param );
+    if (!is_primary( device ))
+    {
+        LOG_CALL( "display mode change on %ls refused\n", device );
+        return DISP_CHANGE_BADMODE;  /* one display */
+    }
     return mode ? change_mode( &mode->dmFields, &mode->dmPelsWidth, &mode->dmPelsHeight, flags )
                 : change_mode( NULL, NULL, NULL, flags );
 }
 
 static LONG WINAPI hook_ChangeDisplaySettingsExA( LPCSTR device, DEVMODEA *mode, HWND hwnd, DWORD flags, void *param )
 {
-    if (enabled && !is_primary_a( device )) LOG_CALL( "display mode change on %s\n", device );
-    if (!enabled || !is_primary_a( device )) return ChangeDisplaySettingsExA( device, mode, hwnd, flags, param );
+    if (!enabled) return ChangeDisplaySettingsExA( device, mode, hwnd, flags, param );
+    if (!is_primary_a( device ))
+    {
+        LOG_CALL( "display mode change on %s refused\n", device );
+        return DISP_CHANGE_BADMODE;  /* one display */
+    }
     return mode ? change_mode( &mode->dmFields, &mode->dmPelsWidth, &mode->dmPelsHeight, flags )
                 : change_mode( NULL, NULL, NULL, flags );
 }
@@ -524,24 +544,6 @@ static LONG WINAPI hook_ChangeDisplaySettingsA( DEVMODEA *mode, DWORD flags )
     return hook_ChangeDisplaySettingsExA( NULL, mode, NULL, flags, NULL );
 }
 
-static void seen_monitor( MONITORINFO *info );
-
-static BOOL CALLBACK add_monitor( HMONITOR monitor, HDC hdc, RECT *rect, LPARAM param )
-{
-    MONITORINFO info = {sizeof(info)};
-    if (!GetMonitorInfoW( monitor, &info )) return TRUE;
-    seen_monitor( &info );
-    UnionRect( (RECT *)param, (RECT *)param, &info.rcMonitor );
-    return TRUE;
-}
-
-/* The desktop over every display, the primary one as the program sees it. */
-static void seen_virtual_screen( RECT *all )
-{
-    SetRectEmpty( all );
-    EnumDisplayMonitors( NULL, NULL, add_monitor, (LPARAM)all );
-}
-
 static int seen_metric( int index, int value )
 {
     switch (index)
@@ -550,17 +552,16 @@ static int seen_metric( int index, int value )
         return mode_width;
     case SM_CYSCREEN:
         return mode_height;
+    /* The primary display is the only one (see "One display"). */
     case SM_XVIRTUALSCREEN:
     case SM_YVIRTUALSCREEN:
+        return 0;
     case SM_CXVIRTUALSCREEN:
+        return mode_width;
     case SM_CYVIRTUALSCREEN:
-    {
-        RECT all;
-        seen_virtual_screen( &all );
-        if (index == SM_XVIRTUALSCREEN) return all.left;
-        if (index == SM_YVIRTUALSCREEN) return all.top;
-        return index == SM_CXVIRTUALSCREEN ? all.right - all.left : all.bottom - all.top;
-    }
+        return mode_height;
+    case SM_CMONITORS:
+        return 1;
     case SM_CXFULLSCREEN:
     case SM_CXMAXIMIZED:
     case SM_CXMAXTRACK:
@@ -626,6 +627,7 @@ static BOOL CALLBACK seen_monitor_enum( HMONITOR monitor, HDC hdc, RECT *rect, L
     const struct monitor_enum *program = (const struct monitor_enum *)param;
     RECT seen = *rect;
 
+    if (monitor != primary_monitor) return TRUE;  /* one display */
     if (seen.left == 0 && seen.top == 0 && seen.right == real_width && seen.bottom == real_height)
     {
         seen.right = mode_width;
@@ -639,6 +641,50 @@ static BOOL WINAPI hook_EnumDisplayMonitors( HDC hdc, const RECT *clip, MONITORE
     struct monitor_enum program = {proc, param};
     if (!enabled || !proc) return EnumDisplayMonitors( hdc, clip, proc, param );
     return EnumDisplayMonitors( hdc, clip, seen_monitor_enum, (LPARAM)&program );
+}
+
+/* Adapters: the primary one alone; a monitor of another: none. */
+static BOOL WINAPI hook_EnumDisplayDevicesW( LPCWSTR device, DWORD index, DISPLAY_DEVICEW *info, DWORD flags )
+{
+    DWORD i;
+
+    if (!enabled) return EnumDisplayDevicesW( device, index, info, flags );
+    if (device) return is_primary( device ) && EnumDisplayDevicesW( device, index, info, flags );
+    if (index) return FALSE;
+    for (i = 0; EnumDisplayDevicesW( NULL, i, info, flags ); i++)
+        if (info->StateFlags & DISPLAY_DEVICE_PRIMARY_DEVICE) return TRUE;
+    return FALSE;
+}
+
+static BOOL WINAPI hook_EnumDisplayDevicesA( LPCSTR device, DWORD index, DISPLAY_DEVICEA *info, DWORD flags )
+{
+    DWORD i;
+
+    if (!enabled) return EnumDisplayDevicesA( device, index, info, flags );
+    if (device) return is_primary_a( device ) && EnumDisplayDevicesA( device, index, info, flags );
+    if (index) return FALSE;
+    for (i = 0; EnumDisplayDevicesA( NULL, i, info, flags ); i++)
+        if (info->StateFlags & DISPLAY_DEVICE_PRIMARY_DEVICE) return TRUE;
+    return FALSE;
+}
+
+/* Every window, point and rectangle is on the primary display. */
+static HMONITOR WINAPI hook_MonitorFromWindow( HWND hwnd, DWORD flags )
+{
+    HMONITOR monitor = MonitorFromWindow( hwnd, flags );
+    return enabled && monitor ? primary_monitor : monitor;
+}
+
+static HMONITOR WINAPI hook_MonitorFromPoint( POINT point, DWORD flags )
+{
+    HMONITOR monitor = MonitorFromPoint( point, flags );
+    return enabled && (monitor || flags != MONITOR_DEFAULTTONULL) ? primary_monitor : monitor;
+}
+
+static HMONITOR WINAPI hook_MonitorFromRect( const RECT *rect, DWORD flags )
+{
+    HMONITOR monitor = MonitorFromRect( rect, flags );
+    return enabled && monitor ? primary_monitor : monitor;
 }
 
 static int WINAPI hook_GetDeviceCaps( HDC hdc, int index )
@@ -1092,7 +1138,8 @@ void upscalegl_init( HMODULE module )
     }
     memset( &monitor, 0, sizeof(monitor) );
     monitor.cbSize = sizeof(monitor);
-    if (GetMonitorInfoW( MonitorFromPoint( origin, MONITOR_DEFAULTTOPRIMARY ), (MONITORINFO *)&monitor ))
+    primary_monitor = MonitorFromPoint( origin, MONITOR_DEFAULTTOPRIMARY );
+    if (GetMonitorInfoW( primary_monitor, (MONITORINFO *)&monitor ))
         lstrcpynW( primary_device, monitor.szDevice, ARRAY_SIZE(primary_device) );
     self = module;
     real_width = mode.dmPelsWidth;
