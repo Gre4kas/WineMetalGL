@@ -123,19 +123,30 @@ WMGL_EXPORT int wmgl_initialize(unsigned int abi_version) {
     // thread, so a second front end (another library of the host, such as a
     // Wine display driver's own OpenGL) would make its contexts current on the
     // first one's threads and the application's GL calls would land in them.
-    // The first library to initialize the core owns it; another is refused.
+    // WineMetalGL's own Wine module (winemetalgl.so), the program's GL, owns
+    // the core whenever it loads, also after a display driver's OpenGL
+    // initialized it first (it does at startup, enumerating GPUs: Steam).
+    // Otherwise the first library to initialize the core owns it; another
+    // is refused.
     static std::mutex ownerLock;
     static const void* owner = nullptr;
     static std::string ownerName;
+    static bool ownerIsModule = false;
     Dl_info caller;
     const bool known = dladdr(__builtin_return_address(0), &caller) && caller.dli_fbase;
     const char* by = known && caller.dli_fname ? caller.dli_fname : "?";
+    const char* byName = std::strrchr(by, '/') ? std::strrchr(by, '/') + 1 : by;
+    const bool module = known && std::strstr(byName, "winemetalgl") != nullptr;
     {
         std::lock_guard<std::mutex> lock(ownerLock);
-        if (!owner) {
+        if (!owner || (module && !ownerIsModule && caller.dli_fbase != owner)) {
+            if (owner)
+                WMGL_INFO(Driver, "initialized by %s, which takes the core over from %s", by, ownerName.c_str());
+            else
+                WMGL_INFO(Driver, "initialized by %s", by);
             owner = known ? caller.dli_fbase : reinterpret_cast<const void*>(1);
             ownerName = by;
-            WMGL_INFO(Driver, "initialized by %s", by);
+            ownerIsModule = module;
         } else if (known && caller.dli_fbase != owner) {
             WMGL_WARN(Driver, "refused a second GL front end, %s: %s owns this process's GL", by, ownerName.c_str());
             void* frames[24];
