@@ -1639,7 +1639,9 @@ void DrawState::applyDynamicState(id<MTLRenderCommandEncoder> encoder, const Ren
 // --------------------------------------------------------------- prepare
 
 id<MTLRenderCommandEncoder> DrawState::prepare(GLenum mode, MTLPrimitiveType& primitive) {
+    stats::Timer phase(&stats::Frame::prepareQueriesNanos);
     queriesPrepareVisibility(ctx_);
+    phase.switchTo(&stats::Frame::prepareTargetNanos);
     RenderTargetDesc target;
     TargetFormats formats;
     if (validatedFor_ && validatedFor_ == drawCount_) {
@@ -1655,8 +1657,10 @@ id<MTLRenderCommandEncoder> DrawState::prepare(GLenum mode, MTLPrimitiveType& pr
     LinkedProgram* program = executable();
     if (!program) return nil;
     // Before the render encoder: completeness checks may build storage.
+    phase.switchTo(&stats::Frame::prepareBordersNanos);
     const uint16_t borders[2] = {borderVariant(*program, static_cast<int>(Stage::Vertex)),
                                  borderVariant(*program, static_cast<int>(Stage::Fragment))};
+    phase.switchTo(&stats::Frame::prepareScissorsNanos);
     // Scissor rectangles of every viewport index (an empty one clips
     // everything). Without gl_ViewportIndex only index 0 is used, and an
     // empty rectangle there draws nothing.
@@ -1678,10 +1682,12 @@ id<MTLRenderCommandEncoder> DrawState::prepare(GLenum mode, MTLPrimitiveType& pr
                    static_cast<NSUInteger>(y1 - y0)};
     }
 
+    phase.switchTo(&stats::Frame::prepareEncoderNanos);
     id<MTLRenderCommandEncoder> encoder = ctx_.stream().render(target);
     if (ctx_.stream().passGeneration() != lastPassGeneration_) {
         lastPassGeneration_ = ctx_.stream().passGeneration();
     }
+    phase.switchTo(&stats::Frame::prepareKeyNanos);
     PipelineKey key;
     std::memset(&key, 0, sizeof(key));
     key.programId = program->uid;

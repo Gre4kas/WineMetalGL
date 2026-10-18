@@ -351,8 +351,12 @@ void markTimerEnd(Context& ctx, Query& q) {
         timer->end = timestamp ? monotonicGpuTime(done.GPUEndTime) : done.GPUEndTime;
         timer->endSet = true;
     }];
+    // The command buffer completes the timer: committed when its render
+    // pass ends rather than now. Cutting the pass short cost DOOM (2016)
+    // eight passes and command buffers a frame for its timestamps (issue #36).
+    q.pendingSerial = ctx.stream().serial();
     stats::count(&stats::Frame::queryCommits);
-    q.pendingSerial = ctx.stream().flush();
+    ctx.stream().commitAtPassEnd();
 }
 
 }  // namespace

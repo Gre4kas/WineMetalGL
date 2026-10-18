@@ -24,6 +24,7 @@ extern bool g_enabled;
 // Process-wide totals of the background pipeline work (not per frame):
 // pipelines predicted, and added to the binary archive.
 extern std::atomic<uint64_t> g_pipelinesPredicted, g_pipelinesArchived;
+extern std::atomic<uint64_t> g_predictNanos;  // time of the background compiles (predictions, archive additions)
 // Logging the counters and descriptions: WINEMETALGL_STATS set.
 extern const bool g_reporting;
 
@@ -96,6 +97,12 @@ struct Frame {
     uint64_t drawSamplersNanos = 0, drawVertexNanos = 0, drawPrepareNanos = 0, drawPipelineNanos = 0,
              drawBindNanos = 0, drawEncodeNanos = 0, drawIndexNanos = 0;
     uint64_t drawOtherNanos = 0;  // not reported: where a phase timer goes after its phase
+    // Parts of drawPrepareNanos: visibility queries, the target, the
+    // clamp-to-border variants, the scissors, the encoder (passStartNanos:
+    // new render passes), the pipeline key.
+    uint32_t barrierBits = 0;  // glMemoryBarrier's bits, all the frame's
+    uint64_t prepareQueriesNanos = 0, prepareTargetNanos = 0, prepareBordersNanos = 0, prepareScissorsNanos = 0,
+             prepareEncoderNanos = 0, prepareKeyNanos = 0, passStartNanos = 0;
 };
 
 // GPU time of completed command buffers (any thread; reported and reset per frame).

@@ -12,6 +12,7 @@
 #include "core/format/formats.h"
 #include "core/format/pixel_transfer.h"
 #include "core/limits.h"
+#include "core/stats.h"
 #include "core/metal/device.h"
 #include "core/util/log.h"
 #include "gl_api.gen.h"
@@ -691,6 +692,19 @@ void TextureBarrier(Context& ctx) {
 void MemoryBarrier(Context& ctx, GLbitfield barriers) {
     if (ctx.version() < 42 && !ctx.hasExtension("GL_ARB_shader_image_load_store")) return ctx.unimplemented("glMemoryBarrier");
     if (barriers != GL_ALL_BARRIER_BITS && (barriers & ~0xffefu)) return ctx.setError(GL_INVALID_VALUE);
+    if (stats::g_enabled) stats::frame().barrierBits |= barriers;
+    // Barriers only for transfers and CPU access (pixel buffers, texture and
+    // buffer updates, client-mapped buffers) order nothing a later draw
+    // reads: those operations run in encoders of their own, after the shader
+    // writes' fence, so the render pass in progress stays open (DOOM (2016)
+    // ended many passes a frame here, issue #36).
+    constexpr GLbitfield kShaderReads = GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT | GL_ELEMENT_ARRAY_BARRIER_BIT |
+                                        GL_UNIFORM_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT |
+                                        GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_COMMAND_BARRIER_BIT |
+                                        GL_FRAMEBUFFER_BARRIER_BIT | GL_TRANSFORM_FEEDBACK_BARRIER_BIT |
+                                        GL_ATOMIC_COUNTER_BARRIER_BIT | GL_SHADER_STORAGE_BARRIER_BIT |
+                                        GL_QUERY_BUFFER_BARRIER_BIT;
+    if (!(barriers & kShaderReads)) return;
     ctx.stream().memoryBarrier(false, (barriers & GL_COMMAND_BARRIER_BIT) != 0);
 }
 

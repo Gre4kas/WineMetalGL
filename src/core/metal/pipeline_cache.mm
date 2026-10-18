@@ -134,7 +134,10 @@ private:
                 // Compiles the pipeline's functions for the archive (a second
                 // compile, off the drawing thread).
                 NSError* error = nil;
-                if ([writing_ addRenderPipelineFunctionsWithDescriptor:desc error:&error]) {
+                const uint64_t start = stats::nowNanos();
+                const BOOL added = [writing_ addRenderPipelineFunctionsWithDescriptor:desc error:&error];
+                stats::g_predictNanos.fetch_add(stats::nowNanos() - start, std::memory_order_relaxed);
+                if (added) {
                     ++unsaved_;
                     stats::g_pipelinesArchived.fetch_add(1, std::memory_order_relaxed);
                 } else {
@@ -469,7 +472,9 @@ void PipelineCache::predict(const PipelineKey& key, const std::shared_ptr<Linked
     const PipelineKey k = key;
     dispatch_group_async(predictions_, predictionQueue(queue), ^{
         if (closing_) return;
+        const uint64_t start = stats::nowNanos();
         build(k, *target, true);
+        stats::g_predictNanos.fetch_add(stats::nowNanos() - start, std::memory_order_relaxed);
     });
 }
 

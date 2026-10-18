@@ -48,7 +48,7 @@ double ms(uint64_t nanos) { return static_cast<double>(nanos) / 1e6; }
 
 const bool g_reporting = enabledFromEnvironment();
 bool g_enabled = g_reporting;
-std::atomic<uint64_t> g_pipelinesPredicted{0}, g_pipelinesArchived{0};
+std::atomic<uint64_t> g_pipelinesPredicted{0}, g_pipelinesArchived{0}, g_predictNanos{0};
 
 Frame& frame() { return thread().frame; }
 
@@ -234,7 +234,8 @@ void endFrame() {
                  "restart %llu elements mapped %llu writing %llu max index %llu) | uniforms %llu KiB | commits %llu (query %llu) | "
                  "pass ends: target %llu blit %llu compute %llu visibility %llu commit %llu barrier %llu clear %llu "
                  "other %llu | reads async %llu waiting %llu | client waits %llu (signaled %llu, %.2f ms) | gpu %.2f ms busy %.2f ms | metal %.1f MiB | draw cpu: samplers %.2f vertex %.2f "
-                 "prepare %.2f pipeline %.2f bind %.2f encode %.2f index %.2f ms\n",
+                 "prepare %.2f pipeline %.2f bind %.2f encode %.2f index %.2f ms | prepare: queries %.2f target %.2f borders "
+                 "%.2f scissors %.2f encoder %.2f (pass starts %.2f) key %.2f ms | barriers 0x%x | background compiles %.0f ms total\n",
                  static_cast<unsigned long long>(t.index), t.lastPresent ? ms(now - t.lastPresent) : 0.0, ms(f.glNanos),
                  static_cast<unsigned long long>(f.calls), ms(f.presentNanos), ms(f.drawableNanos),
                  static_cast<unsigned long long>(f.draws),
@@ -278,7 +279,9 @@ void endFrame() {
                  ms(g_gpuNanos.exchange(0, std::memory_order_relaxed)), ms(takeGpuBusyNanos()),
                  static_cast<double>(Device::get().mtl().currentAllocatedSize) / 1048576.0,
                  ms(f.drawSamplersNanos), ms(f.drawVertexNanos), ms(f.drawPrepareNanos), ms(f.drawPipelineNanos),
-                 ms(f.drawBindNanos), ms(f.drawEncodeNanos), ms(f.drawIndexNanos));
+                 ms(f.drawBindNanos), ms(f.drawEncodeNanos), ms(f.drawIndexNanos), ms(f.prepareQueriesNanos),
+                 ms(f.prepareTargetNanos), ms(f.prepareBordersNanos), ms(f.prepareScissorsNanos), ms(f.prepareEncoderNanos),
+                 ms(f.passStartNanos), ms(f.prepareKeyNanos), f.barrierBits, ms(g_predictNanos.load(std::memory_order_relaxed)));
     if (t.index % 60 == 59) printProfile(60);
     t.frame = Frame();
     t.lastPresent = now;
