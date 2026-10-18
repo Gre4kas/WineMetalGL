@@ -83,7 +83,11 @@ void CommandStream::waitForShaderWrites(id<MTLCommandEncoder> encoder, bool rend
 }
 
 void CommandStream::startRender(const RenderTargetDesc& target) {
-    endEncoder(PassEnd::Target);
+    stats::Timer timer(&stats::Frame::passStartNanos);
+    {
+        stats::Timer end(&stats::Frame::passEndNanos);
+        endEncoder(PassEnd::Target);
+    }
     MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
     const bool clearsApply = pending_.any() && pendingTarget_ == target;
     for (size_t i = 0; i < target.color.size(); ++i) {
@@ -143,8 +147,17 @@ void CommandStream::startRender(const RenderTargetDesc& target) {
         passVisibility_ = true;
     }
     if (clearsApply) pending_ = PendingClear();
-    render_ = [commandBuffer() renderCommandEncoderWithDescriptor:pass];
+    id<MTLCommandBuffer> buffer;
+    {
+        stats::Timer t(&stats::Frame::passBufferNanos);
+        buffer = commandBuffer();
+    }
+    {
+        stats::Timer t(&stats::Frame::passEncoderNanos);
+        render_ = [buffer renderCommandEncoderWithDescriptor:pass];
+    }
     if (stats::g_enabled) {
+        stats::Timer t(&stats::Frame::passLabelNanos);
         // Pass names in Metal System Trace: target size, colour attachments,
         // depth, and the pass number in the frame.
         int colors = 0;
@@ -153,7 +166,10 @@ void CommandStream::startRender(const RenderTargetDesc& target) {
                                                    target.width, target.height, colors, target.depth.texture ? " d" : "",
                                                    clearsApply ? " clear" : ""];
     }
-    waitForShaderWrites(render_, true);
+    {
+        stats::Timer t(&stats::Frame::passFenceNanos);
+        waitForShaderWrites(render_, true);
+    }
     stats::passStarted(target.width, target.height);
     target_ = target;
     drawsInPass_ = false;

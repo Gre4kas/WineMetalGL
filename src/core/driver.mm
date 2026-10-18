@@ -18,6 +18,7 @@
 #include "core/surface.h"
 #include "core/util/crash.h"
 #include "core/util/log.h"
+#include "core/util/thread_qos.h"
 #include "core/util/version.h"
 
 #define WMGL_EXPORT extern "C" __attribute__((visibility("default")))
@@ -351,6 +352,7 @@ WMGL_EXPORT void wmgl_context_destroy(wmgl_context* handle) {
 
 WMGL_EXPORT int wmgl_make_current(wmgl_context* handle, wmgl_surface* draw, wmgl_surface* read) {
     CallPool pool;  // see CallPool (context.h)
+    if (handle) raiseThreadQos("render");  // see thread_qos.h
     Context* previous = currentContext();
     Context* ctx = asContext(handle);
     WMGL_TRACE(Driver, "make current: context %p, draw %p, read %p (was %p)", ctx, draw, read, previous);

@@ -195,6 +195,8 @@ src/core/util/name_table.h
 src/core/util/ref.h
 src/core/util/settings.cpp
 src/core/util/settings.h
+src/core/util/thread_qos.cpp
+src/core/util/thread_qos.h
 src/core/util/version.h
 src/core/version.mm
 src/settings-app/Installations.swift
@@ -407,6 +409,7 @@ tests/host/shader_tests.cpp
 tests/host/test.h
 tests/wine/core_triangle.c
 tests/wine/cts_wgl_sequence.c
+tests/wine/doom_frame.h
 tests/wine/fixture_version.h
 tests/wine/fixtures.txt
 tests/wine/opengl_1d.c
@@ -419,6 +422,7 @@ tests/wine/opengl_compute.c
 tests/wine/opengl_contexts.c
 tests/wine/opengl_cube.c
 tests/wine/opengl_debug.c
+tests/wine/opengl_doom_bench.c
 tests/wine/opengl_fixed_line.c
 tests/wine/opengl_fixed_point.c
 tests/wine/opengl_fixed_texture.c

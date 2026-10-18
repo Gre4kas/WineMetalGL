@@ -672,7 +672,35 @@ bool borderEmulation(const Texture& tex, const SamplerParams& p, bool shadow, sh
     return true;
 }
 
+id<MTLSamplerState> samplerStateUncached(Context& ctx, const SamplerParams& p, bool shadow);
+
 id<MTLSamplerState> samplerState(Context& ctx, const SamplerParams& p, bool shadow) {
+    // Draws ask for the same few samplers again and again: the latest ones
+    // per thread, by their parameters' bytes (equal bytes, equal
+    // parameters), before the key is built.
+    struct Recent {
+        const PipelineCache* cache;
+        bool shadow;
+        SamplerParams params;
+        id<MTLSamplerState> state;
+    };
+    thread_local Recent recent[8];
+    thread_local unsigned nextRecent = 0;
+    PipelineCache& cache = ctx.share().pipelines();
+    for (const Recent& r : recent)
+        if (r.state && r.cache == &cache && r.shadow == shadow && std::memcmp(&r.params, &p, sizeof(p)) == 0) return r.state;
+    id<MTLSamplerState> state = samplerStateUncached(ctx, p, shadow);
+    if (state) {
+        Recent& r = recent[nextRecent++ & 7];
+        r.cache = &cache;
+        r.shadow = shadow;
+        std::memcpy(&r.params, &p, sizeof(p));
+        r.state = state;
+    }
+    return state;
+}
+
+id<MTLSamplerState> samplerStateUncached(Context& ctx, const SamplerParams& p, bool shadow) {
     SamplerKey key;
     std::memset(&key, 0, sizeof(key));
     auto minMag = [](GLenum f) {

@@ -15,6 +15,7 @@
 #include "core/stats.h"
 #include "core/util/log.h"
 #include "core/util/metalfx_config.h"
+#include "core/util/thread_qos.h"
 
 namespace wmgl {
 
@@ -532,6 +533,7 @@ bool Surface::swapMailbox(CommandStream& stream) {
         box->queue = [Device::get().mtl() newCommandQueue];
         CAMetalLayer* layer = layer_;
         box->thread = std::thread([this, box, layer] {
+            raiseThreadQos("present");  // the render thread waits for its slots
             for (;;) {
                 int slot = -1;
                 {

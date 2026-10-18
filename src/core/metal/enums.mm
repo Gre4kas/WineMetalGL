@@ -95,18 +95,23 @@ MTLVertexFormat mtlVertexFormat(GLenum type, GLint size, bool normalized, bool i
     switch (type) {
     case GL_FLOAT: return pick(MTLVertexFormatFloat, MTLVertexFormatFloat2, MTLVertexFormatFloat3, MTLVertexFormatFloat4);
     case GL_HALF_FLOAT: return pick(MTLVertexFormatHalf, MTLVertexFormatHalf2, MTLVertexFormatHalf3, MTLVertexFormatHalf4);
+    // Unnormalized 8- and 16-bit integers read as floats: Metal's vertex
+    // fetch converts them exactly (and fills missing components with 0, 0,
+    // 1 as GL does), so they need no CPU conversion. DOOM (2016) draws
+    // hundreds of GL_SHORT attributes a frame (issue #36). 32-bit integers
+    // Metal does not convert to floats: those stay converted on the CPU.
     case GL_BYTE:
         return normalized ? pick(MTLVertexFormatCharNormalized, MTLVertexFormatChar2Normalized, MTLVertexFormatChar3Normalized, MTLVertexFormatChar4Normalized)
-                          : MTLVertexFormatInvalid;  // float conversion of non-normalized bytes: vertex pulling
+                          : pick(MTLVertexFormatChar, MTLVertexFormatChar2, MTLVertexFormatChar3, MTLVertexFormatChar4);
     case GL_UNSIGNED_BYTE:
         return normalized ? pick(MTLVertexFormatUCharNormalized, MTLVertexFormatUChar2Normalized, MTLVertexFormatUChar3Normalized, MTLVertexFormatUChar4Normalized)
-                          : MTLVertexFormatInvalid;
+                          : pick(MTLVertexFormatUChar, MTLVertexFormatUChar2, MTLVertexFormatUChar3, MTLVertexFormatUChar4);
     case GL_SHORT:
         return normalized ? pick(MTLVertexFormatShortNormalized, MTLVertexFormatShort2Normalized, MTLVertexFormatShort3Normalized, MTLVertexFormatShort4Normalized)
-                          : MTLVertexFormatInvalid;
+                          : pick(MTLVertexFormatShort, MTLVertexFormatShort2, MTLVertexFormatShort3, MTLVertexFormatShort4);
     case GL_UNSIGNED_SHORT:
         return normalized ? pick(MTLVertexFormatUShortNormalized, MTLVertexFormatUShort2Normalized, MTLVertexFormatUShort3Normalized, MTLVertexFormatUShort4Normalized)
-                          : MTLVertexFormatInvalid;
+                          : pick(MTLVertexFormatUShort, MTLVertexFormatUShort2, MTLVertexFormatUShort3, MTLVertexFormatUShort4);
     case GL_INT_2_10_10_10_REV: return n == 4 && normalized ? MTLVertexFormatInt1010102Normalized : MTLVertexFormatInvalid;
     case GL_UNSIGNED_INT_2_10_10_10_REV: return n == 4 && normalized ? MTLVertexFormatUInt1010102Normalized : MTLVertexFormatInvalid;
     case GL_UNSIGNED_INT_10F_11F_11F_REV: return n == 3 ? MTLVertexFormatFloatRG11B10 : MTLVertexFormatInvalid;

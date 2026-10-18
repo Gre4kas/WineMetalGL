@@ -12,6 +12,7 @@
 #include "core/format/formats.h"
 #include "core/format/pixel_transfer.h"
 #include "core/limits.h"
+#include "core/stats.h"
 #include "core/metal/device.h"
 #include "core/util/log.h"
 #include "gl_api.gen.h"
@@ -691,6 +692,7 @@ void TextureBarrier(Context& ctx) {
 void MemoryBarrier(Context& ctx, GLbitfield barriers) {
     if (ctx.version() < 42 && !ctx.hasExtension("GL_ARB_shader_image_load_store")) return ctx.unimplemented("glMemoryBarrier");
     if (barriers != GL_ALL_BARRIER_BITS && (barriers & ~0xffefu)) return ctx.setError(GL_INVALID_VALUE);
+    if (stats::g_enabled) stats::frame().barrierBits |= barriers;
     ctx.stream().memoryBarrier(false, (barriers & GL_COMMAND_BARRIER_BIT) != 0);
 }
 

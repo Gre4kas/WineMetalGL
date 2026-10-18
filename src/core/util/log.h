@@ -19,6 +19,8 @@
 // the levels, which the crash handler (crash.h) writes out with a fault.
 #pragma once
 
+#include <string>
+
 #include <cstdarg>
 #include <cstddef>
 
@@ -82,6 +84,9 @@ void logRawFormat(LogCategory category, const char* format, ...) __attribute__((
 // version), for the banner and the log file's name. Call before anything is
 // logged to name the file after the program.
 void logSetHost(const char* program, const char* hostVersion);
+// The program's file name as the log file is named after it (the Windows
+// executable under Wine), with characters unsafe in a file name replaced.
+std::string logProgramName();
 // Writes the banner (version, system, GPU, environment), once: kept for the
 // log file's head and the crash report. The core calls it when it initializes.
 void logBanner(const char* version, const char* commit, const char* gpu);

@@ -103,6 +103,7 @@ add_library(wmgl_portable STATIC
     src/core/util/log.cpp
     src/core/util/metalfx_config.cpp
     src/core/util/settings.cpp
+    src/core/util/thread_qos.cpp
     vendor/tessellator/tessellator.cpp
 )
 add_dependencies(wmgl_portable wmgl_generated)

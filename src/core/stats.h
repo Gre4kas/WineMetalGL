@@ -12,6 +12,8 @@
 // current on.
 #pragma once
 
+#include <atomic>
+
 #include <cstdint>
 #include <string>
 
@@ -19,6 +21,10 @@ namespace wmgl::stats {
 
 // Counting: WINEMETALGL_STATS set, or turned on by wmgl_stats_enable (tests).
 extern bool g_enabled;
+// Process-wide totals of the background pipeline work (not per frame):
+// pipelines predicted, and added to the binary archive.
+extern std::atomic<uint64_t> g_pipelinesPredicted, g_pipelinesArchived;
+extern std::atomic<uint64_t> g_predictNanos;  // time of the background compiles (predictions, archive additions)
 // Logging the counters and descriptions: WINEMETALGL_STATS set.
 extern const bool g_reporting;
 
@@ -43,6 +49,9 @@ enum IndirectCpu : uint8_t {
 
 struct Frame {
     uint64_t calls = 0, draws = 0, passes = 0, pipelineMisses = 0, programLinks = 0, transientBytes = 0, waits = 0;
+    // Pipelines created from the binary archive, and waits for a pipeline a
+    // background prediction was creating (pipeline_cache.h).
+    uint64_t pipelineArchiveHits = 0, pipelineWaits = 0;
     uint64_t glNanos = 0, pipelineNanos = 0, linkNanos = 0, waitNanos = 0;
     uint64_t lockNanos = 0;  // waiting for the share group's lock inside GL calls
     uint64_t presentNanos = 0, drawableNanos = 0;  // SwapBuffers, and waiting for a drawable inside it
@@ -88,6 +97,16 @@ struct Frame {
     uint64_t drawSamplersNanos = 0, drawVertexNanos = 0, drawPrepareNanos = 0, drawPipelineNanos = 0,
              drawBindNanos = 0, drawEncodeNanos = 0, drawIndexNanos = 0;
     uint64_t drawOtherNanos = 0;  // not reported: where a phase timer goes after its phase
+    // Parts of drawPrepareNanos: visibility queries, the target, the
+    // clamp-to-border variants, the scissors, the encoder (passStartNanos:
+    // new render passes), the pipeline key.
+    uint32_t barrierBits = 0;  // glMemoryBarrier's bits, all the frame's
+    uint64_t prepareQueriesNanos = 0, prepareTargetNanos = 0, prepareBordersNanos = 0, prepareScissorsNanos = 0,
+             prepareEncoderNanos = 0, prepareKeyNanos = 0, passStartNanos = 0;
+    // Parts of passStartNanos: ending the encoder before, the command buffer
+    // (a new one after a commit), the encoder, its label (stats only), the
+    // wait for earlier shader writes.
+    uint64_t passEndNanos = 0, passBufferNanos = 0, passEncoderNanos = 0, passLabelNanos = 0, passFenceNanos = 0;
 };
 
 // GPU time of completed command buffers (any thread; reported and reset per frame).

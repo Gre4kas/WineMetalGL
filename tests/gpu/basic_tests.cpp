@@ -335,3 +335,65 @@ void main() { o = color; })";
     glDeleteProgram(p);
     CHECK_GL();
 }
+
+// Unnormalized 8- and 16-bit integer attributes read as floats keep their
+// integer values (GL 4.6 section 10.3.1), fetched by Metal without a CPU
+// conversion; missing components read 0, 0, 1 (DOOM's GL_SHORT data, issue #36).
+GPU_TEST_VERSION(gpu_unnormalized_integer_attributes, 46) {
+    GLuint vs = glCreateShader(GL_VERTEX_SHADER);
+    const char* source = "#version 460 core\nlayout(location = 0) in vec4 a;\nout vec4 captured;\n"
+                         "void main() { captured = a; gl_Position = vec4(0.0); }\n";
+    glShaderSource(vs, 1, &source, nullptr);
+    glCompileShader(vs);
+    GLuint p = glCreateProgram();
+    glAttachShader(p, vs);
+    const char* varyings[] = {"captured"};
+    glTransformFeedbackVaryings(p, 1, varyings, GL_INTERLEAVED_ATTRIBS);
+    glLinkProgram(p);
+    glUseProgram(p);
+    struct Case { GLenum type; GLint size; float want[2][4]; };
+    const Case cases[] = {
+        {GL_SHORT, 4, {{1234, -5, 32767, -32768}, {7, -9, 0, 0}}},
+        {GL_UNSIGNED_SHORT, 3, {{1234, 65531, 32767, 1}, {7, 65527, 0, 1}}},
+        {GL_BYTE, 2, {{-46, 4, 0, 1}, {-1, -128, 0, 1}}},
+        {GL_UNSIGNED_BYTE, 1, {{210, 0, 0, 1}, {255, 0, 0, 1}}},
+    };
+    // Two vertices, 8 bytes apart.
+    const int16_t shorts[8] = {1234, -5, 32767, -32768, 7, -9, 0, 0};
+    const uint8_t bytes[16] = {210, 4, 0, 0, 0, 0, 0, 0, 255, 128, 0, 0, 0, 0, 0, 0};
+    GLuint vao = 0, buffers[2] = {};
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(2, buffers);
+    glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, buffers[1]);
+    glBufferData(GL_TRANSFORM_FEEDBACK_BUFFER, 2 * 16, nullptr, GL_STATIC_READ);
+    glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 0, buffers[1]);
+    glEnable(GL_RASTERIZER_DISCARD);
+    for (const Case& c : cases) {
+        const bool wide = c.type == GL_SHORT || c.type == GL_UNSIGNED_SHORT;
+        glBindBuffer(GL_ARRAY_BUFFER, buffers[0]);
+        if (wide) glBufferData(GL_ARRAY_BUFFER, sizeof(shorts), shorts, GL_STATIC_DRAW);
+        else glBufferData(GL_ARRAY_BUFFER, sizeof(bytes), bytes, GL_STATIC_DRAW);
+        glVertexAttribPointer(0, c.size, c.type, GL_FALSE, 8, nullptr);
+        glEnableVertexAttribArray(0);
+        glBeginTransformFeedback(GL_POINTS);
+        glDrawArrays(GL_POINTS, 0, 2);
+        glEndTransformFeedback();
+        float out[8] = {};
+        glGetBufferSubData(GL_TRANSFORM_FEEDBACK_BUFFER, 0, sizeof(out), out);
+        for (int v = 0; v < 2; ++v)
+            for (int k = 0; k < 4; ++k) {
+                const float want = c.want[v][k];
+                if (out[v * 4 + k] != want) {
+                    std::printf("  type 0x%x vertex %d component %d: %g, want %g\n", c.type, v, k, out[v * 4 + k], want);
+                    CHECK(false);
+                }
+            }
+    }
+    glDisable(GL_RASTERIZER_DISCARD);
+    CHECK_GL();
+    glDeleteBuffers(2, buffers);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteShader(vs);
+    glDeleteProgram(p);
+}

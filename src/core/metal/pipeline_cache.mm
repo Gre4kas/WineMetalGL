@@ -2,7 +2,12 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <cctype>
 #include <iterator>
+#include <optional>
+#include <sys/sysctl.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #import <objc/message.h>
 
@@ -13,6 +18,240 @@
 #include "core/stats.h"
 
 namespace wmgl {
+
+namespace {
+
+bool predictionEnabled() {
+    static const bool enabled = [] {
+        const char* v = std::getenv("WINEMETALGL_PREDICT_PIPELINES");
+        return !v || v[0] != '0';
+    }();
+    return enabled;
+}
+
+std::string fileSafe(const char* text) {
+    std::string out;
+    for (const char* c = text ? text : ""; *c; ++c)
+        out += (std::isalnum(static_cast<unsigned char>(*c)) || *c == '.' || *c == '-' || *c == '_') ? *c : '_';
+    return out;
+}
+
+// The render pipelines of a program, compiled, in a Metal binary archive on
+// disk: ~/Library/Caches/WineMetalGL/pipelines (WINEMETALGL_PIPELINE_CACHE
+// names another directory; 0 turns it off), one file per program,
+// WineMetalGL build, GPU and macOS build (a compiled pipeline is only valid
+// for those). A pipeline the archive has is created without compiling.
+//
+// The archive loaded from disk is only read, by any thread; pipelines
+// compiled in this run are added on a serial queue to a second copy, which
+// is written back (all of it) shortly after.
+class PipelineArchive {
+public:
+    static PipelineArchive& get() {
+        static PipelineArchive* archive = new PipelineArchive();  // never destroyed: queued work may run at exit
+        return *archive;
+    }
+
+    // Creates the pipeline from the archive, or compiles it and adds it.
+    id<MTLRenderPipelineState> create(MTLRenderPipelineDescriptor* desc, NSError** error) {
+        id<MTLDevice> device = Device::get().mtl();
+        if (loaded_) {
+            desc.binaryArchives = @[ loaded_ ];
+            id<MTLRenderPipelineState> state = [device newRenderPipelineStateWithDescriptor:desc
+                                                                                    options:MTLPipelineOptionFailOnBinaryArchiveMiss
+                                                                                 reflection:nil
+                                                                                      error:nil];
+            if (state) {
+                stats::count(&stats::Frame::pipelineArchiveHits);
+                return state;
+            }
+            desc.binaryArchives = nil;
+        }
+        id<MTLRenderPipelineState> state = [device newRenderPipelineStateWithDescriptor:desc error:error];
+        if (state && writing_) add(desc);
+        return state;
+    }
+
+private:
+    PipelineArchive() {
+        const char* v = std::getenv("WINEMETALGL_PIPELINE_CACHE");
+        if (v && !std::strcmp(v, "0")) return;
+        std::string dir;
+        if (v && *v) dir = v;
+        else if (const char* home = std::getenv("HOME")) dir = std::string(home) + "/Library/Caches/WineMetalGL/pipelines";
+        else return;
+        for (size_t at = 1; at <= dir.size(); ++at)
+            if (at == dir.size() || dir[at] == '/') ::mkdir(dir.substr(0, at).c_str(), 0755);
+        id<MTLDevice> device = Device::get().mtl();
+        char build[64] = "";
+        size_t size = sizeof(build);
+        sysctlbyname("kern.osversion", build, &size, nullptr, 0);
+#ifdef WMGL_VERSION
+        const std::string version = fileSafe(WMGL_COMMIT[0] ? WMGL_COMMIT : WMGL_VERSION);
+#else
+        const std::string version = "dev";
+#endif
+        path_ = dir + "/" + logProgramName() + "-" + version + "-" + fileSafe(device.name.UTF8String) + "-" + fileSafe(build) +
+                ".metallib";
+        url_ = [NSURL fileURLWithPath:[NSString stringWithUTF8String:path_.c_str()]];
+        struct stat st;
+        const bool exists = ::stat(path_.c_str(), &st) == 0 && st.st_size > 0;
+        auto open = [&](bool fromDisk) -> id<MTLBinaryArchive> {
+            MTLBinaryArchiveDescriptor* d = [MTLBinaryArchiveDescriptor new];
+            if (fromDisk) d.url = url_;
+            NSError* error = nil;
+            id<MTLBinaryArchive> archive = [device newBinaryArchiveWithDescriptor:d error:&error];
+            if (!archive && fromDisk)
+                WMGL_WARN(Pipeline, "pipeline cache %s unreadable (%s); starting a new one", path_.c_str(),
+                          error.localizedDescription.UTF8String);
+            return archive;
+        };
+        if (exists) {
+            loaded_ = open(true);
+            if (loaded_) writing_ = open(true);
+            else ::unlink(path_.c_str());
+        }
+        if (!writing_) writing_ = open(false);
+        full_ = exists && st.st_size > kMaxBytes;
+        queue_ = dispatch_queue_create_with_target("winemetalgl.pipeline-archive", DISPATCH_QUEUE_SERIAL,
+                                                  dispatch_get_global_queue(QOS_CLASS_UTILITY, 0));
+        WMGL_INFO(Pipeline, "pipeline cache %s (%s)", path_.c_str(), loaded_ ? "loaded" : "new");
+        // Saved at exit too (a short session ends before the delayed save),
+        // without the additions still queued.
+        std::atexit([] { get().finish(); });
+    }
+
+    void finish() {
+        stopping_ = true;
+        // The last chance for this session's pipelines: a few tries (see save()).
+        dispatch_sync(queue_, ^{
+            for (int attempt = 0; attempt < 3 && unsaved_ && !save(attempt == 2); ++attempt) usleep(200000);
+        });
+    }
+
+    void add(MTLRenderPipelineDescriptor* desc) {
+        if (full_) return;
+        dispatch_async(queue_, ^{
+            if (stopping_) return;
+            @autoreleasepool {
+                // Compiles the pipeline's functions for the archive (a second
+                // compile, off the drawing thread).
+                NSError* error = nil;
+                const uint64_t start = stats::nowNanos();
+                const BOOL added = [writing_ addRenderPipelineFunctionsWithDescriptor:desc error:&error];
+                stats::g_predictNanos.fetch_add(stats::nowNanos() - start, std::memory_order_relaxed);
+                if (added) {
+                    ++unsaved_;
+                    stats::g_pipelinesArchived.fetch_add(1, std::memory_order_relaxed);
+                } else {
+                    WMGL_INFO(Pipeline, "pipeline cache: not added (%s)", error.localizedDescription.UTF8String);
+                }
+                if (!saveScheduled_ && unsaved_) {
+                    saveScheduled_ = true;
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC), queue_, ^{ save(); });
+                }
+            }
+        });
+    }
+
+    // On queue_: writes the archive (to a temporary file renamed over the
+    // old one, so a reader never sees half of it). Metal's archiver fails
+    // now and then while the process compiles other pipelines ("cannot
+    // pack ... gpuarchiver", a different pipeline each time in DOOM (2016));
+    // the same archive saves on a later try, which comes a few seconds on.
+    // `last`: no try follows (a failure is a warning). False on failure.
+    bool save(bool last = false) {
+        @autoreleasepool {
+            saveScheduled_ = false;
+            if (!unsaved_) return true;
+            const std::string temporary = path_ + "." + std::to_string(getpid()) + ".tmp";
+            NSURL* url = [NSURL fileURLWithPath:[NSString stringWithUTF8String:temporary.c_str()]];
+            NSError* error = nil;
+            if ([writing_ serializeToURL:url error:&error] && ::rename(temporary.c_str(), path_.c_str()) == 0) {
+                WMGL_INFO(Pipeline, "pipeline cache: saved %d new pipelines", unsaved_);
+                unsaved_ = 0;
+                struct stat st;
+                if (::stat(path_.c_str(), &st) == 0 && st.st_size > kMaxBytes) {
+                    full_ = true;
+                    WMGL_INFO(Pipeline, "pipeline cache %s is full", path_.c_str());
+                }
+                return true;
+            }
+            ::unlink(temporary.c_str());
+            if (last) {
+                WMGL_WARN(Pipeline, "pipeline cache: %d new pipelines not saved (%s)", unsaved_,
+                          error.localizedDescription.UTF8String);
+                return false;
+            }
+            WMGL_INFO(Pipeline, "pipeline cache: not saved, trying again (%s)", error.localizedDescription.UTF8String);
+            if (!stopping_ && !saveScheduled_) {
+                saveScheduled_ = true;
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), queue_, ^{ save(); });
+            }
+            return false;
+        }
+    }
+
+    static constexpr off_t kMaxBytes = off_t(1) << 30;
+    std::string path_;
+    NSURL* url_ = nil;
+    id<MTLBinaryArchive> loaded_ = nil;   // read only, any thread
+    id<MTLBinaryArchive> writing_ = nil;  // queue_ only
+    dispatch_queue_t queue_ = nil;
+    std::atomic<bool> full_{false}, stopping_{false};
+    int unsaved_ = 0;          // queue_ only
+    bool saveScheduled_ = false;  // queue_ only
+};
+
+// The interface a pipeline's render state depends on in a program: its
+// vertex inputs (location, kind, attribute) and fragment outputs. Programs
+// with the same one take the same states. Empty for programs whose
+// pipelines depend on more (geometry and tessellation stages, captures,
+// clip and cull distances, sample masks, layers and viewports).
+std::string interfaceSignature(LinkedProgram& program) {
+    if (program.pipeline || !program.hasStage(shader::Stage::Vertex) || !program.hasStage(shader::Stage::Fragment) ||
+        program.hasStage(shader::Stage::Geometry) || program.hasStage(shader::Stage::TessControl) ||
+        program.hasStage(shader::Stage::TessEval) || program.link.geometry.active || program.link.xfbVertexCapture ||
+        program.cullDistances() || program.writesLayerOrViewport() || program.writesSampleMask())
+        return {};
+    std::string signature = "v";
+    for (const shader::StageOutput::VertexInput& in : program.stage(shader::Stage::Vertex).vertexInputs)
+        signature += std::to_string(in.location) + in.kind + std::to_string(in.source()) + "." + std::to_string(in.part) + ",";
+    signature += "f";
+    for (const shader::StageOutput::FragOutput& out : program.stage(shader::Stage::Fragment).fragOutputs)
+        signature += std::to_string(out.location) + ":" + std::to_string(out.index) + out.kind + ",";
+    return signature;
+}
+
+// Whether a draw's pipeline key is a plain render state that suits any
+// program of the same interface (no program- or texture-specific variant).
+bool predictableState(const PipelineKey& key) {
+    return key.rasterization && !key.geometryPass && !key.tessellation && !key.borders[0] && !key.borders[1] &&
+           !key.sampleMask && !key.logicOp && !key.ignoreSampleMask && !key.cull && !key.topologyClass &&
+           !key.countFragments;
+}
+
+constexpr size_t kMaxStates = 4096, kStatesPerSignature = 96, kMaxPredicted = 12000;
+
+dispatch_queue_t predictionQueue(size_t index) {
+    // Two serial queues: a few compiles at a time, beside the game's threads.
+    static dispatch_queue_t queues[2] = {
+        dispatch_queue_create_with_target("winemetalgl.predict.0", DISPATCH_QUEUE_SERIAL,
+                                          dispatch_get_global_queue(QOS_CLASS_UTILITY, 0)),
+        dispatch_queue_create_with_target("winemetalgl.predict.1", DISPATCH_QUEUE_SERIAL,
+                                          dispatch_get_global_queue(QOS_CLASS_UTILITY, 0)),
+    };
+    return queues[index & 1];
+}
+
+}  // namespace
+
+PipelineCache::PipelineCache() : predictions_(dispatch_group_create()) {}
+
+PipelineCache::~PipelineCache() {
+    closing_ = true;
+    dispatch_group_wait(predictions_, DISPATCH_TIME_FOREVER);
+}
 
 template <class K>
 size_t PipelineCache::Hash<K>::operator()(const K& k) const {
@@ -36,8 +275,56 @@ id<MTLRenderPipelineState> PipelineCache::render(const PipelineKey& key, LinkedP
         auto it = render_.find(key);
         if (it != render_.end()) return it->second;
     }
-    stats::count(&stats::Frame::pipelineMisses);
-    stats::Timer timer(&stats::Frame::pipelineNanos);
+    return build(key, program, false);
+}
+
+id<MTLRenderPipelineState> PipelineCache::build(const PipelineKey& key, LinkedProgram& program, bool predicted) {
+    std::promise<id<MTLRenderPipelineState>> promise;
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        auto it = render_.find(key);
+        if (it != render_.end()) return it->second;
+        auto building = building_.find(key);
+        if (building != building_.end()) {
+            // Another thread (a prediction) is creating it: wait for that.
+            if (predicted) return nil;
+            Future future = building->second;
+            lock.unlock();
+            stats::count(&stats::Frame::pipelineWaits);
+            stats::Timer timer(&stats::Frame::pipelineNanos);
+            if (id<MTLRenderPipelineState> state = future.get()) return state;
+            lock.lock();
+            it = render_.find(key);
+            if (it != render_.end()) return it->second;
+        }
+        building_[key] = promise.get_future().share();
+    }
+    id<MTLRenderPipelineState> state = nil;
+    @autoreleasepool {
+        std::optional<stats::Timer> timer;
+        if (!predicted) {
+            stats::count(&stats::Frame::pipelineMisses);
+            timer.emplace(&stats::Frame::pipelineNanos);
+        }
+        NSError* error = nil;
+        MTLRenderPipelineDescriptor* desc = describe(key, program);
+        state = desc ? PipelineArchive::get().create(desc, &error) : nil;
+        if (desc && !state && !predicted) WMGL_ERR(Pipeline, "render pipeline creation failed: %s", error.localizedDescription.UTF8String);
+    }
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        // A failed guess is not kept: the draw that needs the key (if one
+        // does) tries again and reports its error.
+        if (state || !predicted) render_.emplace(key, state);
+        building_.erase(key);
+    }
+    promise.set_value(state);
+    if (state && !predicted) learn(key, program);
+    if (state && predicted) stats::g_pipelinesPredicted.fetch_add(1, std::memory_order_relaxed);
+    return state;
+}
+
+MTLRenderPipelineDescriptor* PipelineCache::describe(const PipelineKey& key, LinkedProgram& program) {
     const bool pointSizeAllowed = key.topologyClass == MTLPrimitiveTopologyClassUnspecified ||
                                   key.topologyClass == MTLPrimitiveTopologyClassPoint;
     id<MTLFunction> vertex = key.tessellation ? program.postTessellationVertex(key.tessellation & 2, key.borders[0])
@@ -137,12 +424,75 @@ id<MTLRenderPipelineState> PipelineCache::render(const PipelineKey& key, LinkedP
     }
     desc.depthAttachmentPixelFormat = static_cast<MTLPixelFormat>(key.depthFormat);
     desc.stencilAttachmentPixelFormat = static_cast<MTLPixelFormat>(key.stencilFormat);
-    NSError* error = nil;
-    id<MTLRenderPipelineState> state = [Device::get().mtl() newRenderPipelineStateWithDescriptor:desc error:&error];
-    if (!state) WMGL_ERR(Pipeline, "render pipeline creation failed: %s", error.localizedDescription.UTF8String);
-    std::lock_guard<std::mutex> lock(mutex_);
-    render_.emplace(key, state);
-    return state;
+    return desc;
+}
+
+void PipelineCache::learn(const PipelineKey& key, LinkedProgram& program) {
+    if (!predictionEnabled() || !predictableState(key)) return;
+    const std::string signature = interfaceSignature(program);
+    if (signature.empty()) return;
+    PipelineKey state = key;
+    state.programId = 0;
+    std::vector<std::pair<PipelineKey, std::shared_ptr<LinkedProgram>>> work;
+    {
+        std::lock_guard<std::mutex> lock(predictMutex_);
+        if (states_.size() >= kMaxStates || !states_.insert(state).second) return;
+        std::vector<PipelineKey>& states = statesBySignature_[signature];
+        if (states.size() >= kStatesPerSignature) return;
+        states.push_back(state);
+        auto programs = programsBySignature_.find(signature);
+        if (programs == programsBySignature_.end()) return;
+        std::vector<std::weak_ptr<LinkedProgram>>& list = programs->second;
+        for (size_t i = 0; i < list.size();) {
+            std::shared_ptr<LinkedProgram> target = list[i].lock();
+            if (!target) {
+                list[i] = list.back();
+                list.pop_back();
+                continue;
+            }
+            if (target->uid != program.uid) {
+                PipelineKey k = state;
+                k.programId = target->uid;
+                work.emplace_back(k, std::move(target));
+            }
+            ++i;
+        }
+    }
+    for (auto& [k, target] : work) predict(k, target);
+}
+
+void PipelineCache::linked(const std::shared_ptr<LinkedProgram>& program) {
+    if (!predictionEnabled() || !program) return;
+    const std::string signature = interfaceSignature(*program);
+    if (signature.empty()) return;
+    std::vector<PipelineKey> keys;
+    {
+        std::lock_guard<std::mutex> lock(predictMutex_);
+        programsBySignature_[signature].push_back(program);
+        auto states = statesBySignature_.find(signature);
+        if (states != statesBySignature_.end()) keys = states->second;
+    }
+    for (PipelineKey k : keys) {
+        k.programId = program->uid;
+        predict(k, program);
+    }
+}
+
+void PipelineCache::predict(const PipelineKey& key, const std::shared_ptr<LinkedProgram>& program) {
+    size_t queue;
+    {
+        std::lock_guard<std::mutex> lock(predictMutex_);
+        if (predicted_.size() >= kMaxPredicted || !predicted_.insert(key).second) return;
+        queue = nextQueue_++;
+    }
+    std::shared_ptr<LinkedProgram> target = program;
+    const PipelineKey k = key;
+    dispatch_group_async(predictions_, predictionQueue(queue), ^{
+        if (closing_) return;
+        const uint64_t start = stats::nowNanos();
+        build(k, *target, true);
+        stats::g_predictNanos.fetch_add(stats::nowNanos() - start, std::memory_order_relaxed);
+    });
 }
 
 id<MTLDepthStencilState> PipelineCache::depthStencil(const DepthStencilKey& key) {

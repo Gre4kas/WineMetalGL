@@ -1,5 +1,6 @@
 // Program pipelines whose stages come from different separable programs
 // (shader::linkPipeline): every stage keeps its own program's uniforms.
+#include <unistd.h>
 #include <vector>
 
 #include "gpu.h"
@@ -147,4 +148,44 @@ void main() {
     glDeleteProgramPipelines(1, &pipeline);
     glDeleteProgram(vs);
     glDeleteProgram(geo);
+}
+
+// Render pipelines are predicted (PipelineCache): a render state a draw
+// needed is built in the background for the other linked programs with the
+// same vertex inputs and fragment outputs, so their first draw in that state
+// does not compile a pipeline (DOOM's effects hitched on it, issue #36).
+GPU_TEST_VERSION(gpu_pipeline_prediction, 46) {
+    const char* vs = "#version 460 core\nlayout(location = 0) in vec2 p;\nvoid main() { gl_Position = vec4(p, 0.0, 1.0); }\n";
+    GLuint a = gpu::program(vs, "#version 460 core\nout vec4 o;\nvoid main() { o = vec4(1.0, 0.0, 0.0, 1.0); }\n");
+    GLuint b = gpu::program(vs, "#version 460 core\nout vec4 o;\nvoid main() { o = vec4(0.0, 1.0, 0.0, 1.0); }\n");
+    GLuint vao = gpu::quad();
+    glClearColor(0, 0, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+    unsigned long long before = 0, predicted = 0;
+    CHECK(wmgl_stats_counter("pipelinesPredicted", &before));
+    // A render state no draw used yet: additive blending.
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_ONE, GL_ONE);
+    glUseProgram(a);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glFinish();
+    for (int i = 0; i < 1000 && predicted <= before; ++i) {
+        wmgl_stats_counter("pipelinesPredicted", &predicted);
+        if (predicted <= before) usleep(10000);
+    }
+    CHECK(predicted > before);
+    {
+        gpu::Counters counters;
+        glUseProgram(b);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        glFinish();
+        CHECK_EQ(counters["pipelineMisses"], 0ull);
+    }
+    const uint8_t yellow[4] = {255, 255, 0, 255};
+    CHECK(gpu::near(gpu::readRGBA8(32, 32, 1, 1).data(), yellow));
+    glDisable(GL_BLEND);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(a);
+    glDeleteProgram(b);
+    CHECK_GL();
 }
