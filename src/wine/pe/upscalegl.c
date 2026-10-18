@@ -33,6 +33,12 @@ static BOOL enabled;
 static HMODULE self;
 static SRWLOCK lock = SRWLOCK_INIT;
 
+/* What the program does with its windows and the display, in the log
+ * (WINEMETALGL_LOG=2): the first few hundred calls. */
+static LONG log_budget = 300;
+#define LOG_CALL(...) do { if (wmgl_log_max >= 2 && InterlockedDecrement( &log_budget ) >= 0) \
+                              WMGL_INFO( "UpscaleGL: " __VA_ARGS__ ); } while (0)
+
 /* ----------------------------------------------------------- the display */
 
 struct mode
@@ -153,7 +159,11 @@ static LONG change_mode( const DWORD *fields, const DWORD *width, const DWORD *h
         if ((*fields & DM_PELSWIDTH) && *width) w = *width;
         if ((*fields & DM_PELSHEIGHT) && *height) h = *height;
     }
-    if (!has_mode( w, h ) && (w > desktop_width || h > desktop_height)) return DISP_CHANGE_BADMODE;
+    LOG_CALL( "display mode %ldx%ld asked for (flags %#lx)\n", w, h, flags );
+    /* Up to the real size: a program that asks for the screen's own size
+     * (a resolution saved before UpscaleGL) gets it, unscaled, on this display
+     * rather than a refusal that may send it to another one. */
+    if (!has_mode( w, h ) && (w > real_width || h > real_height)) return DISP_CHANGE_BADMODE;
     if (flags & CDS_TEST) return DISP_CHANGE_SUCCESSFUL;
     if (w != mode_width || h != mode_height)
         WMGL_INFO( "UpscaleGL: display mode %ldx%ld (shown at %ldx%ld)\n", w, h, real_width, real_height );
@@ -177,6 +187,8 @@ static LONG change_mode( const DWORD *fields, const DWORD *width, const DWORD *h
     X(user32, int, GetSystemMetricsForDpi, (int index, UINT dpi)) \
     X(user32, BOOL, GetMonitorInfoA, (HMONITOR monitor, MONITORINFO *info)) \
     X(user32, BOOL, GetMonitorInfoW, (HMONITOR monitor, MONITORINFO *info)) \
+    X(user32, BOOL, EnumDisplayMonitors, (HDC hdc, const RECT *clip, MONITORENUMPROC proc, LPARAM param)) \
+    X(user32, BOOL, ShowWindow, (HWND hwnd, int command)) \
     X(gdi32, int, GetDeviceCaps, (HDC hdc, int index)) \
     X(user32, HWND, CreateWindowExA, (DWORD ex_style, LPCSTR class_name, LPCSTR name, DWORD style, int x, int y, \
                                       int width, int height, HWND parent, HMENU menu, HINSTANCE instance, void *param)) \
@@ -408,6 +420,7 @@ static void place_window( HWND hwnd, int *x, int *y, int *cx, int *cy, UINT flag
 
     if (!enabled || !hwnd || (!size && !move)) return;
     child = (GetWindowLongW( hwnd, GWL_STYLE ) & WS_CHILD) != 0;
+    if (!child) LOG_CALL( "place %p at %d,%d %dx%d flags %#x\n", hwnd, *x, *y, *cx, *cy, flags );
     if (child)
     {
         if (!is_scaled( hwnd )) return;
@@ -487,6 +500,7 @@ static BOOL WINAPI hook_EnumDisplaySettingsA( LPCSTR device, DWORD index, DEVMOD
 
 static LONG WINAPI hook_ChangeDisplaySettingsExW( LPCWSTR device, DEVMODEW *mode, HWND hwnd, DWORD flags, void *param )
 {
+    if (enabled && !is_primary( device )) LOG_CALL( "display mode change on %ls\n", device );
     if (!enabled || !is_primary( device )) return ChangeDisplaySettingsExW( device, mode, hwnd, flags, param );
     return mode ? change_mode( &mode->dmFields, &mode->dmPelsWidth, &mode->dmPelsHeight, flags )
                 : change_mode( NULL, NULL, NULL, flags );
@@ -494,6 +508,7 @@ static LONG WINAPI hook_ChangeDisplaySettingsExW( LPCWSTR device, DEVMODEW *mode
 
 static LONG WINAPI hook_ChangeDisplaySettingsExA( LPCSTR device, DEVMODEA *mode, HWND hwnd, DWORD flags, void *param )
 {
+    if (enabled && !is_primary_a( device )) LOG_CALL( "display mode change on %s\n", device );
     if (!enabled || !is_primary_a( device )) return ChangeDisplaySettingsExA( device, mode, hwnd, flags, param );
     return mode ? change_mode( &mode->dmFields, &mode->dmPelsWidth, &mode->dmPelsHeight, flags )
                 : change_mode( NULL, NULL, NULL, flags );
@@ -509,6 +524,24 @@ static LONG WINAPI hook_ChangeDisplaySettingsA( DEVMODEA *mode, DWORD flags )
     return hook_ChangeDisplaySettingsExA( NULL, mode, NULL, flags, NULL );
 }
 
+static void seen_monitor( MONITORINFO *info );
+
+static BOOL CALLBACK add_monitor( HMONITOR monitor, HDC hdc, RECT *rect, LPARAM param )
+{
+    MONITORINFO info = {sizeof(info)};
+    if (!GetMonitorInfoW( monitor, &info )) return TRUE;
+    seen_monitor( &info );
+    UnionRect( (RECT *)param, (RECT *)param, &info.rcMonitor );
+    return TRUE;
+}
+
+/* The desktop over every display, the primary one as the program sees it. */
+static void seen_virtual_screen( RECT *all )
+{
+    SetRectEmpty( all );
+    EnumDisplayMonitors( NULL, NULL, add_monitor, (LPARAM)all );
+}
+
 static int seen_metric( int index, int value )
 {
     switch (index)
@@ -517,10 +550,17 @@ static int seen_metric( int index, int value )
         return mode_width;
     case SM_CYSCREEN:
         return mode_height;
+    case SM_XVIRTUALSCREEN:
+    case SM_YVIRTUALSCREEN:
     case SM_CXVIRTUALSCREEN:
-        return value - real_width + mode_width;
     case SM_CYVIRTUALSCREEN:
-        return value - real_height + mode_height;
+    {
+        RECT all;
+        seen_virtual_screen( &all );
+        if (index == SM_XVIRTUALSCREEN) return all.left;
+        if (index == SM_YVIRTUALSCREEN) return all.top;
+        return index == SM_CXVIRTUALSCREEN ? all.right - all.left : all.bottom - all.top;
+    }
     case SM_CXFULLSCREEN:
     case SM_CXMAXIMIZED:
     case SM_CXMAXTRACK:
@@ -575,6 +615,32 @@ static BOOL WINAPI hook_GetMonitorInfoA( HMONITOR monitor, MONITORINFO *info )
     return TRUE;
 }
 
+struct monitor_enum
+{
+    MONITORENUMPROC proc;
+    LPARAM param;
+};
+
+static BOOL CALLBACK seen_monitor_enum( HMONITOR monitor, HDC hdc, RECT *rect, LPARAM param )
+{
+    const struct monitor_enum *program = (const struct monitor_enum *)param;
+    RECT seen = *rect;
+
+    if (seen.left == 0 && seen.top == 0 && seen.right == real_width && seen.bottom == real_height)
+    {
+        seen.right = mode_width;
+        seen.bottom = mode_height;
+    }
+    return program->proc( monitor, hdc, &seen, program->param );
+}
+
+static BOOL WINAPI hook_EnumDisplayMonitors( HDC hdc, const RECT *clip, MONITORENUMPROC proc, LPARAM param )
+{
+    struct monitor_enum program = {proc, param};
+    if (!enabled || !proc) return EnumDisplayMonitors( hdc, clip, proc, param );
+    return EnumDisplayMonitors( hdc, clip, seen_monitor_enum, (LPARAM)&program );
+}
+
 static int WINAPI hook_GetDeviceCaps( HDC hdc, int index )
 {
     int value = GetDeviceCaps( hdc, index );
@@ -607,6 +673,8 @@ static HWND WINAPI hook_CreateWindowExW( DWORD ex_style, LPCWSTR class_name, LPC
         height = real_y( height );
     }
     hwnd = CreateWindowExW( ex_style, class_name, name, style, x, y, width, height, parent, menu, instance, param );
+    if (enabled && hwnd && !(style & WS_CHILD))
+        LOG_CALL( "window %p created at %d,%d %dx%d style %#lx ex %#lx\n", hwnd, x, y, width, height, style, ex_style );
     /* Created at the size the program asked for, then over the real screen,
      * which the subclass shows it as that size. */
     if (hwnd && enabled && !(style & WS_CHILD) && covers_screen( x, y, width, height ))
@@ -632,6 +700,8 @@ static HWND WINAPI hook_CreateWindowExA( DWORD ex_style, LPCSTR class_name, LPCS
         height = real_y( height );
     }
     hwnd = CreateWindowExA( ex_style, class_name, name, style, x, y, width, height, parent, menu, instance, param );
+    if (enabled && hwnd && !(style & WS_CHILD))
+        LOG_CALL( "window %p created at %d,%d %dx%d style %#lx ex %#lx\n", hwnd, x, y, width, height, style, ex_style );
     if (hwnd && enabled && !(style & WS_CHILD) && covers_screen( x, y, width, height ))
     {
         scale_window( hwnd );
@@ -645,6 +715,17 @@ static BOOL WINAPI hook_SetWindowPos( HWND hwnd, HWND after, int x, int y, int c
 {
     place_window( hwnd, &x, &y, &cx, &cy, flags );
     return SetWindowPos( hwnd, after, x, y, cx, cy, flags );
+}
+
+static BOOL WINAPI hook_ShowWindow( HWND hwnd, int command )
+{
+    BOOL ret = ShowWindow( hwnd, command );
+    if (enabled && hwnd && GetAncestor( hwnd, GA_ROOT ) == hwnd)
+    {
+        LOG_CALL( "ShowWindow %p %d\n", hwnd, command );
+        check_covering( hwnd );
+    }
+    return ret;
 }
 
 static BOOL WINAPI hook_MoveWindow( HWND hwnd, int x, int y, int width, int height, BOOL repaint )
