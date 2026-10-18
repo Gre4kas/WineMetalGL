@@ -125,7 +125,7 @@ void WINAPI glPixelStorei( GLenum pname, GLint param );
 /* UpscaleGL (upscalegl.c): WINEMETALGL_UPSCALE's hooks go into the
  * program's modules; a window that covers the screen renders at the size the
  * program sees (TRUE), smaller than its client area. */
-void upscalegl_init( HMODULE module );
+void upscalegl_init( HMODULE module, const char *setting );
 BOOL upscalegl_render_size( HWND hwnd, int width, int height, int *render_width, int *render_height );
 
 /* Logging (winemetalgl.c): through winemetalgl.so into the core's log

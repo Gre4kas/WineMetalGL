@@ -49,6 +49,7 @@ LICENSES/tessellator-MIT.txt
 LICENSES/Wine-LGPL-2.1.txt
 MANIFEST.txt
 README.md
+scripts/build-settings-app.sh
 scripts/build-wine-module.sh
 scripts/build.sh
 scripts/check-forbidden-identifiers.sh
@@ -192,8 +193,13 @@ src/core/util/metalfx_config.cpp
 src/core/util/metalfx_config.h
 src/core/util/name_table.h
 src/core/util/ref.h
+src/core/util/settings.cpp
+src/core/util/settings.h
 src/core/util/version.h
 src/core/version.mm
+src/settings-app/MetalSharp.icon/Assets/metalsharp-transparent.png
+src/settings-app/MetalSharp.icon/icon.json
+src/settings-app/WineMetalGLSettings.swift
 src/wine/include/wmgl_gltypes.h
 src/wine/include/wmgl_wine.h
 src/wine/pe/upscalegl.c
@@ -395,6 +401,7 @@ tests/host/fp64_tests.cpp
 tests/host/log_tests.cpp
 tests/host/main.cpp
 tests/host/metalfx_tests.cpp
+tests/host/settings_tests.cpp
 tests/host/shader_tests.cpp
 tests/host/test.h
 tests/wine/core_triangle.c

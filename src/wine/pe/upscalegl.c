@@ -1122,9 +1122,10 @@ static HMODULE WINAPI hook_LoadLibraryExW( LPCWSTR name, HANDLE file, DWORD flag
 
 /* ------------------------------------------------------------- the module */
 
-void upscalegl_init( HMODULE module )
+/* `setting`: WINEMETALGL_UPSCALE, from the environment or the settings file
+ * (the unix side's: core/util/settings.h). */
+void upscalegl_init( HMODULE module, const char *setting )
 {
-    const char *setting = getenv( "WINEMETALGL_UPSCALE" );
     double ratio = preset_ratio( setting );
     MONITORINFOEXW monitor;
     DEVMODEW mode;
