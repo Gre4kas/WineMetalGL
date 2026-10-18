@@ -569,6 +569,25 @@ MTLVertexFormat matchSignedness(MTLVertexFormat format, char kind) {
     return format;
 }
 
+// A vector of at most N elements on the stack: per-draw working lists
+// without allocations.
+template <class T, size_t N>
+struct FixedList {
+    T items[N];
+    size_t count = 0;
+    void push_back(const T& item) { items[count++] = item; }
+    void pop_back() { --count; }
+    T& back() { return items[count - 1]; }
+    T& operator[](size_t i) { return items[i]; }
+    const T& operator[](size_t i) const { return items[i]; }
+    size_t size() const { return count; }
+    bool empty() const { return count == 0; }
+    T* begin() { return items; }
+    T* end() { return items + count; }
+    const T* begin() const { return items; }
+    const T* end() const { return items + count; }
+};
+
 VertexFetch vertexFetch(const shader::StageOutput::VertexInput& input, const VertexAttrib& a) {
     if (input.kind == 'd') {
         const uint32_t element = a.isDouble ? a.elementBytes() : 0,
@@ -595,14 +614,18 @@ size_t DrawState::vertexBufferSlots(LinkedProgram& program) {
 void DrawState::planVertexInputs(LinkedProgram& program, bool gather, VertexInputPlan& plan) const {
     using Plan = VertexInputPlan;
     const VertexArray& vao = *ctx_.state.vertexArray;
-    plan = Plan();
+    // Reset in place: the groups keep their storage between draws.
+    plan.how.fill(Plan::None);
+    plan.group.fill(0);
+    plan.groups.clear();
     struct Window {
         size_t group;
         NSUInteger end;  // one past the highest byte the group's attributes read, within one element
     };
-    std::vector<Window> windows;
+    constexpr size_t kSlots = VertexArray::kAttribSlots;
+    FixedList<Window, kSlots> windows;
     bool constants = false, sides = false, convertedPerVertex = false;
-    std::vector<uint32_t> convertedDivisors;
+    FixedList<uint32_t, kSlots> convertedDivisors;
     auto convert = [&](int location, uint32_t divisor) {
         plan.how[static_cast<size_t>(location)] = Plan::Converted;
         if (!divisor) convertedPerVertex = true;
@@ -614,7 +637,7 @@ void DrawState::planVertexInputs(LinkedProgram& program, bool gather, VertexInpu
         const VertexAttrib* a;
         VertexFetch fetch;
     };
-    std::vector<Direct> direct;
+    FixedList<Direct, kSlots> direct;
     for (const shader::StageOutput::VertexInput& input : program.stage(Stage::Vertex).vertexInputs) {
         const int location = input.location;
         if (location < 0 || location >= VertexArray::kAttribSlots) continue;
@@ -643,7 +666,7 @@ void DrawState::planVertexInputs(LinkedProgram& program, bool gather, VertexInpu
     }
     // Attributes of one buffer, stride and divisor share a layout when they
     // all fit in one element window, whatever their order.
-    std::vector<std::vector<int>> members;
+    FixedList<FixedList<int, kSlots>, kSlots> members;
     for (const Direct& d : direct) {
         const int location = d.location;
         const VertexAttrib* a = d.a;
@@ -663,7 +686,7 @@ void DrawState::planVertexInputs(LinkedProgram& program, bool gather, VertexInpu
         if (chosen == plan.groups.size()) {
             plan.groups.push_back({a->buffer.get(), offset, stride, a->divisor});
             windows.push_back({chosen, end});
-            members.emplace_back();
+            members.push_back({});
         }
         members[chosen].push_back(location);
     }

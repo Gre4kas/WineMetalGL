@@ -164,9 +164,30 @@ static GLuint doom_program(const DoomGL *gl, const char *vs, const char *fs, con
 
 /* A material program: 8 samplers (4 read), a per-view uniform block, vec4
  * arrays; `targets` colour outputs (1, or 2 for the G-buffer pass). */
+static int doom_samplers(void)
+{
+    static int n;
+    if (!n) {
+        const char *v = getenv("WMGL_DOOM_SAMPLERS");
+        n = v && atoi(v) > 0 && atoi(v) <= 16 ? atoi(v) : 16;
+    }
+    return n;
+}
+
+/* A material program: WMGL_DOOM_SAMPLERS samplers (16 by default, all read),
+ * a per-view uniform block, vec4 arrays; `targets` colour outputs (1, or 2
+ * for the G-buffer pass). */
 static GLuint doom_material(const DoomGL *gl, int variant, int targets)
 {
-    char vs[1024], fs[2048];
+    char vs[1024], fs[4096], decl[512] = "", reads[2048] = "";
+    const int samplers = doom_samplers();
+    for (int i = 0; i < samplers; ++i) {
+        char line[160];
+        snprintf(line, sizeof(line), "uniform sampler2D t%d;\n", i);
+        strcat(decl, line);
+        snprintf(line, sizeof(line), "  c += texture(t%d, uv * %d.0 + v.xy) * _fa_[%d];\n", i, 1 + (variant + i) % 3, (variant + i) % 8);
+        strcat(reads, line);
+    }
     snprintf(vs, sizeof(vs),
              "#version 450 core\n"
              "layout(location = 0) in vec3 position;\n"
@@ -185,21 +206,20 @@ static GLuint doom_material(const DoomGL *gl, int variant, int targets)
              4 + variant % 20, 4 + variant % 20);
     snprintf(fs, sizeof(fs),
              "#version 450 core\n"
-             "in vec4 v;\nin vec2 uv;\n"
-             "uniform sampler2D t0, t1, t2, t3, t4, t5, t6, t7;\n"
+             "in vec4 v;\nin vec2 uv;\n%s"
              "uniform vec4 _fa_[8];\n"
              "layout(std140, binding = 0) uniform PerView { mat4 viewProjection; vec4 eye; vec4 fog; };\n"
              "layout(location = 0) out vec4 o0;\n%s"
              "void main() {\n"
-             "  vec4 c = texture(t%d, uv) * texture(t%d, uv * 2.0) + texture(t%d, v.xy) * _fa_[%d] + texture(t%d, v.zw) * fog;\n"
+             "  vec4 c = fog;\n%s"
              "  o0 = c;\n%s"
              "}\n",
-             targets > 1 ? "layout(location = 1) out vec4 o1;\n" : "", variant % 8, (variant + 1) % 8, (variant + 3) % 8,
-             variant % 8, (variant + 5) % 8, targets > 1 ? "  o1 = c * 0.5;\n" : "");
+             decl, targets > 1 ? "layout(location = 1) out vec4 o1;\n" : "", reads, targets > 1 ? "  o1 = c * 0.5;\n" : "");
     GLuint p = doom_program(gl, vs, fs, NULL);
     gl->UseProgram(p);
-    for (int i = 0; i < 8; ++i) {
-        char name[4] = {'t', (char)('0' + i), 0};
+    for (int i = 0; i < samplers; ++i) {
+        char name[8];
+        snprintf(name, sizeof(name), "t%d", i);
         gl->Uniform1i(gl->GetUniformLocation(p, name), i);
     }
     return p;
@@ -278,6 +298,12 @@ static void doom_setup(DoomFrame *d, const DoomGL *gl, int width, int height)
         gl->SamplerParameteri(d->samplers[i], 0x2801, i & 1 ? 0x2703 /* LINEAR_MIPMAP_LINEAR */ : 0x2601);
         gl->SamplerParameteri(d->samplers[i], 0x2800 /* MAG_FILTER */, 0x2601);
         gl->SamplerParameteri(d->samplers[i], 0x2802 /* WRAP_S */, i & 2 ? 0x812F /* CLAMP_TO_EDGE */ : 0x2901 /* REPEAT */);
+        /* WMGL_DOOM_BORDER: half the samplers clamp to a border colour (shadow maps, atlases). */
+        if (getenv("WMGL_DOOM_BORDER") && (i & 4)) {
+            const GLint border = 0x812D /* CLAMP_TO_BORDER */;
+            gl->SamplerParameteri(d->samplers[i], 0x2802, border);
+            gl->SamplerParameteri(d->samplers[i], 0x2803 /* WRAP_T */, border);
+        }
     }
     for (int i = 0; i < kDoomTextures; ++i) {  /* a full mip chain for the mipmapped samplers: one level */
         gl->BindTexture(0x0DE1, d->textures[i]);
@@ -347,6 +373,12 @@ static void doom_setup(DoomFrame *d, const DoomGL *gl, int width, int height)
     gl->GenQueries(kDoomQueries, d->queries[0]);
     gl->GenQueries(kDoomQueries, d->queries[1]);
     gl->GenQueries(kDoomTimestamps, d->timestamps);
+    for (int u = 0; u < 16; ++u) {  /* every unit a material reads */
+        gl->ActiveTexture(0x84C0 + (GLenum)u);
+        gl->BindTexture(0x0DE1, d->textures[u]);
+        gl->BindSampler((GLuint)u, d->samplers[u % 8]);
+    }
+    gl->ActiveTexture(0x84C0);
     for (int i = 0; i < 48 * 4; ++i) d->uniforms[i] = 0.01f * (float)(i % 97);
     for (size_t i = 0; i < sizeof(d->upload); ++i) d->upload[i] = (uint8_t)i;
 }
@@ -356,7 +388,12 @@ static void doom_setup(DoomFrame *d, const DoomGL *gl, int width, int height)
  * the second attribute as floats instead. */
 static int doom_skip(const char *part)
 {
-    const char *skip = getenv("WMGL_DOOM_SKIP");
+    static const char *skip;
+    static int read;
+    if (!read) {
+        skip = getenv("WMGL_DOOM_SKIP");
+        read = 1;
+    }
     return skip && strstr(skip, part) != NULL;
 }
 
@@ -370,7 +407,9 @@ static void doom_draw(DoomFrame *d, GLint va, GLint fa, int shortAttrib)
     const intptr_t base = (intptr_t)((n * 977) % 60000);
     if (n % 5 != 0) gl->BindBuffer(0x8892, d->positions);
     gl->VertexAttribPointer(0, 3, 0x1406 /* FLOAT */, 0, 12, (const void *)(base * 12));
-    if (shortAttrib && !doom_skip("shorts")) {
+    static int floats = -1;
+    if (floats < 0) floats = doom_skip("shorts");
+    if (shortAttrib && !floats) {
         gl->BindBuffer(0x8892, d->shorts);
         gl->VertexAttribPointer(1, 4, 0x1402 /* SHORT */, 0, 8, (const void *)(base * 8));
     } else {
@@ -380,9 +419,9 @@ static void doom_draw(DoomFrame *d, GLint va, GLint fa, int shortAttrib)
     if (va >= 0) gl->Uniform4fv(va, 12, d->uniforms);
     if (fa >= 0 && n % 2 == 0) gl->Uniform4fv(fa, 4, d->uniforms + 16);
     if (n % 3 == 0) gl->BindBufferRange(0x8A11, 0, d->ubo, (intptr_t)((n % 4000) * 256), 256);
-    gl->ActiveTexture(0x84C0 /* TEXTURE0 */ + (GLenum)(n % 8));
+    gl->ActiveTexture(0x84C0 /* TEXTURE0 */ + (GLenum)(n % doom_samplers()));
     gl->BindTexture(0x0DE1, d->textures[(n * 13) % kDoomTextures]);
-    gl->BindSampler((GLuint)(n % 8), d->samplers[n % 8]);
+    gl->BindSampler((GLuint)(n % doom_samplers()), d->samplers[n % 8]);
     gl->DrawElementsBaseVertex(0x0004 /* TRIANGLES */, (GLsizei)count, 0x1403 /* UNSIGNED_SHORT */,
                                (const void *)(first * 2), (GLint)base);
 }
