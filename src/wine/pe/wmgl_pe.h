@@ -68,7 +68,7 @@ struct wmgl_proc
 {
     const char *name;
     PROC proc;
-    const char *source;  /* "1.0".."4.6", or the extension that provides it */
+    const char *source;  /* "1.0".."4.6", or the extensions that provide it, space-separated */
 };
 extern const struct wmgl_proc wmgl_procs[];
 extern const unsigned int wmgl_proc_count;

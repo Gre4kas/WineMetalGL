@@ -102,10 +102,37 @@ pages), so the handler reports a fault only when:
 - the address is not a mapped page whose protection Wine has narrowed (which
   Wine resolves, and the program goes on).
 
+A signal raised in Windows code is passed straight to Wine's handler,
+untouched: some Wine builds run Windows code with the thread's GSBASE at the
+TEB, where reading the macOS thread state (errno, `pthread_self`, Mach
+calls) would read and write the TEB instead.
+
 Aborts are always reported. At most four reports are written per process.
 Whatever it reports, the handler then passes the signal to the handler that
 was there before (Wine's), so Wine's own handling is unchanged.
 `WINEMETALGL_CRASH_HANDLER=0` installs no handlers.
+
+## Windows exceptions
+
+Many games catch their own crashes and exit with a line of their own (id
+Tech 5: `CrashHandler: Aborting`), leaving nothing to go on. `winemetalgl.dll`
+logs the exceptions that end programs as they are raised, before the game's
+handlers: the code, where it happened, the registers (with the memory each
+pointer register points at) and the backtrace, by module and offset, in the
+`pe` category:
+
+```
+pe: exception c0000008 (flags 1) at 00006FFFFFBF4A2A ntdll.dll+0x74a2a, thread 023c
+pe:   rbx 000000002c7d1100 -> -20: ... | ...
+pe:   #3 00006FFFFA2AA1FC XAudio2_7.dll+0xa1fc
+pe:   #4 00000001404B2269 WolfNewOrder_x64.exe+0x4b2269
+```
+
+Invalid handles, stack overflows, heap corruption and stack buffer overruns
+are always logged; access violations, illegal instructions and division by
+zero, which some programs raise on purpose, with `WINEMETALGL_EXCEPTIONS=1`.
+At most 16 are logged per process. A Wine DLL's offsets resolve to source lines
+with `llvm-addr2line -f -i -e <the DLL> <its image base + offset>`.
 
 Symbols in a report are mangled C++ names; `c++filt` turns them back:
 

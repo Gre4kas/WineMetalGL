@@ -167,6 +167,117 @@ static BOOL init_unix_calls( HINSTANCE instance )
     return TRUE;
 }
 
+#ifdef _WIN64
+/* The application's exceptions that end programs are logged with a backtrace
+ * as they are raised, before its own handlers, which often catch them and
+ * exit without a word (id Tech 5's "CrashHandler: Aborting"). Invalid handles,
+ * stack overflows and corruption always; access violations and illegal
+ * instructions, which some programs raise on purpose, with
+ * WINEMETALGL_EXCEPTIONS=1. */
+#ifndef ARRAY_SIZE
+#define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
+#endif
+static LONG exception_reports;
+static volatile DWORD exception_thread;  /* the thread logging one */
+static BOOL log_all_exceptions;
+
+static void describe_address( char *out, size_t size, ULONG_PTR address )
+{
+    HMODULE mod;
+    char path[MAX_PATH];
+    const char *name;
+
+    if (GetModuleHandleExA( GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            (LPCSTR)address, &mod ) && GetModuleFileNameA( mod, path, sizeof(path) ))
+    {
+        name = strrchr( path, '\\' ) ? strrchr( path, '\\' ) + 1 : path;
+        snprintf( out, size, "%p %s+0x%llx", (void *)address, name, (unsigned long long)(address - (ULONG_PTR)mod) );
+    }
+    else snprintf( out, size, "%p", (void *)address );
+}
+
+static LONG CALLBACK log_exception( EXCEPTION_POINTERS *info )
+{
+    const EXCEPTION_RECORD *rec = info->ExceptionRecord;
+    CONTEXT context = *info->ContextRecord;
+    char where[MAX_PATH + 64];
+    unsigned int i;
+
+    switch (rec->ExceptionCode)
+    {
+    case EXCEPTION_INVALID_HANDLE:
+    case EXCEPTION_STACK_OVERFLOW:
+    case STATUS_HEAP_CORRUPTION:
+    case STATUS_STACK_BUFFER_OVERRUN:
+        break;
+    case EXCEPTION_ACCESS_VIOLATION:
+    case EXCEPTION_ILLEGAL_INSTRUCTION:
+    case EXCEPTION_PRIV_INSTRUCTION:
+    case EXCEPTION_INT_DIVIDE_BY_ZERO:
+        if (log_all_exceptions) break;
+        return EXCEPTION_CONTINUE_SEARCH;
+    default:
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    /* Not the faults its own probes take (IsBadReadPtr catches them). */
+    if (exception_thread == GetCurrentThreadId()) return EXCEPTION_CONTINUE_SEARCH;
+    if (InterlockedIncrement( &exception_reports ) > 16) return EXCEPTION_CONTINUE_SEARCH;
+    exception_thread = GetCurrentThreadId();
+    describe_address( where, sizeof(where), (ULONG_PTR)rec->ExceptionAddress );
+    WMGL_ERR( "exception %08lx (flags %lx) at %s, thread %04lx\n", rec->ExceptionCode, rec->ExceptionFlags, where,
+              GetCurrentThreadId() );
+    if (rec->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && rec->NumberParameters >= 2)
+        WMGL_ERR( "  %s %p\n", rec->ExceptionInformation[0] == 8 ? "executing" : rec->ExceptionInformation[0] ? "writing" : "reading",
+                  (void *)rec->ExceptionInformation[1] );
+    /* Its registers, and what those that point at memory point at: what an
+     * overwritten object holds often says who overwrote it. */
+    {
+        const CONTEXT *c = info->ContextRecord;
+        const struct { const char *name; DWORD64 value; } regs[] =
+        {
+            {"rax", c->Rax}, {"rbx", c->Rbx}, {"rcx", c->Rcx}, {"rdx", c->Rdx}, {"rsi", c->Rsi}, {"rdi", c->Rdi},
+            {"rbp", c->Rbp}, {"rsp", c->Rsp}, {"r8", c->R8}, {"r9", c->R9}, {"r10", c->R10}, {"r11", c->R11},
+            {"r12", c->R12}, {"r13", c->R13}, {"r14", c->R14}, {"r15", c->R15},
+        };
+        for (i = 0; i < ARRAY_SIZE(regs); i++)
+        {
+            const DWORD64 *p = (const DWORD64 *)(ULONG_PTR)(regs[i].value & ~(DWORD64)7);
+            if (regs[i].value < 0x10000 || IsBadReadPtr( p - 4, 12 * sizeof(DWORD64) ))
+            {
+                WMGL_ERR( "  %-3s %016llx\n", regs[i].name, (unsigned long long)regs[i].value );
+                continue;
+            }
+            WMGL_ERR( "  %-3s %016llx -> -20: %016llx %016llx %016llx %016llx | %016llx %016llx %016llx %016llx %016llx %016llx %016llx %016llx\n",
+                      regs[i].name, (unsigned long long)regs[i].value,
+                      (unsigned long long)p[-4], (unsigned long long)p[-3], (unsigned long long)p[-2], (unsigned long long)p[-1],
+                      (unsigned long long)p[0], (unsigned long long)p[1], (unsigned long long)p[2], (unsigned long long)p[3],
+                      (unsigned long long)p[4], (unsigned long long)p[5], (unsigned long long)p[6], (unsigned long long)p[7] );
+        }
+    }
+    /* The raiser's frames, from its context. */
+    for (i = 0; i < 24 && context.Rip; i++)
+    {
+        DWORD64 base, frame;
+        void *data;
+        RUNTIME_FUNCTION *function = RtlLookupFunctionEntry( context.Rip, &base, NULL );
+
+        describe_address( where, sizeof(where), context.Rip );
+        WMGL_ERR( "  #%u %s\n", i, where );
+        if (function)
+            RtlVirtualUnwind( UNW_FLAG_NHANDLER, base, context.Rip, function, &context, &data, &frame, NULL );
+        else
+        {
+            /* A leaf: its return address is on top of the stack. */
+            if (!context.Rsp || IsBadReadPtr( (void *)context.Rsp, sizeof(DWORD64) )) break;
+            context.Rip = *(DWORD64 *)context.Rsp;
+            context.Rsp += sizeof(DWORD64);
+        }
+    }
+    exception_thread = 0;
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+#endif
+
 static BOOL init_pixel_formats(void)
 {
     struct wmgl_init_params init = {0};
@@ -191,6 +302,10 @@ static BOOL init_pixel_formats(void)
     wmgl_log_max = init.log_level;
     log_ready = TRUE;
     WMGL_INFO( "winemetalgl.dll (%d-bit) in %s\n", (int)sizeof(void *) * 8, program );
+#ifdef _WIN64
+    log_all_exceptions = getenv( "WINEMETALGL_EXCEPTIONS" ) && !strcmp( getenv( "WINEMETALGL_EXCEPTIONS" ), "1" );
+    AddVectoredExceptionHandler( 1, log_exception );
+#endif
     if (!init.ok || !init.format_count)
     {
         WMGL_ERR( "the WineMetalGL core reported no pixel formats\n" );
@@ -855,6 +970,26 @@ static BOOL context_has_extension( const char *name )
     return has_extension( state->extensions, name );
 }
 
+/* Whether the current context has any of these space-separated extensions. */
+static BOOL context_has_any_extension( const char *names )
+{
+    char name[128];
+    const char *end;
+
+    for (; *names; names = *end ? end + 1 : end)
+    {
+        size_t len;
+        if (!(end = strchr( names, ' ' ))) end = names + strlen( names );
+        if ((len = end - names) && len < sizeof(name))
+        {
+            memcpy( name, names, len );
+            name[len] = 0;
+            if (context_has_extension( name )) return TRUE;
+        }
+    }
+    return FALSE;
+}
+
 PROC WINAPI wglGetProcAddress( LPCSTR name )
 {
     unsigned int lo = 0, hi = wmgl_proc_count, i;
@@ -862,8 +997,16 @@ PROC WINAPI wglGetProcAddress( LPCSTR name )
     if (!name) return NULL;
     for (i = 0; i < sizeof(wgl_procs) / sizeof(wgl_procs[0]); i++)
         if (!strcmp( wgl_procs[i].name, name ))
-            return has_extension( extensions_string(), wgl_procs[i].extension ) ? wgl_procs[i].proc : NULL;
-    if (!wglGetCurrentContext()) return NULL;
+        {
+            if (has_extension( extensions_string(), wgl_procs[i].extension )) return wgl_procs[i].proc;
+            WMGL_INFO( "wglGetProcAddress(%s): NULL, %s is not offered\n", name, wgl_procs[i].extension );
+            return NULL;
+        }
+    if (!wglGetCurrentContext())
+    {
+        WMGL_WARN( "wglGetProcAddress(%s): NULL, no current context\n", name );
+        return NULL;
+    }
     while (lo < hi)
     {
         unsigned int mid = (lo + hi) / 2;
@@ -874,11 +1017,14 @@ PROC WINAPI wglGetProcAddress( LPCSTR name )
             /* Commands of a GL version (every context is the newest) always,
              * extension commands when the context offers the extension. */
             if (proc->source[0] >= '0' && proc->source[0] <= '9') return proc->proc;
-            return context_has_extension( proc->source ) ? proc->proc : NULL;
+            if (context_has_any_extension( proc->source )) return proc->proc;
+            WMGL_INFO( "wglGetProcAddress(%s): NULL, not offered (%s)\n", name, proc->source );
+            return NULL;
         }
         if (cmp < 0) hi = mid;
         else lo = mid + 1;
     }
+    WMGL_INFO( "wglGetProcAddress(%s): NULL, not a command WineMetalGL implements\n", name );
     return NULL;
 }
 
