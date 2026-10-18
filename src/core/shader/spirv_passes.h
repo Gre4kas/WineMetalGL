@@ -33,6 +33,13 @@ std::vector<uint32_t> flattenArraysOfArrays(std::vector<uint32_t> spirv);
 // images passed to functions and any other use keep both accesses.
 std::vector<uint32_t> inferStorageImageAccess(std::vector<uint32_t> spirv);
 
+// Vertex inputs that alias, at the same location (GL allows it for vertex
+// shader inputs: each reads the same generic attribute), become one: Metal
+// takes an attribute index once. The widest of a location's scalar or vector
+// inputs of one component type stays, and the others read its first
+// components. SpaceEngine's orbits declare a vec3 and a vec2 at location 0.
+std::vector<uint32_t> mergeAliasedVertexInputs(std::vector<uint32_t> spirv);
+
 // What the flat inputs of `fragment` are computed from in `vertex`, the
 // stage that feeds them. When nothing that differs between the vertices of
 // a primitive reaches them other than vertex attributes, `perVertex` is

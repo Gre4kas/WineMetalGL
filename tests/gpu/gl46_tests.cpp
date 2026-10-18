@@ -2506,3 +2506,71 @@ GPU_TEST_VERSION(gpu_gl46_texture_feedback_reads_current_texels, 46) {
     glDeleteVertexArrays(1, &vao);
     glDeleteProgram(p);
 }
+
+// Vertex inputs aliased at one location read the same attribute (GL 4.6
+// section 11.1.1); Metal takes an attribute index once, so they become one
+// (mergeAliasedVertexInputs). SpaceEngine's orbits declare a vec3 and a vec2
+// at location 0 and read both (issue #35). Also through transform feedback,
+// which SpaceEngine captures the orbits with.
+GPU_TEST_VERSION(gpu_gl46_aliased_vertex_inputs, 46) {
+    GLuint p = gpu::program("#version 460 core\n"
+                            "layout(location = 0) in vec3 inPos;\n"
+                            "layout(location = 0) in vec2 inNorm;\n"
+                            "layout(location = 0) out vec4 color;\n"
+                            "void main() {\n"
+                            "    gl_Position = vec4(inPos.xy, 0.0, 1.0);\n"
+                            "    color = vec4(inNorm == inPos.xy ? 1.0 : 0.0, inPos.z == 0.0 ? 1.0 : 0.0, 0.0, 1.0);\n"
+                            "}\n",
+                            "#version 460 core\nlayout(location = 0) in vec4 color;\nout vec4 o;\nvoid main() { o = color; }\n");
+    glUseProgram(p);
+    GLuint vao = gpu::quad();
+    glClearColor(0, 0, 1, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    const uint8_t yellow[4] = {255, 255, 0, 255};
+    CHECK(gpu::near(gpu::readRGBA8(16, 48, 1, 1).data(), yellow));
+    CHECK(gpu::near(gpu::readRGBA8(48, 16, 1, 1).data(), yellow));
+    GLint attribs = 0;
+    glGetProgramiv(p, GL_ACTIVE_ATTRIBUTES, &attribs);
+    CHECK_EQ(attribs, 2);
+    CHECK_EQ(glGetAttribLocation(p, "inNorm"), 0);
+    CHECK_GL();
+
+    // The same shader, captured.
+    GLuint vs = glCreateShader(GL_VERTEX_SHADER);
+    const char* source = "#version 460 core\n"
+                         "layout(location = 0) in vec3 inPos;\n"
+                         "layout(location = 0) in vec2 inNorm;\n"
+                         "out vec2 captured;\n"
+                         "void main() { captured = inNorm * 2.0; gl_Position = vec4(inPos, 1.0); }\n";
+    glShaderSource(vs, 1, &source, nullptr);
+    glCompileShader(vs);
+    GLuint capture = glCreateProgram();
+    glAttachShader(capture, vs);
+    const char* varyings[] = {"captured"};
+    glTransformFeedbackVaryings(capture, 1, varyings, GL_INTERLEAVED_ATTRIBS);
+    glLinkProgram(capture);
+    GLint linked = 0;
+    glGetProgramiv(capture, GL_LINK_STATUS, &linked);
+    CHECK_EQ(linked, 1);
+    GLuint buffer = 0;
+    glGenBuffers(1, &buffer);
+    glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, buffer);
+    glBufferData(GL_TRANSFORM_FEEDBACK_BUFFER, 4 * 2 * sizeof(float), nullptr, GL_STATIC_READ);
+    glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 0, buffer);
+    glUseProgram(capture);
+    glEnable(GL_RASTERIZER_DISCARD);
+    glBeginTransformFeedback(GL_POINTS);
+    glDrawArrays(GL_POINTS, 0, 4);
+    glEndTransformFeedback();
+    glDisable(GL_RASTERIZER_DISCARD);
+    float out[8] = {};
+    glGetBufferSubData(GL_TRANSFORM_FEEDBACK_BUFFER, 0, sizeof(out), out);
+    for (float v : out) CHECK(v == 2.0f || v == -2.0f);
+    CHECK_GL();
+    glDeleteBuffers(1, &buffer);
+    glDeleteShader(vs);
+    glDeleteProgram(capture);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
+}

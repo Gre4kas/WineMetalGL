@@ -29,6 +29,9 @@ docs/performance.md
 docs/release.md
 docs/testing.md
 docs/unsupported.md
+Game Specific Patched Files/SpaceEngine/README.md
+Game Specific Patched Files/SpaceEngine/winemac-stale-modifiers.patch
+Game Specific Patched Files/SpaceEngine/winemac.so
 Game Specific Patched Files/The Elder Scrolls III Morrowind (OpenMW)/gen_stubs.py
 Game Specific Patched Files/The Elder Scrolls III Morrowind (OpenMW)/glue.m
 Game Specific Patched Files/The Elder Scrolls III Morrowind (OpenMW)/install.sh

@@ -876,28 +876,57 @@ struct ParsedShader {
 };
 
 // Inserts `text` after the #version line and the #extension lines that
-// directly follow it, then restores the original line numbering.
+// follow it (with comments, blank lines and the conditionals around them,
+// as in "#ifdef X / #extension ... / #endif"), then restores the original
+// line numbering.
 std::string insertAfterDirectives(const std::string& source, const std::string& text, int glslVersion) {
-    size_t at = 0;
-    int line = 1;
-    bool sawVersion = false;
+    size_t at = 0, insertAt = 0;
+    int line = 1, insertLine = 1, depth = 0;
+    bool sawVersion = false, inComment = false;
     while (at < source.size()) {
         size_t end = source.find('\n', at);
         if (end == std::string::npos) end = source.size();
         const std::string l = source.substr(at, end - at);
         const size_t first = l.find_first_not_of(" \t\r");
-        const bool blank = first == std::string::npos;
-        const bool version = !blank && l.compare(first, 8, "#version") == 0;
-        const bool extension = !blank && l.compare(first, 10, "#extension") == 0;
-        if (!blank && !version && !extension) break;
-        if (version) sawVersion = true;
-        if (!sawVersion && !blank) break;
+        bool skip = first == std::string::npos;
+        if (!skip && inComment) skip = true;
+        if (!skip && l.compare(first, 2, "//") == 0) skip = true;
+        if (!skip && l.compare(first, 2, "/*") == 0) skip = inComment = true;
+        if (inComment && l.find("*/") != std::string::npos) {
+            // A comment that ends on this line, with nothing after it.
+            const size_t close = l.find("*/");
+            inComment = false;
+            if (l.find_first_not_of(" \t\r", close + 2) != std::string::npos) break;
+        }
+        if (!skip) {
+            if (l[first] != '#') break;
+            const size_t word = l.find_first_not_of(" \t", first + 1);
+            auto is = [&](const char* directive) {
+                const size_t n = std::strlen(directive);
+                return word != std::string::npos && l.compare(word, n, directive) == 0 &&
+                       (word + n == l.size() || !std::isalnum(static_cast<unsigned char>(l[word + n])));
+            };
+            if (is("version")) sawVersion = true;
+            else if (!sawVersion) break;
+            else if (is("if") || is("ifdef") || is("ifndef")) ++depth;
+            else if (is("endif")) --depth;
+            else if (!is("extension") && !is("else") && !is("elif")) break;
+        }
         at = end < source.size() ? end + 1 : end;
         ++line;
+        // Only outside conditionals, after the #version line.
+        if (sawVersion && depth == 0 && !inComment) {
+            insertAt = at;
+            insertLine = line;
+        }
+    }
+    if (!sawVersion) {
+        insertAt = 0;
+        insertLine = 1;
     }
     // GLSL 3.30+: "#line N" numbers the next line N; earlier versions N + 1.
-    const int lineValue = glslVersion >= 330 ? line : line - 1;
-    return source.substr(0, at) + text + "#line " + std::to_string(lineValue) + "\n" + source.substr(at);
+    const int lineValue = glslVersion >= 330 ? insertLine : insertLine - 1;
+    return source.substr(0, insertAt) + text + "#line " + std::to_string(lineValue) + "\n" + source.substr(insertAt);
 }
 
 std::string raiseComputeVersion(Stage stage, const std::string& source);
@@ -1721,6 +1750,90 @@ std::string gpuShader4Functions(const std::string& source) {
     return out;
 }
 
+// GLSL 1.10's texture functions that core GLSL 1.40+ removed, which
+// `source` calls without defining them, defined over the core ones (the
+// shadow ones return vec4, as before). Drivers accept them in core shaders
+// (SpaceEngine's #version 460 core shaders call texture2D, issue #35). Bias
+// forms are fragment-shader only.
+std::string legacyTextureFunctions(Stage stage, const std::string& source) {
+    struct Function {
+        const char* name;
+        const char* ret;      // "vec4", or "shadow": vec4 of the float result
+        const char* sampler;
+        const char* coord;
+        const char* builtin;  // the core function
+        int extra;            // 0: none, 1: bias (fragment) or nothing, 2: lod
+    };
+    static const Function kFunctions[] = {
+        {"texture1D", "vec4", "sampler1D", "float", "texture", 1},
+        {"texture1DProj", "vec4", "sampler1D", "vec2", "textureProj", 1},
+        {"texture1DProj", "vec4", "sampler1D", "vec4", "textureProj", 1},
+        {"texture1DLod", "vec4", "sampler1D", "float", "textureLod", 2},
+        {"texture1DProjLod", "vec4", "sampler1D", "vec2", "textureProjLod", 2},
+        {"texture1DProjLod", "vec4", "sampler1D", "vec4", "textureProjLod", 2},
+        {"texture2D", "vec4", "sampler2D", "vec2", "texture", 1},
+        {"texture2DProj", "vec4", "sampler2D", "vec3", "textureProj", 1},
+        {"texture2DProj", "vec4", "sampler2D", "vec4", "textureProj", 1},
+        {"texture2DLod", "vec4", "sampler2D", "vec2", "textureLod", 2},
+        {"texture2DProjLod", "vec4", "sampler2D", "vec3", "textureProjLod", 2},
+        {"texture2DProjLod", "vec4", "sampler2D", "vec4", "textureProjLod", 2},
+        {"texture3D", "vec4", "sampler3D", "vec3", "texture", 1},
+        {"texture3DProj", "vec4", "sampler3D", "vec4", "textureProj", 1},
+        {"texture3DLod", "vec4", "sampler3D", "vec3", "textureLod", 2},
+        {"texture3DProjLod", "vec4", "sampler3D", "vec4", "textureProjLod", 2},
+        {"textureCube", "vec4", "samplerCube", "vec3", "texture", 1},
+        {"textureCubeLod", "vec4", "samplerCube", "vec3", "textureLod", 2},
+        {"texture2DRect", "vec4", "sampler2DRect", "vec2", "texture", 0},
+        {"texture2DRectProj", "vec4", "sampler2DRect", "vec3", "textureProj", 0},
+        {"texture2DRectProj", "vec4", "sampler2DRect", "vec4", "textureProj", 0},
+        {"shadow1D", "shadow", "sampler1DShadow", "vec3", "texture", 1},
+        {"shadow1DProj", "shadow", "sampler1DShadow", "vec4", "textureProj", 1},
+        {"shadow1DLod", "shadow", "sampler1DShadow", "vec3", "textureLod", 2},
+        {"shadow1DProjLod", "shadow", "sampler1DShadow", "vec4", "textureProjLod", 2},
+        {"shadow2D", "shadow", "sampler2DShadow", "vec3", "texture", 1},
+        {"shadow2DProj", "shadow", "sampler2DShadow", "vec4", "textureProj", 1},
+        {"shadow2DLod", "shadow", "sampler2DShadow", "vec3", "textureLod", 2},
+        {"shadow2DProjLod", "shadow", "sampler2DShadow", "vec4", "textureProjLod", 2},
+        {"shadow2DRect", "shadow", "sampler2DRectShadow", "vec3", "texture", 0},
+        {"shadow2DRectProj", "shadow", "sampler2DRectShadow", "vec4", "textureProj", 0},
+    };
+    // One scan: the identifiers called, and those defined (after vec4 or float).
+    std::set<std::string> called, defined;
+    std::string previous;
+    for (size_t i = 0; i < source.size();) {
+        const char c = source[i];
+        if (!std::isalpha(static_cast<unsigned char>(c)) && c != '_') {
+            if (!std::isspace(static_cast<unsigned char>(c))) previous.clear();
+            ++i;
+            continue;
+        }
+        size_t end = i;
+        while (end < source.size() && (std::isalnum(static_cast<unsigned char>(source[end])) || source[end] == '_')) ++end;
+        std::string word = source.substr(i, end - i);
+        size_t next = end;
+        while (next < source.size() && std::isspace(static_cast<unsigned char>(source[next]))) ++next;
+        if (next < source.size() && source[next] == '(') (previous == "vec4" || previous == "float" ? defined : called).insert(word);
+        previous = std::move(word);
+        i = end;
+    }
+    std::string out;
+    for (const Function& f : kFunctions) {
+        if (!called.count(f.name) || defined.count(f.name)) continue;
+        auto define = [&](const std::string& params, const std::string& args) {
+            const std::string call = std::string(f.builtin) + "(wmgl_s, wmgl_p" + args + ")";
+            out += std::string("vec4 ") + f.name + "(" + f.sampler + " wmgl_s, " + f.coord + " wmgl_p" + params +
+                   ") { return " + (std::strcmp(f.ret, "shadow") == 0 ? "vec4(" + call + ")" : call) + "; }\n";
+        };
+        if (f.extra == 2) {
+            define(", float wmgl_l", ", wmgl_l");
+            continue;
+        }
+        define("", "");
+        if (f.extra == 1 && stage == Stage::Fragment) define(", float wmgl_b", ", wmgl_b");
+    }
+    return out;
+}
+
 std::string raiseComputeVersion(Stage stage, const std::string& source) {
     std::string raised = source;
     // GL_ARB_cull_distance (GLSL 4.50 core): glslang has gl_CullDistance in
@@ -1763,6 +1876,10 @@ std::string raiseComputeVersion(Stage stage, const std::string& source) {
             body = "\n" + raised;
         }
         raised = insertAfterDirectives(head + body, gpuShader4Functions(raised), 130);
+    }
+    if (!version.es && !version.compatibility && version.number >= 140) {
+        const std::string legacy = legacyTextureFunctions(stage, raised);
+        if (!legacy.empty()) raised = insertAfterDirectives(raised, legacy, version.number);
     }
     if (cull && version.number < 450 && !version.es) {
         const size_t at = raised.find("#version");
@@ -4054,8 +4171,8 @@ static LinkResult linkImplCore(const LinkInput& input, const CaptureCode* captur
         try {
             // Doubles become soft-float code (fp64.h); no-op without them.
             std::vector<uint32_t> spirv =
-                inferStorageImageAccess(
-                    flattenArraysOfArrays(cubeStorageImagesAs2DArrays(lowerGatherOffsets(rectImagesAs2D(stage.spirv)))));
+                inferStorageImageAccess(mergeAliasedVertexInputs(
+                    flattenArraysOfArrays(cubeStorageImagesAs2DArrays(lowerGatherOffsets(rectImagesAs2D(stage.spirv))))));
             if (!lowerFp64(spirv, result.log)) return result;
             BorderMsl msl(std::move(spirv));
             msl.renameMetalFunctionObjects();
