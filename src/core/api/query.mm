@@ -428,6 +428,12 @@ void beginQuery(Context& ctx, GLenum target, int index, GLuint name) {
     if (ctx.isEs() && ((index == kQueryAnySamplesPassed && ctx.state.activeQueries[kQueryAnySamplesPassedConservative]) ||
                        (index == kQueryAnySamplesPassedConservative && ctx.state.activeQueries[kQueryAnySamplesPassed])))
         return ctx.setError(GL_INVALID_OPERATION);
+    // GL_ARB_occlusion_query: glBeginQueryARB with an unused name makes it a
+    // query (from GL 3.1, glBeginQuery needs a generated one). id Tech 5
+    // (Wolfenstein: The New Order) begins its occlusion queries this way;
+    // refused, every object they cull is hidden.
+    if (name && !ctx.queries.isGenerated(name) && !ctx.isEs() && !std::strcmp(ctx.currentCommand, "glBeginQueryARB"))
+        ctx.queries.reserve(name);
     if (name == 0 || !ctx.queries.isGenerated(name)) return ctx.setError(GL_INVALID_OPERATION);
     RefPtr<Query> q = ctx.queries.getRef(name);
     if (!q) {
