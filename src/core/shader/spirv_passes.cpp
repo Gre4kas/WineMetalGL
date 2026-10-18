@@ -87,6 +87,142 @@ std::vector<uint32_t> lowerGatherOffsets(std::vector<uint32_t> spirv) {
     return out;
 }
 
+std::vector<uint32_t> mergeAliasedVertexInputs(std::vector<uint32_t> spirv) {
+    if (spirv.size() < 5) return spirv;
+    struct Scalar { uint32_t op, width, sign; };
+    std::map<uint32_t, Scalar> scalars;                         // OpTypeFloat/OpTypeInt
+    std::map<uint32_t, std::pair<uint32_t, uint32_t>> vectors;  // id -> (component, count)
+    std::map<uint32_t, std::pair<uint32_t, uint32_t>> pointers; // id -> (storage, pointee)
+    std::map<uint32_t, uint32_t> inputs;                        // Input variable -> pointer type
+    std::map<uint32_t, uint32_t> locations;
+    std::set<uint32_t> excluded;                                // built-ins, Component-decorated
+    bool vertex = false;
+    size_t firstFunction = 0;
+    for (size_t i = 5; i < spirv.size();) {
+        const uint32_t count = spirv[i] >> 16, op = spirv[i] & 0xffff;
+        if (!count || i + count > spirv.size()) return spirv;
+        if (op == spv::OpEntryPoint && count >= 3 && spirv[i + 1] == spv::ExecutionModelVertex) vertex = true;
+        if ((op == spv::OpTypeFloat && count == 3) || (op == spv::OpTypeInt && count == 4))
+            scalars[spirv[i + 1]] = {op, spirv[i + 2], op == spv::OpTypeInt ? spirv[i + 3] : 0u};
+        if (op == spv::OpTypeVector && count == 4) vectors[spirv[i + 1]] = {spirv[i + 2], spirv[i + 3]};
+        if (op == spv::OpTypePointer && count == 4) pointers[spirv[i + 1]] = {spirv[i + 2], spirv[i + 3]};
+        if (op == spv::OpVariable && count >= 4 && !firstFunction && spirv[i + 3] == spv::StorageClassInput)
+            inputs[spirv[i + 2]] = spirv[i + 1];
+        if (op == spv::OpDecorate && count >= 4 && spirv[i + 2] == spv::DecorationLocation) locations[spirv[i + 1]] = spirv[i + 3];
+        if (op == spv::OpDecorate && count >= 3 &&
+            (spirv[i + 2] == spv::DecorationBuiltIn || spirv[i + 2] == spv::DecorationComponent))
+            excluded.insert(spirv[i + 1]);
+        if (op == spv::OpFunction && !firstFunction) firstFunction = i;
+        i += count;
+    }
+    if (!vertex || !firstFunction) return spirv;
+    // (component type, count) of a scalar or vector input; count 0 for others.
+    auto shape = [&](uint32_t variable) -> std::pair<uint32_t, uint32_t> {
+        auto pointer = pointers.find(inputs[variable]);
+        if (pointer == pointers.end()) return {0, 0};
+        const uint32_t type = pointer->second.second;
+        if (scalars.count(type)) return {type, 1};
+        auto v = vectors.find(type);
+        if (v != vectors.end() && scalars.count(v->second.first)) return v->second;
+        return {0, 0};
+    };
+    std::map<uint32_t, std::vector<uint32_t>> byLocation;
+    for (const auto& [variable, type] : inputs)
+        if (!excluded.count(variable) && locations.count(variable)) byLocation[locations[variable]].push_back(variable);
+    struct Alias { uint32_t keep, keepType, count; };
+    std::map<uint32_t, Alias> aliases;  // aliased variable -> the variable it reads
+    for (const auto& [location, variables] : byLocation) {
+        if (variables.size() < 2) continue;
+        uint32_t keep = 0, keepCount = 0, component = 0;
+        bool mergeable = true;
+        for (uint32_t variable : variables) {
+            const auto [c, n] = shape(variable);
+            if (!n || (component && c != component)) mergeable = false;
+            component = c;
+            if (n > keepCount) keep = variable, keepCount = n;
+        }
+        if (!mergeable) continue;
+        for (uint32_t variable : variables)
+            if (variable != keep) aliases[variable] = {keep, pointers[inputs[keep]].second, shape(variable).second};
+    }
+    if (aliases.empty()) return spirv;
+    // Code may only load an alias or chain into its components.
+    for (size_t i = firstFunction; i < spirv.size();) {
+        const uint32_t count = spirv[i] >> 16, op = spirv[i] & 0xffff;
+        for (uint32_t w = 1; w < count; ++w) {
+            if (!aliases.count(spirv[i + w])) continue;
+            const bool allowed = (op == spv::OpLoad && w == 3) ||
+                                 ((op == spv::OpAccessChain || op == spv::OpInBoundsAccessChain) && w == 3);
+            if (!allowed) return spirv;
+        }
+        i += count;
+    }
+    uint32_t bound = spirv[3];
+    std::vector<uint32_t> out(spirv.begin(), spirv.begin() + 5);
+    for (size_t i = 5; i < spirv.size();) {
+        const uint32_t count = spirv[i] >> 16, op = spirv[i] & 0xffff;
+        const auto begin = spirv.begin() + static_cast<long>(i), end = begin + count;
+        if (i < firstFunction) {
+            if (op == spv::OpVariable && aliases.count(spirv[i + 2])) {
+                i += count;
+                continue;
+            }
+            if ((op == spv::OpDecorate || op == spv::OpName || op == spv::OpMemberName || op == spv::OpMemberDecorate) &&
+                aliases.count(spirv[i + 1])) {
+                i += count;
+                continue;
+            }
+            if (op == spv::OpEntryPoint) {
+                // The interface follows the name, a nul-terminated string.
+                auto hasNul = [](uint32_t word) {
+                    return !(word & 0xffu) || !(word & 0xff00u) || !(word & 0xff0000u) || !(word & 0xff000000u);
+                };
+                size_t w = 3;  // the word that ends the name
+                while (w < count && !hasNul(spirv[i + w])) ++w;
+                std::vector<uint32_t> words(begin + 1, begin + static_cast<long>(std::min<size_t>(w + 1, count)));
+                for (size_t k = w + 1; k < count; ++k)
+                    if (!aliases.count(spirv[i + k])) words.push_back(spirv[i + k]);
+                out.push_back((static_cast<uint32_t>(words.size() + 1) << 16) | op);
+                out.insert(out.end(), words.begin(), words.end());
+                i += count;
+                continue;
+            }
+            out.insert(out.end(), begin, end);
+            i += count;
+            continue;
+        }
+        auto alias = count >= 4 ? aliases.find(spirv[i + 3]) : aliases.end();
+        if (alias == aliases.end()) {
+            out.insert(out.end(), begin, end);
+        } else if (op == spv::OpLoad) {
+            // Load the kept input, then take the alias's components of it.
+            const Alias& a = alias->second;
+            const uint32_t type = spirv[i + 1], result = spirv[i + 2];
+            const uint32_t loaded = type == a.keepType ? result : bound++;
+            out.push_back((count << 16) | spv::OpLoad);
+            out.insert(out.end(), {a.keepType, loaded, a.keep});
+            out.insert(out.end(), begin + 4, end);
+            if (loaded != result) {
+                if (a.count == 1) {
+                    out.insert(out.end(), {(5u << 16) | spv::OpCompositeExtract, type, result, loaded, 0u});
+                } else {
+                    out.push_back(((5u + a.count) << 16) | spv::OpVectorShuffle);
+                    out.insert(out.end(), {type, result, loaded, loaded});
+                    for (uint32_t c = 0; c < a.count; ++c) out.push_back(c);
+                }
+            }
+        } else {
+            // An access chain into the alias's components chains into the kept input's.
+            const size_t start = out.size();
+            out.insert(out.end(), begin, end);
+            out[start + 3] = alias->second.keep;
+        }
+        i += count;
+    }
+    out[3] = bound;
+    return out;
+}
+
 namespace {
 
 constexpr uint32_t kOpTypeInt = 21, kOpTypeImage = 25, kOpConstant = 43, kOpFunction = 54, kOpLoad = 61,

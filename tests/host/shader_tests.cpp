@@ -138,6 +138,50 @@ TEST(shader_legacy_macros) {
     CHECK(r.ok);
 }
 
+// GLSL 1.10's texture functions in core GLSL 1.40+, which drivers accept
+// (SpaceEngine's #version 460 core atmosphere shaders call texture2D, issue
+// #35), with bias in fragment shaders and shadow lookups as vec4. A shader
+// that defines one itself keeps its own.
+TEST(shader_core_legacy_texture_functions) {
+    LinkInput in;
+    in.shaders.push_back({Stage::Vertex, "#version 460 core\nlayout(location = 0) in vec2 p; uniform sampler2D h;\n"
+                                         "out vec2 uv;\n"
+                                         "void main() { uv = p; gl_Position = vec4(p, texture2DLod(h, p, 0.0).r, 1.0); }\n"});
+    in.shaders.push_back({Stage::Fragment,
+                          "#version 460 core\nin vec2 uv; uniform sampler2D t; uniform samplerCube c;\n"
+                          "uniform sampler2DShadow s; out vec4 o;\n"
+                          "void main() {\n"
+                          "    vec4 textureSize = texture2D(t, uv, 1.0);\n"
+                          "    o = textureSize + textureCube(c, vec3(uv, 1.0)) + shadow2D(s, vec3(uv, 0.5)) + texture2DProj(t, vec3(uv, 2.0));\n"
+                          "}\n"});
+    LinkResult r = link(in);
+    if (!r.ok) std::fprintf(stderr, "%s\n", r.log.c_str());
+    CHECK(r.ok);
+    CompileResult own = compile(Stage::Fragment, "#version 460 core\nuniform sampler2D t; out vec4 o;\n"
+                                                 "vec4 texture2D(sampler2D s, vec2 p) { return texture(s, p) * 2.0; }\n"
+                                                 "void main() { o = texture2D(t, vec2(0.5)); }\n");
+    if (!own.ok) std::fprintf(stderr, "%s\n", own.log.c_str());
+    CHECK(own.ok);
+    // SpaceEngine's header: comments before #version, and an #extension in a
+    // conditional; the functions go after both, and line numbers stay.
+    CompileResult header = compile(Stage::Fragment, "// Atmosphere\n/* scattering\n   tables */\n#version 460 core\n\n"
+                                                    "#ifdef LOG_Z_BUFFER_FS\n#extension GL_ARB_conservative_depth : enable\n#endif\n"
+                                                    "#define _FRAGMENT_\nuniform sampler2D t; out vec4 o;\n"
+                                                    "void main() { o = texture2D(t, vec2(0.5)) + undeclared; }\n");
+    CHECK(!header.ok);
+    CHECK(header.log.find("0:11:") != std::string::npos && header.log.find("undeclared") != std::string::npos);
+    if (header.log.find("0:11:") == std::string::npos) std::fprintf(stderr, "%s\n", header.log.c_str());
+    CompileResult headerOk = compile(Stage::Fragment, "// Atmosphere\n#version 460 core\n#ifdef X\n#extension GL_ARB_conservative_depth : enable\n"
+                                                      "#endif\nuniform sampler2D t; out vec4 o;\nvoid main() { o = texture2D(t, vec2(0.5)); }\n");
+    if (!headerOk.ok) std::fprintf(stderr, "%s\n", headerOk.log.c_str());
+    CHECK(headerOk.ok);
+    CompileResult line = compile(Stage::Fragment, "#version 460 core\nuniform sampler2D t; out vec4 o;\n\n"
+                                                  "void main() { o = texture2D(t, vec2(0.5)) + undeclared; }\n");
+    CHECK(!line.ok);
+    CHECK(line.log.find("0:4:") != std::string::npos);
+    if (line.log.find("0:4:") == std::string::npos) std::fprintf(stderr, "%s\n", line.log.c_str());
+}
+
 TEST(shader_legacy_fragdata) {
     UpgradeResult u = upgradeLegacyGlsl(Stage::Fragment, "#version 120\nvoid main() { gl_FragData[1] = vec4(1.0); }\n");
     CHECK(u.ok);
