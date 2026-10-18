@@ -128,9 +128,20 @@ id<MTLFunction> compileFunctionUncached(const std::string& msl, const std::strin
         return v && v[0] == '1';
     }();
     options.mathMode = safeMath ? MTLMathModeSafe : MTLMathModeRelaxed;
-    // `invariant` outputs (gl_Position of depth pre-passes) compute the same
-    // values in every shader that declares them.
-    options.preserveInvariance = msl.find("invariant]]") != std::string::npos;
+    // Positions are computed the same way in every vertex shader, declared
+    // `invariant` or not: with relaxed math the compiler may otherwise
+    // reassociate the same position expression differently from one shader
+    // to the next, and a pass that tests depth for equality against another
+    // pass's depth (a depth pre-pass, decals) fails on some pixels, which ones
+    // changing with the camera (SOMA's flickering lights and console
+    // details, issue #26). Only position math is constrained; the rest keeps
+    // relaxed math. WINEMETALGL_INVARIANCE=0 restores the declared-only
+    // behaviour.
+    static const bool invarianceAlways = [] {
+        const char* v = std::getenv("WINEMETALGL_INVARIANCE");
+        return !(v && v[0] == '0');
+    }();
+    options.preserveInvariance = invarianceAlways || msl.find("invariant]]") != std::string::npos;
     NSError* error = nil;
     id<MTLLibrary> library = [Device::get().mtl() newLibraryWithSource:[NSString stringWithUTF8String:msl.c_str()]
                                                                options:options
