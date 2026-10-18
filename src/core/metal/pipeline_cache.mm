@@ -123,7 +123,10 @@ private:
 
     void finish() {
         stopping_ = true;
-        dispatch_sync(queue_, ^{ save(); });
+        // The last chance for this session's pipelines: a few tries (see save()).
+        dispatch_sync(queue_, ^{
+            for (int attempt = 0; attempt < 3 && unsaved_ && !save(attempt == 2); ++attempt) usleep(200000);
+        });
     }
 
     void add(MTLRenderPipelineDescriptor* desc) {
@@ -152,11 +155,15 @@ private:
     }
 
     // On queue_: writes the archive (to a temporary file renamed over the
-    // old one, so a reader never sees half of it).
-    void save() {
+    // old one, so a reader never sees half of it). Metal's archiver fails
+    // now and then while the process compiles other pipelines ("cannot
+    // pack ... gpuarchiver", a different pipeline each time in DOOM (2016));
+    // the same archive saves on a later try, which comes a few seconds on.
+    // `last`: no try follows (a failure is a warning). False on failure.
+    bool save(bool last = false) {
         @autoreleasepool {
             saveScheduled_ = false;
-            if (!unsaved_) return;
+            if (!unsaved_) return true;
             const std::string temporary = path_ + "." + std::to_string(getpid()) + ".tmp";
             NSURL* url = [NSURL fileURLWithPath:[NSString stringWithUTF8String:temporary.c_str()]];
             NSError* error = nil;
@@ -168,10 +175,20 @@ private:
                     full_ = true;
                     WMGL_INFO(Pipeline, "pipeline cache %s is full", path_.c_str());
                 }
-            } else {
-                ::unlink(temporary.c_str());
-                WMGL_WARN(Pipeline, "pipeline cache: not saved (%s)", error.localizedDescription.UTF8String);
+                return true;
             }
+            ::unlink(temporary.c_str());
+            if (last) {
+                WMGL_WARN(Pipeline, "pipeline cache: %d new pipelines not saved (%s)", unsaved_,
+                          error.localizedDescription.UTF8String);
+                return false;
+            }
+            WMGL_INFO(Pipeline, "pipeline cache: not saved, trying again (%s)", error.localizedDescription.UTF8String);
+            if (!stopping_ && !saveScheduled_) {
+                saveScheduled_ = true;
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), queue_, ^{ save(); });
+            }
+            return false;
         }
     }
 
