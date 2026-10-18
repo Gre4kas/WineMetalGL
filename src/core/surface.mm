@@ -354,17 +354,35 @@ void dumpFrame(CommandStream& stream, id<MTLTexture> color, int width, int heigh
 
 void Surface::sizeDrawable() {
     if (!layer_) return;
-    layer_.drawableSize = CGSizeMake(std::lround(width_ * upscale_), std::lround(height_ * upscale_));
+    const int width = outputWidth_ > 0 ? outputWidth_ : width_, height = outputHeight_ > 0 ? outputHeight_ : height_;
+    layer_.drawableSize = CGSizeMake(std::lround(width * upscale_), std::lround(height * upscale_));
+}
+
+void Surface::setOutputSize(int width, int height) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (width == outputWidth_ && height == outputHeight_) return;
+    WMGL_INFO(Surface, "output %dx%d for a %dx%d back buffer", width, height, width_, height_);
+    outputWidth_ = width;
+    outputHeight_ = height;
+    sizeDrawable();
 }
 
 // Called by the thread presenting (the mailbox presenter for interval 0).
-id<MTLTexture> Surface::upscale(id<MTLCommandBuffer> commandBuffer, id<MTLTexture> source) {
-    if (upscale_ <= 1.0f || upscaleFailed_) return source;
-    const NSUInteger outWidth = static_cast<NSUInteger>(std::lround(source.width * upscale_));
-    const NSUInteger outHeight = static_cast<NSUInteger>(std::lround(source.height * upscale_));
+id<MTLTexture> Surface::upscale(id<MTLCommandBuffer> commandBuffer, id<MTLTexture> source, NSUInteger outWidth,
+                                NSUInteger outHeight) {
+    if (upscaleFailed_ || (outWidth == source.width && outHeight == source.height)) return source;
+    // MetalFX only scales up.
+    if (outWidth < source.width || outHeight < source.height) return source;
+    static const bool supported = [MTLFXSpatialScalerDescriptor supportsDevice:Device::get().mtl()];
+    if (!supported) {
+        WMGL_WARN(Surface, "MetalFX spatial upscaling is not supported on this device; frames are stretched");
+        upscaleFailed_ = true;
+        return source;
+    }
     id<MTLFXSpatialScaler> scaler = upscaler_;
     if (!scaler || scaler.inputWidth != source.width || scaler.inputHeight != source.height ||
-        scaler.colorTextureFormat != source.pixelFormat || scaler.outputWidth != outWidth) {
+        scaler.colorTextureFormat != source.pixelFormat || scaler.outputWidth != outWidth ||
+        scaler.outputHeight != outHeight) {
         MTLFXSpatialScalerDescriptor* desc = [MTLFXSpatialScalerDescriptor new];
         desc.inputWidth = source.width;
         desc.inputHeight = source.height;
@@ -417,7 +435,9 @@ void Surface::ensurePresentPipeline() {
     presentPipeline_ = [Device::get().mtl() newRenderPipelineStateWithDescriptor:desc error:&error];
     if (!presentPipeline_) WMGL_ERR(Pipeline, "present pipeline: %s", error.localizedDescription.UTF8String);
     MTLSamplerDescriptor* s = [MTLSamplerDescriptor new];
-    s.minFilter = s.magFilter = MTLSamplerMinMagFilterNearest;
+    // Linear: a back buffer MetalFX did not scale is stretched over the
+    // drawable (the same pixels when the sizes match).
+    s.minFilter = s.magFilter = MTLSamplerMinMagFilterLinear;
     presentSampler_ = [Device::get().mtl() newSamplerStateWithDescriptor:s];
 }
 
@@ -426,12 +446,31 @@ void Surface::encodePresent(id<MTLCommandBuffer> commandBuffer, id<MTLTexture> s
     // bytes unchanged.
     if (source.pixelFormat == MTLPixelFormatRGBA8Unorm_sRGB)
         source = [source newTextureViewWithPixelFormat:MTLPixelFormatRGBA8Unorm];
-    source = upscale(commandBuffer, source);
+    // Shown at another size (setOutputSize): in the largest rectangle of the
+    // back buffer's shape, centred, black around it (a 4:3 mode on a 16:9
+    // screen), as a display's scaler keeps a mode's shape.
+    const NSUInteger drawableWidth = drawable.texture.width, drawableHeight = drawable.texture.height;
+    NSUInteger width = drawableWidth, height = drawableHeight;
+    if (outputWidth_ > 0 && outputHeight_ > 0 && source.width && source.height) {
+        const double shape = static_cast<double>(source.width) / source.height;
+        const double screen = static_cast<double>(drawableWidth) / drawableHeight;
+        if (std::fabs(shape / screen - 1.0) > 0.01) {
+            if (shape < screen) width = static_cast<NSUInteger>(std::lround(drawableHeight * shape));
+            else height = static_cast<NSUInteger>(std::lround(drawableWidth / shape));
+        }
+    }
+    source = upscale(commandBuffer, source, width, height);
     MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
     pass.colorAttachments[0].texture = drawable.texture;
-    pass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+    const bool bars = width != drawableWidth || height != drawableHeight;
+    pass.colorAttachments[0].loadAction = bars ? MTLLoadActionClear : MTLLoadActionDontCare;
+    pass.colorAttachments[0].clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 1.0);
     pass.colorAttachments[0].storeAction = MTLStoreActionStore;
     id<MTLRenderCommandEncoder> encoder = [commandBuffer renderCommandEncoderWithDescriptor:pass];
+    if (bars)
+        [encoder setViewport:(MTLViewport){static_cast<double>((drawableWidth - width) / 2),
+                                           static_cast<double>((drawableHeight - height) / 2), static_cast<double>(width),
+                                           static_cast<double>(height), 0.0, 1.0}];
     [encoder setRenderPipelineState:presentPipeline_];
     // No flip in the shader: the drawable's top row samples the back buffer's
     // last row, which is GL's top row (GL row 0 = Metal row 0 = window bottom).

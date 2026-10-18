@@ -1,4 +1,5 @@
 #include "core/util/log.h"
+#include "core/util/settings.h"
 
 #include <dirent.h>
 #include <fcntl.h>
@@ -75,6 +76,7 @@ struct State {
 State& state() {
     static State* s = [] {
         auto* s = new State();  // never destroyed: messages may come from other threads at exit
+        applySettingsFile();    // the settings file's logging, if the environment has none (settings.h)
         const char* spec = std::getenv("WINEMETALGL_LOG");
         s->spec = spec ? spec : "";
         s->levels = parseLogLevels(spec, std::getenv("WINEMETALGL_WINE_DEBUG") != nullptr);

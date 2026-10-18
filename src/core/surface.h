@@ -50,6 +50,10 @@ public:
     // `stream`: the current context's stream when it renders to this
     // surface, so the copy of the old contents is ordered after its work.
     void resize(int width, int height, CommandStream* stream = nullptr);
+    // The size the back buffer is shown at, in the window's pixels (0: its
+    // own): UpscaleGL's games render smaller than their window, and MetalFX
+    // scales the frame up to it (see the Wine module's upscalegl.c).
+    void setOutputSize(int width, int height);
     void setSwapInterval(int interval);
 
     id<MTLTexture> color() const { return color_; }          // what draws render into (MSAA if samples > 1)
@@ -104,13 +108,16 @@ private:
     id<MTLRenderPipelineState> presentPipeline_ = nil;
     id<MTLSamplerState> presentSampler_ = nil;
     // MetalFX spatial upscaling of the back buffer into a drawable `upscale_`
-    // times its size (metalFxFactor; 1: off), through `upscaled_`.
+    // times its output size (metalFxFactor; 1: off), through `upscaled_`.
     float upscale_ = 1.0f;
+    int outputWidth_ = 0, outputHeight_ = 0;  // setOutputSize
     bool upscaleFailed_ = false;
     id upscaler_ = nil;  // id<MTLFXSpatialScaler>
     id<MTLTexture> upscaled_ = nil;
     void sizeDrawable();
-    id<MTLTexture> upscale(id<MTLCommandBuffer> commandBuffer, id<MTLTexture> source);
+    // `source` scaled to `width` x `height` by MetalFX (itself when the sizes
+    // match, or MetalFX cannot: the present pass then stretches it).
+    id<MTLTexture> upscale(id<MTLCommandBuffer> commandBuffer, id<MTLTexture> source, NSUInteger width, NSUInteger height);
     std::unique_ptr<Mailbox> mailbox_;
 };
 

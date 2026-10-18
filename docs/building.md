@@ -111,6 +111,30 @@ What matters:
   `WINEMETALGL_HOST_LIB_DIR=/path/to/x86_64/libs scripts/stage-host-libs.sh /path/to/wine`
   copies an x86_64 FreeType closure into a Wine installation.
 
+## WineMetalGL Settings
+
+`WineMetalGL Settings.app` (`src/settings-app`; each release has it signed
+and notarized) is the easy way in:
+
+- **WineMetalGL**: the CrossOver bottles, MetalSharp's prefixes, `~/.wine` and
+  the prefixes installed into from the app, each with a switch that turns
+  WineMetalGL on or off there (the `opengl32` override, `native` or
+  `builtin`). Where it is installed nowhere yet, **Install into CrossOver**
+  (choose a bottle) and **Install Normally** (choose a Wine, then a prefix)
+  run `install-crossover.sh` and `install-wine-module.sh` with the release the
+  app carries.
+- **UpscaleGL**: Off, Quality, Balanced or Performance (`WINEMETALGL_UPSCALE`).
+- **Logging**: everything (`WINEMETALGL_LOG=2`) or nothing, and a button that
+  opens `~/Library/Logs/WineMetalGL`. Until it is switched, WineMetalGL logs
+  warnings, as without the app.
+
+UpscaleGL and logging go to `~/Library/Application Support/WineMetalGL/settings.conf`,
+`NAME=value` lines of the variables below, which WineMetalGL reads when it
+loads; the environment wins over the file, and a change applies to games
+started afterwards. `scripts/build-settings-app.sh` builds the app (Liquid
+Glass needs Xcode 26 to build and macOS 26 to show; `PAYLOAD=<staged
+release>` makes it able to install).
+
 ## Checking that a program uses the core
 
 Look at a program's `GL_RENDERER` string: it ends in `(WineMetalGL)`, for
@@ -144,5 +168,7 @@ no `opengl32=native` override, and the program got Wine's own OpenGL.
 | `WINEMETALGL_INVARIANCE=0` | Compile vertex positions for invariance only in shaders that declare `invariant`. By default every vertex shader computes positions the same way, so passes that test depth for equality against another pass's depth (pre-passes, decals) match exactly under relaxed math |
 | `WINEMETALGL_SAFE_MATH=1` | Compile shaders with Metal's safe math instead of relaxed math (relaxed allows optimizations such as reassociation that can change results slightly, and keeps infinities and NaN; safe allows none) |
 | `WINEMETALGL_METALFX=0`, `=<factor>` | Turn off, or set the factor of, MetalFX spatial upscaling of window back buffers. Unset, WineMetalGL follows DXMT's setting: off when `DXMT_METALFX_SPATIAL_SWAPCHAIN=0`, else `d3d11.metalSpatialUpscaleFactor` from `DXMT_CONFIG`, `DXMT_CONFIG_FILE` or the Wine installation's `etc/dxmt.conf` (2 when only `DXMT_METALFX_SPATIAL_SWAPCHAIN=1` is set). Factors above 1 (at most 4) present a back buffer through the MetalFX spatial scaler into a drawable that much larger, on GPUs MetalFX supports |
+| `WINEMETALGL_UPSCALE=<preset>` | UpscaleGL: fullscreen programs render at a fraction of the screen and MetalFX scales their frames up to it, as DLSS's modes do in a game that supports them. `quality` renders at 67% of the screen's width and height, `balanced` at 58%, `performance` at 50% (960×540 on a 1080p screen) and `ultra` at 33%; a percentage (`75%`) sets another; `off` (the default) leaves the screen alone. The program is shown one display, the main one, at that size: it is the only resolution listed (at the screen's refresh rates), the system metrics and monitor rectangles agree, and a mode change succeeds without changing the real mode (a mode of another shape is shown with black bars, not stretched). A top-level window that covers that display is made to cover the real screen, and the program sees its client area, window rectangle, size messages and mouse and cursor positions at the size it asked for. Spatial upscaling (MetalFX), not temporal: OpenGL programs give no motion vectors. Windowed programs are not scaled, and a program that reads the display before it loads `opengl32.dll` sees the real one |
+| `WINEMETALGL_SETTINGS=<path>`, `=0` | Read the settings file from there, or none. By default `~/Library/Application Support/WineMetalGL/settings.conf` (written by WineMetalGL Settings) sets the variables of this table the environment does not set |
 | `WINEMETALGL_WINE_DEBUG=1` | Log what the Wine module does (contexts, surfaces, windows): `WINEMETALGL_LOG=wine:3,pe:3` |
 | `WINEMETALGL_VENDOR`, `WINEMETALGL_RENDERER` | Replace the `GL_VENDOR` and `GL_RENDERER` strings, for games that refuse unknown vendors |

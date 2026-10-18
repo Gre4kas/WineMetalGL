@@ -214,6 +214,11 @@ WMGL_EXPORT void wmgl_surface_destroy(wmgl_surface* surface) {
     asSurface(surface)->release();
 }
 
+WMGL_EXPORT void wmgl_surface_set_output(wmgl_surface* handle, int width, int height) {
+    CallPool pool;  // see CallPool (context.h)
+    if (Surface* surface = asSurface(handle)) surface->setOutputSize(width, height);
+}
+
 WMGL_EXPORT void wmgl_surface_flush(wmgl_surface* handle, unsigned int flags, int width, int height, int interval) {
     CallPool pool;  // see CallPool (context.h)
     Surface* surface = asSurface(handle);

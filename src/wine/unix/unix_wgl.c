@@ -86,7 +86,8 @@ struct window
     int format;     /* the window's pixel format */
     void *host;     /* unix_window.m */
     void *surface;  /* core window surface, made on first use */
-    int width, height;
+    int width, height;  /* the surface's */
+    int output_width, output_height;  /* where it is shown (UpscaleGL), 0: the surface's size */
     int interval;
 };
 
@@ -230,15 +231,50 @@ static void to_placement( const struct wmgl_window_placement *from, struct wmgl_
     }
 }
 
+/* The size of a window's surface: what the program renders at (UpscaleGL's
+ * smaller size), else its client area. */
+static void surface_size( const struct wmgl_window_placement *placement, int *width, int *height )
+{
+    BOOL scaled = placement->render_width > 0 && placement->render_height > 0;
+    *width = scaled ? placement->render_width : placement->width;
+    *height = scaled ? placement->render_height : placement->height;
+    if (*width < 1) *width = 1;
+    if (*height < 1) *height = 1;
+}
+
+/* Where a window's surface is shown: its client area when UpscaleGL renders
+ * it smaller (the core scales it up), else at its own size. */
+static void window_output( struct window *window, const struct wmgl_window_placement *placement )
+{
+    int width = 0, height = 0;
+
+    if (placement->render_width > 0 && placement->render_height > 0 &&
+        (placement->render_width != placement->width || placement->render_height != placement->height))
+    {
+        width = placement->width;
+        height = placement->height;
+    }
+    if (width == window->output_width && height == window->output_height) return;
+    if (!wmgl.surface_set_output)
+    {
+        WMGL_WARN( "this WineMetalGL core cannot show a window at another size (UpscaleGL)\n" );
+        return;
+    }
+    wmgl.surface_set_output( window->surface, width, height );
+    window->output_width = width;
+    window->output_height = height;
+}
+
 /* A window's surface, made on first use and kept on its client area. */
 static void *window_surface( const struct wmgl_window_placement *placement )
 {
     struct window *window = find_window( placement->hwnd, FALSE );
     struct wmgl_placement where;
-    int width = placement->width > 0 ? placement->width : 1, height = placement->height > 0 ? placement->height : 1;
+    int width, height;
     void *layer = NULL;
 
     if (!window || !window->format) return NULL;
+    surface_size( placement, &width, &height );
     to_placement( placement, &where );
     if (!window->surface)
     {
@@ -257,6 +293,7 @@ static void *window_surface( const struct wmgl_window_placement *placement )
         }
         window->width = width;
         window->height = height;
+        window_output( window, placement );
         return window->surface;
     }
     wmgl_window_place( window->host, &where );
@@ -267,9 +304,12 @@ static void *window_surface( const struct wmgl_window_placement *placement )
 static void window_resize( const struct wmgl_window_placement *placement )
 {
     struct window *window = find_window( placement->hwnd, FALSE );
-    int width = placement->width > 0 ? placement->width : 1, height = placement->height > 0 ? placement->height : 1;
+    int width, height;
 
-    if (!window || !window->surface || (window->width == width && window->height == height)) return;
+    if (!window || !window->surface) return;
+    surface_size( placement, &width, &height );
+    window_output( window, placement );
+    if (window->width == width && window->height == height) return;
     wmgl.surface_flush( window->surface, WMGL_FLUSH_UPDATED, width, height, window->interval );
     window->width = width;
     window->height = height;

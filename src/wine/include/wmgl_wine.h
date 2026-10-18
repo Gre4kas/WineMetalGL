@@ -65,6 +65,9 @@ struct wmgl_window_placement
     UINT64 hwnd;        /* 0: not a window DC */
     UINT64 top_level;
     INT x, y, width, height;  /* the client area within the top-level window's client area */
+    /* The size the program renders the window at, when UpscaleGL has it
+     * smaller than its client area (upscalegl.c; 0: the client area's). */
+    INT render_width, render_height;
     INT top_level_width, top_level_height;
     UINT screen_width;  /* the primary screen's width */
     INT clip_x, clip_y, clip_width, clip_height;  /* the part of it its ancestors show, likewise */
@@ -98,6 +101,7 @@ struct wmgl_init_params
     INT core_major, core_minor;
     INT log_level;          /* out: the highest level the PE side's messages are kept at (-1: none) */
     BOOL ok;
+    char upscale[32];       /* out: WINEMETALGL_UPSCALE, the settings file's when the environment has none */
 };
 
 /* log: a message of the PE side, into the core's log (category "pe"). */
