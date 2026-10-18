@@ -180,6 +180,13 @@ public:
     GLint baseLevel = 0, maxLevel = 1000;
     GLenum swizzle[4] = {GL_RED, GL_GREEN, GL_BLUE, GL_ALPHA};
     GLenum depthStencilMode = GL_DEPTH_COMPONENT;
+    // GL_DEPTH_TEXTURE_MODE (compatibility profile): how depth values are
+    // returned to sampling, as GL_LUMINANCE (d, d, d, 1), GL_INTENSITY
+    // (d, d, d, d), GL_ALPHA (0, 0, 0, d) or GL_RED (d, 0, 0, 1, the core profile's).
+    GLenum depthTextureMode = GL_LUMINANCE;
+    // GL_GENERATE_MIPMAP (compatibility profile): changes to the base level
+    // regenerate the levels below it.
+    bool generateMipmap = false;
     bool immutable = false;
     GLsizei immutableLevels = 0;
     // GL 4.3 texture views: GL_TEXTURE_VIEW_* (TexStorage sets the levels
