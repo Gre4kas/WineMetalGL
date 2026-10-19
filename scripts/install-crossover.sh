@@ -18,6 +18,8 @@
 #   the bottle gets opengl32.dll, which forwards to winemetalgl.dll, and
 #     winemetalgl.dll itself, in system32 (and syswow64), and the DLL override
 #     opengl32=native.
+# A CrossOver that ignores [Wine] DllPath (the CrossOver 27 Preview, issue
+# #26) is the exception: the module then goes into its lib/wine after all.
 # Removing the override (in the bottle's Wine configuration, Libraries) gives
 # the bottle CrossOver's OpenGL back; `wine --bottle BOTTLE --dll opengl32=b`
 # does so for one run.
@@ -94,9 +96,14 @@ fi
 CX=${CX%/}
 test -d "$CX/Contents/SharedSupport/CrossOver" && CX="$CX/Contents/SharedSupport/CrossOver"
 test -x "$CX/bin/wine" && test -x "$CX/bin/cxbottle" || { echo "not CrossOver: $CX" >&2; exit 1; }
+# An arm64 CrossOver (27) may carry the x86_64 Wine as well (issue #26); only
+# one without it cannot run the module.
 if test -e "$CX/lib/wine/aarch64-unix/ntdll.so"; then
-    echo "This CrossOver runs an arm64 Wine; the module is built for x86_64 Wine (issue #13)." >&2
-    exit 1
+    if ! test -e "$CX/lib/wine/x86_64-unix/ntdll.so"; then
+        echo "This CrossOver runs an arm64 Wine only; the module is built for x86_64 Wine (issue #13)." >&2
+        exit 1
+    fi
+    echo "This CrossOver has both an arm64 and an x86_64 Wine; arm64 bottles may experience issues."
 fi
 
 case "$BOTTLE" in
@@ -179,3 +186,45 @@ if ! out=$("$CX/bin/wine" --bottle "$BOTTLE" --wait-children reg add \
     exit 1
 fi
 echo "Installed opengl32.dll (opengl32=native) into $BOTTLE"
+
+# Some CrossOver builds (the CrossOver 27 Preview, issue #26) ignore the
+# bottle's [Wine] DllPath: their WINEDLLPATH has CrossOver's own directories
+# only, and Steam stops at "Could not load module 'bin/vgui2_s.dll'"
+# (winemetalgl.so is not loaded). Wine lists the directories it was given as
+# WINEDLLDIR<n> in the bottle's environment; when $LIB is not among them, the
+# module goes into CrossOver's lib/wine instead, the one place such a build
+# looks. WINEMETALGL_INTO_APP=1 does that without asking Wine.
+into_app=${WINEMETALGL_INTO_APP:-}
+if test -z "$into_app"; then
+    # shellcheck disable=SC1003 # tr gets a backslash
+    dirs=$("$CX/bin/wine" --bottle "$BOTTLE" --wait-children cmd /c set WINEDLLDIR 2>/dev/null |
+        tr -d '\r' | tr '\\' '/' | grep -i '^WINEDLLDIR[0-9]*=') || dirs=
+    if test -z "$dirs"; then
+        echo "Could not ask $BOTTLE's Wine for its DLL directories; if a game cannot load winemetalgl,"
+        echo "run this again with WINEMETALGL_INTO_APP=1."
+    elif printf '%s\n' "$dirs" | grep -qiF "$LIB"; then
+        echo "CrossOver's Wine finds the module in $LIB"
+    else
+        echo "This CrossOver ignores the bottle's [Wine] DllPath; installing the module into it instead."
+        into_app=1
+    fi
+fi
+if test "$into_app" = 1; then
+    CXLIB=$CX/lib/wine
+    if cp "$LIB/x86_64-windows/winemetalgl.dll" "$CXLIB/x86_64-windows/winemetalgl.dll" &&
+        cp "$LIB/i386-windows/winemetalgl.dll" "$CXLIB/i386-windows/winemetalgl.dll" &&
+        cp "$LIB/x86_64-unix/winemetalgl.so" "$CXLIB/x86_64-unix/winemetalgl.so" &&
+        cp "$LIB/x86_64-unix/libwinemetalgl.dylib" "$CXLIB/x86_64-unix/libwinemetalgl.dylib"; then
+        echo "Installed winemetalgl into $CXLIB"
+        echo "This changes CrossOver.app: updating CrossOver removes the module, and this has to run again."
+    else
+        echo "Could not write into $CXLIB (macOS may protect CrossOver.app: allow Terminal or" >&2
+        echo "WineMetalGL Settings under Privacy & Security, App Management, or use a copy of" >&2
+        echo "CrossOver.app in ~/Applications). Copy these by hand:" >&2
+        echo "  $LIB/x86_64-windows/winemetalgl.dll -> $CXLIB/x86_64-windows/" >&2
+        echo "  $LIB/i386-windows/winemetalgl.dll -> $CXLIB/i386-windows/" >&2
+        echo "  $LIB/x86_64-unix/winemetalgl.so -> $CXLIB/x86_64-unix/" >&2
+        echo "  $LIB/x86_64-unix/libwinemetalgl.dylib -> $CXLIB/x86_64-unix/" >&2
+        exit 1
+    fi
+fi

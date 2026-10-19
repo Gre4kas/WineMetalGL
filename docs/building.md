@@ -90,7 +90,7 @@ Operation not permitted`), so `install-wine-module.sh` refuses it; use
 ./scripts/install-crossover.sh "My Bottle" /path/to/CrossOver.app
 ```
 
-Nothing goes into CrossOver.app. The module and the core go into
+Nothing goes into CrossOver.app, as a rule. The module and the core go into
 `~/Library/Application Support/WineMetalGL/lib/wine` (`WINEMETALGL_HOME`
 chooses another directory), and the bottle's `cxbottle.conf` adds that
 directory to its `[Wine] DllPath`, so CrossOver's Wine finds them there. The
@@ -101,7 +101,18 @@ override. CrossOver's `wine` script ignores `WINEPREFIX` and
 (Libraries) gives the bottle CrossOver's OpenGL back, and
 `wine --bottle "My Bottle" --dll opengl32=b` does so for one run. It is
 tested on CrossOver 26.3, in 64- and 32-bit bottles. CrossOver 27 runs an
-arm64 Wine, which the module is not built for yet (issue #13).
+arm64 Wine, which the module is not built for yet (issue #13); a CrossOver
+that carries the x86_64 Wine as well (a CrossOver 27 Preview) is installed
+into; arm64 bottles may experience issues.
+
+Some CrossOver builds (the CrossOver 27 Preview, issue #26) ignore the
+bottle's `[Wine] DllPath`, and games then stop with `winemetalgl.so is not
+loaded`. The installer asks the bottle's Wine which DLL directories it got,
+and when WineMetalGL's is not among them, copies the module and the core into
+CrossOver.app's own `lib/wine` instead (`WINEMETALGL_INTO_APP=1` does so
+without asking). macOS may need Terminal, or WineMetalGL Settings, allowed
+under Privacy & Security, App Management for that, and updating CrossOver
+removes them again: run the installer once more after an update.
 
 What matters:
 
