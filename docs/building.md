@@ -103,7 +103,7 @@ override. CrossOver's `wine` script ignores `WINEPREFIX` and
 tested on CrossOver 26.3, in 64- and 32-bit bottles. CrossOver 27 runs an
 arm64 Wine, which the module is not built for yet (issue #13); a CrossOver
 that carries the x86_64 Wine as well (a CrossOver 27 Preview) is installed
-into, and works in bottles that run the x86_64 Wine.
+into; arm64 bottles may experience issues.
 
 Some CrossOver builds (the CrossOver 27 Preview, issue #26) ignore the
 bottle's `[Wine] DllPath`, and games then stop with `winemetalgl.so is not

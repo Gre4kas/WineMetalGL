@@ -103,7 +103,7 @@ if test -e "$CX/lib/wine/aarch64-unix/ntdll.so"; then
         echo "This CrossOver runs an arm64 Wine only; the module is built for x86_64 Wine (issue #13)." >&2
         exit 1
     fi
-    echo "This CrossOver has both an arm64 and an x86_64 Wine; WineMetalGL works in bottles that run the x86_64 one."
+    echo "This CrossOver has both an arm64 and an x86_64 Wine; arm64 bottles may experience issues."
 fi
 
 case "$BOTTLE" in
