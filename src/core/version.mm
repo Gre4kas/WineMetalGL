@@ -19,7 +19,7 @@ int devMaxVersion() {
 const std::string& rendererString() {
     static const std::string renderer = [] {
         const char* r = std::getenv("WINEMETALGL_RENDERER");
-        std::string name = r && *r ? std::string(r) : std::string(Device::get().name()) + " (WineMetalGL)";
+        std::string name = r && *r ? std::string(r) : rendererName(Device::get().name());
         if (const int dev = devMaxVersion())
             name += " (dev " + std::to_string(dev / 10) + "." + std::to_string(dev % 10) + ")";
         return name;

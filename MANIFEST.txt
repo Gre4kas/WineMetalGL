@@ -407,6 +407,7 @@ tests/host/metalfx_tests.cpp
 tests/host/settings_tests.cpp
 tests/host/shader_tests.cpp
 tests/host/test.h
+tests/host/version_tests.cpp
 tests/wine/core_triangle.c
 tests/wine/cts_wgl_sequence.c
 tests/wine/doom_frame.h
