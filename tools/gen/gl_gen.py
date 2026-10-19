@@ -429,7 +429,7 @@ def main():
             if impl in recorders:
                 out.write("    if (__builtin_expect(ctx->listCompiler != nullptr, 0) && !wmgl::list::record_%s(%s)) return;\n" % (
                     api_name(impl), call))
-            # A logged error shows the call's arguments (Context::logArguments).
+            # A logged error, or a captured frame (captureFrame), shows the call's arguments.
             fmt, fargs = [], []
             for t, n in params:
                 t0 = t.replace("const ", "").strip()
@@ -444,10 +444,10 @@ def main():
             log = '        wmgl::logCallArguments(*ctx, "%s(%s)"%s);\n' % (cmd, ", ".join(fmt), "".join(", " + a for a in fargs))
             if dflt:
                 out.write("    auto result = wmgl::api::%s(%s);\n" % (api_name(impl), call))
-                out.write("    if (__builtin_expect(ctx->logArguments, 0)) {\n" + log + "    }\n    return result;\n}\n")
+                out.write("    if (__builtin_expect(ctx->logArguments || wmgl::g_captureCalls, 0)) {\n" + log + "    }\n    return result;\n}\n")
             else:
                 out.write("    wmgl::api::%s(%s);\n" % (api_name(impl), call))
-                out.write("    if (__builtin_expect(ctx->logArguments, 0)) {\n" + log + "    }\n}\n")
+                out.write("    if (__builtin_expect(ctx->logArguments || wmgl::g_captureCalls, 0)) {\n" + log + "    }\n}\n")
         out.write("\n}  // namespace\n\nnamespace wmgl {\n\nconst ProcEntry kProcTable[] = {\n")
         for cmd in names:
             out.write('    {"%s", reinterpret_cast<void*>(&e_%s)},\n' % (cmd, cmd))

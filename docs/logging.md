@@ -151,3 +151,20 @@ go to stderr and to `~/Library/Logs/WineMetalGL/winemetalgl-module.log`.
 Attach the program's log file from `~/Library/Logs/WineMetalGL`. For a
 rendering problem, run with `WINEMETALGL_LOG=2` first; for a GPU hang or
 corruption, `WINEMETALGL_LOG=2,gpu:3`.
+
+## Capturing a frame's GL calls
+
+For a rendering bug that shows only in a game, create the file
+`~/Library/Logs/WineMetalGL/capture-frame` while the bug is on screen:
+
+```sh
+touch ~/Library/Logs/WineMetalGL/capture-frame
+```
+
+Within about half a second the next frame's GL calls, each with its
+arguments, go to `~/Library/Logs/WineMetalGL/<program>-frame-<time>.txt`, and
+the trigger file goes. The capture starts with one `# program <id>:` line per
+linked program, listing its uniforms' names, so the programs the frame's
+`glUseProgram` calls name can be told apart; pointer arguments (uniform
+values, buffer data) are shown as addresses. `WINEMETALGL_DUMP_SHADERS=1`
+adds the shaders' translations to the log.

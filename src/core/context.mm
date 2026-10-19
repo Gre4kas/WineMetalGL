@@ -12,6 +12,12 @@
 #include "core/metal/device.h"
 #include "core/program.h"
 #include "core/util/log.h"
+
+#include <unistd.h>
+
+#include <cstdio>
+#include <ctime>
+#include <string>
 #include "core/util/version.h"
 
 namespace wmgl {
@@ -271,13 +277,60 @@ bool Context::advertises(const char* name) const {
     return std::find(extensions_.begin(), extensions_.end(), name) != extensions_.end();
 }
 
+bool g_captureCalls = false;
+
+namespace {
+FILE* g_captureFile = nullptr;
+}  // namespace
+
+void captureFrameBoundary(Context* ctx) {
+    if (g_captureFile) {
+        std::fclose(g_captureFile);
+        g_captureFile = nullptr;
+        g_captureCalls = false;
+        WMGL_INFO(General, "frame capture written");
+    }
+    // A stat every 30 presents: about twice a second.
+    static unsigned presents = 0;
+    if (++presents % 30) return;
+    const char* home = std::getenv("HOME");
+    if (!home) return;
+    const std::string dir = std::string(home) + "/Library/Logs/WineMetalGL/";
+    const std::string trigger = dir + "capture-frame";
+    if (::access(trigger.c_str(), F_OK) != 0) return;
+    ::unlink(trigger.c_str());
+    char path[1024];
+    std::snprintf(path, sizeof(path), "%s%s-frame-%lld.txt", dir.c_str(), logProgramName().c_str(),
+                  static_cast<long long>(::time(nullptr)));
+    if ((g_captureFile = std::fopen(path, "w"))) {
+        // The programs, by their uniforms' names (what a draw's glUseProgram
+        // names is otherwise a number).
+        if (ctx) {
+            ShareLock lock(*ctx);
+            for (const auto& [id, program] : ctx->share().programs) {
+                if (!program || !program->linked) continue;
+                std::string names;
+                for (const shader::UniformInfo& u : program->linked->link.uniforms) {
+                    if (names.size() > 600) break;
+                    names += " " + u.name;
+                }
+                std::fprintf(g_captureFile, "# program %u:%s\n", id, names.c_str());
+            }
+        }
+        g_captureCalls = true;
+        WMGL_INFO(General, "capturing a frame's GL calls to %s", path);
+    }
+}
+
 void logCallArguments(Context& ctx, const char* format, ...) {
-    ctx.logArguments = false;
     char line[1024];
     va_list args;
     va_start(args, format);
     std::vsnprintf(line, sizeof(line), format, args);
     va_end(args);
+    if (g_captureCalls && g_captureFile) std::fprintf(g_captureFile, "%s\n", line);
+    if (!ctx.logArguments) return;
+    ctx.logArguments = false;
     WMGL_WARN(Context, "  the call: %s", line);
 }
 
