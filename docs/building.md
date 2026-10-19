@@ -60,6 +60,13 @@ WineHQ's macOS builds of Wine 11.0 and 11.18, and MetalSharp's Wine 11.17.
 ./scripts/install-wine-module.sh /path/to/wine /path/to/prefix
 ```
 
+Run on their own (a script downloaded without the release, or WineMetalGL
+Settings without one inside it), `install-wine-module.sh` and
+`install-crossover.sh` download the latest release (`WINEMETALGL_VERSION=x.y.z`
+picks another), check it against the release's `SHA256SUMS.txt`, and keep it
+extracted in `~/Library/Caches/WineMetalGL/releases` (`WINEMETALGL_CACHE`).
+macOS's own `curl`, `shasum` and `tar` do all of it.
+
 `install-wine-module.sh` adds the module and the core to the Wine installation
 (the directory with `bin/wine`, or a Wine app such as WineHQ's `Wine
 Stable.app`) without replacing any of Wine's files. Given a prefix, it also puts the
@@ -122,7 +129,7 @@ and notarized) is the easy way in:
   `builtin`). Where it is installed nowhere yet, **Install into CrossOver**
   (choose a bottle) and **Install Normally** (choose a Wine, then a prefix)
   run `install-crossover.sh` and `install-wine-module.sh` with the release the
-  app carries.
+  app carries, or, when it carries none, the latest release they download.
 - **UpscaleGL**: Off, Quality, Balanced or Performance (`WINEMETALGL_UPSCALE`).
 - **Logging**: everything (`WINEMETALGL_LOG=2`) or nothing, and a button that
   opens `~/Library/Logs/WineMetalGL`. Until it is switched, WineMetalGL logs
@@ -133,7 +140,7 @@ UpscaleGL and logging go to `~/Library/Application Support/WineMetalGL/settings.
 loads; the environment wins over the file, and a change applies to games
 started afterwards. `scripts/build-settings-app.sh` builds the app (Liquid
 Glass needs Xcode 26 to build and macOS 26 to show; `PAYLOAD=<staged
-release>` makes it able to install).
+release>` puts a release in it, which it then installs without a download).
 
 ## Checking that a program uses the core
 

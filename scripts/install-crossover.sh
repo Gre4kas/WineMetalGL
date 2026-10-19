@@ -24,20 +24,65 @@
 #
 # From a checkout, MODULE (default build/wine-module) and CORE (default
 # build/release/libwinemetalgl.dylib) choose what is installed; from a release
-# package (this script at its top), its module directory.
+# package (this script at its top), its module directory; and otherwise (the
+# script on its own) the release downloaded from GitHub (fetch_release).
 set -eu
 
 usage='usage: install-crossover.sh BOTTLE [CROSSOVER]'
+# The release to install when neither a release package (module/ next to this
+# script) nor a checkout's build is at hand (a script downloaded on its own,
+# or WineMetalGL Settings without the release inside it): downloaded from
+# GitHub, checked against the release's SHA256SUMS.txt, and kept in
+# WINEMETALGL_CACHE (default ~/Library/Caches/WineMetalGL/releases).
+# WINEMETALGL_VERSION picks a version (default: the latest release).
+fetch_release() {
+    repo=metalsharp/WineMetalGL
+    version=${WINEMETALGL_VERSION:-}
+    if test -z "$version"; then
+        latest=$(curl -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/$repo/releases/latest") ||
+            { echo "cannot reach GitHub to find the latest WineMetalGL release" >&2; exit 1; }
+        version=${latest##*/winemetalgl-}
+        case "$version" in [0-9]*.[0-9]*) ;; *) echo "no WineMetalGL release found ($latest)" >&2; exit 1 ;; esac
+    fi
+    name=winemetalgl-$version-x86_64
+    cache=${WINEMETALGL_CACHE:-$HOME/Library/Caches/WineMetalGL/releases}/$version
+    if ! test -f "$cache/$name/module/x86_64-unix/libwinemetalgl.dylib"; then
+        echo "Downloading WineMetalGL $version"
+        tmp=$(mktemp -d "${TMPDIR:-/tmp}/winemetalgl.XXXXXX")
+        url=https://github.com/$repo/releases/download/winemetalgl-$version
+        curl -fsSL -o "$tmp/$name.tar.gz" "$url/$name.tar.gz" &&
+            curl -fsSL -o "$tmp/SHA256SUMS.txt" "$url/SHA256SUMS.txt" ||
+            { rm -rf "$tmp"; echo "cannot download WineMetalGL $version from $url" >&2; exit 1; }
+        expected=$(awk -v f="$name.tar.gz" '$2 == f { print $1 }' "$tmp/SHA256SUMS.txt")
+        actual=$(shasum -a 256 "$tmp/$name.tar.gz" | awk '{ print $1 }')
+        if test -z "$expected" || test "$expected" != "$actual"; then
+            rm -rf "$tmp"
+            echo "$name.tar.gz does not match the release's SHA256SUMS.txt; not installed" >&2
+            exit 1
+        fi
+        mkdir -p "$cache"
+        tar -xzf "$tmp/$name.tar.gz" -C "$cache" || { rm -rf "$tmp"; echo "cannot extract $name.tar.gz" >&2; exit 1; }
+        rm -rf "$tmp"
+        test -f "$cache/$name/module/x86_64-unix/libwinemetalgl.dylib" ||
+            { echo "$name.tar.gz has no module/ directory" >&2; exit 1; }
+    fi
+    echo "Using WineMetalGL $version ($cache/$name)"
+    MODULE=${MODULE:-$cache/$name/module}
+    CORE=${CORE:-$MODULE/x86_64-unix/libwinemetalgl.dylib}
+}
+
 HERE=$(cd "$(dirname "$0")" && pwd)
 BOTTLE=${1:?$usage}
 CX=${2:-}
+ROOT=$(cd "$HERE/.." && pwd)
 if test -d "$HERE/module"; then
     MODULE=${MODULE:-$HERE/module}
     CORE=${CORE:-$HERE/module/x86_64-unix/libwinemetalgl.dylib}
-else
-    ROOT=$(cd "$HERE/.." && pwd)
+elif test -n "${MODULE:-}" || { test -d "$ROOT/build/wine-module" && test -f "$ROOT/CMakeLists.txt"; }; then
     MODULE=${MODULE:-$ROOT/build/wine-module}
     CORE=${CORE:-$ROOT/build/release/libwinemetalgl.dylib}
+else
+    fetch_release
 fi
 
 if test -z "$CX"; then

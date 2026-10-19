@@ -52,6 +52,34 @@ static void check(int ok, const char *what)
 
 static LRESULT CALLBACK proc(HWND h, UINT m, WPARAM w, LPARAM l) { return DefWindowProcA(h, m, w, l); }
 
+static LPARAM display_change;
+
+static LRESULT CALLBACK windowed_proc(HWND h, UINT m, WPARAM w, LPARAM l)
+{
+    if (m == WM_DISPLAYCHANGE) display_change = l;
+    return DefWindowProcA(h, m, w, l);
+}
+
+/* A window that does not cover the screen is still told display changes in
+ * the size the program sees (Foundation quit on one with the real size). */
+static void check_display_change(int width, int height)
+{
+    WNDCLASSA wc = {0};
+    HWND hwnd;
+
+    wc.lpfnWndProc = windowed_proc;
+    wc.hInstance = GetModuleHandleA(NULL);
+    wc.lpszClassName = "wmglupscalewindowed";
+    RegisterClassA(&wc);
+    hwnd = CreateWindowA("wmglupscalewindowed", "windowed", WS_OVERLAPPEDWINDOW, 40, 40, width / 2, height / 2, NULL, NULL,
+                         wc.hInstance, NULL);
+    check(hwnd != NULL, "windowed window");
+    /* What the real display would announce. */
+    SendMessageA(hwnd, WM_DISPLAYCHANGE, 32, MAKELPARAM(width * 2, height * 2));
+    check(LOWORD(display_change) == width && HIWORD(display_change) == height, "display change in the program's size");
+    DestroyWindow(hwnd);
+}
+
 static int close_to(long a, long b) { return a - b <= 1 && b - a <= 1; }
 
 static GLuint shader(GLenum type, const char *source)
@@ -166,6 +194,7 @@ int main(int argc, char **argv)
     if (setting && *setting && strcmp(setting, "off") && strcmp(setting, "0")) {
         check_mode_change(hwnd, width, height);
         check_window(hwnd, width, height);
+        check_display_change(width, height);
     }
 
     dc = GetDC(hwnd);
