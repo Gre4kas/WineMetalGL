@@ -4,7 +4,8 @@
 // override, opengl32=native (WineMetalGL) or builtin (Wine's own OpenGL),
 // set through that Wine's `reg`. Installing runs the release's own scripts,
 // which the app carries (Contents/Resources/Installer: install-crossover.sh,
-// install-wine-module.sh and their module directory).
+// install-wine-module.sh, and the release's module directory when the app was
+// built with it; without it, the scripts download the latest release).
 
 import AppKit
 import SwiftUI
@@ -42,7 +43,13 @@ final class Installations: ObservableObject {
             .first { FileManager.default.isExecutableFile(atPath: $0.appendingPathComponent("bin/wine").path) }
     }
 
-    /// The release payload the app carries, if this build has one.
+    /// The release carried with the scripts (else they download it).
+    var carriesRelease: Bool {
+        guard let installer else { return false }
+        return FileManager.default.fileExists(atPath: installer.appendingPathComponent("module").path)
+    }
+
+    /// The install scripts the app carries.
     var installer: URL? {
         guard let dir = Bundle.main.resourceURL?.appendingPathComponent("Installer"),
               FileManager.default.fileExists(atPath: dir.appendingPathComponent("install-wine-module.sh").path)
@@ -292,8 +299,10 @@ struct InstallationsCard: View {
                     }
                 }
             }
-            if installations.installer == nil && (installations.offersCrossOver || installations.offersNormal) {
-                Text("This build of WineMetalGL Settings carries no WineMetalGL to install.")
+            if installations.offersCrossOver || installations.offersNormal {
+                Text(installations.installer == nil ? "This build of WineMetalGL Settings cannot install WineMetalGL."
+                     : installations.carriesRelease ? "Installs the WineMetalGL that comes with this app."
+                     : "Downloads the latest WineMetalGL release from GitHub to install.")
                     .font(.footnote)
                     .foregroundStyle(.tertiary)
             }
