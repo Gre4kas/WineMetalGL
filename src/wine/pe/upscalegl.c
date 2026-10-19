@@ -19,7 +19,9 @@
  *
  * The functions are replaced in the import address tables of the program's
  * modules (not Wine's builtin DLLs, nor this one, whose own calls reach the
- * real functions) as they load, and GetProcAddress returns the replacements.
+ * real functions): those loaded already, and the ones it loads later as they
+ * load (a loader notification); GetProcAddress returns the replacements.
+ * Steam's own processes are left alone.
  * A module that reads the display before this DLL loads (a program loading
  * opengl32.dll late) sees the real one.
  */
@@ -235,11 +237,7 @@ static LONG change_mode( const DWORD *fields, const DWORD *width, const DWORD *h
     X(user32, LONG_PTR, GetWindowLongPtrW, (HWND hwnd, int index)) \
     X(user32, LONG_PTR, SetWindowLongPtrA, (HWND hwnd, int index, LONG_PTR value)) \
     X(user32, LONG_PTR, SetWindowLongPtrW, (HWND hwnd, int index, LONG_PTR value)) \
-    X(kernel32, FARPROC, GetProcAddress, (HMODULE module, LPCSTR name)) \
-    X(kernel32, HMODULE, LoadLibraryA, (LPCSTR name)) \
-    X(kernel32, HMODULE, LoadLibraryW, (LPCWSTR name)) \
-    X(kernel32, HMODULE, LoadLibraryExA, (LPCSTR name, HANDLE file, DWORD flags)) \
-    X(kernel32, HMODULE, LoadLibraryExW, (LPCWSTR name, HANDLE file, DWORD flags))
+    X(kernel32, FARPROC, GetProcAddress, (HMODULE module, LPCSTR name))
 
 /* hook_<export>. GetWindowLongPtrA and the like are macros of the headers
  * on i386, where user32 does not export them (their entries stay unused). */
@@ -1131,32 +1129,57 @@ static FARPROC WINAPI hook_GetProcAddress( HMODULE module, LPCSTR name )
     return proc;
 }
 
-static HMODULE WINAPI hook_LoadLibraryA( LPCSTR name )
+/* A DLL the program loads after this one: patched before its DllMain runs.
+ * (Not by replacing LoadLibrary: a process that resolves LoadLibrary's
+ * address to start it in another process, as Steam does to load its overlay
+ * into a game, would hand that process an address in this DLL.) */
+typedef struct
 {
-    HMODULE module = LoadLibraryA( name );
-    if (module && enabled) patch_modules();
-    return module;
+    ULONG flags;
+    const UNICODE_STRING *full_name;
+    const UNICODE_STRING *base_name;
+    void *base;
+    ULONG size;
+} dll_loaded_data;
+
+static void CALLBACK dll_loaded( ULONG reason, const void *data, void *context )
+{
+    const dll_loaded_data *loaded = data;
+    HMODULE module;
+    unsigned int i, count = 0;
+
+    if (reason != 1 /* LDR_DLL_NOTIFICATION_REASON_LOADED */ || !loaded || !(module = loaded->base)) return;
+    AcquireSRWLockExclusive( &patch_lock );
+    for (i = 0; i < patched_count && patched[i] != module; i++);
+    if (i == patched_count)
+    {
+        if (patched_count < ARRAY_SIZE(patched)) patched[patched_count++] = module;
+        if (module != self && !is_wine_builtin( module )) count = patch_module( module );
+    }
+    ReleaseSRWLockExclusive( &patch_lock );
+    if (count && loaded->full_name)
+        WMGL_INFO( "UpscaleGL: %u imports of %.*ls\n", count, (int)(loaded->full_name->Length / sizeof(WCHAR)),
+                   loaded->full_name->Buffer );
 }
 
-static HMODULE WINAPI hook_LoadLibraryW( LPCWSTR name )
+/* Steam's own processes load WineMetalGL too (their web views use OpenGL):
+ * they are left alone. */
+static BOOL is_steam_process(void)
 {
-    HMODULE module = LoadLibraryW( name );
-    if (module && enabled) patch_modules();
-    return module;
-}
+    static const WCHAR *const names[] =
+    {
+        L"steam.exe", L"steamwebhelper.exe", L"steamwebhelper_real.exe", L"gameoverlayui.exe",
+        L"gameoverlayui64.exe", L"steamerrorreporter.exe", L"steamerrorreporter64.exe", L"steamservice.exe",
+    };
+    WCHAR path[MAX_PATH];
+    const WCHAR *name;
+    unsigned int i;
 
-static HMODULE WINAPI hook_LoadLibraryExA( LPCSTR name, HANDLE file, DWORD flags )
-{
-    HMODULE module = LoadLibraryExA( name, file, flags );
-    if (module && enabled) patch_modules();
-    return module;
-}
-
-static HMODULE WINAPI hook_LoadLibraryExW( LPCWSTR name, HANDLE file, DWORD flags )
-{
-    HMODULE module = LoadLibraryExW( name, file, flags );
-    if (module && enabled) patch_modules();
-    return module;
+    if (!GetModuleFileNameW( NULL, path, ARRAY_SIZE(path) )) return FALSE;
+    name = wcsrchr( path, '\\' ) ? wcsrchr( path, '\\' ) + 1 : path;
+    for (i = 0; i < ARRAY_SIZE(names); i++)
+        if (!_wcsicmp( name, names[i] )) return TRUE;
+    return FALSE;
 }
 
 /* ------------------------------------------------------------- the module */
@@ -1175,6 +1198,11 @@ void upscalegl_init( HMODULE module, const char *setting )
         WMGL_WARN( "UpscaleGL: WINEMETALGL_UPSCALE=%s is not off, quality, balanced, performance, ultra or a "
                    "percentage from 25 to 99; off\n", setting );
     if (ratio <= 0) return;
+    if (is_steam_process())
+    {
+        WMGL_INFO( "UpscaleGL: off in Steam's own processes\n" );
+        return;
+    }
     memset( &mode, 0, sizeof(mode) );
     mode.dmSize = sizeof(mode);
     if (!EnumDisplaySettingsW( NULL, ENUM_CURRENT_SETTINGS, &mode ) || !mode.dmPelsWidth || !mode.dmPelsHeight)
@@ -1210,6 +1238,13 @@ void upscalegl_init( HMODULE module, const char *setting )
     }
     enabled = TRUE;
     patch_modules();
+    {
+        NTSTATUS (WINAPI *register_notification)( ULONG, void *, void *, void ** ) =
+            (void *)GetProcAddress( GetModuleHandleA( "ntdll.dll" ), "LdrRegisterDllNotification" );
+        static void *cookie;
+        if (!register_notification || register_notification( 0, (void *)dll_loaded, NULL, &cookie ))
+            WMGL_WARN( "UpscaleGL: no DLL load notifications: DLLs the program loads later see the real display\n" );
+    }
     WMGL_INFO( "UpscaleGL: %s (%.0f%%): the %ldx%ld display is shown to programs as %ldx%ld, %u modes\n", setting,
                ratio * 100.0, real_width, real_height, desktop_width, desktop_height, mode_count );
 }
