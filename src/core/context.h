@@ -234,6 +234,13 @@ void noCurrentContext(const char* command);
 // Logs the arguments of a GL call whose error setError logged (`format` and
 // the arguments from the generated entry point).
 void logCallArguments(Context& ctx, const char* format, ...) __attribute__((format(printf, 2, 3)));
+// Frame capture: when ~/Library/Logs/WineMetalGL/capture-frame appears, the
+// next frame's GL calls, with their arguments, go to
+// ~/Library/Logs/WineMetalGL/<program>-frame-<time>.txt (and the trigger
+// goes). For a rendering bug, the calls of a frame that shows it.
+extern bool g_captureCalls;
+// At each present: starts or ends a capture.
+void captureFrameBoundary(Context* ctx);
 
 // An Objective-C autorelease pool for the scope of a GL call. Metal hands
 // back some objects autoreleased (encoders, command buffers, pass

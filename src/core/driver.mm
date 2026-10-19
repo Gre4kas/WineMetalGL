@@ -233,6 +233,7 @@ WMGL_EXPORT void wmgl_surface_flush(wmgl_surface* handle, unsigned int flags, in
         Context* ctx = currentContext();
         if (ctx && ctx->drawSurface() == surface) surface->swap(ctx->stream());
         stats::endFrame();
+        captureFrameBoundary(ctx);
     }
 }
 
@@ -244,6 +245,7 @@ WMGL_EXPORT int wmgl_surface_swap(wmgl_surface* handle) {
     if (ctx && ctx->drawSurface() == surface) {
         const bool presented = surface->swap(ctx->stream());
         stats::endFrame();
+        captureFrameBoundary(ctx);
         return presented ? 1 : 0;
     }
     // SwapBuffers on a DC whose surface is not current here: present what it has.

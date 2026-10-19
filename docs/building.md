@@ -138,7 +138,7 @@ release>` makes it able to install).
 ## Checking that a program uses the core
 
 Look at a program's `GL_RENDERER` string: it ends in `(WineMetalGL)`, for
-example `Apple M4 (WineMetalGL)`. With `WINEMETALGL_LOG=2` the core prints
+example `M4 (WineMetalGL)`. With `WINEMETALGL_LOG=2` the core prints
 `winemetalgl:info: WineMetalGL core on <GPU>` to stderr when it loads. If the
 renderer is anything else, the prefix has no `opengl32.dll` from the module or
 no `opengl32=native` override, and the program got Wine's own OpenGL.
