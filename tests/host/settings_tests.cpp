@@ -39,11 +39,23 @@ TEST(settings_file_under_environment) {
     CHECK(savedHome == (std::getenv("HOME") ? std::getenv("HOME") : ""));
     CHECK(!std::strcmp(std::getenv("WINEMETALGL_SETTINGS"), path));
 
+    // A child of a process that applied the file inherits its values, marked:
+    // the file as it is now wins over them, the environment still over it.
+    CHECK(std::getenv("WINEMETALGL_SETTINGS_APPLIED") != nullptr);
+    setenv("WINEMETALGL_TEST_SETTING_A", "stale", 1);
+    setenv("WINEMETALGL_UPSCALE", "stale", 1);
+    setenv("WINEMETALGL_SETTINGS_APPLIED", "WINEMETALGL_TEST_SETTING_A,WINEMETALGL_UPSCALE", 1);
+    applySettingsFile();
+    CHECK(!std::strcmp(std::getenv("WINEMETALGL_TEST_SETTING_A"), "from-file"));
+    CHECK(!std::strcmp(std::getenv("WINEMETALGL_UPSCALE"), "performance"));
+    CHECK(!std::strcmp(std::getenv("WINEMETALGL_TEST_SETTING_B"), "from-environment"));
+
     setenv("WINEMETALGL_SETTINGS", "0", 1);
     CHECK(settingsPath().empty());
     unsetenv("WINEMETALGL_SETTINGS");
     unsetenv("WINEMETALGL_UPSCALE");
     unsetenv("WINEMETALGL_TEST_SETTING_A");
     unsetenv("WINEMETALGL_TEST_SETTING_B");
+    unsetenv("WINEMETALGL_SETTINGS_APPLIED");
     std::remove(path);
 }

@@ -262,25 +262,30 @@ static struct hook hooks[] =
 #undef X
 };
 
-/* --------------------------------------------- windows covering the screen */
+/* ------------------------------------------------- the program's windows */
 
-struct scaled_window
+/* Each top-level window of the program has a subclass: display changes are
+ * told in the program's size for all of them (Foundation, windowed, quit on
+ * a WM_DISPLAYCHANGE with the real one), and sizes and positions for the
+ * ones that cover the screen. */
+struct program_window
 {
     HWND hwnd;
     WNDPROC proc;  /* the program's window procedure */
     BOOL unicode;  /* proc takes Unicode messages */
+    BOOL covers;   /* it covers the screen: its coordinates are the program's */
 };
 
-static struct scaled_window scaled[16];
-static unsigned int scaled_count;
+static struct program_window windows_[256];
+static unsigned int window_count, covering_count;
 
-static LRESULT CALLBACK scaled_proc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam );
+static LRESULT CALLBACK program_window_proc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam );
 
-static struct scaled_window *find_scaled( HWND hwnd )
+static struct program_window *find_window( HWND hwnd )
 {
     unsigned int i;
-    for (i = 0; i < scaled_count; i++)
-        if (scaled[i].hwnd == hwnd) return &scaled[i];
+    for (i = 0; i < window_count; i++)
+        if (windows_[i].hwnd == hwnd) return &windows_[i];
     return NULL;
 }
 
@@ -288,12 +293,13 @@ static struct scaled_window *find_scaled( HWND hwnd )
  * coordinates are the program's. */
 static BOOL is_scaled( HWND hwnd )
 {
+    struct program_window *window;
     HWND root;
     BOOL found;
 
-    if (!enabled || !hwnd || !(root = GetAncestor( hwnd, GA_ROOT ))) return FALSE;
+    if (!enabled || !hwnd || !covering_count || !(root = GetAncestor( hwnd, GA_ROOT ))) return FALSE;
     AcquireSRWLockShared( &lock );
-    found = find_scaled( root ) != NULL;
+    found = (window = find_window( root )) && window->covers;
     ReleaseSRWLockShared( &lock );
     return found;
 }
@@ -301,74 +307,100 @@ static BOOL is_scaled( HWND hwnd )
 /* Screen coordinates are the program's while a window covers the screen. */
 static BOOL screen_scaled(void)
 {
-    BOOL any;
-
-    if (!enabled) return FALSE;
-    AcquireSRWLockShared( &lock );
-    any = scaled_count > 0;
-    ReleaseSRWLockShared( &lock );
-    return any;
+    return enabled && covering_count > 0;
 }
 
-static void scale_window( HWND hwnd )
+/* Gives a top-level window of the program the subclass (once). */
+static void subclass_window( HWND hwnd )
 {
-    struct scaled_window *window;
-    BOOL unicode = IsWindowUnicode( hwnd );
-    WNDPROC proc = (WNDPROC)(unicode ? GetWindowLongPtrW( hwnd, GWLP_WNDPROC ) : GetWindowLongPtrA( hwnd, GWLP_WNDPROC ));
+    struct program_window *window;
+    BOOL unicode;
+    WNDPROC proc;
 
+    if (!enabled || !hwnd || GetAncestor( hwnd, GA_ROOT ) != hwnd || GetAncestor( hwnd, GA_PARENT ) == HWND_MESSAGE)
+        return;
+    unicode = IsWindowUnicode( hwnd );
+    proc = (WNDPROC)(unicode ? GetWindowLongPtrW( hwnd, GWLP_WNDPROC ) : GetWindowLongPtrA( hwnd, GWLP_WNDPROC ));
+    if (!proc || proc == program_window_proc) return;
     AcquireSRWLockExclusive( &lock );
-    if (find_scaled( hwnd ) || scaled_count == ARRAY_SIZE(scaled))
+    if (find_window( hwnd ) || window_count == ARRAY_SIZE(windows_))
     {
         ReleaseSRWLockExclusive( &lock );
         return;
     }
-    window = &scaled[scaled_count++];
+    window = &windows_[window_count++];
     window->hwnd = hwnd;
     window->proc = proc;
     window->unicode = unicode;
+    window->covers = FALSE;
     ReleaseSRWLockExclusive( &lock );
     /* Outside the lock: the subclass takes it. */
-    if (unicode) SetWindowLongPtrW( hwnd, GWLP_WNDPROC, (LONG_PTR)scaled_proc );
-    else SetWindowLongPtrA( hwnd, GWLP_WNDPROC, (LONG_PTR)scaled_proc );
-    WMGL_INFO( "UpscaleGL: window %p covers the screen: %ldx%ld shown at %ldx%ld\n", hwnd, mode_width, mode_height,
-               real_width, real_height );
+    if (unicode) SetWindowLongPtrW( hwnd, GWLP_WNDPROC, (LONG_PTR)program_window_proc );
+    else SetWindowLongPtrA( hwnd, GWLP_WNDPROC, (LONG_PTR)program_window_proc );
 }
 
-static void forget_scaled( HWND hwnd, BOOL restore )
+static void scale_window( HWND hwnd )
 {
-    struct scaled_window *window, gone = {0};
+    struct program_window *window;
+    BOOL now = FALSE;
 
+    subclass_window( hwnd );
     AcquireSRWLockExclusive( &lock );
-    if ((window = find_scaled( hwnd )))
+    if ((window = find_window( hwnd )) && !window->covers)
     {
-        gone = *window;
-        *window = scaled[--scaled_count];
+        window->covers = now = TRUE;
+        covering_count++;
     }
     ReleaseSRWLockExclusive( &lock );
-    if (!gone.hwnd) return;
-    if (restore && (WNDPROC)GetWindowLongPtrW( hwnd, GWLP_WNDPROC ) == scaled_proc)
-    {
-        if (gone.unicode) SetWindowLongPtrW( hwnd, GWLP_WNDPROC, (LONG_PTR)gone.proc );
-        else SetWindowLongPtrA( hwnd, GWLP_WNDPROC, (LONG_PTR)gone.proc );
-    }
-    WMGL_INFO( "UpscaleGL: window %p no longer covers the screen\n", hwnd );
+    if (now)
+        WMGL_INFO( "UpscaleGL: window %p covers the screen: %ldx%ld shown at %ldx%ld\n", hwnd, mode_width, mode_height,
+                   real_width, real_height );
 }
 
-/* The window procedure of a window that covers the screen: the program's,
- * given sizes and positions in its coordinates. */
-static LRESULT CALLBACK scaled_proc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam )
+/* The window no longer covers the screen (`gone`: it is destroyed). */
+static void forget_scaled( HWND hwnd, BOOL gone )
 {
-    struct scaled_window *window, copy = {0};
+    struct program_window *window;
+    BOOL was = FALSE;
+
+    AcquireSRWLockExclusive( &lock );
+    if ((window = find_window( hwnd )))
+    {
+        if (window->covers)
+        {
+            window->covers = FALSE;
+            covering_count--;
+            was = TRUE;
+        }
+        if (gone) *window = windows_[--window_count];
+    }
+    ReleaseSRWLockExclusive( &lock );
+    if (was) WMGL_INFO( "UpscaleGL: window %p no longer covers the screen\n", hwnd );
+}
+
+/* The window procedure of the program's windows: the program's, told display
+ * changes, and (covering the screen) sizes and positions, in its coordinates. */
+static LRESULT CALLBACK program_window_proc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam )
+{
+    struct program_window *window, copy = {0};
     WINDOWPOS seen, *pos;
     LRESULT ret;
 
     AcquireSRWLockShared( &lock );
-    if ((window = find_scaled( hwnd ))) copy = *window;
+    if ((window = find_window( hwnd ))) copy = *window;
     ReleaseSRWLockShared( &lock );
     if (!copy.proc) return DefWindowProcW( hwnd, msg, wparam, lparam );
 
 #define CALL(l) (copy.unicode ? CallWindowProcW( copy.proc, hwnd, msg, wparam, (l) ) \
                               : CallWindowProcA( copy.proc, hwnd, msg, wparam, (l) ))
+    if (msg == WM_NCDESTROY)
+    {
+        ret = CALL( lparam );
+        forget_scaled( hwnd, TRUE );
+        return ret;
+    }
+    if (msg == WM_DISPLAYCHANGE) return CALL( MAKELPARAM( mode_width, mode_height ) );
+    if (!copy.covers) return CALL( lparam );
     switch (msg)
     {
     case WM_SIZE:
@@ -394,10 +426,6 @@ static LRESULT CALLBACK scaled_proc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM 
             pos->flags = seen.flags;
             pos->hwndInsertAfter = seen.hwndInsertAfter;
         }
-        return ret;
-    case WM_NCDESTROY:
-        ret = CALL( lparam );
-        forget_scaled( hwnd, FALSE );
         return ret;
     }
     return CALL( lparam );
@@ -449,7 +477,7 @@ static void place_window( HWND hwnd, int *x, int *y, int *cx, int *cy, UINT flag
             py = rect.top;
         }
         if (covers_screen( px, py, *cx, *cy )) scale_window( hwnd );
-        else if (is_scaled( hwnd )) forget_scaled( hwnd, TRUE );  /* back to a window */
+        else if (is_scaled( hwnd )) forget_scaled( hwnd, FALSE );  /* back to a window */
     }
     if (!is_scaled( hwnd )) return;
     if (move)
@@ -725,6 +753,7 @@ static HWND WINAPI hook_CreateWindowExW( DWORD ex_style, LPCWSTR class_name, LPC
         height = real_y( height );
     }
     hwnd = CreateWindowExW( ex_style, class_name, name, style, x, y, width, height, parent, menu, instance, param );
+    if (hwnd && enabled && !(style & WS_CHILD)) subclass_window( hwnd );
     if (enabled && hwnd && !(style & WS_CHILD))
         LOG_CALL( "window %p created at %d,%d %dx%d style %#lx ex %#lx\n", hwnd, x, y, width, height, style, ex_style );
     /* Created at the size the program asked for, then over the real screen,
@@ -752,6 +781,7 @@ static HWND WINAPI hook_CreateWindowExA( DWORD ex_style, LPCSTR class_name, LPCS
         height = real_y( height );
     }
     hwnd = CreateWindowExA( ex_style, class_name, name, style, x, y, width, height, parent, menu, instance, param );
+    if (hwnd && enabled && !(style & WS_CHILD)) subclass_window( hwnd );
     if (enabled && hwnd && !(style & WS_CHILD))
         LOG_CALL( "window %p created at %d,%d %dx%d style %#lx ex %#lx\n", hwnd, x, y, width, height, style, ex_style );
     if (hwnd && enabled && !(style & WS_CHILD) && covers_screen( x, y, width, height ))
@@ -894,6 +924,7 @@ static void seen_message( MSG *msg )
     BOOL client = !screen && msg->message >= WM_MOUSEFIRST && msg->message <= WM_MOUSELAST;
     BOOL nonclient = msg->message >= WM_NCMOUSEMOVE && msg->message <= WM_NCXBUTTONDBLCLK;  /* screen coordinates */
 
+    if (enabled && msg->message == WM_DISPLAYCHANGE) msg->lParam = MAKELPARAM( mode_width, mode_height );
     if (!screen_scaled()) return;
     seen_point( &msg->pt );
     if (screen || ((client || nonclient) && is_scaled( msg->hwnd )))
@@ -934,22 +965,22 @@ static BOOL WINAPI hook_GetMessageA( MSG *msg, HWND hwnd, UINT first, UINT last 
  * where the program asks for or sets GWLP_WNDPROC. */
 static BOOL program_proc( HWND hwnd, int index, LONG_PTR *proc )
 {
-    struct scaled_window *window;
+    struct program_window *window;
 
     if (!enabled || index != GWLP_WNDPROC) return FALSE;
     AcquireSRWLockShared( &lock );
-    if ((window = find_scaled( hwnd ))) *proc = (LONG_PTR)window->proc;
+    if ((window = find_window( hwnd ))) *proc = (LONG_PTR)window->proc;
     ReleaseSRWLockShared( &lock );
     return window != NULL;
 }
 
 static BOOL set_program_proc( HWND hwnd, int index, LONG_PTR proc, BOOL unicode, LONG_PTR *old )
 {
-    struct scaled_window *window;
+    struct program_window *window;
 
     if (!enabled || index != GWLP_WNDPROC) return FALSE;
     AcquireSRWLockExclusive( &lock );
-    if ((window = find_scaled( hwnd )))
+    if ((window = find_window( hwnd )))
     {
         *old = (LONG_PTR)window->proc;
         window->proc = (WNDPROC)proc;
@@ -1058,12 +1089,16 @@ static unsigned int patch_module( HMODULE module )
 /* Modules loaded since the last call: the program's get the hooks. */
 static void patch_modules(void)
 {
-    HMODULE modules[1024];
+    HMODULE modules[1024], done[64];
+    unsigned int counts[64];
     DWORD needed = 0;
-    unsigned int i, j, count;
+    unsigned int i, j, count, done_count = 0;
 
     if (!K32EnumProcessModules( GetCurrentProcess(), modules, sizeof(modules), &needed )) return;
     count = needed / sizeof(HMODULE) < ARRAY_SIZE(modules) ? needed / sizeof(HMODULE) : ARRAY_SIZE(modules);
+    /* Nothing under patch_lock may take the loader lock (GetModuleFileNameW
+     * does): a thread holding it, loading a DLL, can be waiting here
+     * (Foundation hung at its start, Steam's overlay loading). */
     AcquireSRWLockExclusive( &patch_lock );
     for (i = 0; i < count; i++)
     {
@@ -1071,14 +1106,18 @@ static void patch_modules(void)
         if (j < patched_count) continue;
         if (patched_count < ARRAY_SIZE(patched)) patched[patched_count++] = modules[i];
         if (modules[i] == self || is_wine_builtin( modules[i] )) continue;
-        if ((j = patch_module( modules[i] )))
+        if ((j = patch_module( modules[i] )) && done_count < ARRAY_SIZE(done))
         {
-            WCHAR path[MAX_PATH];
-            if (wmgl_log_max >= 2 && GetModuleFileNameW( modules[i], path, ARRAY_SIZE(path) ))
-                WMGL_INFO( "UpscaleGL: %u imports of %ls\n", j, path );
+            done[done_count] = modules[i];
+            counts[done_count++] = j;
         }
     }
     ReleaseSRWLockExclusive( &patch_lock );
+    for (i = 0; i < done_count && wmgl_log_max >= 2; i++)
+    {
+        WCHAR path[MAX_PATH];
+        if (GetModuleFileNameW( done[i], path, ARRAY_SIZE(path) )) WMGL_INFO( "UpscaleGL: %u imports of %ls\n", counts[i], path );
+    }
 }
 
 static FARPROC WINAPI hook_GetProcAddress( HMODULE module, LPCSTR name )
