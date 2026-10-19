@@ -7,14 +7,11 @@
 </p>
 
 WineMetalGL is an OpenGL implementation on Metal for Wine on macOS 15 or newer. It installs into an unmodified Wine 11.x as a Wine module of its own, and gives Windows programs OpenGL 4.6 contexts, core or compatibility profile, instead of Apple's OpenGL: It runs x86_64 and i386 Windows programs together in a WoW64 prefix. Wine's Direct3D 10 and 11
-(wined3d), which draw through OpenGL, get feature level 11_1 on it.
+(wined3d), which draw through OpenGL, get feature level 11_1 on it. It also gives OpenGL ES 2.0, 3.0, 3.1 and 3.2 contexts. 
 
-WineMetalGL is in it's early development stages. Please report any issues with an attached log and / or screenshot when problems arrive. 
+WineMetalGL is in it's early development stages. Please report any issues with an attached log and / or screenshot when problems arrive. A Developer Signed Settings Application (Written in Swift UI) can help you install, manage upscaling, and turn logging on or off to a dedicated folder. 
 
 ([Test suite](docs/testing.md#direct3d-through-wined3d))
-
-It also gives OpenGL ES 2.0, 3.0, 3.1 and 3.2 contexts
-(`WGL_EXT_create_context_es2_profile`), for programs and engines that render with OpenGL ES on Windows: GLSL ES 1.00 to 3.20, the OpenGL ES format, error and completeness rules, ASTC LDR and ETC2 textures, advanced blending, and the common OpenGL ES 2.0 extensions
 
 
 The core, `libwinemetalgl.dylib`, has no dependency on Apple's OpenGL. It
@@ -23,19 +20,6 @@ compiles GLSL with glslang and SPIRV-Cross to the Metal Shading Language and imp
 driver ABI in `include/winemetalgl/driver.h`. 
 
 Wine itself is not patched or rebuilt ([Build it yourself](docs/building.md#the-wine-module)).
-
-## Proof Of Concept
-
-Dead Cells (Requires OpenGL 3.2+) running under MetalSharp Wine-11.17 Using WineMetalGL;
-
-<img width="1920" height="1082" alt="image" src="https://github.com/user-attachments/assets/dcf456b7-3b7f-48c6-b57e-cfd68794ada2" />
-
-DOOM (2016) on its OpenGL renderer under MetalSharp's Wine 11.17 with the
-WineMetalGL module: an OpenGL 4.6 compatibility context on an Apple M4.
-
-<img width="1302" height="737" alt="doom_perf" src="https://github.com/user-attachments/assets/f38603ed-b9e8-4ea9-b256-da4ee1cffd52" />
-
-
 
 
 <!-- BEGIN GENERATED: totals (scripts/docs/generate.py) -->
