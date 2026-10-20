@@ -4,6 +4,7 @@
 
 #include "core/shader/compiler.h"
 #include "core/shader/glsl_upgrade.h"
+#include "core/shader/link_file_cache.h"
 #include "test.h"
 
 using namespace wmgl::shader;
@@ -883,4 +884,55 @@ TEST(shader_line_continuation_before_420) {
     // Without a backslash at the end of the line nothing changes; CRLF continuations join too.
     CHECK_EQ(spliceLineContinuations("a\\b\nc"), std::string("a\\b\nc"));
     CHECK_EQ(spliceLineContinuations("a \\\r\nb\nc"), std::string("a b\n\nc"));
+}
+
+// Link results kept on disk read back as they were written: a round trip of
+// programs with geometry, tessellation, transform feedback, blocks, images
+// and subroutines gives the same bytes and the same translations.
+TEST(shader_link_results_round_trip) {
+    std::vector<LinkInput> inputs(4);
+    inputs[0].shaders.push_back({Stage::Vertex, "#version 330 core\nlayout(location = 3) in vec3 pos; uniform mat4 mvp;\n"
+                                               "out vec2 v; void main() { v = pos.xy; gl_Position = mvp * vec4(pos, 1.0); }\n"});
+    inputs[0].shaders.push_back({Stage::Fragment, "#version 330 core\nin vec2 v; uniform sampler2D tex;\n"
+                                                 "layout(std140) uniform B { vec4 tint; }; out vec4 color;\n"
+                                                 "void main() { color = texture(tex, v) * tint; }\n"});
+    inputs[1].shaders.push_back({Stage::Vertex, "#version 330 core\nin vec4 pos; out float w; void main() { w = 2.0; gl_Position = pos; }\n"});
+    inputs[1].shaders.push_back({Stage::Geometry, "#version 330 core\nlayout(triangles) in; layout(triangle_strip, max_vertices = 3) out;\n"
+                                                 "in float w[]; out vec4 fcol;\n"
+                                                 "void main() { for (int i = 0; i < 3; ++i) { fcol = vec4(w[i]); gl_Position = gl_in[i].gl_Position;"
+                                                 " EmitVertex(); } EndPrimitive(); }\n"});
+    inputs[1].shaders.push_back({Stage::Fragment, "#version 330 core\nin vec4 fcol; out vec4 color; void main() { color = fcol; }\n"});
+    inputs[1].transformFeedbackVaryings = {"fcol", "gl_Position"};
+    inputs[2].shaders.push_back({Stage::Vertex, "#version 420\nout vec4 v; void main() { v = vec4(1); gl_Position = vec4(0); }\n"});
+    inputs[2].shaders.push_back({Stage::TessControl, "#version 420\nlayout(vertices = 3) out; in vec4 v[]; out vec4 c[];\n"
+                                                    "void main() { c[gl_InvocationID] = v[gl_InvocationID];\n"
+                                                    "gl_TessLevelOuter[0] = gl_TessLevelOuter[1] = gl_TessLevelOuter[2] = 2.0;"
+                                                    " gl_TessLevelInner[0] = 2.0; }\n"});
+    inputs[2].shaders.push_back({Stage::TessEval, "#version 420\nlayout(triangles) in; in vec4 c[]; out vec4 e;\n"
+                                                 "void main() { e = c[0] * gl_TessCoord.x; gl_Position = vec4(gl_TessCoord, 1.0); }\n"});
+    inputs[2].shaders.push_back({Stage::Fragment, "#version 420\nin vec4 e; out vec4 o; void main() { o = e; }\n"});
+    inputs[3].shaders.push_back({Stage::Vertex, "#version 430\nvoid main() { gl_Position = vec4(0); }\n"});
+    inputs[3].shaders.push_back({Stage::Fragment, "#version 430\nlayout(r32ui) uniform uimage2D img;\n"
+                                                 "layout(std430, binding = 1) buffer S { uint n[]; };\n"
+                                                 "subroutine vec4 shade(); subroutine(shade) vec4 red() { return vec4(1, 0, 0, 1); }\n"
+                                                 "subroutine uniform shade pick; out vec4 o;\n"
+                                                 "void main() { imageAtomicAdd(img, ivec2(0), 1u); n[0] = 1u; o = pick(); }\n"});
+    for (const LinkInput& in : inputs) {
+        const LinkResult r = link(in);
+        if (!r.ok) std::fprintf(stderr, "%s\n", r.log.c_str());
+        CHECK(r.ok);
+        const std::vector<uint8_t> bytes = serializeLinkResult(r);
+        LinkResult back;
+        CHECK(deserializeLinkResult(bytes, back));
+        CHECK(serializeLinkResult(back) == bytes);
+        for (int s = 0; s < kStageCount; ++s) CHECK(back.stages[s].msl == r.stages[s].msl);
+        CHECK(back.uniforms.size() == r.uniforms.size() && back.blocks.size() == r.blocks.size());
+        CHECK(back.geometry.active == r.geometry.active && back.geometry.kernel.msl == r.geometry.kernel.msl);
+        CHECK(back.tess.active == r.tess.active && (r.tess.evaluation == nullptr) == (back.tess.evaluation == nullptr));
+        if (r.tess.evaluation && back.tess.evaluation)
+            CHECK(serializeLinkResult(*back.tess.evaluation) == serializeLinkResult(*r.tess.evaluation));
+        // Truncated data is refused, not misread.
+        std::vector<uint8_t> cut(bytes.begin(), bytes.begin() + static_cast<std::ptrdiff_t>(bytes.size() / 2));
+        CHECK(!deserializeLinkResult(cut, back));
+    }
 }

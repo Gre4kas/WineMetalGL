@@ -90,6 +90,7 @@ add_library(wmgl_portable STATIC
     src/core/shader/compiler.cpp
     src/core/shader/fp64.cpp
     src/core/shader/geometry.cpp
+    src/core/shader/link_file_cache.cpp
     src/core/shader/transform_feedback.cpp
     src/core/shader/glsl_upgrade.cpp
     src/core/shader/tessellation.cpp

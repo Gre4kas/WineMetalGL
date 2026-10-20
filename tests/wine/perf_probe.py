@@ -18,8 +18,9 @@ The default installation is MetalSharp's Wine, ~/.metalsharp/runtime/wine.
 Each scene runs in its own process. Counters are averaged over the frames
 after the warm-up ("steady"); pipeline and link counts are also summed over
 every frame ("total"), since compile stutter happens before the steady state.
-Runs use their own pipeline archive (WINEMETALGL_PIPELINE_CACHE), emptied
-at the start of each run, and a new shader salt, so the probe's shaders
+Runs use their own pipeline archive and shader cache
+(WINEMETALGL_PIPELINE_CACHE, WINEMETALGL_SHADER_CACHE), emptied at the start
+of each run, and a new shader salt, so the probe's shaders
 compile cold.
 """
 import argparse
@@ -202,7 +203,8 @@ def run_scene(runtime, prefix, scene, frames, warmup, timeout, salt):
         os.remove(log_path)
     probe_scene = "shader_link" if scene == "shader_link_warm" else scene
     env = wine_env(runtime, prefix, {"WINEMETALGL_STATS": "1", "WINEMETALGL_LOG_FILE": log_path,
-                                     "WINEMETALGL_PIPELINE_CACHE": os.path.join(CACHE, "pipelines")})
+                                     "WINEMETALGL_PIPELINE_CACHE": os.path.join(CACHE, "pipelines"),
+                                     "WINEMETALGL_SHADER_CACHE": os.path.join(CACHE, "shaders")})
     start = time.time()
     try:
         result = subprocess.run([os.path.join(runtime, "bin/wine"), r"C:\perf\opengl_perf_probe.exe", probe_scene,
@@ -282,6 +284,7 @@ def cmd_run(args):
     # measured cold (shader_link_warm then runs with the archive filled).
     # Metal's own compiler cache stays warm between runs.
     shutil.rmtree(os.path.join(CACHE, "pipelines"), ignore_errors=True)
+    shutil.rmtree(os.path.join(CACHE, "shaders"), ignore_errors=True)
     # A new salt per run keeps the probe's own shaders out of Metal's compiler
     # cache (the fixed-function shaders WineMetalGL generates stay cached).
     salt = int(time.time()) % 1000000 + 1
