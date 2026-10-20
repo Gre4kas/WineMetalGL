@@ -202,6 +202,7 @@ void writePendingImages(Context& ctx, Texture& tex) {
             if (image.pending.size() == rowBytes * static_cast<size_t>(h)) {
                 id<MTLBuffer> staging = [Device::get().mtl() newBufferWithBytes:image.pending.data() length:image.pending.size()
                                                                          options:MTLResourceStorageModeShared];
+                if (staging) tex.root().touchSerial = ctx.stream().serial();
                 if (staging)
                     [ctx.stream().uploadBlit(!ctx.stream().pendingClearUses(tex.mtl)) copyFromBuffer:staging sourceOffset:0 sourceBytesPerRow:rowBytes
                                     sourceBytesPerImage:image.pending.size() sourceSize:MTLSizeMake(w, h, 1)
@@ -285,6 +286,7 @@ bool ensureTextureStorage(Context& ctx, Texture& tex) {
     if (tex.mtl && tex.storage == format->storage && tex.mtl.textureType == texture.textureType &&
         tex.mtl.sampleCount == texture.sampleCount) {
         id<MTLBlitCommandEncoder> blit = ctx.stream().uploadBlit();
+        tex.root().touchSerial = ctx.stream().serial();  // copied in order: later uploads follow
         // Slices are faces for cube maps and cube map arrays.
         auto sliceCount = [](id<MTLTexture> t) {
             return t.textureType == MTLTextureTypeCube ? NSUInteger{6}
@@ -866,6 +868,7 @@ void uploadTexels(Context& ctx, Texture& tex, int face, int level, int x, int y,
             static_cast<uint8_t*>(stencilStaging.data)[i] = in[i * 8 + 4];
         }
         id<MTLBlitCommandEncoder> blit = ctx.stream().uploadBlit(!ctx.stream().pendingClearUses(tex.mtl));
+        tex.root().touchSerial = ctx.stream().serial();
         for (int layer = 0; layer < depth; ++layer) {
             const NSUInteger slice = static_cast<NSUInteger>(tex.target == GL_TEXTURE_CUBE_MAP ? face : array ? z + layer : 0);
             const size_t first = imageTexels * static_cast<size_t>(layer);
@@ -892,8 +895,20 @@ void uploadTexels(Context& ctx, Texture& tex, int face, int level, int x, int y,
 void uploadStaged(Context& ctx, Texture& tex, int face, int level, int x, int y, int z, int width, int height, int depth,
                   const TransientAllocation& staging, size_t bytesPerRow, size_t bytesPerImage) {
     const bool array = tex.mtl.textureType == MTLTextureType2DArray || tex.mtl.textureType == MTLTextureTypeCubeArray;
-    // A pending clear of another target stays a load action of its pass.
-    id<MTLBlitCommandEncoder> blit = ctx.stream().uploadBlit(!ctx.stream().pendingClearUses(tex.mtl));
+    // Storage the command buffer being recorded has not used takes the
+    // upload ahead of it: a render pass in progress goes on (on a tile-based
+    // GPU, ending it stores and reloads every attachment). Otherwise the
+    // upload comes in order, and a pending clear of another target stays a
+    // load action of its pass.
+    CommandStream& stream = ctx.stream();
+    Texture& root = tex.root();
+    const uint64_t serial = stream.serial();
+    const bool clearPending = stream.pendingClearUses(tex.mtl);
+    id<MTLBlitCommandEncoder> blit = root.touchSerial != serial && !clearPending ? stream.preludeUpload() : nil;
+    if (!blit) {
+        blit = stream.uploadBlit(!clearPending);
+        root.touchSerial = serial;
+    }
     if (tex.mtl.textureType == MTLTextureType3D) {
         [blit copyFromBuffer:staging.buffer sourceOffset:staging.offset sourceBytesPerRow:bytesPerRow
             sourceBytesPerImage:bytesPerImage sourceSize:MTLSizeMake(width, height, depth) toTexture:tex.mtl

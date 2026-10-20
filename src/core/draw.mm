@@ -73,6 +73,7 @@ bool attachmentTarget(Context& ctx, const Attachment& a, RenderTargetDesc::Targe
     if (a.type == GL_TEXTURE) {
         Texture* tex = a.texture.get();
         if (!tex || !ensureTextureStorage(ctx, *tex)) return false;
+        tex->root().touchSerial = ctx.stream().serial();  // rendered to (or read) in this command buffer
         const int face = a.cubeFace ? static_cast<int>(a.cubeFace - GL_TEXTURE_CUBE_MAP_POSITIVE_X) : 0;
         const TextureImage& image = tex->image(face, a.level);
         // A level defined off the mip chain has no storage of its size.
@@ -1196,6 +1197,7 @@ id<MTLTexture> DrawState::imageBinding(LinkedProgram& program, size_t index) {
         if (view && u.texture) {
             const uint64_t serial = ctx_.stream().serial();
             u.texture->lastUseSerial = serial;
+            u.texture->root().touchSerial = serial;
             if (u.access != GL_READ_ONLY) ctx_.stream().noteShaderWrites();
             // Stores to a buffer image change the buffer: CPU reads and later uploads wait for this draw.
             if (Buffer* buffer = u.texture->buffer.get(); buffer && u.access != GL_READ_ONLY) {
@@ -1526,6 +1528,7 @@ void DrawState::bindStorageBlocks(id<MTLComputeCommandEncoder> encoder, const sh
 
 void DrawState::markSampled(Texture& texture) {
     texture.lastUseSerial = ctx_.stream().serial();
+    texture.root().touchSerial = texture.lastUseSerial;
     // A buffer texture reads its buffer: writes to the buffer must wait for this draw.
     if (texture.target == GL_TEXTURE_BUFFER && texture.buffer) texture.buffer->lastUseSerial = texture.lastUseSerial;
 }
@@ -1826,7 +1829,7 @@ id<MTLRenderCommandEncoder> DrawState::prepare(GLenum mode, MTLPrimitiveType& pr
     }
 
     phase.switchTo(&stats::Frame::prepareEncoderNanos);
-    id<MTLRenderCommandEncoder> encoder = ctx_.stream().render(target);
+    id<MTLRenderCommandEncoder> encoder = ctx_.stream().renderDraw(target);
     if (ctx_.stream().passGeneration() != lastPassGeneration_) {
         lastPassGeneration_ = ctx_.stream().passGeneration();
     }
@@ -2789,7 +2792,7 @@ bool DrawState::runVertexCapture(LinkedProgram& lp, const std::vector<uint32_t>&
             RenderTargetDesc target;
             TargetFormats formats;
             if (!drawTarget(target, formats, false)) return false;
-            encoder = ctx_.stream().render(target);
+            encoder = ctx_.stream().renderDraw(target);
             key.sampleCount = static_cast<uint8_t>(target.samples);
             for (int i = 0; i < 8; ++i) key.colorFormats[i] = static_cast<uint16_t>(formats.color[i]);
             key.depthFormat = static_cast<uint16_t>(formats.depth);
@@ -4511,7 +4514,7 @@ void DrawState::clearWithDraw(const RenderTargetDesc& target, const TargetFormat
     }
     id<MTLRenderPipelineState> pipeline = clearPipeline(formats, writeMasks, target.samples, signature, target.layers > 0);
     if (!pipeline) return;
-    id<MTLRenderCommandEncoder> encoder = ctx_.stream().render(target);
+    id<MTLRenderCommandEncoder> encoder = ctx_.stream().renderDraw(target);
     queriesSuspendVisibility(ctx_, encoder);  // clears do not count towards occlusion queries
     DepthStencilKey ds;
     std::memset(&ds, 0, sizeof(ds));

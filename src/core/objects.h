@@ -268,6 +268,12 @@ public:
     // Recorded for the GL 4.x binding model (state.h); nothing reads them yet.
     uint64_t lastUseSerial = 0;
     uint64_t version = 0;
+    // The last command buffer whose draws sample, write or render to the
+    // storage, or that uploads to it in order (kept on the texture that owns
+    // the storage: root()). An upload while it is not the one being recorded
+    // may run ahead of that command buffer (texture_storage.mm uploadStaged).
+    uint64_t touchSerial = 0;
+    Texture& root() { return viewOf ? *viewOf : *this; }
 
     int faceCount() const { return target == GL_TEXTURE_CUBE_MAP ? 6 : 1; }
     const TextureImage& image(int face, int level) const { return images[face][level]; }

@@ -357,3 +357,58 @@ in vec4 tex; out vec4 frag; void main() { frag = tex; })");
     glDeleteTextures(1, &tex);
     CHECK_GL();
 }
+
+// Uploads between draws of one pass: a texture the command buffer has
+// sampled gets the upload in order (the draw before it sees the old texels),
+// one it has not used may get it ahead (the draw after it sees the new).
+GPU_TEST(gpu_texture_upload_between_draws_keeps_order) {
+    static const char* vs = R"(#version 330
+in vec2 position;
+uniform float x;
+out vec2 uv;
+void main() { uv = vec2(0.5); gl_Position = vec4(position.x * 0.25 + x, position.y, 0.0, 1.0); })";
+    static const char* fs = R"(#version 330
+in vec2 uv;
+uniform sampler2D tex;
+out vec4 o;
+void main() { o = texture(tex, uv); })";
+    GLuint p = gpu::program(vs, fs);
+    GLuint vao = gpu::quad();
+    const uint8_t red[4] = {255, 0, 0, 255}, green[4] = {0, 255, 0, 255}, blue[4] = {0, 0, 255, 255};
+    GLuint tex[2];
+    glGenTextures(2, tex);
+    for (GLuint t : tex) {
+        glBindTexture(GL_TEXTURE_2D, t);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, red);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    }
+    glFinish();
+    glUseProgram(p);
+    glBindVertexArray(vao);
+    const GLint x = glGetUniformLocation(p, "x");
+    glClearColor(0, 0, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+    // tex[0]: sampled, then uploaded, then sampled again.
+    glBindTexture(GL_TEXTURE_2D, tex[0]);
+    glUniform1f(x, -0.75f);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, green);
+    glUniform1f(x, -0.25f);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    // tex[1]: not used yet in this command buffer: uploaded, then sampled.
+    glBindTexture(GL_TEXTURE_2D, tex[1]);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, blue);
+    glUniform1f(x, 0.25f);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    GLint viewport[4];
+    glGetIntegerv(GL_VIEWPORT, viewport);
+    const int y = viewport[3] / 2, w = viewport[2];
+    CHECK(gpu::near(gpu::readRGBA8(w * 1 / 8, y, 1, 1).data(), red));
+    CHECK(gpu::near(gpu::readRGBA8(w * 3 / 8, y, 1, 1).data(), green));
+    CHECK(gpu::near(gpu::readRGBA8(w * 5 / 8, y, 1, 1).data(), blue));
+    glDeleteTextures(2, tex);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
+    CHECK_GL();
+}

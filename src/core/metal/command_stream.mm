@@ -207,6 +207,11 @@ void CommandStream::startRender(const RenderTargetDesc& target) {
 }
 
 id<MTLRenderCommandEncoder> CommandStream::render(const RenderTargetDesc& target) {
+    hoistBlocked_ = true;  // a pass that may sample any texture
+    return renderDraw(target);
+}
+
+id<MTLRenderCommandEncoder> CommandStream::renderDraw(const RenderTargetDesc& target) {
     if (__builtin_expect(deferred_ != nullptr, 0)) runDeferred();
     ++renderCalls_;
     // A clear recorded for another target while this pass stayed open runs
@@ -366,11 +371,26 @@ id<MTLBlitCommandEncoder> CommandStream::uploadBlit(bool keepPendingClear) {
 
 id<MTLBlitCommandEncoder> CommandStream::blit(bool keepPendingClear) {
     if (__builtin_expect(deferred_ != nullptr, 0)) runDeferred();
+    hoistBlocked_ = true;  // a copy that may read or write any texture
     return uploadBlit(keepPendingClear);
+}
+
+id<MTLBlitCommandEncoder> CommandStream::preludeUpload() {
+    if (hoistBlocked_) return nil;
+    loadDiscard_ = Discard();  // the upload may write an invalidated attachment
+    if (!preludeUpload_) {
+        if (!preludeUploadBuffer_) {
+            preludeUploadBuffer_ = [queue_.mtl() commandBuffer];
+            preludeUploadBuffer_.label = @"WineMetalGL prelude (uploads)";
+        }
+        preludeUpload_ = [preludeUploadBuffer_ blitCommandEncoder];
+    }
+    return preludeUpload_;
 }
 
 id<MTLComputeCommandEncoder> CommandStream::compute(bool keepPendingClear) {
     if (__builtin_expect(deferred_ != nullptr, 0)) runDeferred();
+    hoistBlocked_ = true;  // a dispatch that may read or write any texture
     loadDiscard_ = Discard();  // the dispatches may write the invalidated attachments
     if (compute_ && (keepPendingClear || !pending_.any())) return compute_;
     if (!keepPendingClear) resolvePendingClear();
@@ -462,6 +482,11 @@ void CommandStream::commitPrelude() {
     const auto commit = [](id<MTLCommandBuffer> b) {
         if (b) [b commit];
     };
+    // Uploads first: nothing recorded after them reads what they replace.
+    if (preludeUpload_) [preludeUpload_ endEncoding];
+    commit(preludeUploadBuffer_);
+    preludeUpload_ = nil;
+    preludeUploadBuffer_ = nil;
     commit(stepBuffers_[static_cast<int>(PreludeStep::Scan)]);
     commit(stepBuffers_[static_cast<int>(PreludeStep::Expand)]);
     commit(preludeRenderBuffer_);
@@ -498,6 +523,7 @@ uint64_t CommandStream::flush(bool keepPendingClear) {
     queue_.commit(buffer_, serial_);
     lastCommitted_ = serial_;
     buffer_ = nil;
+    hoistBlocked_ = false;
     visibility_ = nil;
     serial_ = 0;
     return lastCommitted_;

@@ -61,6 +61,10 @@ public:
     // Returns an encoder for the target, starting a pass if needed. Any
     // pending clear for this target is applied as load actions.
     id<MTLRenderCommandEncoder> render(const RenderTargetDesc& target);
+    // render() for DrawState's draws, whose textures mark what they use
+    // (Texture::touchSerial): uploads to other storage still run ahead
+    // (preludeUpload). Other users' passes may read any texture.
+    id<MTLRenderCommandEncoder> renderDraw(const RenderTargetDesc& target);
     id<MTLRenderCommandEncoder> currentRender() const { return render_; }
     // A render or compute encoder is open (work encoded now joins a draw or dispatch in progress).
     bool encoding() const { return render_ != nil || compute_ != nil; }
@@ -111,6 +115,12 @@ public:
     // A blit that writes texture contents the API is replacing (uploads,
     // storage reallocation): deferred work (setDeferred) stays deferred.
     id<MTLBlitCommandEncoder> uploadBlit(bool keepPendingClear = false);
+    // An upload to storage the command buffer being recorded has not used
+    // (the caller knows: Texture::touchSerial): recorded in a command buffer
+    // committed just ahead of it, so a render pass in progress goes on. Nil
+    // once the command buffer has a blit or dispatch of its own (it may have
+    // read or written the storage): the caller uploads in order then.
+    id<MTLBlitCommandEncoder> preludeUpload();
     // Work the API defers until a command may read what it produces
     // (GL_GENERATE_MIPMAP regeneration after uploads, api/texture.mm): runs
     // before the next render, compute or blit encoder (other than an
@@ -244,6 +254,12 @@ private:
     id<MTLBlitCommandEncoder> blit_ = nil;
     id<MTLComputeCommandEncoder> compute_ = nil;
     id<MTLCommandBuffer> preludeRenderBuffer_ = nil, preludeComputeBuffer_ = nil;
+    // preludeUpload's command buffer and encoder; hoistBlocked_: the command
+    // buffer being recorded has a blit, dispatch or pass other than an
+    // upload's or DrawState's draws.
+    id<MTLCommandBuffer> preludeUploadBuffer_ = nil;
+    id<MTLBlitCommandEncoder> preludeUpload_ = nil;
+    bool hoistBlocked_ = false;
     id<MTLCommandBuffer> stepBuffers_[static_cast<int>(PreludeStep::Count)] = {};
     id<MTLComputeCommandEncoder> stepEncoders_[static_cast<int>(PreludeStep::Count)] = {};
     id<MTLRenderCommandEncoder> preludeRender_ = nil;
