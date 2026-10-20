@@ -78,6 +78,14 @@ public:
     bool clearWithLoadAction(const RenderTargetDesc& target, const PendingClear& clear);
     // Forces pending load-action clears to execute (empty pass).
     void resolvePendingClear();
+    // glInvalidateFramebuffer of the target's attachments (colour slots in
+    // colorMask, depth, stencil): while a pass on the target is open, it
+    // ends without storing them unless a draw follows in it; otherwise the
+    // target's next pass, if it is the next work recorded, does not load them.
+    void invalidate(const RenderTargetDesc& target, uint8_t colorMask, bool depth, bool stencil);
+    // Whether a pending load-action clear is for an attachment of `texture`
+    // (or of a view of it): writes to it must let the clear run first.
+    bool pendingClearUses(id<MTLTexture> texture) const;
 
     // keepPendingClear: the encoder's commands touch no texture of a pending
     // clear's target (buffer copies, a dispatch without textures or images),
@@ -85,6 +93,23 @@ public:
     // running first as a pass of its own (which stores the attachments, for
     // the next pass to load them back).
     id<MTLBlitCommandEncoder> blit(bool keepPendingClear = false);
+    // A blit that writes texture contents the API is replacing (uploads,
+    // storage reallocation): deferred work (setDeferred) stays deferred.
+    id<MTLBlitCommandEncoder> uploadBlit(bool keepPendingClear = false);
+    // Work the API defers until a command may read what it produces
+    // (GL_GENERATE_MIPMAP regeneration after uploads, api/texture.mm): runs
+    // before the next render, compute or blit encoder (other than an
+    // upload's) and before a commit. Replaces earlier deferred work; the
+    // caller's function drains everything it deferred.
+    void setDeferred(std::function<void()> work) { deferred_ = std::move(work); }
+    void runDeferred() {
+        if (!deferred_ || runningDeferred_) return;
+        std::function<void()> work = std::move(deferred_);
+        deferred_ = nullptr;
+        runningDeferred_ = true;
+        work();
+        runningDeferred_ = false;
+    }
     id<MTLComputeCommandEncoder> compute(bool keepPendingClear = false);
     // Prelude: two command buffers committed just ahead of the one being
     // recorded, for work that reads nothing the GPU writes in it. Draws that
@@ -179,6 +204,16 @@ private:
     void startRender(const RenderTargetDesc& target);
 
     Queue& queue_;
+    std::function<void()> deferred_;
+    bool runningDeferred_ = false;
+    // invalidate(): attachments of the open pass it ends without storing,
+    // and of the next pass on discardTarget_ it starts without loading.
+    struct Discard {
+        uint8_t color = 0;
+        bool depth = false, stencil = false;
+        bool any() const { return color || depth || stencil; }
+    } storeDiscard_, loadDiscard_;
+    RenderTargetDesc discardTarget_;
     id<MTLCommandBuffer> buffer_ = nil;
     uint64_t serial_ = 0;
     uint64_t lastCommitted_ = 0;

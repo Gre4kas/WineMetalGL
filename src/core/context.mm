@@ -28,6 +28,7 @@ thread_local Context* t_current = nullptr;
 }  // namespace
 
 thread_local int ShareLock::depth = 0;
+thread_local int CallPool::depth = 0;
 
 void waitForGpuUnlocked(Context& ctx, uint64_t serial, bool keepBusy) {
     if (!serial) return;

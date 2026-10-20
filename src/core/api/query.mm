@@ -352,7 +352,8 @@ void markTimerEnd(Context& ctx, Query& q) {
         timer->endSet = true;
     }];
     stats::count(&stats::Frame::queryCommits);
-    q.pendingSerial = ctx.stream().flush();
+    // A commit of WineMetalGL's own: a pending clear stays a load action.
+    q.pendingSerial = ctx.stream().flush(true);
 }
 
 }  // namespace
@@ -461,7 +462,7 @@ void beginQuery(Context& ctx, GLenum target, int index, GLuint name) {
     } else if (index == kQueryTimeElapsed) {
         // Time from the start of the next command buffer.
         stats::count(&stats::Frame::queryCommits);
-        ctx.stream().flush();
+        ctx.stream().flush(true);  // WineMetalGL's own commit: a pending clear stays a load action
         q->timer = std::make_shared<Query::Timer>();
         std::shared_ptr<Query::Timer> timer = q->timer;
         [ctx.stream().commandBuffer() addCompletedHandler:^(id<MTLCommandBuffer> done) {
@@ -609,6 +610,7 @@ void getQueryObject(Context& ctx, GLuint name, GLenum pname, T* params) {
     [ctx.stream().blit(true) copyFromBuffer:staging.buffer sourceOffset:staging.offset toBuffer:queryBuffer->mtl
                         destinationOffset:static_cast<NSUInteger>(offset) size:sizeof(T)];
     queryBuffer->lastUseSerial = queryBuffer->lastWriteSerial = ctx.stream().serial();
+    queryBuffer->shadowValid = false;
     ++queryBuffer->version;
 }
 
@@ -700,7 +702,10 @@ GLenum ClientWaitSync(Context& ctx, GLsync handle, GLbitfield flags, GLuint64 ti
         stats::count(&stats::Frame::clientWaitsSignaled);
         return GL_ALREADY_SIGNALED;
     }
-    if (flags & GL_SYNC_FLUSH_COMMANDS_BIT) ctx.stream().flush();
+    // Flushing commits the fence's command buffer, unless it is committed
+    // already (a poll of an older fence: committing again would end the
+    // render pass in progress for nothing).
+    if ((flags & GL_SYNC_FLUSH_COMMANDS_BIT) && !queue.isCommitted(sync->serial)) ctx.stream().flush();
     if (timeout == 0) return GL_TIMEOUT_EXPIRED;
     stats::Timer timer(&stats::Frame::clientWaitNanos);
     ShareUnlock unlock(ctx);  // `hold` keeps the sync alive

@@ -92,10 +92,35 @@ bool gpuBusy(Context& ctx, const Buffer& buffer) {
     return buffer.lastUseSerial && !ctx.share().queue.isComplete(buffer.lastUseSerial);
 }
 
-// Replaces the storage so in-flight work keeps the old contents. Without
-// memory for new storage it waits for the GPU and keeps the old one.
-void rename(Context& ctx, Buffer& buffer, bool preserveContents) {
-    id<MTLBuffer> fresh = newStorage(buffer.size);
+// Retired storage of at least `length` bytes whose last GPU use has
+// completed, taken out of `pool`; nil if none.
+id<MTLBuffer> takeRetired(Context& ctx, std::vector<Buffer::Retired>& pool, NSUInteger length) {
+    for (size_t i = 0; i < pool.size(); ++i) {
+        if (pool[i].mtl.length < length || !ctx.share().queue.isComplete(pool[i].serial)) continue;
+        id<MTLBuffer> storage = pool[i].mtl;
+        pool.erase(pool.begin() + static_cast<std::ptrdiff_t>(i));
+        return storage;
+    }
+    return nil;
+}
+
+// Keeps storage the GPU still uses for reuse once `serial` completes (the
+// oldest goes when the pool is full). Only for buffers of up to 16 MiB, so
+// a pool holds at most 64 MiB.
+void retire(std::vector<Buffer::Retired>& pool, id<MTLBuffer> storage, uint64_t serial) {
+    if (!storage || storage.length > (16u << 20)) return;
+    if (pool.size() >= Buffer::kMaxRetired) pool.erase(pool.begin());
+    pool.push_back({storage, serial});
+}
+
+// Replaces the storage so in-flight work keeps the old contents: storage
+// retired earlier whose GPU work has completed, else new storage. With
+// `preserveContents`, everything but [skipOffset, skipOffset + skipSize)
+// (which the caller is about to overwrite) is copied over. Without memory
+// for new storage it waits for the GPU and keeps the old one.
+void rename(Context& ctx, Buffer& buffer, bool preserveContents, GLintptr skipOffset = 0, GLsizeiptr skipSize = 0) {
+    id<MTLBuffer> fresh = buffer.mtl ? takeRetired(ctx, buffer.retired, buffer.mtl.length) : nil;
+    if (!fresh) fresh = newStorage(buffer.size);
     if (!fresh) {
         ctx.stream().waitFor(buffer.lastUseSerial);
         ++buffer.version;
@@ -104,11 +129,26 @@ void rename(Context& ctx, Buffer& buffer, bool preserveContents) {
     if (preserveContents && buffer.mtl) {
         // Queued GPU writes (copies, transform feedback) must land first.
         if (buffer.lastWriteSerial) ctx.stream().waitFor(buffer.lastWriteSerial);
-        std::memcpy(fresh.contents, buffer.mtl.contents, static_cast<size_t>(buffer.size));
+        const auto* from = static_cast<const uint8_t*>(buffer.mtl.contents);
+        auto* to = static_cast<uint8_t*>(fresh.contents);
+        const size_t size = static_cast<size_t>(buffer.size);
+        const size_t skipStart = std::min(static_cast<size_t>(skipOffset), size);
+        const size_t skipEnd = std::min(skipStart + static_cast<size_t>(skipSize), size);
+        std::memcpy(to, from, skipStart);
+        std::memcpy(to + skipEnd, from + skipEnd, size - skipEnd);
     }
+    if (buffer.lastUseSerial) retire(buffer.retired, buffer.mtl, buffer.lastUseSerial);
+    if (!preserveContents) buffer.shadowValid = false;  // the contents are undefined now
     buffer.mtl = fresh;
     buffer.lastUseSerial = buffer.lastWriteSerial = 0;
     ++buffer.version;
+}
+
+// Drops storage kept for reuse that no longer fits the buffer (it was
+// respecified at another size, or is immutable or client memory now).
+void dropRetired(Buffer& buffer) {
+    buffer.retired.clear();
+    buffer.retiredStaging.clear();
 }
 
 Buffer* boundBuffer(Context& ctx, GLenum target) {
@@ -144,6 +184,7 @@ RefPtr<Buffer> bufferForBind(Context& ctx, GLuint name, bool& ok) {
 }
 
 void unmapBuffer(Buffer& buffer) {
+    buffer.mapStaging = nil;  // writes to it are discarded with the storage they were for
     buffer.mapped = false;
     buffer.mapAccess = 0;
     buffer.mapOffset = 0;
@@ -375,7 +416,9 @@ void BufferData(Context& ctx, GLenum target, GLsizeiptr size, const void* data, 
         buffer->size = size;
         buffer->usage = usage;
         buffer->pinned = true;
+        dropRetired(*buffer);
         buffer->lastUseSerial = buffer->lastWriteSerial = 0;
+        buffer->shadowValid = false;
         ++buffer->version;
         ctx.markDirty(kDirtyVertexInput | kDirtyUniformBuffers);
         return;
@@ -387,8 +430,17 @@ void BufferData(Context& ctx, GLenum target, GLsizeiptr size, const void* data, 
     if (buffer->mtl && !wasPinned && buffer->size == size && !gpuBusy(ctx, *buffer)) {
         ++buffer->version;
     } else {
-        buffer->mtl = newStorage(size);
+        // Orphaning at the same size reuses storage retired by earlier frames.
+        id<MTLBuffer> reused = nil;
+        if (buffer->mtl && !wasPinned && buffer->size == size) {
+            reused = takeRetired(ctx, buffer->retired, buffer->mtl.length);
+            retire(buffer->retired, buffer->mtl, buffer->lastUseSerial);
+        } else {
+            dropRetired(*buffer);
+        }
+        buffer->mtl = reused ? reused : newStorage(size);
         buffer->lastUseSerial = buffer->lastWriteSerial = 0;
+        buffer->shadowValid = false;
         ++buffer->version;
         if (size && !buffer->mtl) {
             buffer->size = 0;
@@ -397,6 +449,7 @@ void BufferData(Context& ctx, GLenum target, GLsizeiptr size, const void* data, 
     }
     buffer->size = size;
     buffer->usage = usage;
+    buffer->shadowValid = false;
     if (data && size) std::memcpy(buffer->mtl.contents, data, static_cast<size_t>(size));
     ctx.markDirty(kDirtyVertexInput | kDirtyUniformBuffers);
 }
@@ -422,7 +475,9 @@ void BufferStorage(Context& ctx, GLenum target, GLsizeiptr size, const void* dat
     buffer->usage = GL_DYNAMIC_DRAW;
     buffer->immutable = true;
     buffer->storageFlags = flags;
+    dropRetired(*buffer);
     buffer->lastUseSerial = buffer->lastWriteSerial = 0;
+    buffer->shadowValid = false;
     ++buffer->version;
     ctx.markDirty(kDirtyVertexInput | kDirtyUniformBuffers);
 }
@@ -440,7 +495,7 @@ void BufferSubData(Context& ctx, GLenum target, GLintptr offset, GLsizeiptr size
         // and so does a mapped buffer.
         if (!buffer->immutable && !buffer->pinned && !buffer->mapped && (size == buffer->size || buffer->size <= (256 << 10))) {
             // Small or whole-buffer updates: copy-on-write.
-            rename(ctx, *buffer, size != buffer->size);
+            rename(ctx, *buffer, size != buffer->size, offset, size);
         } else {
             // Large partial update: ordered GPU copy from staging memory.
             TransientAllocation staging = ctx.draw().transient().allocate(static_cast<size_t>(size), ctx.stream().serial(), 16);
@@ -448,11 +503,13 @@ void BufferSubData(Context& ctx, GLenum target, GLintptr offset, GLsizeiptr size
             [ctx.stream().blit(true) copyFromBuffer:staging.buffer sourceOffset:staging.offset toBuffer:buffer->mtl
                                 destinationOffset:static_cast<NSUInteger>(offset) size:static_cast<NSUInteger>(size)];
             buffer->lastUseSerial = buffer->lastWriteSerial = ctx.stream().serial();
+            buffer->shadowWrite(offset, size, data);
             ++buffer->version;
             return;
         }
     }
     std::memcpy(static_cast<uint8_t*>(buffer->mtl.contents) + offset, data, static_cast<size_t>(size));
+    buffer->shadowWrite(offset, size, data);
     ++buffer->version;
 }
 
@@ -497,6 +554,7 @@ void ClearBufferSubData(Context& ctx, GLenum target, GLenum internalformat, GLin
     [ctx.stream().blit(true) copyFromBuffer:staging.buffer sourceOffset:staging.offset toBuffer:buffer->mtl
                         destinationOffset:static_cast<NSUInteger>(offset) size:static_cast<NSUInteger>(size)];
     buffer->lastUseSerial = buffer->lastWriteSerial = ctx.stream().serial();
+    buffer->shadowValid = false;
     ++buffer->version;
 }
 
@@ -558,12 +616,24 @@ void* MapBufferRange(Context& ctx, GLenum target, GLintptr offset, GLsizeiptr le
         ctx.setError(GL_OUT_OF_MEMORY);
         return nullptr;
     }
+    id<MTLBuffer> staging = nil;
     if (!(access & GL_MAP_UNSYNCHRONIZED_BIT) && gpuBusy(ctx, *buffer)) {
         // Immutable storage is never renamed: an invalidating map just waits.
-        if ((access & GL_MAP_INVALIDATE_BUFFER_BIT) && !buffer->immutable && !buffer->pinned) rename(ctx, *buffer, false);
-        else if ((access & GL_MAP_INVALIDATE_RANGE_BIT) && !read && !buffer->immutable && !buffer->pinned) rename(ctx, *buffer, true);
-        // A read-only mapping waits for GPU writes only; a writable one also for GPU reads.
-        else waitForGpuUnlocked(ctx, (access & GL_MAP_WRITE_BIT) ? buffer->lastUseSerial : buffer->lastWriteSerial);
+        if ((access & GL_MAP_INVALIDATE_BUFFER_BIT) && !buffer->immutable && !buffer->pinned) {
+            rename(ctx, *buffer, false);
+        } else if ((access & GL_MAP_INVALIDATE_RANGE_BIT) && !read && !buffer->immutable && !buffer->pinned) {
+            // A large buffer maps staging memory, copied into place at the
+            // unmap (copying the rest of the buffer for copy-on-write costs
+            // more); a small one is renamed.
+            if (buffer->size > (256 << 10)) {
+                staging = takeRetired(ctx, buffer->retiredStaging, static_cast<NSUInteger>(length));
+                if (!staging) staging = allocateStorage(length);
+            }
+            if (!staging) rename(ctx, *buffer, true, offset, length);
+        } else {
+            // A read-only mapping waits for GPU writes only; a writable one also for GPU reads.
+            waitForGpuUnlocked(ctx, (access & GL_MAP_WRITE_BIT) ? buffer->lastUseSerial : buffer->lastWriteSerial);
+        }
     }
     // Another context may have respecified or mapped the buffer during a wait.
     if (buffer->mapped || !buffer->mtl || length > buffer->size - offset) {
@@ -574,7 +644,9 @@ void* MapBufferRange(Context& ctx, GLenum target, GLintptr offset, GLsizeiptr le
     buffer->mapAccess = access;
     buffer->mapOffset = offset;
     buffer->mapLength = length;
-    buffer->mapPointer = static_cast<uint8_t*>(buffer->mtl.contents) + offset;
+    buffer->mapStaging = staging;
+    buffer->mapPointer = staging ? staging.contents : static_cast<uint8_t*>(buffer->mtl.contents) + offset;
+    if (write && !staging) buffer->shadowValid = false;  // written in place, behind the copy's back
     return buffer->mapPointer;
 }
 
@@ -605,6 +677,16 @@ GLboolean UnmapBuffer(Context& ctx, GLenum target) {
         ctx.setError(GL_INVALID_OPERATION);
         return GL_FALSE;
     }
+    if (id<MTLBuffer> staging = buffer->mapStaging) {
+        // An invalidating map of busy storage: an ordered GPU copy into place.
+        const uint64_t serial = ctx.stream().serial();
+        [ctx.stream().blit(true) copyFromBuffer:staging sourceOffset:0 toBuffer:buffer->mtl
+                            destinationOffset:static_cast<NSUInteger>(buffer->mapOffset)
+                                         size:static_cast<NSUInteger>(buffer->mapLength)];
+        buffer->lastUseSerial = buffer->lastWriteSerial = serial;
+        buffer->shadowWrite(buffer->mapOffset, buffer->mapLength, staging.contents);
+        retire(buffer->retiredStaging, staging, serial);
+    }
     unmapBuffer(*buffer);
     ++buffer->version;
     return GL_TRUE;
@@ -634,6 +716,7 @@ void CopyBufferSubData(Context& ctx, GLenum readTarget, GLenum writeTarget, GLin
     [ctx.stream().blit(true) copyFromBuffer:src->mtl sourceOffset:static_cast<NSUInteger>(readOffset) toBuffer:dst->mtl
                         destinationOffset:static_cast<NSUInteger>(writeOffset) size:static_cast<NSUInteger>(size)];
     src->lastUseSerial = dst->lastUseSerial = dst->lastWriteSerial = ctx.stream().serial();
+    dst->shadowValid = false;
     ++dst->version;
 }
 

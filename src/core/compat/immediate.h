@@ -15,6 +15,7 @@
 #include <array>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <vector>
 
 #include "core/compat/fixed_state.h"
@@ -36,6 +37,9 @@ struct ImmediateBatch {
     std::array<uint32_t, kAttribSlotCount> firstSet{};  // vertex where an unknown slot was first set
     std::array<Value, kAttribSlotCount> current{};
     std::vector<Value> data;  // vertexCount() * kAttribSlotCount values
+    // A display list's batch drawn before: its varying slots packed in a
+    // buffer object, drawn from without CPU work (api/fixed_vertex.mm).
+    mutable std::shared_ptr<struct ListBatchBuffer> gpu;
 
     size_t vertexCount() const { return data.size() / kAttribSlotCount; }
     void begin(GLenum primitive, const Context* live);  // live: current values are known
@@ -76,7 +80,8 @@ void emitVertex(Context& ctx, float x, float y, float z, float w);
 
 // Draws a batch; `batch` from a display list takes unknown values from the
 // current state first.
-void drawBatch(Context& ctx, const ImmediateBatch& batch);
+// list: the batch belongs to a display list (it is drawn again unchanged).
+void drawBatch(Context& ctx, const ImmediateBatch& batch, bool list = false);
 
 // Display list compilation: whether a command being compiled must also run
 // now (always true when no list is being compiled), and recording.

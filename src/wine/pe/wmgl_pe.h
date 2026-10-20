@@ -62,6 +62,10 @@ NTSTATUS wmgl_unix_call( unsigned int code, void *args );
  * parameter struct points to at `pointer_offset`. FALSE: make the call now. */
 BOOL wmgl_batch( unsigned int code, const void *args, size_t size, const void *data, UINT64 data_size,
                  size_t pointer_offset );
+/* A call that returns nothing, made while calls are batched: runs as the
+ * batch's last record, the batch then running at once (one unix call for
+ * them all). FALSE: nothing is batched (the caller makes the call). */
+BOOL wmgl_batch_last( unsigned int code, const void *args, size_t size );
 #define WMGL_CALL(name, args) wmgl_unix_call( unix_##name, (args) )
 
 struct wmgl_proc

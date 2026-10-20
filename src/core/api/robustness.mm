@@ -13,6 +13,7 @@
 #include "core/compat/compat_api.h"
 #include "core/compat/fixed_state.h"
 #include "core/context.h"
+#include "core/draw.h"
 #include "core/format/es_formats.h"
 #include "core/format/pixel_transfer.h"
 #include "core/limits.h"
@@ -488,7 +489,8 @@ bool validAttachment(Context& ctx, GLenum target, GLenum attachment) {
     return attachment >= GL_COLOR_ATTACHMENT0 && attachment < GL_COLOR_ATTACHMENT0 + Framebuffer::kMaxColor;
 }
 
-void invalidateFramebuffer(Context& ctx, GLenum target, GLsizei count, const GLenum* attachments) {
+// rect: the region invalidated (x, y, width, height), null for all of it.
+void invalidateFramebuffer(Context& ctx, GLenum target, GLsizei count, const GLenum* attachments, const GLint* rect = nullptr) {
     if (target != GL_FRAMEBUFFER && target != GL_DRAW_FRAMEBUFFER && target != GL_READ_FRAMEBUFFER)
         return ctx.setError(GL_INVALID_ENUM);
     if (count < 0) return ctx.setError(GL_INVALID_VALUE);
@@ -501,6 +503,29 @@ void invalidateFramebuffer(Context& ctx, GLenum target, GLsizei count, const GLe
             return ctx.setError(colorBeyond ? GL_INVALID_OPERATION : GL_INVALID_ENUM);
         }
     }
+    // The draw framebuffer's invalidated attachments are neither stored by
+    // the pass on them nor loaded by its next one (CommandStream::invalidate):
+    // on tile-based GPUs that saves writing and reading them back.
+    if (target == GL_READ_FRAMEBUFFER || !count) return;
+    RenderTargetDesc desc;
+    TargetFormats formats;
+    if (!ctx.draw().drawTarget(desc, formats, false)) return;
+    if (rect && (rect[0] > 0 || rect[1] > 0 || static_cast<int64_t>(rect[0]) + rect[2] < static_cast<int64_t>(desc.width) ||
+                 static_cast<int64_t>(rect[1]) + rect[3] < static_cast<int64_t>(desc.height)))
+        return;  // part of the attachments: they are stored
+    const Framebuffer* fb = ctx.state.drawFramebuffer.get();
+    uint8_t color = 0;
+    bool depth = false, stencil = false;
+    for (GLsizei i = 0; i < count; ++i) {
+        const GLenum a = attachments[i];
+        if (a == GL_DEPTH || a == GL_DEPTH_ATTACHMENT || a == GL_DEPTH_STENCIL_ATTACHMENT) depth = true;
+        if (a == GL_STENCIL || a == GL_STENCIL_ATTACHMENT || a == GL_DEPTH_STENCIL_ATTACHMENT) stencil = true;
+        if (a == GL_COLOR) color = 0xff;
+        if (fb && a >= GL_COLOR_ATTACHMENT0 && a < GL_COLOR_ATTACHMENT0 + Framebuffer::kMaxColor)
+            for (size_t j = 0; j < fb->drawBuffers.size() && j < 8; ++j)
+                if (fb->drawBuffers[j] == a) color |= static_cast<uint8_t>(1u << j);
+    }
+    ctx.stream().invalidate(desc, color, depth, stencil);
 }
 
 Texture* invalidatedTexture(Context& ctx, GLuint name, GLint level) {
@@ -526,9 +551,8 @@ void InvalidateFramebuffer(Context& ctx, GLenum target, GLsizei numAttachments, 
 void InvalidateSubFramebuffer(Context& ctx, GLenum target, GLsizei numAttachments, const GLenum* attachments, GLint x,
                               GLint y, GLsizei width, GLsizei height) {
     if (width < 0 || height < 0) return ctx.setError(GL_INVALID_VALUE);
-    (void)x;
-    (void)y;
-    invalidateFramebuffer(ctx, target, numAttachments, attachments);
+    const GLint rect[4] = {x, y, width, height};
+    invalidateFramebuffer(ctx, target, numAttachments, attachments, rect);
 }
 
 void InvalidateTexImage(Context& ctx, GLuint texture, GLint level) { invalidatedTexture(ctx, texture, level); }

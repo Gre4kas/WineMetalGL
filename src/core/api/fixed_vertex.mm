@@ -14,6 +14,7 @@
 #include "core/format/vertex_decode.h"
 #include "core/context.h"
 #include "core/draw.h"
+#include "core/metal/device.h"
 #include "core/objects.h"
 #include "gl_api.gen.h"
 
@@ -165,9 +166,56 @@ void setAttribute(Context& ctx, int slot, float x, float y, float z, float w) {
 
 void emitVertex(Context& ctx, float x, float y, float z, float w) { emitVertexRaw(ctx, bits(x, y, z, w)); }
 
-void drawBatch(Context& ctx, const ImmediateBatch& batch) {
+}  // namespace compat
+
+struct ListBatchBuffer {
+    RefPtr<Buffer> buffer;
+    uint32_t stride = 0;
+    std::array<int8_t, kAttribSlotCount> position{};  // a varying slot's 16-byte position in a vertex, -1: none
+};
+
+namespace compat {
+
+namespace {
+
+// A display list batch whose every value is known at compile time: its
+// varying slots packed into a buffer object once.
+const ListBatchBuffer* listBatchBuffer(const ImmediateBatch& batch) {
+    if (batch.gpu) return batch.gpu.get();
+    auto gpu = std::make_shared<ListBatchBuffer>();
+    gpu->position.fill(-1);
+    int count = 0;
+    for (int slot = 0; slot < kAttribSlotCount; ++slot)
+        if (batch.varying & (1u << slot)) gpu->position[static_cast<size_t>(slot)] = static_cast<int8_t>(count++);
+    const size_t n = batch.vertexCount();
+    gpu->stride = static_cast<uint32_t>(count) * sizeof(ImmediateBatch::Value);
+    std::vector<ImmediateBatch::Value> packed(n * static_cast<size_t>(count));
+    for (size_t v = 0; v < n; ++v)
+        for (int slot = 0; slot < kAttribSlotCount; ++slot)
+            if (gpu->position[static_cast<size_t>(slot)] >= 0)
+                packed[v * static_cast<size_t>(count) + static_cast<size_t>(gpu->position[static_cast<size_t>(slot)])] =
+                    batch.data[v * kAttribSlotCount + static_cast<size_t>(slot)];
+    const size_t bytes = packed.size() * sizeof(ImmediateBatch::Value);
+    gpu->buffer = makeRef<Buffer>(0);
+    gpu->buffer->mtl = [Device::get().mtl() newBufferWithBytes:packed.data() length:bytes options:MTLResourceStorageModeShared];
+    if (!gpu->buffer->mtl) return nullptr;
+    gpu->buffer->size = static_cast<GLsizeiptr>(bytes);
+    gpu->buffer->usage = GL_STATIC_DRAW;
+    batch.gpu = std::move(gpu);
+    return batch.gpu.get();
+}
+
+}  // namespace
+
+void drawBatch(Context& ctx, const ImmediateBatch& batch, bool list) {
     const size_t n = batch.vertexCount();
     ImmediateState& im = immediate(ctx);
+    // Every vertex's values are the batch's own when each slot not known at
+    // compile time was set before the first vertex.
+    bool own = list && n;
+    for (int slot = 0; own && slot < kAttribSlotCount; ++slot)
+        if ((batch.varying & ~batch.known & (1u << slot)) && batch.firstSet[static_cast<size_t>(slot)] != 0) own = false;
+    const ListBatchBuffer* gpu = own ? listBatchBuffer(batch) : nullptr;
     if (n) {
         const ImmediateBatch::Value* source = batch.data.data();
         if (batch.varying & ~batch.known) {
@@ -193,6 +241,13 @@ void drawBatch(Context& ctx, const ImmediateBatch& batch) {
             a.size = 4;
             a.type = type;
             a.integer = type != GL_FLOAT;
+            if (gpu) {
+                a.buffer = gpu->buffer;
+                a.stride = static_cast<GLsizei>(gpu->stride);
+                a.offset = static_cast<GLintptr>(gpu->position[static_cast<size_t>(slot)]) *
+                           static_cast<GLintptr>(sizeof(ImmediateBatch::Value));
+                continue;
+            }
             a.stride = static_cast<GLsizei>(kAttribSlotCount * sizeof(ImmediateBatch::Value));
             a.offset = reinterpret_cast<GLintptr>(source + slot);
         }
@@ -270,7 +325,7 @@ bool compileArrayDraw(Context& ctx, GLenum mode, const std::vector<uint32_t>& in
         if (position && fetch(ctx, *position, index, value, type)) batch.vertex(value);
     }
     splitBatch(*lc);
-    lc->list->commands.push_back([batch = std::move(batch)](Context& c) { drawBatch(c, batch); });
+    lc->list->commands.push_back([batch = std::move(batch)](Context& c) { drawBatch(c, batch, true); });
     return lc->mode == GL_COMPILE_AND_EXECUTE;
 }
 
@@ -367,7 +422,7 @@ void End(Context& ctx) {
     if (ListCompiler* lc = ctx.listCompiler.get()) {
         if (lc->inBegin && !lc->split) {
             lc->list->commands.push_back([batch = std::move(lc->batch)](Context& c) {
-                compat::drawBatch(c, batch);
+                compat::drawBatch(c, batch, true);
                 applyBatchCurrent(c, batch);
             });
             lc->batch = ImmediateBatch();

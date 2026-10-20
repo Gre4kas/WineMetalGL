@@ -203,7 +203,7 @@ void writePendingImages(Context& ctx, Texture& tex) {
                 id<MTLBuffer> staging = [Device::get().mtl() newBufferWithBytes:image.pending.data() length:image.pending.size()
                                                                          options:MTLResourceStorageModeShared];
                 if (staging)
-                    [ctx.stream().blit() copyFromBuffer:staging sourceOffset:0 sourceBytesPerRow:rowBytes
+                    [ctx.stream().uploadBlit(!ctx.stream().pendingClearUses(tex.mtl)) copyFromBuffer:staging sourceOffset:0 sourceBytesPerRow:rowBytes
                                     sourceBytesPerImage:image.pending.size() sourceSize:MTLSizeMake(w, h, 1)
                                               toTexture:tex.mtl destinationSlice:static_cast<NSUInteger>(face)
                                        destinationLevel:static_cast<NSUInteger>(level) destinationOrigin:MTLOriginMake(0, 0, 0)];
@@ -284,7 +284,7 @@ bool ensureTextureStorage(Context& ctx, Texture& tex) {
     // Keep existing contents of levels that still match.
     if (tex.mtl && tex.storage == format->storage && tex.mtl.textureType == texture.textureType &&
         tex.mtl.sampleCount == texture.sampleCount) {
-        id<MTLBlitCommandEncoder> blit = ctx.stream().blit();
+        id<MTLBlitCommandEncoder> blit = ctx.stream().uploadBlit();
         // Slices are faces for cube maps and cube map arrays.
         auto sliceCount = [](id<MTLTexture> t) {
             return t.textureType == MTLTextureTypeCube ? NSUInteger{6}
@@ -865,7 +865,7 @@ void uploadTexels(Context& ctx, Texture& tex, int face, int level, int x, int y,
             std::memcpy(static_cast<uint8_t*>(depthStaging.data) + i * 4, in + i * 8, 4);
             static_cast<uint8_t*>(stencilStaging.data)[i] = in[i * 8 + 4];
         }
-        id<MTLBlitCommandEncoder> blit = ctx.stream().blit();
+        id<MTLBlitCommandEncoder> blit = ctx.stream().uploadBlit(!ctx.stream().pendingClearUses(tex.mtl));
         for (int layer = 0; layer < depth; ++layer) {
             const NSUInteger slice = static_cast<NSUInteger>(tex.target == GL_TEXTURE_CUBE_MAP ? face : array ? z + layer : 0);
             const size_t first = imageTexels * static_cast<size_t>(layer);
@@ -892,7 +892,8 @@ void uploadTexels(Context& ctx, Texture& tex, int face, int level, int x, int y,
 void uploadStaged(Context& ctx, Texture& tex, int face, int level, int x, int y, int z, int width, int height, int depth,
                   const TransientAllocation& staging, size_t bytesPerRow, size_t bytesPerImage) {
     const bool array = tex.mtl.textureType == MTLTextureType2DArray || tex.mtl.textureType == MTLTextureTypeCubeArray;
-    id<MTLBlitCommandEncoder> blit = ctx.stream().blit();
+    // A pending clear of another target stays a load action of its pass.
+    id<MTLBlitCommandEncoder> blit = ctx.stream().uploadBlit(!ctx.stream().pendingClearUses(tex.mtl));
     if (tex.mtl.textureType == MTLTextureType3D) {
         [blit copyFromBuffer:staging.buffer sourceOffset:staging.offset sourceBytesPerRow:bytesPerRow
             sourceBytesPerImage:bytesPerImage sourceSize:MTLSizeMake(width, height, depth) toTexture:tex.mtl
@@ -1095,6 +1096,7 @@ id<MTLTexture> imageView(Context& ctx, const ImageUnit& unit, GLenum imageType, 
         id<MTLTexture> view = [buffer->mtl newTextureWithDescriptor:desc offset:offset bytesPerRow:rowBytes(width)];
         if (view) tex->views.push_back({key, view});
         buffer->lastUseSerial = buffer->lastWriteSerial = ctx.stream().serial();
+        buffer->shadowValid = false;
         ++buffer->version;
         return view;
     }

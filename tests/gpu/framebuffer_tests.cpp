@@ -1,6 +1,7 @@
 // Framebuffer objects, blits, buffer clears and copies.
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <vector>
 
 #include "gpu.h"
@@ -479,4 +480,76 @@ GPU_TEST(gpu_depth_only_position_only_vertex) {
     glDeleteBuffers(1, &vbo);
     glDeleteVertexArrays(1, &vao);
     glDeleteProgram(p);
+}
+
+// glInvalidateFramebuffer: the invalidated attachments of the pass in
+// progress are not stored, unless the pass draws to them afterwards; the
+// others keep their contents.
+GPU_TEST(gpu_invalidate_framebuffer_stores_later_draws) {
+    static const char* vs = R"(#version 330
+in vec2 position;
+void main() { gl_Position = vec4(position, 0.0, 1.0); })";
+    static const char* fs = R"(#version 330
+uniform vec4 color;
+out vec4 o;
+void main() { o = color; })";
+    auto glInvalidateFramebuffer =
+        reinterpret_cast<PFN_glInvalidateFramebuffer>(wmgl_get_proc_address("glInvalidateFramebuffer"));
+    CHECK(glInvalidateFramebuffer != nullptr);
+    if (!glInvalidateFramebuffer) return;
+    GLuint p = gpu::program(vs, fs);
+    GLuint vao = gpu::quad();
+    GLuint tex = colorTexture(GL_RGBA8, 16, 16, GL_RGBA, GL_UNSIGNED_BYTE);
+    GLuint fb = framebuffer(tex);
+    GLuint depth = 0;
+    glGenRenderbuffers(1, &depth);
+    glBindRenderbuffer(GL_RENDERBUFFER, depth);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, 16, 16);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, depth);
+    CHECK_EQ(glCheckFramebufferStatus(GL_FRAMEBUFFER), static_cast<GLenum>(GL_FRAMEBUFFER_COMPLETE));
+    glViewport(0, 0, 16, 16);
+    glUseProgram(p);
+    glBindVertexArray(vao);
+    const GLint color = glGetUniformLocation(p, "color");
+    glClearColor(0, 0, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glUniform4f(color, 1, 0, 0, 1);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    // Colour invalidated, then drawn again in the same pass: the draw is stored.
+    const GLenum colorAttachment = GL_COLOR_ATTACHMENT0;
+    glInvalidateFramebuffer(GL_FRAMEBUFFER, 1, &colorAttachment);
+    glUniform4f(color, 0, 1, 0, 1);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    const uint8_t green[4] = {0, 255, 0, 255}, blue[4] = {0, 0, 255, 255};
+    CHECK(gpu::near(gpu::readRGBA8(8, 8, 1, 1).data(), green));
+    // Depth and stencil invalidated at the end of a pass: the colour stays.
+    glUniform4f(color, 0, 0, 1, 1);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    const GLenum depthStencil = GL_DEPTH_STENCIL_ATTACHMENT;
+    glInvalidateFramebuffer(GL_FRAMEBUFFER, 1, &depthStencil);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    std::vector<uint8_t> texels(16 * 16 * 4);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, texels.data());
+    CHECK(gpu::near(&texels[(8 * 16 + 8) * 4], blue));
+    // A partial invalidation keeps everything: an upload after an invalidation is kept too.
+    glBindFramebuffer(GL_FRAMEBUFFER, fb);
+    glInvalidateFramebuffer(GL_FRAMEBUFFER, 1, &colorAttachment);
+    std::vector<uint8_t> greenTexels(16 * 16 * 4);
+    for (size_t i = 0; i < greenTexels.size(); i += 4) std::memcpy(&greenTexels[i], green, 4);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 16, 16, GL_RGBA, GL_UNSIGNED_BYTE, greenTexels.data());
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_ONE, GL_ONE);
+    glUniform4f(color, 0, 0, 1, 1);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glDisable(GL_BLEND);
+    const uint8_t cyan[4] = {0, 255, 255, 255};
+    CHECK(gpu::near(gpu::readRGBA8(8, 8, 1, 1).data(), cyan));
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &fb);
+    glDeleteRenderbuffers(1, &depth);
+    glDeleteTextures(1, &tex);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
+    CHECK_GL();
 }

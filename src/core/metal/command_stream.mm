@@ -53,6 +53,16 @@ void CommandStream::endEncoder(PassEnd cause) {
     }
     shaderWrites_ = false;
     if (render_) {
+        // Every attachment is stored but those invalidated since the pass's last draw.
+        for (size_t i = 0; i < target_.color.size(); ++i)
+            if (target_.color[i].texture)
+                [render_ setColorStoreAction:storeDiscard_.color & (1u << i) ? MTLStoreActionDontCare : MTLStoreActionStore
+                                     atIndex:i];
+        if (target_.depth.texture)
+            [render_ setDepthStoreAction:storeDiscard_.depth ? MTLStoreActionDontCare : MTLStoreActionStore];
+        if (target_.stencil.texture)
+            [render_ setStencilStoreAction:storeDiscard_.stencil ? MTLStoreActionDontCare : MTLStoreActionStore];
+        storeDiscard_ = Discard();
         [render_ endEncoding];
         render_ = nil;
     }
@@ -90,6 +100,10 @@ void CommandStream::startRender(const RenderTargetDesc& target) {
     }
     MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
     const bool clearsApply = pending_.any() && pendingTarget_ == target;
+    // Attachments invalidated since the last work recorded are not loaded.
+    const Discard noLoad = loadDiscard_.any() && discardTarget_ == target ? loadDiscard_ : Discard();
+    loadDiscard_ = Discard();
+    storeDiscard_ = Discard();
     for (size_t i = 0; i < target.color.size(); ++i) {
         const auto& t = target.color[i];
         if (!t.texture) continue;
@@ -102,27 +116,31 @@ void CommandStream::startRender(const RenderTargetDesc& target) {
             a.loadAction = MTLLoadActionClear;
             a.clearColor = pending_.color[i];
         } else {
-            a.loadAction = MTLLoadActionLoad;
+            a.loadAction = noLoad.color & (1u << i) ? MTLLoadActionDontCare : MTLLoadActionLoad;
         }
-        a.storeAction = MTLStoreActionStore;
+        a.storeAction = MTLStoreActionUnknown;  // chosen when the pass ends (endEncoder)
     }
     if (target.depth.texture) {
         MTLRenderPassDepthAttachmentDescriptor* d = pass.depthAttachment;
         d.texture = target.depth.texture;
         d.level = target.depth.level;
         d.slice = target.depth.slice;
-        d.loadAction = clearsApply && pending_.depth ? MTLLoadActionClear : MTLLoadActionLoad;
+        d.loadAction = clearsApply && pending_.depth ? MTLLoadActionClear
+                       : noLoad.depth                ? MTLLoadActionDontCare
+                                                     : MTLLoadActionLoad;
         d.clearDepth = pending_.depthValue;
-        d.storeAction = MTLStoreActionStore;
+        d.storeAction = MTLStoreActionUnknown;
     }
     if (target.stencil.texture) {
         MTLRenderPassStencilAttachmentDescriptor* s = pass.stencilAttachment;
         s.texture = target.stencil.texture;
         s.level = target.stencil.level;
         s.slice = target.stencil.slice;
-        s.loadAction = clearsApply && pending_.stencil ? MTLLoadActionClear : MTLLoadActionLoad;
+        s.loadAction = clearsApply && pending_.stencil ? MTLLoadActionClear
+                       : noLoad.stencil                ? MTLLoadActionDontCare
+                                                       : MTLLoadActionLoad;
         s.clearStencil = pending_.stencilValue;
-        s.storeAction = MTLStoreActionStore;
+        s.storeAction = MTLStoreActionUnknown;
     }
     if (!target.hasAnyAttachment()) {
         // Framebuffer with no attachments (ARB_framebuffer_no_attachments).
@@ -177,13 +195,28 @@ void CommandStream::startRender(const RenderTargetDesc& target) {
 }
 
 id<MTLRenderCommandEncoder> CommandStream::render(const RenderTargetDesc& target) {
+    if (__builtin_expect(deferred_ != nullptr, 0)) runDeferred();
     ++renderCalls_;
     // A clear recorded for another target while this pass stayed open runs
     // first: later draws (here, or sampling that target) must see it.
     if (pending_.any() && pendingTarget_ != target) resolvePendingClear();
-    if (render_ && target_ == target) return render_;
+    if (render_ && target_ == target) {
+        storeDiscard_ = Discard();  // the pass writes the attachments again
+        return render_;
+    }
     startRender(target);
     return render_;
+}
+
+void CommandStream::invalidate(const RenderTargetDesc& target, uint8_t colorMask, bool depth, bool stencil) {
+    Discard& d = render_ && target_ == target ? storeDiscard_ : loadDiscard_;
+    if (&d == &loadDiscard_ && !(discardTarget_ == target)) {
+        discardTarget_ = target;
+        loadDiscard_ = Discard();
+    }
+    d.color |= colorMask;
+    d.depth = d.depth || depth;
+    d.stencil = d.stencil || stencil;
 }
 
 bool CommandStream::clearWithLoadAction(const RenderTargetDesc& target, const PendingClear& clear) {
@@ -215,7 +248,16 @@ void CommandStream::resolvePendingClear() {
     endEncoder();
 }
 
-id<MTLBlitCommandEncoder> CommandStream::blit(bool keepPendingClear) {
+bool CommandStream::pendingClearUses(id<MTLTexture> texture) const {
+    if (!pending_.any() || !texture) return false;
+    auto uses = [&](id<MTLTexture> t) { return t && (t == texture || t.parentTexture == texture || texture.parentTexture == t); };
+    for (const RenderTargetDesc::Target& c : pendingTarget_.color)
+        if (uses(c.texture)) return true;
+    return uses(pendingTarget_.depth.texture) || uses(pendingTarget_.stencil.texture);
+}
+
+id<MTLBlitCommandEncoder> CommandStream::uploadBlit(bool keepPendingClear) {
+    loadDiscard_ = Discard();  // the copies may write the invalidated attachments
     // A clear recorded after this encoder opened must run before new commands.
     if (blit_ && (keepPendingClear || !pending_.any())) return blit_;
     if (!keepPendingClear) resolvePendingClear();
@@ -225,7 +267,14 @@ id<MTLBlitCommandEncoder> CommandStream::blit(bool keepPendingClear) {
     return blit_;
 }
 
+id<MTLBlitCommandEncoder> CommandStream::blit(bool keepPendingClear) {
+    if (__builtin_expect(deferred_ != nullptr, 0)) runDeferred();
+    return uploadBlit(keepPendingClear);
+}
+
 id<MTLComputeCommandEncoder> CommandStream::compute(bool keepPendingClear) {
+    if (__builtin_expect(deferred_ != nullptr, 0)) runDeferred();
+    loadDiscard_ = Discard();  // the dispatches may write the invalidated attachments
     if (compute_ && (keepPendingClear || !pending_.any())) return compute_;
     if (!keepPendingClear) resolvePendingClear();
     endEncoder(PassEnd::Compute);
@@ -256,6 +305,7 @@ void CommandStream::present(id<CAMetalDrawable> drawable) {
 }
 
 id<MTLRenderCommandEncoder> CommandStream::preludeRender() {
+    if (__builtin_expect(deferred_ != nullptr, 0)) runDeferred();
     if (preludeRender_) return preludeRender_;
     if (!preludeRenderBuffer_) {
         preludeRenderBuffer_ = [queue_.mtl() commandBuffer];
@@ -270,6 +320,7 @@ id<MTLRenderCommandEncoder> CommandStream::preludeRender() {
 }
 
 id<MTLComputeCommandEncoder> CommandStream::preludeCompute() {
+    if (__builtin_expect(deferred_ != nullptr, 0)) runDeferred();
     if (preludeCompute_) return preludeCompute_;
     if (!preludeComputeBuffer_) {
         preludeComputeBuffer_ = [queue_.mtl() commandBuffer];
@@ -280,6 +331,7 @@ id<MTLComputeCommandEncoder> CommandStream::preludeCompute() {
 }
 
 id<MTLComputeCommandEncoder> CommandStream::preludeStep(PreludeStep step) {
+    if (__builtin_expect(deferred_ != nullptr, 0)) runDeferred();
     const int i = static_cast<int>(step);
     if (stepEncoders_[i]) return stepEncoders_[i];
     if (!stepBuffers_[i]) {
@@ -329,6 +381,7 @@ void CommandStream::waitForPrelude() {
 }
 
 uint64_t CommandStream::flush(bool keepPendingClear) {
+    if (__builtin_expect(deferred_ != nullptr, 0)) runDeferred();
     if (!keepPendingClear) resolvePendingClear();
     endEncoder(PassEnd::Commit);
     commitPrelude();
