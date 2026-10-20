@@ -435,9 +435,31 @@ id<MTLTexture> bufferTextureView(Context& ctx, Texture& tex) {
 
 }  // namespace
 
+namespace {
+
+bool imagesComplete(Context& ctx, Texture& tex, const SamplerParams& p, bool& multisample);
+
+}  // namespace
+
 bool textureComplete(Context& ctx, Texture& tex, const SamplerParams* params) {
     if (tex.target == GL_TEXTURE_BUFFER) return bufferTextureView(ctx, tex) != nil;
     const SamplerParams& p = params ? *params : tex.sampler;
+    // Every change to the images bumps the version: draws of an unchanged
+    // texture skip the scan of its levels.
+    Texture::CompletenessMemo& m = tex.completeness;
+    if (m.version == tex.version && m.baseLevel == tex.baseLevel && m.maxLevel == tex.maxLevel &&
+        m.minFilter == p.minFilter && m.magFilter == p.magFilter && m.depthStencilMode == tex.depthStencilMode)
+        return m.complete && ensureTextureStorage(ctx, tex);
+    bool multisample = false;
+    const bool complete = imagesComplete(ctx, tex, p, multisample);
+    m = {tex.version, tex.baseLevel, tex.maxLevel, p.minFilter, p.magFilter, tex.depthStencilMode, complete};
+    return complete && ensureTextureStorage(ctx, tex);
+}
+
+namespace {
+
+// The images' part of textureComplete.
+bool imagesComplete(Context& ctx, Texture& tex, const SamplerParams& p, bool& multisample) {
     // Immutable textures clamp the base and max levels to [0, levels - 1] (GL 4.2 section 3.9.14).
     const int levels = tex.immutable ? std::max<int>(1, tex.immutableLevels) : Texture::kMaxLevels;
     const int base = tex.immutable ? std::clamp(tex.baseLevel, 0, levels - 1) : tex.baseLevel;
@@ -457,8 +479,8 @@ bool textureComplete(Context& ctx, Texture& tex, const SamplerParams* params) {
                            tex.target != GL_TEXTURE_RECTANGLE && tex.target != GL_TEXTURE_2D_MULTISAMPLE &&
                            tex.target != GL_TEXTURE_2D_MULTISAMPLE_ARRAY;
     // Multisample textures have no sampler state and are complete once defined.
-    const bool multisample = tex.target == GL_TEXTURE_2D_MULTISAMPLE || tex.target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY;
-    if (multisample) return ensureTextureStorage(ctx, tex);
+    multisample = tex.target == GL_TEXTURE_2D_MULTISAMPLE || tex.target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY;
+    if (multisample) return true;
     // Integer formats cannot be filtered; depth formats only with compare mode
     // or nearest filtering in some cases (GL 3.3: depth textures filter linearly).
     // Stencil indices sample like integers (GL 4.6 section 8.17).
@@ -491,8 +513,10 @@ bool textureComplete(Context& ctx, Texture& tex, const SamplerParams* params) {
             }
         }
     }
-    return ensureTextureStorage(ctx, tex);
+    return true;
 }
+
+}  // namespace
 
 namespace {
 

@@ -274,6 +274,14 @@ public:
     // may run ahead of that command buffer (texture_storage.mm uploadStaged).
     uint64_t touchSerial = 0;
     Texture& root() { return viewOf ? *viewOf : *this; }
+    // textureComplete's last answer about the images (storage is checked
+    // every time), for the version and the parameters it depends on.
+    struct CompletenessMemo {
+        uint64_t version = ~0ull;
+        GLint baseLevel = 0, maxLevel = 0;
+        GLenum minFilter = 0, magFilter = 0, depthStencilMode = 0;
+        bool complete = false;
+    } completeness;
 
     int faceCount() const { return target == GL_TEXTURE_CUBE_MAP ? 6 : 1; }
     const TextureImage& image(int face, int level) const { return images[face][level]; }
