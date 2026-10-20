@@ -1,6 +1,12 @@
 #include "core/metal/pipeline_cache.h"
 
 #include <algorithm>
+#include <chrono>
+#include <condition_variable>
+#include <ctime>
+#include <cstring>
+#include <dirent.h>
+#include <mutex>
 #include <cstdlib>
 #include <cctype>
 #include <iterator>
@@ -44,7 +50,9 @@ std::string fileSafe(const char* text) {
 //
 // The archive loaded from disk is only read, by any thread; pipelines
 // compiled in this run are added on a serial queue to a second copy, which
-// is written back (all of it) shortly after.
+// is written back (all of it) shortly after. Both are read from disk off
+// the drawing thread: the first when a context is made (start()), the
+// second on the queue when the first pipeline is added.
 class PipelineArchive {
 public:
     static PipelineArchive& get() {
@@ -52,10 +60,22 @@ public:
         return *archive;
     }
 
+    // Starts reading the archive (a game's archive can be hundreds of MB).
+    static void start() { get(); }
+
     // Creates the pipeline from the archive, or compiles it and adds it.
     id<MTLRenderPipelineState> create(MTLRenderPipelineDescriptor* desc, NSError** error) {
         id<MTLDevice> device = Device::get().mtl();
-        if (loaded_) {
+        if (!loadedReady_.load(std::memory_order_acquire)) {
+            // Still reading (a large archive takes seconds; it started when
+            // the context was made, usually long before the first draw): a
+            // short wait, then a compile, which Metal's own shader cache
+            // often makes quick, rather than holding the draw.
+            std::unique_lock<std::mutex> lock(loadMutex_);
+            loadDone_.wait_for(lock, std::chrono::milliseconds(50),
+                               [&] { return loadedReady_.load(std::memory_order_acquire); });
+        }
+        if (loadedReady_.load(std::memory_order_acquire) && loaded_) {
             desc.binaryArchives = @[ loaded_ ];
             id<MTLRenderPipelineState> state = [device newRenderPipelineStateWithDescriptor:desc
                                                                                     options:MTLPipelineOptionFailOnBinaryArchiveMiss
@@ -68,7 +88,7 @@ public:
             desc.binaryArchives = nil;
         }
         id<MTLRenderPipelineState> state = [device newRenderPipelineStateWithDescriptor:desc error:error];
-        if (state && writing_) add(desc);
+        if (state) add(desc);
         return state;
     }
 
@@ -94,34 +114,64 @@ private:
         path_ = dir + "/" + logProgramName() + "-" + version + "-" + fileSafe(device.name.UTF8String) + "-" + fileSafe(build) +
                 ".metallib";
         url_ = [NSURL fileURLWithPath:[NSString stringWithUTF8String:path_.c_str()]];
-        struct stat st;
-        const bool exists = ::stat(path_.c_str(), &st) == 0 && st.st_size > 0;
-        auto open = [&](bool fromDisk) -> id<MTLBinaryArchive> {
-            MTLBinaryArchiveDescriptor* d = [MTLBinaryArchiveDescriptor new];
-            if (fromDisk) d.url = url_;
-            NSError* error = nil;
-            id<MTLBinaryArchive> archive = [device newBinaryArchiveWithDescriptor:d error:&error];
-            if (!archive && fromDisk)
-                WMGL_WARN(Pipeline, "pipeline cache %s unreadable (%s); starting a new one", path_.c_str(),
-                          error.localizedDescription.UTF8String);
-            return archive;
-        };
-        if (exists) {
-            loaded_ = open(true);
-            if (loaded_) writing_ = open(true);
-            else ::unlink(path_.c_str());
-        }
-        if (!writing_) writing_ = open(false);
-        full_ = exists && st.st_size > kMaxBytes;
+        dir_ = dir;
         queue_ = dispatch_queue_create_with_target("winemetalgl.pipeline-archive", DISPATCH_QUEUE_SERIAL,
                                                   dispatch_get_global_queue(QOS_CLASS_UTILITY, 0));
-        WMGL_INFO(Pipeline, "pipeline cache %s (%s)", path_.c_str(), loaded_ ? "loaded" : "new");
+        enabled_ = true;
+        loadedReady_.store(false, std::memory_order_relaxed);
+        // Read on a queue of its own (the archive queue may be saving).
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+            @autoreleasepool {
+                struct stat st;
+                const bool exists = ::stat(path_.c_str(), &st) == 0 && st.st_size > 0;
+                id<MTLBinaryArchive> loaded = exists ? open(true) : nil;
+                if (exists && !loaded) ::unlink(path_.c_str());
+                full_ = loaded && st.st_size > kMaxBytes;
+                WMGL_INFO(Pipeline, "pipeline cache %s (%s)", path_.c_str(), loaded ? "loaded" : "new");
+                {
+                    std::lock_guard<std::mutex> lock(loadMutex_);
+                    loaded_ = loaded;
+                    loadedReady_.store(true, std::memory_order_release);
+                }
+                loadDone_.notify_all();
+                removeStaleTemporaries();
+            }
+        });
         // Saved at exit too (a short session ends before the delayed save),
         // without the additions still queued.
         std::atexit([] { get().finish(); });
     }
 
+    // The archive at path_, or (fromDisk false) a new one.
+    id<MTLBinaryArchive> open(bool fromDisk) {
+        MTLBinaryArchiveDescriptor* d = [MTLBinaryArchiveDescriptor new];
+        if (fromDisk) d.url = url_;
+        NSError* error = nil;
+        id<MTLBinaryArchive> archive = [Device::get().mtl() newBinaryArchiveWithDescriptor:d error:&error];
+        if (!archive && fromDisk)
+            WMGL_WARN(Pipeline, "pipeline cache %s unreadable (%s); starting a new one", path_.c_str(),
+                      error.localizedDescription.UTF8String);
+        return archive;
+    }
+
+    // Temporary files of saves that never finished (a process that ended
+    // while writing), an hour old or more.
+    void removeStaleTemporaries() {
+        DIR* d = ::opendir(dir_.c_str());
+        if (!d) return;
+        const time_t now = ::time(nullptr);
+        while (dirent* e = ::readdir(d)) {
+            const size_t n = std::strlen(e->d_name);
+            if (n < 4 || std::strcmp(e->d_name + n - 4, ".tmp") != 0 || !std::strstr(e->d_name, ".metallib.")) continue;
+            const std::string file = dir_ + "/" + e->d_name;
+            struct stat st;
+            if (::stat(file.c_str(), &st) == 0 && now - st.st_mtimespec.tv_sec > 3600) ::unlink(file.c_str());
+        }
+        ::closedir(d);
+    }
+
     void finish() {
+        if (!enabled_) return;
         stopping_ = true;
         // The last chance for this session's pipelines: a few tries (see save()).
         dispatch_sync(queue_, ^{
@@ -130,10 +180,21 @@ private:
     }
 
     void add(MTLRenderPipelineDescriptor* desc) {
-        if (full_) return;
+        if (full_ || !enabled_) return;
         dispatch_async(queue_, ^{
             if (stopping_) return;
             @autoreleasepool {
+                // The copy written back: the file's contents, read here the first time.
+                if (!writing_) {
+                    // After the read: a copy started before it would replace the file's pipelines.
+                    {
+                        std::unique_lock<std::mutex> lock(loadMutex_);
+                        loadDone_.wait(lock, [&] { return loadedReady_.load(std::memory_order_acquire); });
+                    }
+                    writing_ = loaded_ ? open(true) : nil;
+                    if (!writing_) writing_ = open(false);
+                    if (!writing_) return;
+                }
                 // Compiles the pipeline's functions for the archive (a second
                 // compile, off the drawing thread).
                 NSError* error = nil;
@@ -192,16 +253,28 @@ private:
         }
     }
 
-    static constexpr off_t kMaxBytes = off_t(1) << 30;
-    std::string path_;
+    // Reading an archive takes about a second per 70 MB: past this size it
+    // takes no more pipelines.
+    static constexpr off_t kMaxBytes = off_t(256) << 20;
+    std::string path_, dir_;
     NSURL* url_ = nil;
-    id<MTLBinaryArchive> loaded_ = nil;   // read only, any thread
+    bool enabled_ = false;
+    id<MTLBinaryArchive> loaded_ = nil;   // read only, any thread, once loadedReady_
+    std::atomic<bool> loadedReady_{true};  // false while a read is under way
+    std::mutex loadMutex_;
+    std::condition_variable loadDone_;
     id<MTLBinaryArchive> writing_ = nil;  // queue_ only
     dispatch_queue_t queue_ = nil;
     std::atomic<bool> full_{false}, stopping_{false};
     int unsaved_ = 0;          // queue_ only
     bool saveScheduled_ = false;  // queue_ only
 };
+
+}  // namespace
+
+void startPipelineArchive() { PipelineArchive::start(); }
+
+namespace {
 
 // The interface a pipeline's render state depends on in a program: its
 // vertex inputs (location, kind, attribute) and fragment outputs. Programs

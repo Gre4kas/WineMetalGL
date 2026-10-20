@@ -1,5 +1,7 @@
 #include "core/context.h"
 
+#include "core/metal/pipeline_cache.h"
+
 #include <cstdarg>
 
 #include <algorithm>
@@ -74,6 +76,7 @@ void noCurrentContext(const char* command) {
 Context::Context(RefPtr<ShareGroup> share, const ContextConfig& config, int pixelFormat)
     : config_(config), share_(std::move(share)), stream_(share_->queue) {
     (void)pixelFormat;
+    startPipelineArchive();
     defaultVertexArray = makeRef<VertexArray>(0);
     defaultTransformFeedback = makeRef<TransformFeedback>(0);
     state.vertexArray = defaultVertexArray;
