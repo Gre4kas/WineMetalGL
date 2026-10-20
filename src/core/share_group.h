@@ -1,6 +1,8 @@
 // Objects shared between contexts (wglShareLists / share context).
 #pragma once
 
+#include <atomic>
+
 #include <map>
 #include <mutex>
 #include <string>
@@ -45,6 +47,11 @@ public:
 
     Queue queue;
     PipelineCache& pipelines() { return *pipelines_; }
+    // Contexts of the group current on some thread (wmgl_make_current):
+    // with one, nothing else can see its commands before it commits.
+    // (Every context of the Wine module shares a hidden root context's
+    // group, which is never current.)
+    std::atomic<int> currentContexts{0};
 
     // Compatibility profile: generated fixed-function programs by state key
     // (core/compat/fixed_function.h), and display lists (compat/display_list.h).

@@ -481,6 +481,10 @@ private:
             uint64_t uid = 0, version = 0;
             uint32_t size = 0;
         } uniforms[2];
+        // Uniform block buffers set per stage (vertex, fragment) by bindUniforms
+        // in slots kSlotFirstUniformBlock onwards (nil: unknown).
+        id<MTLBuffer> blockBuffers[2][14];
+        NSUInteger blockOffsets[2][14];
         // Textures and samplers set per stage (vertex, fragment) by bindTextures.
         id<MTLTexture> textures[2][kTrackedTextures];
         id<MTLSamplerState> samplers[2][kTrackedTextures];

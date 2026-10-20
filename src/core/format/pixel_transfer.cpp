@@ -3,6 +3,9 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <memory>
+#include <mutex>
+#include <unordered_map>
 
 namespace wmgl {
 
@@ -742,6 +745,80 @@ bool identityTransfer(GLenum format, GLenum type, const FormatInfo& info) {
     }
 }
 
+// unpackPixels' byte shuffle into RGBA8 (unsigned normalized, RGB or RGBA
+// base format): for each stored channel, the byte of the client group it
+// comes from, or kShuffleZero / kShuffleOne.
+constexpr int8_t kShuffleZero = -1, kShuffleOne = -2;
+bool byteShuffle(GLenum format, GLenum type, bool alphaIsOne, int8_t map[4]) {
+    const int8_t O = kShuffleOne;
+    auto set = [&](int8_t r, int8_t g, int8_t b, int8_t a) {
+        map[0] = r;
+        map[1] = g;
+        map[2] = b;
+        map[3] = alphaIsOne ? O : a;
+        return true;
+    };
+    if (type == GL_UNSIGNED_BYTE) {
+        switch (format) {
+        case GL_RGB: return set(0, 1, 2, O);
+        case GL_BGR: return set(2, 1, 0, O);
+        case GL_RGBA: return set(0, 1, 2, 3);
+        case GL_BGRA: return set(2, 1, 0, 3);
+        // Conversion to RGB copies L into R, G and B (GL 2.1 section 3.6.5).
+        case GL_LUMINANCE: return set(0, 0, 0, O);
+        case GL_LUMINANCE_ALPHA: return set(0, 0, 0, 1);
+        default: return false;
+        }
+    }
+    // The first component is in the most significant byte: on a little-endian
+    // host, the last byte in memory (the REV orders are UNSIGNED_BYTE groups).
+    if (type == GL_UNSIGNED_INT_8_8_8_8) {
+        if (format == GL_RGBA) return set(3, 2, 1, 0);
+        if (format == GL_BGRA) return set(1, 2, 3, 0);
+        return false;
+    }
+    if (type == GL_UNSIGNED_INT_8_8_8_8_REV) {
+        if (format == GL_RGBA) return set(0, 1, 2, 3);
+        if (format == GL_BGRA) return set(2, 1, 0, 3);
+    }
+    return false;
+}
+
+// unpackPixels' tables for 16-bit packed groups into RGBA8: the generic
+// conversion (readGroup, clamping, rgbaToStored, encodeStorage) of every
+// value, built once per (format, type, base format, alpha) and kept.
+const uint32_t* packed16Table(GLenum format, GLenum type, const FormatInfo& info) {
+    switch (type) {
+    case GL_UNSIGNED_SHORT_5_6_5: case GL_UNSIGNED_SHORT_5_6_5_REV:
+        if (format != GL_RGB) return nullptr;
+        break;
+    case GL_UNSIGNED_SHORT_4_4_4_4: case GL_UNSIGNED_SHORT_4_4_4_4_REV: case GL_UNSIGNED_SHORT_5_5_5_1:
+    case GL_UNSIGNED_SHORT_1_5_5_5_REV:
+        if (format != GL_RGBA && format != GL_BGRA) return nullptr;
+        break;
+    default: return nullptr;
+    }
+    static std::mutex lock;
+    static std::unordered_map<uint64_t, std::unique_ptr<uint32_t[]>> tables;
+    const uint64_t key = (static_cast<uint64_t>(format) << 40) ^ (static_cast<uint64_t>(type) << 16) ^
+                         (static_cast<uint64_t>(info.baseFormat) << 2) ^ (info.storedAlphaIsOne ? 1u : 0u) ^
+                         (info.storage == Storage::RGBA8Unorm_sRGB ? 2u : 0u);
+    std::lock_guard<std::mutex> guard(lock);
+    std::unique_ptr<uint32_t[]>& table = tables[key];
+    if (!table) {
+        table.reset(new uint32_t[65536]);
+        for (uint32_t v = 0; v < 65536; ++v) {
+            const uint16_t group = static_cast<uint16_t>(v);
+            Texel t;
+            readGroup(reinterpret_cast<const uint8_t*>(&group), format, type, false, false, t);
+            for (double& c : t.c) c = std::clamp(c, 0.0, 1.0);
+            rgbaToStored(info, t);
+            encodeStorage(info.storage, t, reinterpret_cast<uint8_t*>(&table[v]));
+        }
+    }
+    return table.get();
+}
+
 }  // namespace
 
 bool storedLayout(GLenum format, GLenum type, const FormatInfo& info) {
@@ -790,14 +867,74 @@ void unpackPixels(const void* src, GLenum format, GLenum type, int width, int he
         return;
     }
     if (format == GL_RGB && type == GL_UNSIGNED_BYTE && l.groupBytes == 3 && rgba8 && info.baseFormat == GL_RGB) {
+        // Four texels a step as one byte shuffle (pshufb, tbl), while 16
+        // bytes can be read within the row; the rest one at a time.
+        typedef uint8_t Bytes16 __attribute__((ext_vector_type(16)));
+        const Bytes16 opaque = (Bytes16)(0xff);
         for (int z = 0; z < depth; ++z)
             for (int y = 0; y < height; ++y) {
                 const uint8_t* row = rowAt(z, y);
-                for (int x = 0; x < width; ++x, row += 3, dst += 4) {
+                int x = 0;
+                for (; x + 6 <= width; x += 4, row += 12, dst += 16) {
+                    Bytes16 in;
+                    std::memcpy(&in, row, 16);
+                    const Bytes16 out = __builtin_shufflevector(in, opaque, 0, 1, 2, 16, 3, 4, 5, 16, 6, 7, 8, 16, 9, 10, 11, 16);
+                    std::memcpy(dst, &out, 16);
+                }
+                for (; x < width; ++x, row += 3, dst += 4) {
                     dst[0] = row[0];
                     dst[1] = row[1];
                     dst[2] = row[2];
                     dst[3] = 0xff;
+                }
+            }
+        return;
+    }
+    if (!swap && rgba8 && (info.baseFormat == GL_RGB || info.baseFormat == GL_RGBA)) {
+        // Other byte groups into RGBA8: a byte shuffle (8-bit normalized
+        // values convert exactly), with an opaque alpha where the group has
+        // none or the internal format drops it.
+        int8_t map[4];
+        if (byteShuffle(format, type, info.storedAlphaIsOne, map) && l.groupBytes == groupBytes(format, type)) {
+            for (int z = 0; z < depth; ++z)
+                for (int y = 0; y < height; ++y) {
+                    const uint8_t* row = rowAt(z, y);
+                    for (int x = 0; x < width; ++x, row += l.groupBytes, dst += 4)
+                        for (int c = 0; c < 4; ++c) dst[c] = map[c] < 0 ? (map[c] == kShuffleOne ? 0xff : 0) : row[map[c]];
+                }
+            return;
+        }
+        // 16-bit packed groups (565, 4444, 5551 and their REV orders): a
+        // table of the generic conversion of every value.
+        if (const uint32_t* table = packed16Table(format, type, info); table && l.groupBytes == 2) {
+            for (int z = 0; z < depth; ++z)
+                for (int y = 0; y < height; ++y) {
+                    const uint8_t* row = rowAt(z, y);
+                    for (int x = 0; x < width; ++x, row += 2, dst += 4) {
+                        uint16_t v;
+                        std::memcpy(&v, row, 2);
+                        std::memcpy(dst, &table[v], 4);
+                    }
+                }
+            return;
+        }
+    }
+    if (!swap && type == GL_FLOAT && info.storage == Storage::RGBA16Float &&
+        ((format == GL_RGBA && info.baseFormat == GL_RGBA && !info.storedAlphaIsOne) ||
+         (format == GL_RGB && info.baseFormat == GL_RGB)) && l.groupBytes == groupBytes(format, type)) {
+        // Floats into half floats, as encodeStorage converts them.
+        const int components = format == GL_RGBA ? 4 : 3;
+        for (int z = 0; z < depth; ++z)
+            for (int y = 0; y < height; ++y) {
+                const uint8_t* row = rowAt(z, y);
+                for (int x = 0; x < width; ++x, row += l.groupBytes, dst += 8) {
+                    float f[4] = {0, 0, 0, 1};
+                    std::memcpy(f, row, static_cast<size_t>(components) * 4);
+                    if (info.storedAlphaIsOne) f[3] = 1;
+                    for (int c = 0; c < 4; ++c) {
+                        const uint16_t h = floatToHalf(f[c]);
+                        std::memcpy(dst + c * 2, &h, 2);
+                    }
                 }
             }
         return;

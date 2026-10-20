@@ -1353,6 +1353,18 @@ void main() { gl_FragColor = texture2D(tex, vec2(0.5)); })");
     clear();
     glRectf(0, 0, 64, 64);
     CHECK(pixel(32, 32, kGreen));
+    // The regeneration is deferred to the next command that reads the levels:
+    // several uploads, then a read of a smaller level without a draw.
+    for (int i = 0; i < 8; ++i) glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 4, 4, GL_RGBA, GL_UNSIGNED_BYTE, (i & 1 ? green : red).data());
+    uint8_t level2[4] = {};
+    glGetTexImage(GL_TEXTURE_2D, 2, GL_RGBA, GL_UNSIGNED_BYTE, level2);
+    CHECK(std::memcmp(level2, kGreen, 4) == 0);
+    // A write to a smaller level after an upload to the base level wins.
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 4, 4, GL_RGBA, GL_UNSIGNED_BYTE, red.data());
+    glTexSubImage2D(GL_TEXTURE_2D, 2, 0, 0, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, kGreen);
+    clear();
+    glRectf(0, 0, 64, 64);
+    CHECK(pixel(32, 32, kGreen));
     glTexParameteri(GL_TEXTURE_2D, GL_GENERATE_MIPMAP, 2);
     CHECK_EQ(glGetError(), static_cast<GLenum>(GL_INVALID_VALUE));
     glDeleteTextures(1, &tex);

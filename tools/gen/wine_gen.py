@@ -251,6 +251,9 @@ def main():
                 _, field, size = kind
                 out.write("    if (count >= 0 && wmgl_batch( unix_%s, &args, sizeof(args), %s, %s, offsetof(struct %s_params, %s) ))"
                           " return;\n" % (cmd, field, size, cmd, field))
+            elif ret == "void" and cmd not in MANUAL_UNIX:
+                # Joins the calls batched before it (one unix call for both).
+                out.write("    if (wmgl_batch_last( unix_%s, &args, sizeof(args) )) return;\n" % cmd)
             out.write("    WMGL_CALL(%s, &args);\n" % cmd)
             if ret != "void":
                 out.write("    return args.ret;\n")

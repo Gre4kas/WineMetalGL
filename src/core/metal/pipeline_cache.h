@@ -92,6 +92,10 @@ struct SamplerKey {
 // and fragment outputs, and a program that links gets the states seen so far,
 // so an effect's first draw usually finds its pipeline made
 // (WINEMETALGL_PREDICT_PIPELINES=0 turns that off).
+// Starts reading the on-disk pipeline cache in the background (a context
+// was made: its first pipelines then rarely wait for it).
+void startPipelineArchive();
+
 class PipelineCache {
 public:
     PipelineCache();

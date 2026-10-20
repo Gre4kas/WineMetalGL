@@ -359,13 +359,37 @@ WMGL_EXPORT int wmgl_make_current(wmgl_context* handle, wmgl_surface* draw, wmgl
     Context* ctx = asContext(handle);
     WMGL_TRACE(Driver, "make current: context %p, draw %p, read %p (was %p)", ctx, draw, read, previous);
     // Switching contexts flushes the previous one (WGL requires an implicit glFlush).
-    if (previous && previous != ctx) previous->stream().flush();
+    if (previous && previous != ctx) {
+        previous->stream().flush();
+        if (previous->current) {
+            previous->current = false;
+            --previous->share().currentContexts;
+        }
+    }
+    if (ctx && !ctx->current) {
+        ctx->current = true;
+        ++ctx->share().currentContexts;
+    }
     setCurrentContext(ctx);
     if (ctx) ctx->bindSurfaces(asSurface(draw), asSurface(read ? read : draw));
     return 1;
 }
 
 WMGL_EXPORT void* wmgl_get_proc_address(const char* name) { return lookupProc(name); }
+
+namespace {
+thread_local void* t_batchPool = nullptr;
+}  // namespace
+
+// A batch of GL calls (the Wine module's): one autorelease pool for them all
+// instead of one per call (CallPool).
+WMGL_EXPORT void wmgl_batch_begin(void) {
+    if (CallPool::depth++ == 0) t_batchPool = objc_autoreleasePoolPush();
+}
+
+WMGL_EXPORT void wmgl_batch_end(void) {
+    if (CallPool::depth > 0 && --CallPool::depth == 0) objc_autoreleasePoolPop(t_batchPool);
+}
 
 WMGL_EXPORT const char* wmgl_renderer_string(void) {
     // GL_RENDERER's string, WINEMETALGL_RENDERER included.

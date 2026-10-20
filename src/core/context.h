@@ -98,6 +98,10 @@ public:
     void markDirty(uint64_t bits) { dirty |= bits; }
 
     CommandStream& stream() { return stream_; }
+    // Textures with GL_GENERATE_MIPMAP levels to regenerate (Texture::mipmapsPending).
+    std::vector<RefPtr<Texture>> pendingMipmaps;
+    // Current on a thread (ShareGroup::currentContexts counts it).
+    bool current = false;
     DrawState& draw() { return *draw_; }
 
     // Returns the buffer bound to a buffer target, or null for an invalid target.
@@ -248,12 +252,17 @@ void captureFrameBoundary(Context* ctx);
 // autoreleases), and the threads GL calls come from have no pool that ever
 // drains: without one, every render encoder kept its command buffer, and so
 // every texture and buffer storage the frame used, alive (issue #16).
+// Inside another pool of this kind (a batch of calls, wmgl_batch_begin) a
+// call adds none: the outer one drains when the batch ends.
 struct CallPool {
-    CallPool() : token(objc_autoreleasePoolPush()) {}
-    ~CallPool() { objc_autoreleasePoolPop(token); }
+    CallPool() : token(depth++ ? nullptr : objc_autoreleasePoolPush()) {}
+    ~CallPool() {
+        if (--depth == 0) objc_autoreleasePoolPop(token);
+    }
     CallPool(const CallPool&) = delete;
     CallPool& operator=(const CallPool&) = delete;
     void* token;
+    static thread_local int depth;  // pools of this kind open on this thread
 };
 
 // Scoped share-group lock (every GL command runs under it).

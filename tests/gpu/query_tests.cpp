@@ -1,4 +1,6 @@
 // Queries, conditional rendering and syncs.
+#include <chrono>
+#include <thread>
 #include "gpu.h"
 
 namespace {
@@ -126,5 +128,81 @@ GPU_TEST(gpu_max_element_index) {
     GLint64 maxIndex = 0;
     glGetInteger64v(GL_MAX_ELEMENT_INDEX, &maxIndex);
     CHECK_EQ(maxIndex, static_cast<GLint64>(UINT32_MAX));
+    CHECK_GL();
+}
+
+// GL_TIME_ELAPSED of a GPU-heavy pass (timed by encoder timestamps, without
+// commits) is within the wall time from its first command to glFinish, and
+// a sizeable part of it.
+GPU_TEST(gpu_timer_elapsed_matches_wall_time) {
+    static const char* fs = R"(#version 330
+out vec4 o;
+void main() {
+    vec2 p = gl_FragCoord.xy * 0.001;
+    for (int i = 0; i < 400; ++i) p = vec2(sin(p.x * 1.7 + p.y), cos(p.y * 1.3 - p.x));
+    o = vec4(p, 0.0, 1.0);
+})";
+    GLuint p = gpu::program(kVs, fs);
+    GLuint vao = gpu::quad();
+    GLuint tex = 0, fb = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1024, 1024, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glGenFramebuffers(1, &fb);
+    glBindFramebuffer(GL_FRAMEBUFFER, fb);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+    glViewport(0, 0, 1024, 1024);
+    glUseProgram(p);
+    glBindVertexArray(vao);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);  // compiles the pipeline
+    glFinish();
+    GLuint q = 0;
+    glGenQueries(1, &q);
+    const auto start = std::chrono::steady_clock::now();
+    glBeginQuery(GL_TIME_ELAPSED, q);
+    for (int i = 0; i < 8; ++i) glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glEndQuery(GL_TIME_ELAPSED);
+    glFinish();
+    const double wall = std::chrono::duration<double, std::nano>(std::chrono::steady_clock::now() - start).count();
+    GLuint64 elapsed = 0;
+    glGetQueryObjectui64v(q, GL_QUERY_RESULT, &elapsed);
+    if (!(elapsed > 0 && static_cast<double>(elapsed) <= wall * 1.05 && static_cast<double>(elapsed) >= wall * 0.2))
+        std::fprintf(stderr, "  elapsed %llu ns, wall %.0f ns\n", static_cast<unsigned long long>(elapsed), wall);
+    CHECK(elapsed > 0);
+    CHECK(static_cast<double>(elapsed) <= wall * 1.05);
+    CHECK(static_cast<double>(elapsed) >= wall * 0.2);
+    glDeleteQueries(1, &q);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &fb);
+    glDeleteTextures(1, &tex);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
+    CHECK_GL();
+}
+
+// glFlush, then a wait without GL_SYNC_FLUSH_COMMANDS_BIT: the fence
+// signals (a flush deferred to the next pass still commits for the wait),
+// as does a status polled after glFlush.
+GPU_TEST(gpu_flush_then_wait_without_flush_bit) {
+    GLuint p = gpu::program(kVs, kFs);
+    GLuint vao = gpu::quad();
+    glUseProgram(p);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    GLsync a = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+    glFlush();
+    CHECK_EQ(glClientWaitSync(a, 0, 2000000000ull) != GL_TIMEOUT_EXPIRED, true);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    GLsync b = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+    glFlush();
+    GLint status = GL_UNSIGNALED;
+    for (int i = 0; i < 2000 && status != GL_SIGNALED; ++i) {
+        glGetSynciv(b, GL_SYNC_STATUS, 1, nullptr, &status);
+        if (status != GL_SIGNALED) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    CHECK_EQ(status, GL_SIGNALED);
+    glDeleteSync(a);
+    glDeleteSync(b);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
     CHECK_GL();
 }

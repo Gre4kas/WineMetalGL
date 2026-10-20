@@ -731,6 +731,10 @@ static bool drawsToFrontBuffer(Context& ctx) {
 
 void Flush(Context& ctx) {
     if (drawsToFrontBuffer(ctx)) ctx.drawSurface()->swap(ctx.stream());
+    // With no other context to see the commands, the commit waits for the
+    // pass in progress to end (CommandStream::deferFlush): engines flush
+    // mid-frame often, and each commit would end the pass.
+    else if (ctx.share().currentContexts.load(std::memory_order_relaxed) <= 1) ctx.stream().deferFlush();
     else ctx.stream().flush();
 }
 

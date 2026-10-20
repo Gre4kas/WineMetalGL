@@ -34,23 +34,37 @@ void prewarmFunctions(std::shared_ptr<LinkedProgram> program) {
     static dispatch_queue_t queue =
         dispatch_queue_create_with_target("winemetalgl.prewarm", DISPATCH_QUEUE_CONCURRENT,
                                           dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0));
-    dispatch_async(queue, ^{
-        @autoreleasepool {
-            LinkedProgram& lp = *program;
-            if (lp.hasStage(shader::Stage::Compute)) {
-                lp.computePipeline();
-                return;
+    LinkedProgram& lp = *program;
+    if (lp.hasStage(shader::Stage::Compute)) {
+        dispatch_async(queue, ^{
+            @autoreleasepool {
+                program->computePipeline();
             }
-            // What PipelineCache::render asks for by default; the variants
-            // (borders, logic operations, culling, ...) still compile on demand.
-            if (lp.hasStage(shader::Stage::Vertex)) lp.function(shader::Stage::Vertex);
-            if (lp.hasStage(shader::Stage::Fragment)) lp.function(shader::Stage::Fragment);
-            if (lp.link.geometry.active) {
-                lp.geometryPassthrough();
-                lp.geometryKernel();
+        });
+        return;
+    }
+    // What PipelineCache::render asks for by default, each stage on its own
+    // (the queue is concurrent); the variants (borders, logic operations,
+    // culling, ...) still compile on demand.
+    if (lp.hasStage(shader::Stage::Vertex))
+        dispatch_async(queue, ^{
+            @autoreleasepool {
+                program->function(shader::Stage::Vertex);
             }
-        }
-    });
+        });
+    if (lp.hasStage(shader::Stage::Fragment))
+        dispatch_async(queue, ^{
+            @autoreleasepool {
+                program->function(shader::Stage::Fragment);
+            }
+        });
+    if (lp.link.geometry.active)
+        dispatch_async(queue, ^{
+            @autoreleasepool {
+                program->geometryPassthrough();
+                program->geometryKernel();
+            }
+        });
 }
 
 namespace {
@@ -754,8 +768,13 @@ std::shared_ptr<LinkedProgram> LinkedProgram::spanningTessEvaluation(std::shared
     return out;
 }
 
+namespace {
+
+std::shared_ptr<LinkedProgram> buildPipelineExecutable(ProgramPipeline& pp);
+
+}  // namespace
+
 std::shared_ptr<LinkedProgram> pipelineExecutable(ProgramPipeline& pp) {
-    using shader::Stage;
     constexpr int kStages = shader::kStageCount;
     bool current = pp.executable != nullptr;
     for (int s = 0; s < kStages; ++s) {
@@ -763,7 +782,38 @@ std::shared_ptr<LinkedProgram> pipelineExecutable(ProgramPipeline& pp) {
         if (pp.builtFrom[s] != (p ? p->linked : nullptr)) current = false;
     }
     if (current) return pp.executable;
+    // A combination built before: the same stage programs with the same
+    // executables (an executable belongs to the program it was linked for).
+    for (size_t i = 0; i < pp.built.size(); ++i) {
+        ProgramPipeline::BuiltExecutable& b = pp.built[i];
+        bool match = true;
+        for (int s = 0; s < kStages && match; ++s) {
+            const Program* p = pp.stages[s].get();
+            match = b.owner[s] == p && b.from[s] == (p ? p->linked : nullptr);
+        }
+        if (!match) continue;
+        for (int s = 0; s < kStages; ++s) pp.builtFrom[s] = b.from[s];
+        pp.executable = b.executable;
+        std::rotate(pp.built.begin(), pp.built.begin() + static_cast<std::ptrdiff_t>(i), pp.built.begin() + static_cast<std::ptrdiff_t>(i) + 1);
+        return pp.executable;
+    }
+    std::shared_ptr<LinkedProgram> out = buildPipelineExecutable(pp);
+    ProgramPipeline::BuiltExecutable b;
+    for (int s = 0; s < kStages; ++s) {
+        b.from[s] = pp.builtFrom[s];
+        b.owner[s] = pp.stages[s].get();
+    }
+    b.executable = out;
+    if (pp.built.size() >= ProgramPipeline::kMaxBuiltExecutables) pp.built.pop_back();
+    pp.built.insert(pp.built.begin(), std::move(b));
+    return out;
+}
 
+namespace {
+
+std::shared_ptr<LinkedProgram> buildPipelineExecutable(ProgramPipeline& pp) {
+    using shader::Stage;
+    constexpr int kStages = shader::kStageCount;
     auto out = std::make_shared<LinkedProgram>();
     out->pipeline = true;
     out->uid = nextLinkedProgramId();
@@ -882,5 +932,7 @@ std::shared_ptr<LinkedProgram> pipelineExecutable(ProgramPipeline& pp) {
     pp.executable = out;
     return out;
 }
+
+}  // namespace
 
 }  // namespace wmgl

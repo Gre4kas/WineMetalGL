@@ -936,6 +936,48 @@ void ReadPixels(Context& ctx, GLint x, GLint y, GLsizei width, GLsizei height, G
                                       sourceSize:MTLSizeMake(width, height, 1) toBuffer:pbo->mtl destinationOffset:start
                           destinationBytesPerRow:layout.rowStride destinationBytesPerImage:layout.rowStride * height];
             pbo->lastUseSerial = pbo->lastWriteSerial = ctx.stream().serial();
+            pbo->shadowValid = false;
+            ++pbo->version;
+            stats::count(&stats::Frame::readsAsync);
+            return;
+        }
+    }
+    // GL_BGRA bytes of RGBA8 texels into a pack buffer: swizzled by a kernel
+    // in command order (a blit copies bytes as they are), also without waiting.
+    if (pbo && pbo->mtl && !pbo->mappedNonPersistent() && !ps.swapBytes && !depth && !stencil && !depthStencil && width > 0 &&
+        height > 0 && x >= 0 && y >= 0 && x + width <= levelWidth && y + height <= levelHeight && format == GL_BGRA &&
+        (type == GL_UNSIGNED_BYTE || type == GL_UNSIGNED_INT_8_8_8_8_REV) && info->storage == Storage::RGBA8Unorm &&
+        source.textureType == MTLTextureType2D && source.sampleCount == 1 && (source.usage & MTLTextureUsageShaderRead) &&
+        (source.pixelFormat == MTLPixelFormatRGBA8Unorm || source.pixelFormat == MTLPixelFormatRGBA8Unorm_sRGB)) {
+        static id<MTLComputePipelineState> pipeline = [] {
+            NSError* error = nil;
+            id<MTLFunction> function = [Device::get().utilityLibrary() newFunctionWithName:@"wmgl_pack_bgra8"];
+            id<MTLComputePipelineState> state =
+                function ? [Device::get().mtl() newComputePipelineStateWithFunction:function error:&error] : nil;
+            if (!state) WMGL_ERR(Pipeline, "BGRA pack pipeline failed: %s", error.localizedDescription.UTF8String);
+            return state;
+        }();
+        const TransferLayout layout = transferLayout(format, type, width, height, 1, ps);
+        const uintptr_t start = reinterpret_cast<uintptr_t>(pixels) + layout.skipBytes;
+        if (pipeline && start % 4 == 0 && layout.rowStride % 4 == 0 && start <= static_cast<size_t>(pbo->size) &&
+            layout.bytesNeeded - layout.skipBytes <= static_cast<size_t>(pbo->size) - start) {
+            id<MTLComputeCommandEncoder> encoder = ctx.stream().compute(!ctx.stream().pendingClearUses(source));
+            const uint32_t params[4] = {static_cast<uint32_t>(x), static_cast<uint32_t>(y), static_cast<uint32_t>(width),
+                                        static_cast<uint32_t>(height)};
+            const uint32_t rowWords = static_cast<uint32_t>(layout.rowStride / 4);
+            // The texels as stored: an sRGB back buffer is read through a linear view (reads would decode it).
+            id<MTLTexture> texels = source.pixelFormat == MTLPixelFormatRGBA8Unorm_sRGB
+                                        ? [source newTextureViewWithPixelFormat:MTLPixelFormatRGBA8Unorm]
+                                        : source;
+            [encoder setComputePipelineState:pipeline];
+            [encoder setTexture:texels atIndex:0];
+            [encoder setBuffer:pbo->mtl offset:start atIndex:0];
+            [encoder setBytes:params length:sizeof(params) atIndex:1];
+            [encoder setBytes:&rowWords length:sizeof(rowWords) atIndex:2];
+            [encoder dispatchThreads:MTLSizeMake(static_cast<NSUInteger>(width), static_cast<NSUInteger>(height), 1)
+               threadsPerThreadgroup:MTLSizeMake(16, 16, 1)];
+            pbo->lastUseSerial = pbo->lastWriteSerial = ctx.stream().serial();
+            pbo->shadowValid = false;
             ++pbo->version;
             stats::count(&stats::Frame::readsAsync);
             return;

@@ -1,5 +1,7 @@
 #include "core/context.h"
 
+#include "core/metal/pipeline_cache.h"
+
 #include <cstdarg>
 
 #include <algorithm>
@@ -28,6 +30,7 @@ thread_local Context* t_current = nullptr;
 }  // namespace
 
 thread_local int ShareLock::depth = 0;
+thread_local int CallPool::depth = 0;
 
 void waitForGpuUnlocked(Context& ctx, uint64_t serial, bool keepBusy) {
     if (!serial) return;
@@ -73,6 +76,7 @@ void noCurrentContext(const char* command) {
 Context::Context(RefPtr<ShareGroup> share, const ContextConfig& config, int pixelFormat)
     : config_(config), share_(std::move(share)), stream_(share_->queue) {
     (void)pixelFormat;
+    startPipelineArchive();
     defaultVertexArray = makeRef<VertexArray>(0);
     defaultTransformFeedback = makeRef<TransformFeedback>(0);
     state.vertexArray = defaultVertexArray;
@@ -98,6 +102,7 @@ Context::Context(RefPtr<ShareGroup> share, const ContextConfig& config, int pixe
 
 Context::~Context() {
     stream_.finish();
+    if (current) --share_->currentContexts;
     {
         ShareLock lock(*this);
         api::releaseCurrentProgram(*this);

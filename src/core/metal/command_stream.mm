@@ -53,6 +53,19 @@ void CommandStream::endEncoder(PassEnd cause) {
     }
     shaderWrites_ = false;
     if (render_) {
+        // Every attachment is stored but those invalidated since the pass's last draw.
+        for (size_t i = 0; i < target_.color.size(); ++i) {
+            if (!target_.color[i].texture) continue;
+            MTLStoreAction action = storeDiscard_.color & (1u << i) ? MTLStoreActionDontCare : MTLStoreActionStore;
+            if (i == 0 && resolveAtEnd_) action = MTLStoreActionStoreAndMultisampleResolve;
+            [render_ setColorStoreAction:action atIndex:i];
+        }
+        resolveAtEnd_ = false;
+        if (target_.depth.texture)
+            [render_ setDepthStoreAction:storeDiscard_.depth ? MTLStoreActionDontCare : MTLStoreActionStore];
+        if (target_.stencil.texture)
+            [render_ setStencilStoreAction:storeDiscard_.stencil ? MTLStoreActionDontCare : MTLStoreActionStore];
+        storeDiscard_ = Discard();
         [render_ endEncoding];
         render_ = nil;
     }
@@ -83,6 +96,8 @@ void CommandStream::waitForShaderWrites(id<MTLCommandEncoder> encoder, bool rend
 }
 
 void CommandStream::startRender(const RenderTargetDesc& target) {
+    // A glFlush deferred while the previous pass went on commits now.
+    if (flushDeferred_) flush(true);
     stats::Timer timer(&stats::Frame::passStartNanos);
     {
         stats::Timer end(&stats::Frame::passEndNanos);
@@ -90,6 +105,10 @@ void CommandStream::startRender(const RenderTargetDesc& target) {
     }
     MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
     const bool clearsApply = pending_.any() && pendingTarget_ == target;
+    // Attachments invalidated since the last work recorded are not loaded.
+    const Discard noLoad = loadDiscard_.any() && discardTarget_ == target ? loadDiscard_ : Discard();
+    loadDiscard_ = Discard();
+    storeDiscard_ = Discard();
     for (size_t i = 0; i < target.color.size(); ++i) {
         const auto& t = target.color[i];
         if (!t.texture) continue;
@@ -102,27 +121,32 @@ void CommandStream::startRender(const RenderTargetDesc& target) {
             a.loadAction = MTLLoadActionClear;
             a.clearColor = pending_.color[i];
         } else {
-            a.loadAction = MTLLoadActionLoad;
+            a.loadAction = noLoad.color & (1u << i) ? MTLLoadActionDontCare : MTLLoadActionLoad;
         }
-        a.storeAction = MTLStoreActionStore;
+        a.storeAction = MTLStoreActionUnknown;  // chosen when the pass ends (endEncoder)
+        if (i == 0 && target.colorResolve) a.resolveTexture = target.colorResolve;
     }
     if (target.depth.texture) {
         MTLRenderPassDepthAttachmentDescriptor* d = pass.depthAttachment;
         d.texture = target.depth.texture;
         d.level = target.depth.level;
         d.slice = target.depth.slice;
-        d.loadAction = clearsApply && pending_.depth ? MTLLoadActionClear : MTLLoadActionLoad;
+        d.loadAction = clearsApply && pending_.depth ? MTLLoadActionClear
+                       : noLoad.depth                ? MTLLoadActionDontCare
+                                                     : MTLLoadActionLoad;
         d.clearDepth = pending_.depthValue;
-        d.storeAction = MTLStoreActionStore;
+        d.storeAction = MTLStoreActionUnknown;
     }
     if (target.stencil.texture) {
         MTLRenderPassStencilAttachmentDescriptor* s = pass.stencilAttachment;
         s.texture = target.stencil.texture;
         s.level = target.stencil.level;
         s.slice = target.stencil.slice;
-        s.loadAction = clearsApply && pending_.stencil ? MTLLoadActionClear : MTLLoadActionLoad;
+        s.loadAction = clearsApply && pending_.stencil ? MTLLoadActionClear
+                       : noLoad.stencil                ? MTLLoadActionDontCare
+                                                       : MTLLoadActionLoad;
         s.clearStencil = pending_.stencilValue;
-        s.storeAction = MTLStoreActionStore;
+        s.storeAction = MTLStoreActionUnknown;
     }
     if (!target.hasAnyAttachment()) {
         // Framebuffer with no attachments (ARB_framebuffer_no_attachments).
@@ -145,6 +169,18 @@ void CommandStream::startRender(const RenderTargetDesc& target) {
         }
         pass.visibilityResultBuffer = visibility_;
         passVisibility_ = true;
+    }
+    uint32_t sampleStart, sampleEnd;
+    if (takeSamples(sampleStart, sampleEnd)) {
+        pass.sampleBufferAttachments[0].sampleBuffer = samples_;
+        // From the vertex stage's start to the fragment stage's end. A
+        // tile-based GPU runs a pass's vertex stage ahead, beside the
+        // fragments of the pass before: queries start no earlier than that
+        // pass's end (api/query.mm timedNanos).
+        pass.sampleBufferAttachments[0].startOfVertexSampleIndex = sampleStart;
+        pass.sampleBufferAttachments[0].endOfVertexSampleIndex = MTLCounterDontSample;
+        pass.sampleBufferAttachments[0].startOfFragmentSampleIndex = MTLCounterDontSample;
+        pass.sampleBufferAttachments[0].endOfFragmentSampleIndex = sampleEnd;
     }
     if (clearsApply) pending_ = PendingClear();
     id<MTLCommandBuffer> buffer;
@@ -177,13 +213,33 @@ void CommandStream::startRender(const RenderTargetDesc& target) {
 }
 
 id<MTLRenderCommandEncoder> CommandStream::render(const RenderTargetDesc& target) {
+    hoistBlocked_ = true;  // a pass that may sample any texture
+    return renderDraw(target);
+}
+
+id<MTLRenderCommandEncoder> CommandStream::renderDraw(const RenderTargetDesc& target) {
+    if (__builtin_expect(deferred_ != nullptr, 0)) runDeferred();
     ++renderCalls_;
     // A clear recorded for another target while this pass stayed open runs
     // first: later draws (here, or sampling that target) must see it.
     if (pending_.any() && pendingTarget_ != target) resolvePendingClear();
-    if (render_ && target_ == target) return render_;
+    if (render_ && target_ == target) {
+        storeDiscard_ = Discard();  // the pass writes the attachments again
+        return render_;
+    }
     startRender(target);
     return render_;
+}
+
+void CommandStream::invalidate(const RenderTargetDesc& target, uint8_t colorMask, bool depth, bool stencil) {
+    Discard& d = render_ && target_ == target ? storeDiscard_ : loadDiscard_;
+    if (&d == &loadDiscard_ && !(discardTarget_ == target)) {
+        discardTarget_ = target;
+        loadDiscard_ = Discard();
+    }
+    d.color |= colorMask;
+    d.depth = d.depth || depth;
+    d.stencil = d.stencil || stencil;
 }
 
 bool CommandStream::clearWithLoadAction(const RenderTargetDesc& target, const PendingClear& clear) {
@@ -215,21 +271,161 @@ void CommandStream::resolvePendingClear() {
     endEncoder();
 }
 
-id<MTLBlitCommandEncoder> CommandStream::blit(bool keepPendingClear) {
+bool CommandStream::resolveOpenPass(id<MTLTexture> color) {
+    if (!render_ || target_.color[0].texture != color || !target_.colorResolve) return false;
+    resolveAtEnd_ = true;
+    endEncoder(PassEnd::Other);
+    return true;
+}
+
+bool CommandStream::pendingClearUses(id<MTLTexture> texture) const {
+    if (!pending_.any() || !texture) return false;
+    auto uses = [&](id<MTLTexture> t) { return t && (t == texture || t.parentTexture == texture || texture.parentTexture == t); };
+    for (const RenderTargetDesc::Target& c : pendingTarget_.color)
+        if (uses(c.texture)) return true;
+    return uses(pendingTarget_.depth.texture) || uses(pendingTarget_.stencil.texture);
+}
+
+namespace {
+
+constexpr uint32_t kTimingSamples = 4096;
+
+id<MTLCounterSet> timestampCounters() {
+    static id<MTLCounterSet> set = [] {
+        id<MTLDevice> device = Device::get().mtl();
+        if (![device supportsCounterSampling:MTLCounterSamplingPointAtStageBoundary]) return (id<MTLCounterSet>)nil;
+        for (id<MTLCounterSet> s in device.counterSets)
+            if ([s.name isEqualToString:MTLCommonCounterSetTimestamp]) return s;
+        return (id<MTLCounterSet>)nil;
+    }();
+    return set;
+}
+
+}  // namespace
+
+bool CommandStream::gpuTiming() {
+    static const bool enabled = [] {
+        const char* v = std::getenv("WINEMETALGL_GPU_TIMERS");
+        return (!v || v[0] != '0') && timestampCounters() != nil;
+    }();
+    return enabled;
+}
+
+namespace {
+
+id<MTLCounterSampleBuffer> newTimingSamples() {
+    MTLCounterSampleBufferDescriptor* desc = [MTLCounterSampleBufferDescriptor new];
+    desc.counterSet = timestampCounters();
+    desc.storageMode = MTLStorageModeShared;
+    desc.sampleCount = kTimingSamples;
+    NSError* error = nil;
+    id<MTLCounterSampleBuffer> buffer = [Device::get().mtl() newCounterSampleBufferWithDescriptor:desc error:&error];
+    if (!buffer) WMGL_WARN(Gpu, "no counter sample buffer for timer queries: %s", error.localizedDescription.UTF8String);
+    return buffer;
+}
+
+}  // namespace
+
+bool CommandStream::takeSamples(uint32_t& start, uint32_t& end) {
+    if (!timing_) return false;
+    if (!samples_ || nextSample_ + 2 > kTimingSamples) {
+        // A query's samples straddling two buffers reads as 0 (finalize).
+        samples_ = newTimingSamples();
+        nextSample_ = 0;
+        if (!samples_) return false;
+    }
+    start = nextSample_;
+    end = nextSample_ + 1;
+    nextSample_ += 2;
+    return true;
+}
+
+bool CommandStream::beginTiming(TimingMark& first) {
+    if (!gpuTiming()) return false;
+    // The query times the encoders opened from now on, in one sample buffer
+    // with room for 256 of them.
+    endEncoder(PassEnd::Other);
+    if (!samples_ || nextSample_ + 512 > kTimingSamples) {
+        samples_ = newTimingSamples();
+        nextSample_ = 0;
+        if (!samples_) return false;
+    }
+    // Once a context times queries every encoder takes samples: a query's
+    // first pass then knows when the pass before it ended.
+    timing_ = true;
+    first = {samples_, nextSample_};
+    return true;
+}
+
+void CommandStream::endTiming(TimingMark& last) {
+    endEncoder(PassEnd::Other);
+    last = {samples_, nextSample_ ? nextSample_ - 1 : 0};
+}
+
+id<MTLBlitCommandEncoder> CommandStream::uploadBlit(bool keepPendingClear) {
+    loadDiscard_ = Discard();  // the copies may write the invalidated attachments
     // A clear recorded after this encoder opened must run before new commands.
     if (blit_ && (keepPendingClear || !pending_.any())) return blit_;
     if (!keepPendingClear) resolvePendingClear();
     endEncoder(PassEnd::Blit);
-    blit_ = [commandBuffer() blitCommandEncoder];
+    uint32_t start, end;
+    if (takeSamples(start, end)) {
+        MTLBlitPassDescriptor* pass = [MTLBlitPassDescriptor blitPassDescriptor];
+        pass.sampleBufferAttachments[0].sampleBuffer = samples_;
+        pass.sampleBufferAttachments[0].startOfEncoderSampleIndex = start;
+        pass.sampleBufferAttachments[0].endOfEncoderSampleIndex = end;
+        blit_ = [commandBuffer() blitCommandEncoderWithDescriptor:pass];
+    } else {
+        blit_ = [commandBuffer() blitCommandEncoder];
+    }
     waitForShaderWrites(blit_, false);
     return blit_;
 }
 
+id<MTLBlitCommandEncoder> CommandStream::blit(bool keepPendingClear) {
+    if (__builtin_expect(deferred_ != nullptr, 0)) runDeferred();
+    hoistBlocked_ = true;  // a copy that may read or write any texture
+    return uploadBlit(keepPendingClear);
+}
+
+id<MTLCommandBuffer> CommandStream::preludeInit() {
+    if (!preludeInitBuffer_) {
+        preludeInitBuffer_ = [queue_.mtl() commandBuffer];
+        preludeInitBuffer_.label = @"WineMetalGL prelude (new storage)";
+    }
+    return preludeInitBuffer_;
+}
+
+id<MTLBlitCommandEncoder> CommandStream::preludeUpload() {
+    if (hoistBlocked_) return nil;
+    loadDiscard_ = Discard();  // the upload may write an invalidated attachment
+    if (!preludeUpload_) {
+        if (!preludeUploadBuffer_) {
+            preludeUploadBuffer_ = [queue_.mtl() commandBuffer];
+            preludeUploadBuffer_.label = @"WineMetalGL prelude (uploads)";
+        }
+        preludeUpload_ = [preludeUploadBuffer_ blitCommandEncoder];
+    }
+    return preludeUpload_;
+}
+
 id<MTLComputeCommandEncoder> CommandStream::compute(bool keepPendingClear) {
+    if (__builtin_expect(deferred_ != nullptr, 0)) runDeferred();
+    hoistBlocked_ = true;  // a dispatch that may read or write any texture
+    loadDiscard_ = Discard();  // the dispatches may write the invalidated attachments
     if (compute_ && (keepPendingClear || !pending_.any())) return compute_;
     if (!keepPendingClear) resolvePendingClear();
     endEncoder(PassEnd::Compute);
-    compute_ = [commandBuffer() computeCommandEncoder];
+    uint32_t start, end;
+    if (takeSamples(start, end)) {
+        MTLComputePassDescriptor* pass = [MTLComputePassDescriptor computePassDescriptor];
+        pass.sampleBufferAttachments[0].sampleBuffer = samples_;
+        pass.sampleBufferAttachments[0].startOfEncoderSampleIndex = start;
+        pass.sampleBufferAttachments[0].endOfEncoderSampleIndex = end;
+        compute_ = [commandBuffer() computeCommandEncoderWithDescriptor:pass];
+    } else {
+        compute_ = [commandBuffer() computeCommandEncoder];
+    }
     waitForShaderWrites(compute_, false);
     return compute_;
 }
@@ -256,6 +452,7 @@ void CommandStream::present(id<CAMetalDrawable> drawable) {
 }
 
 id<MTLRenderCommandEncoder> CommandStream::preludeRender() {
+    if (__builtin_expect(deferred_ != nullptr, 0)) runDeferred();
     if (preludeRender_) return preludeRender_;
     if (!preludeRenderBuffer_) {
         preludeRenderBuffer_ = [queue_.mtl() commandBuffer];
@@ -270,6 +467,7 @@ id<MTLRenderCommandEncoder> CommandStream::preludeRender() {
 }
 
 id<MTLComputeCommandEncoder> CommandStream::preludeCompute() {
+    if (__builtin_expect(deferred_ != nullptr, 0)) runDeferred();
     if (preludeCompute_) return preludeCompute_;
     if (!preludeComputeBuffer_) {
         preludeComputeBuffer_ = [queue_.mtl() commandBuffer];
@@ -280,6 +478,7 @@ id<MTLComputeCommandEncoder> CommandStream::preludeCompute() {
 }
 
 id<MTLComputeCommandEncoder> CommandStream::preludeStep(PreludeStep step) {
+    if (__builtin_expect(deferred_ != nullptr, 0)) runDeferred();
     const int i = static_cast<int>(step);
     if (stepEncoders_[i]) return stepEncoders_[i];
     if (!stepBuffers_[i]) {
@@ -304,6 +503,14 @@ void CommandStream::commitPrelude() {
     const auto commit = [](id<MTLCommandBuffer> b) {
         if (b) [b commit];
     };
+    // New storage's contents first, then uploads: nothing recorded after
+    // them reads what they replace.
+    commit(preludeInitBuffer_);
+    preludeInitBuffer_ = nil;
+    if (preludeUpload_) [preludeUpload_ endEncoding];
+    commit(preludeUploadBuffer_);
+    preludeUpload_ = nil;
+    preludeUploadBuffer_ = nil;
     commit(stepBuffers_[static_cast<int>(PreludeStep::Scan)]);
     commit(stepBuffers_[static_cast<int>(PreludeStep::Expand)]);
     commit(preludeRenderBuffer_);
@@ -329,6 +536,8 @@ void CommandStream::waitForPrelude() {
 }
 
 uint64_t CommandStream::flush(bool keepPendingClear) {
+    flushDeferred_ = false;
+    if (__builtin_expect(deferred_ != nullptr, 0)) runDeferred();
     if (!keepPendingClear) resolvePendingClear();
     endEncoder(PassEnd::Commit);
     commitPrelude();
@@ -339,6 +548,7 @@ uint64_t CommandStream::flush(bool keepPendingClear) {
     queue_.commit(buffer_, serial_);
     lastCommitted_ = serial_;
     buffer_ = nil;
+    hoistBlocked_ = false;
     visibility_ = nil;
     serial_ = 0;
     return lastCommitted_;

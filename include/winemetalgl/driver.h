@@ -106,6 +106,11 @@ void wmgl_set_buffer_memory(void *(*allocate)(size_t size), void (*release)(void
  * the counters, and wmgl_stats_counter reads one by name ("draws", "waits",
  * "commits", "indirectGpu", "tessMetal", "passEnds.commit", ...), returning
  * 0 for an unknown name. Optional: cores before 3.2.0 do not export them. */
+/* One autorelease pool around a batch of GL calls instead of one per call
+ * (the Wine module's batches, src/wine/unix/unix_main.c). */
+void wmgl_batch_begin(void);
+void wmgl_batch_end(void);
+
 void wmgl_stats_enable(int enable);
 void wmgl_stats_reset(void);
 int wmgl_stats_counter(const char *name, unsigned long long *value);

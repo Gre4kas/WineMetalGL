@@ -1,4 +1,5 @@
 #include "core/shader/compiler.h"
+#include "core/shader/link_file_cache.h"
 
 #include <glslang/Public/ResourceLimits.h>
 #include <glslang/Public/ShaderLang.h>
@@ -4897,7 +4898,14 @@ LinkResult link(const LinkInput& input) {
     static LinkCache cache;
     std::string key = linkKey(input);
     if (std::shared_ptr<const LinkResult> cached = cache.find(key)) return *cached;
+    // Linked in an earlier run (link_file_cache.h).
+    if (std::shared_ptr<LinkResult> stored = loadLinkResult(key)) {
+        LinkResult result = *stored;
+        cache.add(std::move(key), std::move(stored));
+        return result;
+    }
     LinkResult result = linkUncached(input);
+    storeLinkResult(key, result);
     cache.add(std::move(key), std::make_shared<const LinkResult>(result));
     return result;
 }

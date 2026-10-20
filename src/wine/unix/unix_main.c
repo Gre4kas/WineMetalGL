@@ -150,8 +150,19 @@ extern const unixlib_entry_t __wine_unix_call_funcs[];
  * queue are delivered after the batch. */
 static NTSTATUS run_batch( const struct wmgl_batch_params *params, const unixlib_entry_t *table )
 {
+    static void (*batch_begin)(void), (*batch_end)(void);
+    static BOOL looked_up;
     const char *at = (const char *)(ULONG_PTR)params->data, *end = at + params->size;
     struct wmgl_batch_record record;
+
+    /* The core's calls share one autorelease pool (older cores: one each). */
+    if (!looked_up)
+    {
+        *(void **)&batch_begin = wmgl_core_symbol( "wmgl_batch_begin" );
+        *(void **)&batch_end = wmgl_core_symbol( "wmgl_batch_end" );
+        looked_up = TRUE;
+    }
+    if (batch_begin && batch_end) batch_begin();
 
     while ((size_t)(end - at) >= sizeof(record))
     {
@@ -162,6 +173,7 @@ static NTSTATUS run_batch( const struct wmgl_batch_params *params, const unixlib
         table[record.code]( (void *)(at + sizeof(record)) );
         at += record.size;
     }
+    if (batch_begin && batch_end) batch_end();
     return wmgl_after_call();
 }
 

@@ -6,6 +6,7 @@
 #import <Metal/Metal.h>
 
 #include <array>
+#include <cstring>
 #include <atomic>
 #include <map>
 #include <memory>
@@ -14,6 +15,7 @@
 #include <vector>
 
 #include "core/format/formats.h"
+#include "core/metal/command_stream.h"
 #include "core/shader/compiler.h"
 #include "core/gl/types.h"
 #include "core/util/ref.h"
@@ -48,6 +50,43 @@ public:
     GLintptr mapOffset = 0;
     GLsizeiptr mapLength = 0;
     void* mapPointer = nullptr;
+    // A writable invalidating map of a large buffer the GPU still uses
+    // writes here instead; glUnmapBuffer copies it into place, ordered on the
+    // GPU (api/buffer.mm).
+    id<MTLBuffer> mapStaging = nil;
+    // Storage replaced while the GPU still used it (copy-on-write), and map
+    // staging the GPU has copied from, with the serial of their last use:
+    // reused once that completes instead of allocating (api/buffer.mm).
+    struct Retired {
+        id<MTLBuffer> mtl;
+        uint64_t serial;
+    };
+    static constexpr size_t kMaxRetired = 4;
+    std::vector<Retired> retired, retiredStaging;
+    // DrawState::uniformBlockBuffer's copies of small uniform block ranges
+    // into transient memory, so the GPU never reads the buffer and updates
+    // between draws need no copy-on-write: valid for `serial` (one command
+    // buffer) while `version` is unchanged.
+    struct UniformSnapshot {
+        id<MTLBuffer> buffer = nil;
+        NSUInteger offset = 0;
+        GLintptr source = -1;
+        uint32_t bytes = 0;
+        uint64_t version = 0, serial = 0;
+    };
+    UniformSnapshot uniformSnapshots[4];
+    uint8_t nextUniformSnapshot = 0;
+    // A CPU copy of the contents, for CPU reads of indices (draw.mm
+    // drawElements) while ordered GPU copies of CPU data into the buffer
+    // (large glBufferSubData, invalidating maps) are pending: started the
+    // first time such a read had to wait for the GPU, then kept up to date by
+    // the CPU's writes; any other GPU write or respecification invalidates it.
+    std::vector<uint8_t> shadow;
+    bool shadowValid = false;
+    void shadowWrite(GLintptr offset, GLsizeiptr bytes, const void* data) {
+        if (shadowValid && bytes > 0 && static_cast<size_t>(offset + bytes) <= shadow.size())
+            std::memcpy(shadow.data() + offset, data, static_cast<size_t>(bytes));
+    }
     // GPU serial of the last command buffer that read or wrote this buffer,
     // and of the last one that wrote it (CPU reads wait for that one).
     uint64_t lastUseSerial = 0;
@@ -187,6 +226,11 @@ public:
     // GL_GENERATE_MIPMAP (compatibility profile): changes to the base level
     // regenerate the levels below it.
     bool generateMipmap = false;
+    // GL_GENERATE_MIPMAP levels the GPU has yet to regenerate (api/texture.mm
+    // generateMipmapsAfterChange defers them to the next command that may
+    // read them), for this target.
+    bool mipmapsPending = false;
+    GLenum pendingMipmapTarget = 0;
     bool immutable = false;
     GLsizei immutableLevels = 0;
     // GL 4.3 texture views: GL_TEXTURE_VIEW_* (TexStorage sets the levels
@@ -224,6 +268,20 @@ public:
     // Recorded for the GL 4.x binding model (state.h); nothing reads them yet.
     uint64_t lastUseSerial = 0;
     uint64_t version = 0;
+    // The last command buffer whose draws sample, write or render to the
+    // storage, or that uploads to it in order (kept on the texture that owns
+    // the storage: root()). An upload while it is not the one being recorded
+    // may run ahead of that command buffer (texture_storage.mm uploadStaged).
+    uint64_t touchSerial = 0;
+    Texture& root() { return viewOf ? *viewOf : *this; }
+    // textureComplete's last answer about the images (storage is checked
+    // every time), for the version and the parameters it depends on.
+    struct CompletenessMemo {
+        uint64_t version = ~0ull;
+        GLint baseLevel = 0, maxLevel = 0;
+        GLenum minFilter = 0, magFilter = 0, depthStencilMode = 0;
+        bool complete = false;
+    } completeness;
 
     int faceCount() const { return target == GL_TEXTURE_CUBE_MAP ? 6 : 1; }
     const TextureImage& image(int face, int level) const { return images[face][level]; }
@@ -426,6 +484,16 @@ public:
     // The executable built from the stage programs (DrawState::executable).
     std::shared_ptr<LinkedProgram> executable;
     std::shared_ptr<LinkedProgram> builtFrom[6];  // the stage programs' executables it was built from
+    // Executables built for earlier stage combinations, most recent first:
+    // switching back to one (glUseProgramStages per draw) reuses it, and with
+    // it the pipeline states keyed by its uid (program.mm pipelineExecutable).
+    struct BuiltExecutable {
+        std::shared_ptr<LinkedProgram> from[6];
+        const Program* owner[6];
+        std::shared_ptr<LinkedProgram> executable;
+    };
+    static constexpr size_t kMaxBuiltExecutables = 32;
+    std::vector<BuiltExecutable> built;
 };
 
 // ------------------------------------------------------- queries and syncs
@@ -453,6 +521,10 @@ public:
         std::atomic<bool> startSet{false}, endSet{false};
     };
     std::shared_ptr<Timer> timer;
+    // TIME_ELAPSED timed by GPU timestamps of the encoders between begin
+    // and end (CommandStream::beginTiming), without commits.
+    bool gpuTimed = false;
+    CommandStream::TimingMark timedFirst, timedLast;
 };
 
 class Sync : public RefCounted, public Labeled {

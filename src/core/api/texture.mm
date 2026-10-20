@@ -113,6 +113,7 @@ struct ImageTarget {
 };
 
 void generateMipmapsAfterChange(Context& ctx, const ImageTarget& t, GLint level);
+void runPendingMipmapsOf(Context& ctx, const Texture* tex);
 
 // dims: 1, 2 or 3 (TexImage1D/2D/3D); generates GL_INVALID_ENUM for targets
 // that the call does not accept.
@@ -334,6 +335,33 @@ void uploadRegion(Context& ctx, Texture& tex, int face, int level, int x, int y,
     imageChanged(ctx, tex);
 }
 
+// glTex(Sub)Image from a pixel unpack buffer holding texels in the stored
+// layout: a GPU copy from the buffer, in command order (no wait for GPU
+// writes to it, no CPU copy). False: the CPU path (conversion, alignment
+// Metal's copies do not take, errors).
+bool uploadFromUnpackBuffer(Context& ctx, Texture& tex, int face, int level, int x, int y, int z, int w, int h, int d,
+                            GLenum format, GLenum type, const void* pixels, bool threeD) {
+    Buffer* pbo = ctx.state.pixelUnpackBuffer.get();
+    if (!pbo || !pbo->mtl || pbo->mappedNonPersistent() || w <= 0 || h <= 0 || d <= 0) return false;
+    TextureImage& image = tex.image(face, level);
+    if (!image.format || image.format->compressed || tex.target == GL_TEXTURE_1D_ARRAY) return false;
+    PixelStoreParams ps = pixelStoreParams(ctx.state.unpack, threeD);
+    if (ps.swapBytes || (ctx.isEs() && image.format->isDepth()) || !storedLayout(format, type, *image.format)) return false;
+    if (!imageHasStorage(ctx, tex, face, level) || !tex.mtl || tex.mtl.pixelFormat == MTLPixelFormatDepth32Float_Stencil8)
+        return false;
+    const TransferLayout l = transferLayout(format, type, w, h, d, ps);
+    const size_t texel = storageBytes(image.format->storage);
+    const uintptr_t offset = reinterpret_cast<uintptr_t>(pixels), start = offset + l.skipBytes;
+    const size_t size = static_cast<size_t>(pbo->size);
+    if (offset % typeSize(type) || start % texel || start % 4 || l.rowStride % texel || l.rowStride % 4 ||
+        l.imageStride % l.rowStride || offset > size || l.bytesNeeded > size - offset)
+        return false;
+    uploadFromBuffer(ctx, tex, face, level, x, y, z, w, h, d, pbo->mtl, start, l.rowStride, l.imageStride, true);
+    pbo->lastUseSerial = ctx.stream().serial();
+    imageChanged(ctx, tex);
+    return true;
+}
+
 size_t compressedSize(const FormatInfo& info, GLsizei w, GLsizei h, GLsizei d) {
     const size_t blocksX = storageBlocksAcross(info.storage, static_cast<size_t>(w));
     const size_t blocksY = storageBlocksAcross(info.storage, static_cast<size_t>(h), true);
@@ -500,6 +528,7 @@ void texImage(Context& ctx, int dims, GLenum target, GLint level, GLint internal
               GLsizei depth, GLint border, GLenum format, GLenum type, const void* pixels) {
     ImageTarget t;
     if (!imageTarget(ctx, target, dims, true, t)) return;
+    if (!t.proxy && level != t.tex->baseLevel) runPendingMipmapsOf(ctx, t.tex);
     const GLenum requested = static_cast<GLenum>(internalformat);
     const FormatInfo* info = nullptr;
     bool tooLarge;
@@ -556,6 +585,7 @@ void texSubImage(Context& ctx, int dims, GLenum target, GLint level, GLint x, GL
                  GLsizei d, GLenum format, GLenum type, const void* pixels) {
     ImageTarget t;
     if (!imageTarget(ctx, target, dims, false, t)) return;
+    if (!t.proxy && level != t.tex->baseLevel) runPendingMipmapsOf(ctx, t.tex);
     if (ctx.isEs() && (!es::isFormat(format) || !es::isType(type))) return ctx.setError(GL_INVALID_ENUM);
     if (!ctx.isEs() && !checkFormatType(ctx, format, type)) return;
     if (level < 0 || level > maxLevelFor(t.target)) return ctx.setError(GL_INVALID_VALUE);
@@ -577,6 +607,10 @@ void texSubImage(Context& ctx, int dims, GLenum target, GLint level, GLint x, GL
     if (rgtc && ((x % 4) || (y % 4) || ((w % 4) && x + w != image.width) || ((h % 4) && y + h != image.height)))
         return ctx.setError(GL_INVALID_OPERATION);
     if (!ctx.isEs() && !textureTransferCompatible(format, type, *image.format)) return ctx.setError(GL_INVALID_OPERATION);
+    if (!rgtc && uploadFromUnpackBuffer(ctx, *t.tex, t.face, level, x, y, z, w, h, d, format, type, pixels, dims == 3)) {
+        generateMipmapsAfterChange(ctx, t, level);
+        return;
+    }
     const TransferLayout layout = transferLayout(format, type, w, h, d, pixelStoreParams(ctx.state.unpack, dims == 3));
     const uint8_t* src = nullptr;
     if (!unpackSource(ctx, pixels, w && h && d ? layout.bytesNeeded : 0, typeSize(type), src)) return;
@@ -592,6 +626,7 @@ void compressedTexImage(Context& ctx, int dims, GLenum target, GLint level, GLen
                         GLsizei height, GLsizei depth, GLint border, GLsizei imageSize, const void* data) {
     ImageTarget t;
     if (!imageTarget(ctx, target, dims, true, t)) return;
+    if (!t.proxy && level != t.tex->baseLevel) runPendingMipmapsOf(ctx, t.tex);
     const FormatInfo* info = formatInfo(internalformat);
     if (!info || !info->compressed || info->internalFormat != internalformat || !compressedFormatSupported(ctx, info))
         return ctx.setError(GL_INVALID_ENUM);
@@ -629,6 +664,7 @@ void compressedTexSubImage(Context& ctx, int dims, GLenum target, GLint level, G
                            GLsizei h, GLsizei d, GLenum format, GLsizei imageSize, const void* data) {
     ImageTarget t;
     if (!imageTarget(ctx, target, dims, false, t)) return;
+    if (!t.proxy && level != t.tex->baseLevel) runPendingMipmapsOf(ctx, t.tex);
     if (level < 0 || level > maxLevelFor(t.target)) return ctx.setError(GL_INVALID_VALUE);
     if (w < 0 || h < 0 || d < 0) return ctx.setError(GL_INVALID_VALUE);
     const FormatInfo* info = formatInfo(format);
@@ -862,6 +898,7 @@ void copyTexImage(Context& ctx, int dims, GLenum target, GLint level, GLenum int
                   GLsizei width, GLsizei height, GLint border) {
     ImageTarget t;
     if (!imageTarget(ctx, target, dims, false, t)) return;
+    if (!t.proxy && level != t.tex->baseLevel) runPendingMipmapsOf(ctx, t.tex);
     if (ctx.isEs()) return esCopyTexImage(ctx, t, level, internalformat, x, y, width, height, border);
     if (!isValidTextureInternalFormat(internalformat, ctx.isCompat(), stencilTextures(ctx))) return ctx.setError(GL_INVALID_VALUE);
     bool tooLarge;
@@ -892,6 +929,7 @@ void copyTexSubImage(Context& ctx, int dims, GLenum target, GLint level, GLint x
                      GLint x, GLint y, GLsizei width, GLsizei height) {
     ImageTarget t;
     if (!imageTarget(ctx, target, dims, false, t)) return;
+    if (!t.proxy && level != t.tex->baseLevel) runPendingMipmapsOf(ctx, t.tex);
     if (level < 0 || level > maxLevelFor(t.target)) return ctx.setError(GL_INVALID_VALUE);
     if (width < 0 || height < 0) return ctx.setError(GL_INVALID_VALUE);
     const TextureImage& image = t.tex->image(t.face, level);
@@ -1066,6 +1104,7 @@ void texParameter(Context& ctx, GLenum target, GLenum pname, const ParamValues& 
         const int64_t level = v.kind == ParamValues::Float && ctx.isEs() ? std::llround(v.f[0]) : v.i[0];
         if (level < 0) return ctx.setError(GL_INVALID_VALUE);
         const GLint value = static_cast<GLint>(std::min<int64_t>(level, std::numeric_limits<GLint>::max()));
+        runPendingMipmapsOf(ctx, tex);  // regenerated from the levels it was asked for
         if (pname == GL_TEXTURE_BASE_LEVEL) {
             if ((multisample || target == GL_TEXTURE_RECTANGLE) && value != 0) return ctx.setError(GL_INVALID_OPERATION);
             tex->baseLevel = value;
@@ -2017,6 +2056,33 @@ void ClearTexSubImage(Context& ctx, GLuint texture, GLint level, GLint xoffset, 
                  type, data);
 }
 
+namespace {
+
+// How generateMipmaps encodes: now (glGenerateMipmap), deferred (defines
+// the levels, then queues the GPU work: GL_GENERATE_MIPMAP), or the queued
+// GPU work (the levels are defined).
+enum class MipmapMode { Now, Defer, Encode };
+void generateMipmaps(Context& ctx, Texture* tex, GLenum target, MipmapMode mode);
+
+// Encodes the GL_GENERATE_MIPMAP regenerations deferred since the last one.
+void runPendingMipmaps(Context& ctx) {
+    std::vector<RefPtr<Texture>> pending;
+    pending.swap(ctx.pendingMipmaps);
+    for (const RefPtr<Texture>& tex : pending) {
+        if (!tex->mipmapsPending) continue;
+        tex->mipmapsPending = false;
+        generateMipmaps(ctx, tex.get(), tex->pendingMipmapTarget, MipmapMode::Encode);
+    }
+}
+
+// A command is about to change `tex` other than through its base level:
+// its deferred regeneration runs first.
+void runPendingMipmapsOf(Context& ctx, const Texture* tex) {
+    if (tex && tex->mipmapsPending) ctx.stream().runDeferred();
+}
+
+}  // namespace
+
 void GenerateMipmap(Context& ctx, GLenum target) {
     if (target != GL_TEXTURE_1D && target != GL_TEXTURE_2D && target != GL_TEXTURE_3D &&
         target != GL_TEXTURE_1D_ARRAY && target != GL_TEXTURE_2D_ARRAY && target != GL_TEXTURE_CUBE_MAP &&
@@ -2025,6 +2091,13 @@ void GenerateMipmap(Context& ctx, GLenum target) {
     if (ctx.isEs() && !targetSupported(ctx, target)) return ctx.setError(GL_INVALID_ENUM);
     Texture* tex = boundTexture(ctx, target);
     if (!tex) return ctx.setError(GL_INVALID_OPERATION);
+    runPendingMipmapsOf(ctx, tex);
+    generateMipmaps(ctx, tex, target, MipmapMode::Now);
+}
+
+namespace {
+
+void generateMipmaps(Context& ctx, Texture* tex, GLenum target, MipmapMode mode) {
     // An immutable texture's levels are fixed by TexStorage: the base level is
     // clamped to them and generation stops at the last one.
     const int levelEnd = tex->immutable ? std::max<int>(1, tex->immutableLevels) : Texture::kMaxLevels;
@@ -2063,12 +2136,30 @@ void GenerateMipmap(Context& ctx, GLenum target) {
         w = std::max(1, w / 2);
         if (!oneD) h = std::max(1, h / 2);
         if (target == GL_TEXTURE_3D) d = std::max(1, d / 2);
-        if (!tex->immutable)
-            for (int face = 0; face < tex->faceCount(); ++face)
+        if (!tex->immutable && mode != MipmapMode::Encode)
+            for (int face = 0; face < tex->faceCount(); ++face) {
+                // A level already of this shape (regenerated before) stays as it is.
+                const TextureImage& image = tex->image(face, level);
+                if (image.format == info && image.width == w && image.height == h && image.depth == d && !image.samples &&
+                    image.requestedFormat == baseImage.requestedFormat && image.pending.empty())
+                    continue;
                 defineImage(ctx, *tex, face, level, baseImage.requestedFormat, info, w, h, d);
+            }
         last = level;
     }
     if (last == base || !ensureTextureStorage(ctx, *tex)) return;
+    if (mode == MipmapMode::Defer) {
+        // The GPU work runs before the next command that may read the levels,
+        // so a run of uploads to the base level regenerates them once.
+        imageChanged(ctx, *tex);
+        tex->pendingMipmapTarget = target;
+        if (!tex->mipmapsPending) {
+            tex->mipmapsPending = true;
+            ctx.pendingMipmaps.emplace_back(tex);
+        }
+        ctx.stream().setDeferred([&ctx] { runPendingMipmaps(ctx); });
+        return;
+    }
     if (!imageHasStorage(ctx, *tex, 0, base) || !imageHasStorage(ctx, *tex, 0, last)) return;
     if (info->depthBits) {
         generateDepthMipmaps(ctx, *tex, base, last);
@@ -2087,8 +2178,6 @@ void GenerateMipmap(Context& ctx, GLenum target) {
     [ctx.stream().blit() generateMipmapsForTexture:view ? view : tex->mtl];
     imageChanged(ctx, *tex);
 }
-
-namespace {
 
 // GL_GENERATE_MIPMAP: a change to the base level of a texture that has it
 // regenerates the levels below, as glGenerateMipmap would, without errors
@@ -2112,7 +2201,7 @@ void generateMipmapsAfterChange(Context& ctx, const ImageTarget& t, GLint level)
                 image.internalFormat != base.internalFormat || image.width != image.height)
                 return;
         }
-    GenerateMipmap(ctx, t.target);
+    generateMipmaps(ctx, &tex, t.target, MipmapMode::Defer);
 }
 
 }  // namespace

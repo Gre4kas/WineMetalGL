@@ -952,7 +952,7 @@ def render(suites, es_suites):
               "what is supported and every run: [Conformance results](docs/conformance.md#conformance-totals).",
               "",
               "OpenGL 1.0 to 2.1 are implemented by WineMetalGL itself, as its compatibility profile: the "
-              "fixed-function pipeline, immediate mode, display lists and legacy GLSL, alongside every 3.x feature. "
+              "fixed-function pipeline, immediate mode, display lists and legacy GLSL, alongside every 3.x / 4.x feature. "
               "No public Khronos suite measures them; the Wine fixtures, GPU tests and game corpus exercise them, and "
               "[Unsupported](docs/unsupported.md#compatibility-profile-opengl-10-to-21) lists what is not implemented.",
               ""]

@@ -11,6 +11,8 @@
 #include <limits>
 #include <mutex>
 #include <tuple>
+#include <mach/mach_time.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "core/context.h"
@@ -86,6 +88,61 @@ bool anyOcclusionActive(Context& ctx) {
     return false;
 }
 
+// Nanoseconds per GPU timestamp tick, from pairs of CPU and GPU timestamps,
+// refined as time passes. Metal's CPU timestamps are nanoseconds or
+// mach_absolute_time units (as an x86_64 process under Rosetta, whose
+// timebase is 1/1, cannot tell): the clock they match decides.
+double nanosPerGpuTick() {
+    static std::mutex lock;
+    static MTLTimestamp cpu0 = 0, gpu0 = 0;
+    static double ratio = 1.0, nanosPerCpuUnit = 1.0;
+    std::lock_guard<std::mutex> guard(lock);
+    MTLTimestamp cpu = 0, gpu = 0;
+    const uint64_t machBefore = mach_absolute_time(), nanosBefore = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+    [Device::get().mtl() sampleTimestamps:&cpu gpuTimestamp:&gpu];
+    if (!cpu0) {
+        mach_timebase_info_data_t timebase;
+        mach_timebase_info(&timebase);
+        const auto distance = [](uint64_t a, uint64_t b) { return a > b ? a - b : b - a; };
+        if (distance(cpu, machBefore) < distance(cpu, nanosBefore))
+            nanosPerCpuUnit = static_cast<double>(timebase.numer) / timebase.denom;
+        cpu0 = cpu;
+        gpu0 = gpu;
+    } else if (gpu > gpu0 && cpu > cpu0 && (cpu - cpu0) * nanosPerCpuUnit > 1e6) {
+        ratio = static_cast<double>(cpu - cpu0) * nanosPerCpuUnit / static_cast<double>(gpu - gpu0);
+    }
+    return ratio;
+}
+
+// A GPU-timed TIME_ELAPSED query: from the first timed encoder's start to
+// the last one's end (each encoder takes a start and an end sample).
+uint64_t timedNanos(const Query& q) {
+    const CommandStream::TimingMark& a = q.timedFirst;
+    const CommandStream::TimingMark& b = q.timedLast;
+    if (!a.buffer || a.buffer != b.buffer || b.sample < a.sample + 1) {
+        if (a.buffer && a.buffer != b.buffer)
+            logOnce(LogLevel::Warn, LogCategory::Gpu, "timer-samples", "a timer query spans two sample buffers; its result is 0");
+        return 0;
+    }
+    // From the end of the encoder before the first (sample a - 1), if any.
+    const uint32_t from = a.sample > 0 ? a.sample - 1 : a.sample;
+    NSData* data = [a.buffer resolveCounterRange:NSMakeRange(from, b.sample - from + 1)];
+    if (!data) return 0;
+    const auto* r = static_cast<const MTLCounterResultTimestamp*>(data.bytes);
+    const size_t n = data.length / sizeof(MTLCounterResultTimestamp);
+    const size_t skip = a.sample - from;
+    uint64_t start = MTLCounterErrorValue, end = 0;
+    for (size_t i = skip; i + 1 < n; i += 2) {
+        if (r[i].timestamp == MTLCounterErrorValue || r[i + 1].timestamp == MTLCounterErrorValue) continue;
+        start = std::min<uint64_t>(start, r[i].timestamp);
+        end = std::max<uint64_t>(end, r[i + 1].timestamp);
+    }
+    if (start == MTLCounterErrorValue || end <= start) return 0;
+    // The GPU was busy with the encoder before until it ended.
+    if (skip && r[0].timestamp != MTLCounterErrorValue && r[0].timestamp > start && r[0].timestamp < end) start = r[0].timestamp;
+    return static_cast<uint64_t>(static_cast<double>(end - start) * nanosPerGpuTick());
+}
+
 void finalize(Query& q) {
     switch (q.target) {
     case GL_SAMPLES_PASSED: case GL_ANY_SAMPLES_PASSED: case GL_ANY_SAMPLES_PASSED_CONSERVATIVE: {
@@ -122,7 +179,8 @@ void finalize(Query& q) {
         break;
     }
     case GL_TIME_ELAPSED:
-        if (q.timer && q.timer->startSet && q.timer->endSet)
+        if (q.gpuTimed) q.result = timedNanos(q);
+        else if (q.timer && q.timer->startSet && q.timer->endSet)
             q.result = static_cast<uint64_t>(std::max(0.0, (q.timer->end - q.timer->start) * 1e9));
         break;
     case GL_TIMESTAMP:
@@ -352,7 +410,8 @@ void markTimerEnd(Context& ctx, Query& q) {
         timer->endSet = true;
     }];
     stats::count(&stats::Frame::queryCommits);
-    q.pendingSerial = ctx.stream().flush();
+    // A commit of WineMetalGL's own: a pending clear stays a load action.
+    q.pendingSerial = ctx.stream().flush(true);
 }
 
 }  // namespace
@@ -454,14 +513,18 @@ void beginQuery(Context& ctx, GLenum target, int index, GLuint name) {
     q->visibilitySlots.clear();
     q->counterSerial = 0;
     q->timer.reset();
+    q->gpuTimed = false;
     ctx.state.activeQueries[index] = q;
     if (isOcclusion(index)) {
         ++ctx.occlusionEpoch;
         ctx.stream().setVisibilityWanted(true);
+    } else if (index == kQueryTimeElapsed && ctx.stream().beginTiming(q->timedFirst)) {
+        // Timed by the GPU timestamps of the encoders until the end, without commits.
+        q->gpuTimed = true;
     } else if (index == kQueryTimeElapsed) {
         // Time from the start of the next command buffer.
         stats::count(&stats::Frame::queryCommits);
-        ctx.stream().flush();
+        ctx.stream().flush(true);  // WineMetalGL's own commit: a pending clear stays a load action
         q->timer = std::make_shared<Query::Timer>();
         std::shared_ptr<Query::Timer> timer = q->timer;
         [ctx.stream().commandBuffer() addCompletedHandler:^(id<MTLCommandBuffer> done) {
@@ -479,6 +542,9 @@ void endQuery(Context& ctx, int index) {
     if (isOcclusion(index)) {
         endVisibility(ctx);
         if (q->visibilitySlots.empty()) q->resultFinal = true;
+    } else if (index == kQueryTimeElapsed && q->gpuTimed) {
+        ctx.stream().endTiming(q->timedLast);
+        q->pendingSerial = ctx.stream().serial();  // the samples resolve once it completes
     } else if (index == kQueryTimeElapsed) {
         markTimerEnd(ctx, *q);
     } else if (index == kQueryStatisticsFirst + kStatFragmentShaderInvocations) {
@@ -609,6 +675,7 @@ void getQueryObject(Context& ctx, GLuint name, GLenum pname, T* params) {
     [ctx.stream().blit(true) copyFromBuffer:staging.buffer sourceOffset:staging.offset toBuffer:queryBuffer->mtl
                         destinationOffset:static_cast<NSUInteger>(offset) size:sizeof(T)];
     queryBuffer->lastUseSerial = queryBuffer->lastWriteSerial = ctx.stream().serial();
+    queryBuffer->shadowValid = false;
     ++queryBuffer->version;
 }
 
@@ -700,7 +767,12 @@ GLenum ClientWaitSync(Context& ctx, GLsync handle, GLbitfield flags, GLuint64 ti
         stats::count(&stats::Frame::clientWaitsSignaled);
         return GL_ALREADY_SIGNALED;
     }
-    if (flags & GL_SYNC_FLUSH_COMMANDS_BIT) ctx.stream().flush();
+    // Flushing commits the fence's command buffer, unless it is committed
+    // already (a poll of an older fence: committing again would end the
+    // render pass in progress for nothing).
+    if ((flags & GL_SYNC_FLUSH_COMMANDS_BIT) && !queue.isCommitted(sync->serial)) ctx.stream().flush();
+    // An earlier glFlush promised the fence would signal without the bit.
+    else if (!queue.isCommitted(sync->serial)) ctx.stream().commitIfDeferred();
     if (timeout == 0) return GL_TIMEOUT_EXPIRED;
     stats::Timer timer(&stats::Frame::clientWaitNanos);
     ShareUnlock unlock(ctx);  // `hold` keeps the sync alive
@@ -725,6 +797,8 @@ void GetSynciv(Context& ctx, GLsync handle, GLenum pname, GLsizei count, GLsizei
     switch (pname) {
     case GL_OBJECT_TYPE: value = GL_SYNC_FENCE; break;
     case GL_SYNC_STATUS:
+        // A status polled after glFlush must become signalled (a deferred flush commits).
+        if (sync->serial && !ctx.share().queue.isCommitted(sync->serial)) ctx.stream().commitIfDeferred();
         value = !sync->serial || ctx.share().queue.isComplete(sync->serial) ? GL_SIGNALED : GL_UNSIGNALED;
         break;
     case GL_SYNC_CONDITION: value = GL_SYNC_GPU_COMMANDS_COMPLETE; break;

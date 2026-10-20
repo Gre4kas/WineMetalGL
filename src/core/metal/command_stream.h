@@ -34,6 +34,10 @@ struct RenderTargetDesc {
     // renderbuffer or texture of one sample, which Metal renders single-sample.
     bool multisampled = false;
     uint32_t layers = 0;           // renderTargetArrayLength for layered rendering (0 = not layered)
+    // A multisampled default framebuffer's resolve texture for colour 0
+    // (Surface): passes carry it, so a read of the resolved image while
+    // the pass is open resolves as the pass ends (CommandStream::resolveOpenPass).
+    id<MTLTexture> colorResolve = nil;
     bool operator==(const RenderTargetDesc& o) const;
     bool operator!=(const RenderTargetDesc& o) const { return !(*this == o); }
     bool hasAnyAttachment() const;
@@ -61,6 +65,10 @@ public:
     // Returns an encoder for the target, starting a pass if needed. Any
     // pending clear for this target is applied as load actions.
     id<MTLRenderCommandEncoder> render(const RenderTargetDesc& target);
+    // render() for DrawState's draws, whose textures mark what they use
+    // (Texture::touchSerial): uploads to other storage still run ahead
+    // (preludeUpload). Other users' passes may read any texture.
+    id<MTLRenderCommandEncoder> renderDraw(const RenderTargetDesc& target);
     id<MTLRenderCommandEncoder> currentRender() const { return render_; }
     // A render or compute encoder is open (work encoded now joins a draw or dispatch in progress).
     bool encoding() const { return render_ != nil || compute_ != nil; }
@@ -78,6 +86,32 @@ public:
     bool clearWithLoadAction(const RenderTargetDesc& target, const PendingClear& clear);
     // Forces pending load-action clears to execute (empty pass).
     void resolvePendingClear();
+    // Ends a pass open on `color` (colour 0) that carries a resolve texture,
+    // resolving into it; false if no such pass is open (the caller resolves).
+    bool resolveOpenPass(id<MTLTexture> color);
+    // glInvalidateFramebuffer of the target's attachments (colour slots in
+    // colorMask, depth, stencil): while a pass on the target is open, it
+    // ends without storing them unless a draw follows in it; otherwise the
+    // target's next pass, if it is the next work recorded, does not load them.
+    void invalidate(const RenderTargetDesc& target, uint8_t colorMask, bool depth, bool stencil);
+    // GPU timing of encoders for GL_TIME_ELAPSED queries, without commits:
+    // from the first query on, every render, compute and blit encoder samples
+    // the GPU timestamp at its start and its end into a counter sample buffer.
+    // beginTiming ends the open encoder and returns where the next encoder's
+    // start sample goes; endTiming ends the open encoder and returns the
+    // last sample taken since (below `first`: no encoder ran). False without
+    // stage-boundary counter sampling (the caller commits instead).
+    struct TimingMark {
+        id<MTLCounterSampleBuffer> buffer = nil;
+        uint32_t sample = 0;
+    };
+    bool beginTiming(TimingMark& first);
+    void endTiming(TimingMark& last);
+    // Whether the device samples timestamps at encoder boundaries.
+    static bool gpuTiming();
+    // Whether a pending load-action clear is for an attachment of `texture`
+    // (or of a view of it): writes to it must let the clear run first.
+    bool pendingClearUses(id<MTLTexture> texture) const;
 
     // keepPendingClear: the encoder's commands touch no texture of a pending
     // clear's target (buffer copies, a dispatch without textures or images),
@@ -85,6 +119,33 @@ public:
     // running first as a pass of its own (which stores the attachments, for
     // the next pass to load them back).
     id<MTLBlitCommandEncoder> blit(bool keepPendingClear = false);
+    // A blit that writes texture contents the API is replacing (uploads,
+    // storage reallocation): deferred work (setDeferred) stays deferred.
+    id<MTLBlitCommandEncoder> uploadBlit(bool keepPendingClear = false);
+    // An upload to storage the command buffer being recorded has not used
+    // (the caller knows: Texture::touchSerial): recorded in a command buffer
+    // committed just ahead of it, so a render pass in progress goes on. Nil
+    // once the command buffer has a blit or dispatch of its own (it may have
+    // read or written the storage): the caller uploads in order then.
+    id<MTLBlitCommandEncoder> preludeUpload();
+    // A command buffer for initialising new storage (texture_storage.mm
+    // initStorage), committed first at the next commit: one for all the
+    // textures made until then rather than one each.
+    id<MTLCommandBuffer> preludeInit();
+    // Work the API defers until a command may read what it produces
+    // (GL_GENERATE_MIPMAP regeneration after uploads, api/texture.mm): runs
+    // before the next render, compute or blit encoder (other than an
+    // upload's) and before a commit. Replaces earlier deferred work; the
+    // caller's function drains everything it deferred.
+    void setDeferred(std::function<void()> work) { deferred_ = std::move(work); }
+    void runDeferred() {
+        if (!deferred_ || runningDeferred_) return;
+        std::function<void()> work = std::move(deferred_);
+        deferred_ = nullptr;
+        runningDeferred_ = true;
+        work();
+        runningDeferred_ = false;
+    }
     id<MTLComputeCommandEncoder> compute(bool keepPendingClear = false);
     // Prelude: two command buffers committed just ahead of the one being
     // recorded, for work that reads nothing the GPU writes in it. Draws that
@@ -131,6 +192,16 @@ public:
     // buffer's pass on its target) instead of running as a pass of its own:
     // for commits WineMetalGL makes itself, which nothing outside sees.
     uint64_t flush(bool keepPendingClear = false);
+    // glFlush when nothing outside this context can see the commands yet
+    // (one context in the share group, no front-buffer rendering): the
+    // commit waits for the next render pass to start, a commit of its own,
+    // or commitIfDeferred (an application waiting for a fence or query of
+    // the commands), so a pass in progress goes on.
+    void deferFlush() { flushDeferred_ = true; }
+    bool flushDeferred() const { return flushDeferred_; }
+    void commitIfDeferred() {
+        if (flushDeferred_) flush(true);
+    }
     // Nanoseconds (stats::nowNanos) of the last commit.
     uint64_t lastCommitNanos() const { return lastCommitNanos_; }
     // Commits and waits for all work from this stream to complete.
@@ -179,6 +250,25 @@ private:
     void startRender(const RenderTargetDesc& target);
 
     Queue& queue_;
+    std::function<void()> deferred_;
+    bool runningDeferred_ = false;
+    bool flushDeferred_ = false;
+    bool resolveAtEnd_ = false;  // resolveOpenPass: the open pass's colour 0 resolves
+    // Timing (beginTiming): encoders opened while timing_ sample into
+    // samples_ (two samples each, from nextSample_; a full buffer is replaced).
+    bool timing_ = false;
+    id<MTLCounterSampleBuffer> samples_ = nil;
+    uint32_t nextSample_ = 0;
+    // The two sample indices for a new encoder, or false (not timing).
+    bool takeSamples(uint32_t& start, uint32_t& end);
+    // invalidate(): attachments of the open pass it ends without storing,
+    // and of the next pass on discardTarget_ it starts without loading.
+    struct Discard {
+        uint8_t color = 0;
+        bool depth = false, stencil = false;
+        bool any() const { return color || depth || stencil; }
+    } storeDiscard_, loadDiscard_;
+    RenderTargetDesc discardTarget_;
     id<MTLCommandBuffer> buffer_ = nil;
     uint64_t serial_ = 0;
     uint64_t lastCommitted_ = 0;
@@ -187,6 +277,12 @@ private:
     id<MTLBlitCommandEncoder> blit_ = nil;
     id<MTLComputeCommandEncoder> compute_ = nil;
     id<MTLCommandBuffer> preludeRenderBuffer_ = nil, preludeComputeBuffer_ = nil;
+    // preludeUpload's command buffer and encoder; hoistBlocked_: the command
+    // buffer being recorded has a blit, dispatch or pass other than an
+    // upload's or DrawState's draws.
+    id<MTLCommandBuffer> preludeUploadBuffer_ = nil, preludeInitBuffer_ = nil;
+    id<MTLBlitCommandEncoder> preludeUpload_ = nil;
+    bool hoistBlocked_ = false;
     id<MTLCommandBuffer> stepBuffers_[static_cast<int>(PreludeStep::Count)] = {};
     id<MTLComputeCommandEncoder> stepEncoders_[static_cast<int>(PreludeStep::Count)] = {};
     id<MTLRenderCommandEncoder> preludeRender_ = nil;

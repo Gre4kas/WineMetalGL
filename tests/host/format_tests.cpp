@@ -1,6 +1,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <tuple>
 #include <vector>
 #include <cstring>
 
@@ -210,4 +211,108 @@ TEST(format_es_copy_tex_image_rules) {
     type = GL_UNSIGNED_BYTE;
     CHECK(es::texImageFormat(0x8043, GL_LUMINANCE, type, error) == 0);
     CHECK(error == GL_INVALID_OPERATION);
+}
+
+// unpackPixels' table conversions of 16-bit packed groups and floats into
+// half floats give the generic conversion's texels, bit for bit: the same
+// groups byte-swapped with GL_UNPACK_SWAP_BYTES take the generic path.
+TEST(format_unpack_fast_paths_match_generic) {
+    PixelStoreParams ps, swapped;
+    ps.alignment = swapped.alignment = 1;
+    swapped.swapBytes = true;
+    std::vector<uint16_t> groups(65536), swappedGroups(65536);
+    for (uint32_t v = 0; v < 65536; ++v) {
+        groups[v] = static_cast<uint16_t>(v);
+        swappedGroups[v] = static_cast<uint16_t>((v >> 8) | (v << 8));
+    }
+    const struct { GLenum internal, format, type; } packed[] = {
+        {GL_RGB565, GL_RGB, GL_UNSIGNED_SHORT_5_6_5},           {GL_RGB8, GL_RGB, GL_UNSIGNED_SHORT_5_6_5_REV},
+        {GL_RGBA4, GL_RGBA, GL_UNSIGNED_SHORT_4_4_4_4},         {GL_RGBA8, GL_BGRA, GL_UNSIGNED_SHORT_4_4_4_4_REV},
+        {GL_RGB5_A1, GL_RGBA, GL_UNSIGNED_SHORT_5_5_5_1},       {GL_RGB8, GL_BGRA, GL_UNSIGNED_SHORT_1_5_5_5_REV},
+        {GL_SRGB8_ALPHA8, GL_RGBA, GL_UNSIGNED_SHORT_4_4_4_4},
+    };
+    for (const auto& p : packed) {
+        const FormatInfo* f = formatInfo(p.internal);
+        CHECK(f != nullptr);
+        if (!f) continue;
+        std::vector<uint32_t> fast(65536), generic(65536);
+        unpackPixels(groups.data(), p.format, p.type, 256, 256, 1, ps, *f, fast.data());
+        unpackPixels(swappedGroups.data(), p.format, p.type, 256, 256, 1, swapped, *f, generic.data());
+        CHECK(fast == generic);
+    }
+    const FormatInfo* rgba16f = formatInfo(GL_RGBA16F);
+    const FormatInfo* rgb16f = formatInfo(GL_RGB16F);
+    CHECK(rgba16f && rgb16f);
+    if (rgba16f && rgb16f) {
+        const float floats[12] = {1.0f, -2.5f, 65504.0f, 1e-7f, 70000.0f, -0.0f, 0.333f, 1e-5f, 3.0f, 4.0f, 5.0f, 6.0f};
+        uint32_t swappedFloats[12];
+        for (int i = 0; i < 12; ++i) {
+            uint32_t u;
+            std::memcpy(&u, &floats[i], 4);
+            swappedFloats[i] = __builtin_bswap32(u);
+        }
+        for (const auto& [info, format, count] : {std::tuple{rgba16f, GL_RGBA, 3}, std::tuple{rgb16f, GL_RGB, 4}}) {
+            uint16_t fast[16] = {}, generic[16] = {};
+            unpackPixels(floats, format, GL_FLOAT, count, 1, 1, ps, *info, fast);
+            unpackPixels(swappedFloats, format, GL_FLOAT, count, 1, 1, swapped, *info, generic);
+            CHECK(std::memcmp(fast, generic, sizeof(fast)) == 0);
+        }
+    }
+}
+
+// unpackPixels' byte shuffles into RGBA8.
+TEST(format_unpack_byte_shuffles) {
+    PixelStoreParams ps;
+    ps.alignment = 1;
+    const FormatInfo* rgba8 = formatInfo(GL_RGBA8);
+    const FormatInfo* rgb8 = formatInfo(GL_RGB8);
+    CHECK(rgba8 && rgb8);
+    if (!rgba8 || !rgb8) return;
+    const uint8_t bytes[8] = {10, 20, 30, 40, 50, 60, 70, 80};
+    const struct { const FormatInfo* info; GLenum format, type; int width; uint8_t want[8]; } cases[] = {
+        {rgba8, GL_BGR, GL_UNSIGNED_BYTE, 2, {30, 20, 10, 255, 60, 50, 40, 255}},
+        {rgba8, GL_RGB, GL_UNSIGNED_BYTE, 2, {10, 20, 30, 255, 40, 50, 60, 255}},
+        {rgb8, GL_RGBA, GL_UNSIGNED_BYTE, 2, {10, 20, 30, 255, 50, 60, 70, 255}},
+        {rgb8, GL_BGRA, GL_UNSIGNED_BYTE, 2, {30, 20, 10, 255, 70, 60, 50, 255}},
+        {rgba8, GL_LUMINANCE, GL_UNSIGNED_BYTE, 2, {10, 10, 10, 255, 20, 20, 20, 255}},
+        {rgba8, GL_LUMINANCE_ALPHA, GL_UNSIGNED_BYTE, 2, {10, 10, 10, 20, 30, 30, 30, 40}},
+        {rgba8, GL_RGBA, GL_UNSIGNED_INT_8_8_8_8, 2, {40, 30, 20, 10, 80, 70, 60, 50}},
+        {rgba8, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8, 2, {20, 30, 40, 10, 60, 70, 80, 50}},
+    };
+    for (const auto& c : cases) {
+        uint8_t stored[8] = {};
+        unpackPixels(bytes, c.format, c.type, c.width, 1, 1, ps, *c.info, stored);
+        CHECK(std::memcmp(stored, c.want, 8) == 0);
+        if (c.type == GL_UNSIGNED_INT_8_8_8_8) {
+            // The generic path (byte-swapped words) agrees.
+            PixelStoreParams swapped = ps;
+            swapped.swapBytes = true;
+            const uint8_t reversed[8] = {40, 30, 20, 10, 80, 70, 60, 50};
+            uint8_t generic[8] = {};
+            unpackPixels(reversed, c.format, c.type, c.width, 1, 1, swapped, *c.info, generic);
+            CHECK(std::memcmp(generic, c.want, 8) == 0);
+        }
+    }
+}
+
+// RGB bytes into RGBA8, four texels a step and the tail one at a time: rows
+// of several widths, each followed by bytes the conversion must not read
+// into the texels.
+TEST(format_unpack_rgb_rows) {
+    PixelStoreParams ps;
+    ps.alignment = 1;
+    const FormatInfo* rgb8 = formatInfo(GL_RGB8);
+    CHECK(rgb8 != nullptr);
+    if (!rgb8) return;
+    for (int width : {1, 5, 6, 7, 13, 64}) {
+        std::vector<uint8_t> rgb(static_cast<size_t>(width) * 3 * 2 + 16, 0xee);
+        for (size_t i = 0; i < static_cast<size_t>(width) * 3 * 2; ++i) rgb[i] = static_cast<uint8_t>(i * 7 + 1);
+        std::vector<uint8_t> stored(static_cast<size_t>(width) * 4 * 2, 0), want(stored.size());
+        for (size_t t = 0; t < static_cast<size_t>(width) * 2; ++t) {
+            std::memcpy(&want[t * 4], &rgb[t * 3], 3);
+            want[t * 4 + 3] = 0xff;
+        }
+        unpackPixels(rgb.data(), GL_RGB, GL_UNSIGNED_BYTE, width, 2, 1, ps, *rgb8, stored.data());
+        CHECK(stored == want);
+    }
 }

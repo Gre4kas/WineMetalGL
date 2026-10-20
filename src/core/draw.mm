@@ -73,6 +73,7 @@ bool attachmentTarget(Context& ctx, const Attachment& a, RenderTargetDesc::Targe
     if (a.type == GL_TEXTURE) {
         Texture* tex = a.texture.get();
         if (!tex || !ensureTextureStorage(ctx, *tex)) return false;
+        tex->root().touchSerial = ctx.stream().serial();  // rendered to (or read) in this command buffer
         const int face = a.cubeFace ? static_cast<int>(a.cubeFace - GL_TEXTURE_CUBE_MAP_POSITIVE_X) : 0;
         const TextureImage& image = tex->image(face, a.level);
         // A level defined off the mip chain has no storage of its size.
@@ -780,6 +781,15 @@ bool DrawState::bindVertexInputs(id<MTLRenderCommandEncoder> encoder, PipelineKe
         int byteOffset = 0;
     };
     std::vector<ConstantInput> constants;
+    // Client-memory attributes in a format Metal fetches: the elements the
+    // draw reads are copied into transient memory as they are (one copy for
+    // interleaved arrays), so Metal fetches them without CPU conversion.
+    struct ClientCopy {
+        int location;
+        const VertexAttrib* attrib;
+        VertexFetch fetch;
+    };
+    FixedList<ClientCopy, VertexArray::kAttribSlots> clientCopies;
     for (const shader::StageOutput::VertexInput& input : program.stage(Stage::Vertex).vertexInputs) {
         const int location = input.location;
         if (location < 0 || location >= VertexArray::kAttribSlots) continue;
@@ -823,6 +833,18 @@ bool DrawState::bindVertexInputs(id<MTLRenderCommandEncoder> encoder, PipelineKe
                 ctx_.setError(GL_INVALID_OPERATION);
                 return false;
             }
+            if (!a.buffer && input.kind != 'd' && !partner && !gather && !gpuGather_) {
+                // Client memory Metal can fetch as it is: copied, not converted.
+                const VertexFetch fetch = vertexFetch(input, a);
+                const NSUInteger stride = static_cast<NSUInteger>(a.effectiveStride());
+                // Each copy may take a layout of its own: only with room for
+                // all of them next to the direct groups, conversion and constants.
+                if (fetch.format != MTLVertexFormatInvalid && fetch.offset % 4 == 0 && stride % 4 == 0 && stride > 0 &&
+                    fetch.bytes <= stride && plan.groups.size() + clientCopies.size() + 4 <= slots) {
+                    clientCopies.push_back({location, &a, fetch});
+                    break;
+                }
+            }
             if (gather && a.divisor && instanceGather_)
                 converted.push_back({location, &a, instanceGather_, input.kind, input.part, input.byteOffset, 0});
             else
@@ -841,6 +863,75 @@ bool DrawState::bindVertexInputs(id<MTLRenderCommandEncoder> encoder, PipelineKe
             }
             break;
         case Plan::None: break;
+        }
+    }
+    // Copied client attributes: those of one stride and divisor whose
+    // elements share one stride's window are copied together.
+    {
+        bool copied[VertexArray::kAttribSlots] = {};
+        for (size_t i = 0; i < clientCopies.size(); ++i) {
+            if (copied[i]) continue;
+            const ClientCopy& lead = clientCopies[i];
+            const NSUInteger stride = static_cast<NSUInteger>(lead.attrib->effectiveStride());
+            const uint32_t divisor = lead.attrib->divisor;
+            NSUInteger low = lead.fetch.offset, high = lead.fetch.offset + lead.fetch.bytes, used = lead.fetch.bytes;
+            FixedList<size_t, VertexArray::kAttribSlots> members;
+            members.push_back(i);
+            copied[i] = true;
+            for (size_t j = i + 1; j < clientCopies.size(); ++j) {
+                const ClientCopy& c = clientCopies[j];
+                if (copied[j] || static_cast<NSUInteger>(c.attrib->effectiveStride()) != stride || c.attrib->divisor != divisor)
+                    continue;
+                const NSUInteger l = std::min(low, c.fetch.offset), h = std::max(high, c.fetch.offset + c.fetch.bytes);
+                // Attributes far apart in the element (immediate mode's slots)
+                // are copied apart rather than with the bytes between them.
+                if (h - l > stride || (h - l > 64 && h - l > 2 * (used + c.fetch.bytes))) continue;
+                low = l;
+                high = h;
+                used += c.fetch.bytes;
+                members.push_back(j);
+                copied[j] = true;
+            }
+            // The elements read, as the conversion below counts them; element
+            // e is fetched as vertex e - rebase.
+            uint32_t first = 0, count = 0, rebase = 0;
+            if (divisor) {
+                count = baseInstance_ +
+                        static_cast<uint32_t>((static_cast<uint64_t>(std::max<GLsizei>(1, instances)) + divisor - 1) / divisor);
+            } else {
+                first = static_cast<uint32_t>(std::max(0, firstVertex));
+                count = static_cast<uint32_t>(std::max(0, vertexCount));
+                rebase = static_cast<uint32_t>(vertexRebase_);
+            }
+            const size_t elements = static_cast<size_t>(first - rebase) + count;
+            if (elements > kMaxConvertedVertices) {
+                logOnce(LogLevel::Warn, LogCategory::Draw, "converted-span", "draw skipped: %zu vertices to convert", elements);
+                return false;
+            }
+            // Elements with little of their stride read are packed: the window
+            // each, 4-byte aligned; others are copied as one run.
+            const NSUInteger window = high - low;
+            const bool pack = stride > 64 && stride > 2 * window;
+            const NSUInteger copyStride = pack ? (window + 3) & ~NSUInteger(3) : stride;
+            const size_t span = count ? static_cast<size_t>(count - 1) * copyStride + window : 0;
+            const size_t lead_bytes = static_cast<size_t>(first - rebase) * copyStride;
+            TransientAllocation alloc = transient_.allocate(std::max<size_t>(1, lead_bytes + span), serial, 16);
+            if (!alloc.data) return false;
+            const uint8_t* from = reinterpret_cast<const uint8_t*>(low) + static_cast<size_t>(first) * stride;
+            uint8_t* to = static_cast<uint8_t*>(alloc.data) + lead_bytes;
+            if (pack) {
+                for (uint32_t e = 0; e < count; ++e) std::memcpy(to + e * copyStride, from + e * stride, window);
+            } else if (span) {
+                std::memcpy(to, from, span);
+            }
+            const int layout = addLayout(alloc.buffer, alloc.offset, static_cast<uint32_t>(copyStride), divisor, false);
+            if (layout < 0) return false;
+            for (size_t m : members) {
+                VertexAttributeKey& out = key.attributes[clientCopies[m].location];
+                out.format = static_cast<uint8_t>(clientCopies[m].fetch.format);
+                out.layout = static_cast<uint8_t>(layout);
+                out.offset = static_cast<uint16_t>(clientCopies[m].fetch.offset - low);
+            }
         }
     }
     // Converted attributes: expanded to 4 x 32-bit components, interleaved in
@@ -1106,10 +1197,12 @@ id<MTLTexture> DrawState::imageBinding(LinkedProgram& program, size_t index) {
         if (view && u.texture) {
             const uint64_t serial = ctx_.stream().serial();
             u.texture->lastUseSerial = serial;
+            u.texture->root().touchSerial = serial;
             if (u.access != GL_READ_ONLY) ctx_.stream().noteShaderWrites();
             // Stores to a buffer image change the buffer: CPU reads and later uploads wait for this draw.
             if (Buffer* buffer = u.texture->buffer.get(); buffer && u.access != GL_READ_ONLY) {
                 buffer->lastUseSerial = buffer->lastWriteSerial = serial;
+                buffer->shadowValid = false;
                 ++buffer->version;
             } else if (buffer) {
                 buffer->lastUseSerial = serial;
@@ -1163,6 +1256,8 @@ void DrawState::bindUniforms(id<MTLRenderCommandEncoder> encoder, LinkedProgram&
         e.driverSet = false;
         e.fragmentDriverSet = false;
         for (auto& u : e.uniforms) u = {};
+        for (auto& stage : e.blockBuffers)
+            for (auto& buffer : stage) buffer = nil;
     }
     if (tessInputs_.active) {
         // The tessellation evaluation vertex function's domain points, patch records and control block.
@@ -1243,6 +1338,22 @@ void DrawState::bindUniforms(id<MTLRenderCommandEncoder> encoder, LinkedProgram&
             id<MTLBuffer> buffer = zero;
             NSUInteger offset = 0;
             uniformBlockBuffer(program, b, buffer, offset);
+            // A buffer the encoder has in the slot is not set again; a new offset alone is cheaper.
+            const int tracked = slot - static_cast<int>(shader::kSlotFirstUniformBlock);
+            if (tracked >= 0 && tracked < 14) {
+                __strong id<MTLBuffer>& had = e.blockBuffers[vertex ? 0 : 1][tracked];
+                NSUInteger& hadOffset = e.blockOffsets[vertex ? 0 : 1][tracked];
+                if (had == buffer) {
+                    if (hadOffset != offset) {
+                        if (vertex) [encoder setVertexBufferOffset:offset atIndex:static_cast<NSUInteger>(slot)];
+                        else [encoder setFragmentBufferOffset:offset atIndex:static_cast<NSUInteger>(slot)];
+                        hadOffset = offset;
+                    }
+                    continue;
+                }
+                had = buffer;
+                hadOffset = offset;
+            }
             if (vertex) [encoder setVertexBuffer:buffer offset:offset atIndex:static_cast<NSUInteger>(slot)];
             else [encoder setFragmentBuffer:buffer offset:offset atIndex:static_cast<NSUInteger>(slot)];
         }
@@ -1285,9 +1396,41 @@ void DrawState::uniformBlockBuffer(LinkedProgram& program, size_t index, __stron
     if (!ib.buffer || !ib.buffer->mtl) return;
     // A range starting past the end (the buffer shrank after binding) reads as unbound.
     if (ib.offset < 0 || ib.offset >= ib.buffer->size) return;
-    buffer = ib.buffer->mtl;
+    Buffer& source = *ib.buffer;
+    const uint64_t serial = ctx_.stream().serial();
+    // A small block of a buffer the GPU does not write and the application
+    // cannot write behind GL's back is copied into transient memory, once per
+    // command buffer and contents version: the GPU never reads the buffer
+    // itself, so glBufferSubData between draws (the common per-draw update)
+    // writes it in place instead of renaming it.
+    const GLint dataSize = program.link.blocks[index].dataSize;
+    if (dataSize > 0 && dataSize <= 65536 && !source.pinned && !source.mapped &&
+        !(source.immutable && (source.storageFlags & GL_MAP_PERSISTENT_BIT)) &&
+        (!source.lastWriteSerial || ctx_.share().queue.isComplete(source.lastWriteSerial))) {
+        const uint32_t bytes = static_cast<uint32_t>(dataSize + 15) & ~15u;
+        for (const Buffer::UniformSnapshot& snapshot : source.uniformSnapshots) {
+            if (snapshot.buffer && snapshot.source == ib.offset && snapshot.bytes == bytes && snapshot.serial == serial &&
+                snapshot.version == source.version) {
+                buffer = snapshot.buffer;
+                offset = snapshot.offset;
+                return;
+            }
+        }
+        const size_t available = static_cast<size_t>(source.size - ib.offset);
+        const size_t copied = std::min<size_t>(bytes, available);
+        TransientAllocation alloc = transient_.allocate(bytes, serial, 256);
+        std::memcpy(alloc.data, source.contents() + ib.offset, copied);
+        if (copied < bytes) std::memset(static_cast<uint8_t*>(alloc.data) + copied, 0, bytes - copied);
+        stats::count(&stats::Frame::uniformBytes, bytes);
+        Buffer::UniformSnapshot& slot = source.uniformSnapshots[source.nextUniformSnapshot++ % 4];
+        slot = {alloc.buffer, alloc.offset, ib.offset, bytes, source.version, serial};
+        buffer = alloc.buffer;
+        offset = alloc.offset;
+        return;
+    }
+    buffer = source.mtl;
     offset = static_cast<NSUInteger>(ib.offset);
-    ib.buffer->lastUseSerial = ctx_.stream().serial();
+    source.lastUseSerial = serial;
 }
 
 void DrawState::atomicCounterBuffer(LinkedProgram& program, size_t index, __strong id<MTLBuffer>& buffer, NSUInteger& offset) {
@@ -1302,6 +1445,7 @@ void DrawState::atomicCounterBuffer(LinkedProgram& program, size_t index, __stro
     offset = static_cast<NSUInteger>(ib.offset);
     // Counters change the buffer: CPU reads and later uploads wait for this draw.
     ib.buffer->lastUseSerial = ib.buffer->lastWriteSerial = ctx_.stream().serial();
+    ib.buffer->shadowValid = false;
     ctx_.stream().noteShaderWrites();
     ++ib.buffer->version;
 }
@@ -1341,6 +1485,7 @@ bool DrawState::storageArguments(const shader::StageOutput& stage, const Program
                 if (arg.writes) {
                     // Stores change the buffer: CPU reads and later uploads wait for this work.
                     ib.buffer->lastWriteSerial = serial;
+                    ib.buffer->shadowValid = false;
                     ++ib.buffer->version;
                     ctx_.stream().noteShaderWrites();
                 }
@@ -1383,6 +1528,7 @@ void DrawState::bindStorageBlocks(id<MTLComputeCommandEncoder> encoder, const sh
 
 void DrawState::markSampled(Texture& texture) {
     texture.lastUseSerial = ctx_.stream().serial();
+    texture.root().touchSerial = texture.lastUseSerial;
     // A buffer texture reads its buffer: writes to the buffer must wait for this draw.
     if (texture.target == GL_TEXTURE_BUFFER && texture.buffer) texture.buffer->lastUseSerial = texture.lastUseSerial;
 }
@@ -1683,7 +1829,7 @@ id<MTLRenderCommandEncoder> DrawState::prepare(GLenum mode, MTLPrimitiveType& pr
     }
 
     phase.switchTo(&stats::Frame::prepareEncoderNanos);
-    id<MTLRenderCommandEncoder> encoder = ctx_.stream().render(target);
+    id<MTLRenderCommandEncoder> encoder = ctx_.stream().renderDraw(target);
     if (ctx_.stream().passGeneration() != lastPassGeneration_) {
         lastPassGeneration_ = ctx_.stream().passGeneration();
     }
@@ -2609,6 +2755,7 @@ DrawState::Capture DrawState::captureTransformFeedback(GLenum mode, const std::v
         Buffer& buffer = *xfb.buffers[b].buffer;
         xfb.written[b] += static_cast<GLsizeiptr>(primitives * perPrimitive * link.xfbStride[b] * 4);
         buffer.lastUseSerial = buffer.lastWriteSerial = serial;
+        buffer.shadowValid = false;
         ++buffer.version;
     }
     return rasterized ? kCapturedAndDrawn : kCaptured;
@@ -2645,7 +2792,7 @@ bool DrawState::runVertexCapture(LinkedProgram& lp, const std::vector<uint32_t>&
             RenderTargetDesc target;
             TargetFormats formats;
             if (!drawTarget(target, formats, false)) return false;
-            encoder = ctx_.stream().render(target);
+            encoder = ctx_.stream().renderDraw(target);
             key.sampleCount = static_cast<uint8_t>(target.samples);
             for (int i = 0; i < 8; ++i) key.colorFormats[i] = static_cast<uint16_t>(formats.color[i]);
             key.depthFormat = static_cast<uint16_t>(formats.depth);
@@ -3983,7 +4130,19 @@ void DrawState::drawElements(GLenum mode, GLsizei count, GLenum type, const void
     bool cpuReadable = !elementBuffer;
     auto cpuSource = [&] {
         if (!cpuReadable) {
-            if (elementBuffer->lastWriteSerial) ctx_.stream().waitFor(elementBuffer->lastWriteSerial);
+            Buffer& b = *elementBuffer;
+            if (b.shadowValid && b.shadow.size() == static_cast<size_t>(b.size)) {
+                // The pending GPU writes copy CPU data the copy has already.
+                source = b.shadow.data() + offset;
+            } else if (b.lastWriteSerial && !ctx_.share().queue.isComplete(b.lastWriteSerial)) {
+                ctx_.stream().waitFor(b.lastWriteSerial);
+                // Keep a copy from now on (Buffer::shadow): CPU updates of the
+                // buffer then need no wait here.
+                if (b.size <= (64 << 20) && !b.mapped && !b.pinned) {
+                    b.shadow.assign(b.contents(), b.contents() + b.size);
+                    b.shadowValid = true;
+                }
+            }
             cpuReadable = true;
         }
         return source;
@@ -4355,7 +4514,7 @@ void DrawState::clearWithDraw(const RenderTargetDesc& target, const TargetFormat
     }
     id<MTLRenderPipelineState> pipeline = clearPipeline(formats, writeMasks, target.samples, signature, target.layers > 0);
     if (!pipeline) return;
-    id<MTLRenderCommandEncoder> encoder = ctx_.stream().render(target);
+    id<MTLRenderCommandEncoder> encoder = ctx_.stream().renderDraw(target);
     queriesSuspendVisibility(ctx_, encoder);  // clears do not count towards occlusion queries
     DepthStencilKey ds;
     std::memset(&ds, 0, sizeof(ds));

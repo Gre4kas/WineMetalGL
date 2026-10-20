@@ -156,6 +156,17 @@ kernel void wmgl_decode_texels(texture2d<float> source [[texture(0)]], device fl
     out[id.y * size.x + id.x] = source.sample(nearest, (float2(id) + 0.5) / float2(size), level(0));
 }
 
+// glReadPixels of RGBA8 (unsigned normalized) texels as GL_BGRA bytes into a
+// pack buffer, in command order: params.xy = the region's origin, params.zw
+// = its size; rowWords = the destination's row stride in 4-byte words.
+kernel void wmgl_pack_bgra8(texture2d<float, access::read> source [[texture(0)]], device uint* out [[buffer(0)]],
+                            constant uint4& params [[buffer(1)]], constant uint& rowWords [[buffer(2)]],
+                            uint2 id [[thread_position_in_grid]]) {
+    if (id.x >= params.z || id.y >= params.w) return;
+    const float4 c = source.read(uint2(params.x + id.x, params.y + id.y));
+    out[id.y * rowWords + id.x] = pack_float_to_unorm4x8(c.bgra);
+}
+
 // GL_RGB32F/I/UI buffer texels (12 bytes) expanded to RGBA32 with alpha
 // `one` (1.0f or 1, as bits): params.x = texel count, params.y = one.
 kernel void wmgl_expand_rgb32(device const uint* in [[buffer(0)]], device uint4* out [[buffer(1)]],

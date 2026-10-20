@@ -90,10 +90,27 @@ static void deliver_debug_messages(void)
     } while (params.more);
 }
 
-/* Batching is off with WINEMETALGL_BATCH=0, and once the application
- * installs a debug callback (its messages then arrive during the call that
- * caused them, as GL_DEBUG_OUTPUT_SYNCHRONOUS asks). */
-static BOOL batching = TRUE;
+/* Batching is off with WINEMETALGL_BATCH=0, and while the application has
+ * a debug callback and GL_DEBUG_OUTPUT_SYNCHRONOUS enabled: its messages
+ * then arrive during the call that caused them. Without synchronous output
+ * they may come later (GL 4.6 section 20.8), after the batch. */
+#ifndef GL_DEBUG_OUTPUT_SYNCHRONOUS
+#define GL_DEBUG_OUTPUT_SYNCHRONOUS 0x8242
+#endif
+static BOOL batching = TRUE, batching_allowed = TRUE, debug_callback, debug_synchronous;
+
+static void note_call( unsigned int code, const void *args )
+{
+    if (code == unix_glDebugMessageCallback || code == unix_glDebugMessageCallbackARB ||
+        code == unix_glDebugMessageCallbackKHR || code == unix_glDebugMessageCallbackAMD)
+        debug_callback = *(void *const *)args != NULL;  /* the callback is the first parameter */
+    else if ((code == unix_glEnable || code == unix_glDisable) &&
+             ((const struct glEnable_params *)args)->cap == GL_DEBUG_OUTPUT_SYNCHRONOUS)
+        debug_synchronous = code == unix_glEnable;
+    else
+        return;
+    batching = batching_allowed && !(debug_callback && debug_synchronous);
+}
 
 /* Runs the thread's batched calls (one unix call); FALSE: delivering
  * debug messages is left to the caller. */
@@ -118,6 +135,7 @@ BOOL wmgl_batch( unsigned int code, const void *args, size_t size, const void *d
     struct wmgl_batch_record record;
     BYTE *at;
 
+    note_call( code, args );
     /* Large or missing data (the core reports the error) is passed as is. */
     if (!batching || data_size > BATCH_BYTES || (data_size && !data)) return FALSE;
     record_size = sizeof(struct wmgl_batch_record) + params_size + (((size_t)data_size + 7) & ~(size_t)7);
@@ -140,15 +158,24 @@ BOOL wmgl_batch( unsigned int code, const void *args, size_t size, const void *d
     return TRUE;
 }
 
+BOOL wmgl_batch_last( unsigned int code, const void *args, size_t size )
+{
+    struct thread_state *state = TlsGetValue( tls_index );
+
+    /* Pointers in the arguments stay valid: the batch runs before this returns. */
+    if (!batching || !state || !state->batch || !state->batch->used) return FALSE;
+    if (!wmgl_batch( code, args, size, NULL, 0, 0 )) return FALSE;
+    flush_batch( state, TRUE );
+    return TRUE;
+}
+
 NTSTATUS wmgl_unix_call( unsigned int code, void *args )
 {
     NTSTATUS status;
 
     /* Batched calls run first, in order. */
     flush_batch( TlsGetValue( tls_index ), TRUE );
-    if (code == unix_glDebugMessageCallback || code == unix_glDebugMessageCallbackARB ||
-        code == unix_glDebugMessageCallbackKHR || code == unix_glDebugMessageCallbackAMD)
-        batching = FALSE;
+    note_call( code, args );
     status = unix_call_dispatcher( unixlib, code, args );
     if (status == WMGL_STATUS_DEBUG_MESSAGES)
     {
@@ -334,7 +361,7 @@ BOOL WINAPI DllMain( HINSTANCE instance, DWORD reason, LPVOID reserved )
     case DLL_PROCESS_ATTACH:
         module = instance;
         wmgl_log_max = getenv( "WINEMETALGL_WINE_DEBUG" ) ? 3 : 0;
-        if (getenv( "WINEMETALGL_BATCH" ) && !strcmp( getenv( "WINEMETALGL_BATCH" ), "0" )) batching = FALSE;
+        if (getenv( "WINEMETALGL_BATCH" ) && !strcmp( getenv( "WINEMETALGL_BATCH" ), "0" )) batching = batching_allowed = FALSE;
         if ((tls_index = TlsAlloc()) == TLS_OUT_OF_INDEXES) return FALSE;
         if (!init_unix_calls( instance ))
         {

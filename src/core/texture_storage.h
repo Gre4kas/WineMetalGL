@@ -81,6 +81,11 @@ void uploadTexels(Context& ctx, Texture& tex, int face, int level, int x, int y,
 // The same from texels already in transient memory (not depth/stencil).
 void uploadStaged(Context& ctx, Texture& tex, int face, int level, int x, int y, int z, int width, int height, int depth,
                   const TransientAllocation& staging, size_t bytesPerRow, size_t bytesPerImage);
+// uploadStaged from any buffer, at `sourceOffset`. inOrder: the buffer may
+// hold GPU writes of the command buffer being recorded (a pixel unpack
+// buffer), so the copy never runs ahead of it.
+void uploadFromBuffer(Context& ctx, Texture& tex, int face, int level, int x, int y, int z, int width, int height, int depth,
+                      id<MTLBuffer> source, NSUInteger sourceOffset, size_t bytesPerRow, size_t bytesPerImage, bool inOrder);
 
 namespace api {
 // glGenerateMipmap of a depth or depth/stencil texture (api/blit.mm).

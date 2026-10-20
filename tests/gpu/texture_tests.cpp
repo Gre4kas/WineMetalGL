@@ -357,3 +357,96 @@ in vec4 tex; out vec4 frag; void main() { frag = tex; })");
     glDeleteTextures(1, &tex);
     CHECK_GL();
 }
+
+// Uploads between draws of one pass: a texture the command buffer has
+// sampled gets the upload in order (the draw before it sees the old texels),
+// one it has not used may get it ahead (the draw after it sees the new).
+GPU_TEST(gpu_texture_upload_between_draws_keeps_order) {
+    static const char* vs = R"(#version 330
+in vec2 position;
+uniform float x;
+out vec2 uv;
+void main() { uv = vec2(0.5); gl_Position = vec4(position.x * 0.25 + x, position.y, 0.0, 1.0); })";
+    static const char* fs = R"(#version 330
+in vec2 uv;
+uniform sampler2D tex;
+out vec4 o;
+void main() { o = texture(tex, uv); })";
+    GLuint p = gpu::program(vs, fs);
+    GLuint vao = gpu::quad();
+    const uint8_t red[4] = {255, 0, 0, 255}, green[4] = {0, 255, 0, 255}, blue[4] = {0, 0, 255, 255};
+    GLuint tex[2];
+    glGenTextures(2, tex);
+    for (GLuint t : tex) {
+        glBindTexture(GL_TEXTURE_2D, t);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, red);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    }
+    glFinish();
+    glUseProgram(p);
+    glBindVertexArray(vao);
+    const GLint x = glGetUniformLocation(p, "x");
+    glClearColor(0, 0, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+    // tex[0]: sampled, then uploaded, then sampled again.
+    glBindTexture(GL_TEXTURE_2D, tex[0]);
+    glUniform1f(x, -0.75f);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, green);
+    glUniform1f(x, -0.25f);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    // tex[1]: not used yet in this command buffer: uploaded, then sampled.
+    glBindTexture(GL_TEXTURE_2D, tex[1]);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, blue);
+    glUniform1f(x, 0.25f);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    GLint viewport[4];
+    glGetIntegerv(GL_VIEWPORT, viewport);
+    const int y = viewport[3] / 2, w = viewport[2];
+    CHECK(gpu::near(gpu::readRGBA8(w * 1 / 8, y, 1, 1).data(), red));
+    CHECK(gpu::near(gpu::readRGBA8(w * 3 / 8, y, 1, 1).data(), green));
+    CHECK(gpu::near(gpu::readRGBA8(w * 5 / 8, y, 1, 1).data(), blue));
+    glDeleteTextures(2, tex);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
+    CHECK_GL();
+}
+
+// glTexSubImage2D from a pixel unpack buffer in the stored layout: a GPU
+// copy in command order, after GPU writes to the buffer, with the unpack
+// row length and skips applied.
+GPU_TEST(gpu_texture_upload_from_unpack_buffer) {
+    std::vector<uint32_t> texels(16 * 16);
+    for (size_t i = 0; i < texels.size(); ++i) texels[i] = 0xff000000u | static_cast<uint32_t>(i * 2654435761u >> 8);
+    GLuint source = 0, pbo = 0, tex = 0;
+    glGenBuffers(1, &source);
+    glBindBuffer(GL_COPY_READ_BUFFER, source);
+    glBufferData(GL_COPY_READ_BUFFER, texels.size() * 4, texels.data(), GL_STATIC_DRAW);
+    glGenBuffers(1, &pbo);
+    glBindBuffer(GL_COPY_WRITE_BUFFER, pbo);
+    glBufferData(GL_COPY_WRITE_BUFFER, texels.size() * 4, nullptr, GL_STREAM_DRAW);
+    glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0, texels.size() * 4);  // GPU-written
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, 8, 8);
+    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo);
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, 16);
+    glPixelStorei(GL_UNPACK_SKIP_PIXELS, 4);
+    glPixelStorei(GL_UNPACK_SKIP_ROWS, 2);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 8, 8, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+    glPixelStorei(GL_UNPACK_SKIP_PIXELS, 0);
+    glPixelStorei(GL_UNPACK_SKIP_ROWS, 0);
+    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+    std::vector<uint32_t> back(8 * 8);
+    glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, back.data());
+    bool same = true;
+    for (int y = 0; y < 8; ++y)
+        for (int x = 0; x < 8; ++x) same = same && back[static_cast<size_t>(y * 8 + x)] == texels[static_cast<size_t>((y + 2) * 16 + x + 4)];
+    CHECK(same);
+    glDeleteTextures(1, &tex);
+    glDeleteBuffers(1, &pbo);
+    glDeleteBuffers(1, &source);
+    CHECK_GL();
+}
