@@ -12,6 +12,7 @@
 #include <mutex>
 #include <tuple>
 #include <mach/mach_time.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "core/context.h"
@@ -87,25 +88,28 @@ bool anyOcclusionActive(Context& ctx) {
     return false;
 }
 
-// Nanoseconds per GPU timestamp tick, from pairs of CPU and GPU timestamps
-// (Metal's CPU timestamps: mach_absolute_time units), refined as time passes.
+// Nanoseconds per GPU timestamp tick, from pairs of CPU and GPU timestamps,
+// refined as time passes. Metal's CPU timestamps are nanoseconds or
+// mach_absolute_time units (as an x86_64 process under Rosetta, whose
+// timebase is 1/1, cannot tell): the clock they match decides.
 double nanosPerGpuTick() {
     static std::mutex lock;
     static MTLTimestamp cpu0 = 0, gpu0 = 0;
-    static double ratio = 1.0;
-    static mach_timebase_info_data_t timebase = [] {
-        mach_timebase_info_data_t t;
-        mach_timebase_info(&t);
-        return t;
-    }();
+    static double ratio = 1.0, nanosPerCpuUnit = 1.0;
     std::lock_guard<std::mutex> guard(lock);
     MTLTimestamp cpu = 0, gpu = 0;
+    const uint64_t machBefore = mach_absolute_time(), nanosBefore = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
     [Device::get().mtl() sampleTimestamps:&cpu gpuTimestamp:&gpu];
     if (!cpu0) {
+        mach_timebase_info_data_t timebase;
+        mach_timebase_info(&timebase);
+        const auto distance = [](uint64_t a, uint64_t b) { return a > b ? a - b : b - a; };
+        if (distance(cpu, machBefore) < distance(cpu, nanosBefore))
+            nanosPerCpuUnit = static_cast<double>(timebase.numer) / timebase.denom;
         cpu0 = cpu;
         gpu0 = gpu;
-    } else if (gpu > gpu0 && cpu > cpu0 && cpu - cpu0 > 1000000) {
-        ratio = static_cast<double>(cpu - cpu0) * timebase.numer / timebase.denom / static_cast<double>(gpu - gpu0);
+    } else if (gpu > gpu0 && cpu > cpu0 && (cpu - cpu0) * nanosPerCpuUnit > 1e6) {
+        ratio = static_cast<double>(cpu - cpu0) * nanosPerCpuUnit / static_cast<double>(gpu - gpu0);
     }
     return ratio;
 }
