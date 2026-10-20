@@ -3,6 +3,7 @@
 #include <dirent.h>
 #include <dlfcn.h>
 #include <fcntl.h>
+#include <pwd.h>
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <unistd.h>
@@ -240,15 +241,15 @@ void f(Reader& r, std::vector<T>& v) {
 
 // ------------------------------------------------------------- the files
 
-// The directory, or "" (off).
+// The directory, or "" (off): in the account's home directory (from the
+// user database, not the environment: no path comes from outside).
 const std::string& cacheDirectory() {
     static const std::string dir = [] {
         const char* v = std::getenv("WINEMETALGL_SHADER_CACHE");
         if (v && !std::strcmp(v, "0")) return std::string();
-        std::string d;
-        if (v && *v) d = v;
-        else if (const char* home = std::getenv("HOME")) d = std::string(home) + "/Library/Caches/WineMetalGL/shaders";
-        else return std::string();
+        const passwd* account = ::getpwuid(::getuid());
+        if (!account || !account->pw_dir || account->pw_dir[0] != '/') return std::string();
+        const std::string d = std::string(account->pw_dir) + "/Library/Caches/WineMetalGL/shaders";
         for (size_t at = 1; at <= d.size(); ++at)
             if (at == d.size() || d[at] == '/') ::mkdir(d.substr(0, at).c_str(), 0755);
         return d;

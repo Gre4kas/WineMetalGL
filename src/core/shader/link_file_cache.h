@@ -3,8 +3,8 @@
 // translation instead of compiling and translating the shaders again (load
 // times; Metal's own cache then skips the MSL compile).
 //
-// One file per link key under WINEMETALGL_SHADER_CACHE (a directory; "0":
-// off), else ~/Library/Caches/WineMetalGL/shaders. A file holds its full key
+// One file per link key under ~/Library/Caches/WineMetalGL/shaders
+// (WINEMETALGL_SHADER_CACHE=0: off). A file holds its full key
 // (read back and compared: no collisions) and is valid only for the build
 // that wrote it (the core's file identity and the format version are part
 // of the name).
