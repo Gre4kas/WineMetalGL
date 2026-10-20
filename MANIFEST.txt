@@ -47,6 +47,7 @@ docs/images/doom-2016-gameplay.jpg
 docs/images/doom-2016-settings.jpg
 docs/logging.md
 docs/performance.md
+docs/release-notes/3.4.0.md
 docs/release.md
 docs/testing.md
 docs/unsupported.md
