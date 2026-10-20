@@ -1,5 +1,6 @@
 // Queries, conditional rendering and syncs.
 #include <chrono>
+#include <thread>
 #include "gpu.h"
 
 namespace {
@@ -174,6 +175,33 @@ void main() {
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glDeleteFramebuffers(1, &fb);
     glDeleteTextures(1, &tex);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
+    CHECK_GL();
+}
+
+// glFlush, then a wait without GL_SYNC_FLUSH_COMMANDS_BIT: the fence
+// signals (a flush deferred to the next pass still commits for the wait),
+// as does a status polled after glFlush.
+GPU_TEST(gpu_flush_then_wait_without_flush_bit) {
+    GLuint p = gpu::program(kVs, kFs);
+    GLuint vao = gpu::quad();
+    glUseProgram(p);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    GLsync a = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+    glFlush();
+    CHECK_EQ(glClientWaitSync(a, 0, 2000000000ull) != GL_TIMEOUT_EXPIRED, true);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    GLsync b = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+    glFlush();
+    GLint status = GL_UNSIGNALED;
+    for (int i = 0; i < 2000 && status != GL_SIGNALED; ++i) {
+        glGetSynciv(b, GL_SYNC_STATUS, 1, nullptr, &status);
+        if (status != GL_SIGNALED) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    CHECK_EQ(status, GL_SIGNALED);
+    glDeleteSync(a);
+    glDeleteSync(b);
     glDeleteVertexArrays(1, &vao);
     glDeleteProgram(p);
     CHECK_GL();

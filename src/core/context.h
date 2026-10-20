@@ -100,6 +100,8 @@ public:
     CommandStream& stream() { return stream_; }
     // Textures with GL_GENERATE_MIPMAP levels to regenerate (Texture::mipmapsPending).
     std::vector<RefPtr<Texture>> pendingMipmaps;
+    // Current on a thread (ShareGroup::currentContexts counts it).
+    bool current = false;
     DrawState& draw() { return *draw_; }
 
     // Returns the buffer bound to a buffer target, or null for an invalid target.

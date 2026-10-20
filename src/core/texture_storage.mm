@@ -106,7 +106,8 @@ bool baseDimensions(const Texture& tex, GLsizei& w0, GLsizei& h0, GLsizei& d0, c
 //   blurs heightmaps with SRC_ALPHA/ONE_MINUS_SRC_ALPHA into fresh R32F
 //   textures, and dst * 0 is NaN when the old memory held NaN (issue #12).
 void initStorage(Context& ctx, id<MTLTexture> texture, MTLClearColor color) {
-    id<MTLCommandBuffer> commandBuffer = [ctx.stream().queue().mtl() commandBuffer];
+    // Committed ahead of the next commit, with other new storage.
+    id<MTLCommandBuffer> commandBuffer = ctx.stream().preludeInit();
     const bool volume = texture.textureType == MTLTextureType3D;
     const NSUInteger faces = texture.textureType == MTLTextureTypeCube        ? 6
                              : texture.textureType == MTLTextureTypeCubeArray ? 6 * texture.arrayLength
@@ -127,7 +128,6 @@ void initStorage(Context& ctx, id<MTLTexture> texture, MTLClearColor color) {
             [[commandBuffer renderCommandEncoderWithDescriptor:pass] endEncoding];
         }
     }
-    [commandBuffer commit];
 }
 
 }  // namespace
@@ -918,7 +918,14 @@ void uploadTexels(Context& ctx, Texture& tex, int face, int level, int x, int y,
 
 void uploadStaged(Context& ctx, Texture& tex, int face, int level, int x, int y, int z, int width, int height, int depth,
                   const TransientAllocation& staging, size_t bytesPerRow, size_t bytesPerImage) {
+    uploadFromBuffer(ctx, tex, face, level, x, y, z, width, height, depth, staging.buffer, staging.offset, bytesPerRow,
+                     bytesPerImage, false);
+}
+
+void uploadFromBuffer(Context& ctx, Texture& tex, int face, int level, int x, int y, int z, int width, int height, int depth,
+                      id<MTLBuffer> source, NSUInteger sourceOffset, size_t bytesPerRow, size_t bytesPerImage, bool inOrder) {
     const bool array = tex.mtl.textureType == MTLTextureType2DArray || tex.mtl.textureType == MTLTextureTypeCubeArray;
+    const TransientAllocation staging{source, sourceOffset, nullptr};
     // Storage the command buffer being recorded has not used takes the
     // upload ahead of it: a render pass in progress goes on (on a tile-based
     // GPU, ending it stores and reloads every attachment). Otherwise the
@@ -928,7 +935,7 @@ void uploadStaged(Context& ctx, Texture& tex, int face, int level, int x, int y,
     Texture& root = tex.root();
     const uint64_t serial = stream.serial();
     const bool clearPending = stream.pendingClearUses(tex.mtl);
-    id<MTLBlitCommandEncoder> blit = root.touchSerial != serial && !clearPending ? stream.preludeUpload() : nil;
+    id<MTLBlitCommandEncoder> blit = !inOrder && root.touchSerial != serial && !clearPending ? stream.preludeUpload() : nil;
     if (!blit) {
         blit = stream.uploadBlit(!clearPending);
         root.touchSerial = serial;

@@ -359,7 +359,17 @@ WMGL_EXPORT int wmgl_make_current(wmgl_context* handle, wmgl_surface* draw, wmgl
     Context* ctx = asContext(handle);
     WMGL_TRACE(Driver, "make current: context %p, draw %p, read %p (was %p)", ctx, draw, read, previous);
     // Switching contexts flushes the previous one (WGL requires an implicit glFlush).
-    if (previous && previous != ctx) previous->stream().flush();
+    if (previous && previous != ctx) {
+        previous->stream().flush();
+        if (previous->current) {
+            previous->current = false;
+            --previous->share().currentContexts;
+        }
+    }
+    if (ctx && !ctx->current) {
+        ctx->current = true;
+        ++ctx->share().currentContexts;
+    }
     setCurrentContext(ctx);
     if (ctx) ctx->bindSurfaces(asSurface(draw), asSurface(read ? read : draw));
     return 1;

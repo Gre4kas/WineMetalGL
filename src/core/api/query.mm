@@ -771,6 +771,8 @@ GLenum ClientWaitSync(Context& ctx, GLsync handle, GLbitfield flags, GLuint64 ti
     // already (a poll of an older fence: committing again would end the
     // render pass in progress for nothing).
     if ((flags & GL_SYNC_FLUSH_COMMANDS_BIT) && !queue.isCommitted(sync->serial)) ctx.stream().flush();
+    // An earlier glFlush promised the fence would signal without the bit.
+    else if (!queue.isCommitted(sync->serial)) ctx.stream().commitIfDeferred();
     if (timeout == 0) return GL_TIMEOUT_EXPIRED;
     stats::Timer timer(&stats::Frame::clientWaitNanos);
     ShareUnlock unlock(ctx);  // `hold` keeps the sync alive
@@ -795,6 +797,8 @@ void GetSynciv(Context& ctx, GLsync handle, GLenum pname, GLsizei count, GLsizei
     switch (pname) {
     case GL_OBJECT_TYPE: value = GL_SYNC_FENCE; break;
     case GL_SYNC_STATUS:
+        // A status polled after glFlush must become signalled (a deferred flush commits).
+        if (sync->serial && !ctx.share().queue.isCommitted(sync->serial)) ctx.stream().commitIfDeferred();
         value = !sync->serial || ctx.share().queue.isComplete(sync->serial) ? GL_SIGNALED : GL_UNSIGNALED;
         break;
     case GL_SYNC_CONDITION: value = GL_SYNC_GPU_COMMANDS_COMPLETE; break;

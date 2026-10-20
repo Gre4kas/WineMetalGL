@@ -335,6 +335,33 @@ void uploadRegion(Context& ctx, Texture& tex, int face, int level, int x, int y,
     imageChanged(ctx, tex);
 }
 
+// glTex(Sub)Image from a pixel unpack buffer holding texels in the stored
+// layout: a GPU copy from the buffer, in command order (no wait for GPU
+// writes to it, no CPU copy). False: the CPU path (conversion, alignment
+// Metal's copies do not take, errors).
+bool uploadFromUnpackBuffer(Context& ctx, Texture& tex, int face, int level, int x, int y, int z, int w, int h, int d,
+                            GLenum format, GLenum type, const void* pixels, bool threeD) {
+    Buffer* pbo = ctx.state.pixelUnpackBuffer.get();
+    if (!pbo || !pbo->mtl || pbo->mappedNonPersistent() || w <= 0 || h <= 0 || d <= 0) return false;
+    TextureImage& image = tex.image(face, level);
+    if (!image.format || image.format->compressed || tex.target == GL_TEXTURE_1D_ARRAY) return false;
+    PixelStoreParams ps = pixelStoreParams(ctx.state.unpack, threeD);
+    if (ps.swapBytes || (ctx.isEs() && image.format->isDepth()) || !storedLayout(format, type, *image.format)) return false;
+    if (!imageHasStorage(ctx, tex, face, level) || !tex.mtl || tex.mtl.pixelFormat == MTLPixelFormatDepth32Float_Stencil8)
+        return false;
+    const TransferLayout l = transferLayout(format, type, w, h, d, ps);
+    const size_t texel = storageBytes(image.format->storage);
+    const uintptr_t offset = reinterpret_cast<uintptr_t>(pixels), start = offset + l.skipBytes;
+    const size_t size = static_cast<size_t>(pbo->size);
+    if (offset % typeSize(type) || start % texel || start % 4 || l.rowStride % texel || l.rowStride % 4 ||
+        l.imageStride % l.rowStride || offset > size || l.bytesNeeded > size - offset)
+        return false;
+    uploadFromBuffer(ctx, tex, face, level, x, y, z, w, h, d, pbo->mtl, start, l.rowStride, l.imageStride, true);
+    pbo->lastUseSerial = ctx.stream().serial();
+    imageChanged(ctx, tex);
+    return true;
+}
+
 size_t compressedSize(const FormatInfo& info, GLsizei w, GLsizei h, GLsizei d) {
     const size_t blocksX = storageBlocksAcross(info.storage, static_cast<size_t>(w));
     const size_t blocksY = storageBlocksAcross(info.storage, static_cast<size_t>(h), true);
@@ -580,6 +607,10 @@ void texSubImage(Context& ctx, int dims, GLenum target, GLint level, GLint x, GL
     if (rgtc && ((x % 4) || (y % 4) || ((w % 4) && x + w != image.width) || ((h % 4) && y + h != image.height)))
         return ctx.setError(GL_INVALID_OPERATION);
     if (!ctx.isEs() && !textureTransferCompatible(format, type, *image.format)) return ctx.setError(GL_INVALID_OPERATION);
+    if (!rgtc && uploadFromUnpackBuffer(ctx, *t.tex, t.face, level, x, y, z, w, h, d, format, type, pixels, dims == 3)) {
+        generateMipmapsAfterChange(ctx, t, level);
+        return;
+    }
     const TransferLayout layout = transferLayout(format, type, w, h, d, pixelStoreParams(ctx.state.unpack, dims == 3));
     const uint8_t* src = nullptr;
     if (!unpackSource(ctx, pixels, w && h && d ? layout.bytesNeeded : 0, typeSize(type), src)) return;

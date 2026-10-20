@@ -99,6 +99,7 @@ Context::Context(RefPtr<ShareGroup> share, const ContextConfig& config, int pixe
 
 Context::~Context() {
     stream_.finish();
+    if (current) --share_->currentContexts;
     {
         ShareLock lock(*this);
         api::releaseCurrentProgram(*this);

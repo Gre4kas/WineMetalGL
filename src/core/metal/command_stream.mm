@@ -54,10 +54,13 @@ void CommandStream::endEncoder(PassEnd cause) {
     shaderWrites_ = false;
     if (render_) {
         // Every attachment is stored but those invalidated since the pass's last draw.
-        for (size_t i = 0; i < target_.color.size(); ++i)
-            if (target_.color[i].texture)
-                [render_ setColorStoreAction:storeDiscard_.color & (1u << i) ? MTLStoreActionDontCare : MTLStoreActionStore
-                                     atIndex:i];
+        for (size_t i = 0; i < target_.color.size(); ++i) {
+            if (!target_.color[i].texture) continue;
+            MTLStoreAction action = storeDiscard_.color & (1u << i) ? MTLStoreActionDontCare : MTLStoreActionStore;
+            if (i == 0 && resolveAtEnd_) action = MTLStoreActionStoreAndMultisampleResolve;
+            [render_ setColorStoreAction:action atIndex:i];
+        }
+        resolveAtEnd_ = false;
         if (target_.depth.texture)
             [render_ setDepthStoreAction:storeDiscard_.depth ? MTLStoreActionDontCare : MTLStoreActionStore];
         if (target_.stencil.texture)
@@ -93,6 +96,8 @@ void CommandStream::waitForShaderWrites(id<MTLCommandEncoder> encoder, bool rend
 }
 
 void CommandStream::startRender(const RenderTargetDesc& target) {
+    // A glFlush deferred while the previous pass went on commits now.
+    if (flushDeferred_) flush(true);
     stats::Timer timer(&stats::Frame::passStartNanos);
     {
         stats::Timer end(&stats::Frame::passEndNanos);
@@ -119,6 +124,7 @@ void CommandStream::startRender(const RenderTargetDesc& target) {
             a.loadAction = noLoad.color & (1u << i) ? MTLLoadActionDontCare : MTLLoadActionLoad;
         }
         a.storeAction = MTLStoreActionUnknown;  // chosen when the pass ends (endEncoder)
+        if (i == 0 && target.colorResolve) a.resolveTexture = target.colorResolve;
     }
     if (target.depth.texture) {
         MTLRenderPassDepthAttachmentDescriptor* d = pass.depthAttachment;
@@ -265,6 +271,13 @@ void CommandStream::resolvePendingClear() {
     endEncoder();
 }
 
+bool CommandStream::resolveOpenPass(id<MTLTexture> color) {
+    if (!render_ || target_.color[0].texture != color || !target_.colorResolve) return false;
+    resolveAtEnd_ = true;
+    endEncoder(PassEnd::Other);
+    return true;
+}
+
 bool CommandStream::pendingClearUses(id<MTLTexture> texture) const {
     if (!pending_.any() || !texture) return false;
     auto uses = [&](id<MTLTexture> t) { return t && (t == texture || t.parentTexture == texture || texture.parentTexture == t); };
@@ -375,6 +388,14 @@ id<MTLBlitCommandEncoder> CommandStream::blit(bool keepPendingClear) {
     return uploadBlit(keepPendingClear);
 }
 
+id<MTLCommandBuffer> CommandStream::preludeInit() {
+    if (!preludeInitBuffer_) {
+        preludeInitBuffer_ = [queue_.mtl() commandBuffer];
+        preludeInitBuffer_.label = @"WineMetalGL prelude (new storage)";
+    }
+    return preludeInitBuffer_;
+}
+
 id<MTLBlitCommandEncoder> CommandStream::preludeUpload() {
     if (hoistBlocked_) return nil;
     loadDiscard_ = Discard();  // the upload may write an invalidated attachment
@@ -482,7 +503,10 @@ void CommandStream::commitPrelude() {
     const auto commit = [](id<MTLCommandBuffer> b) {
         if (b) [b commit];
     };
-    // Uploads first: nothing recorded after them reads what they replace.
+    // New storage's contents first, then uploads: nothing recorded after
+    // them reads what they replace.
+    commit(preludeInitBuffer_);
+    preludeInitBuffer_ = nil;
     if (preludeUpload_) [preludeUpload_ endEncoding];
     commit(preludeUploadBuffer_);
     preludeUpload_ = nil;
@@ -512,6 +536,7 @@ void CommandStream::waitForPrelude() {
 }
 
 uint64_t CommandStream::flush(bool keepPendingClear) {
+    flushDeferred_ = false;
     if (__builtin_expect(deferred_ != nullptr, 0)) runDeferred();
     if (!keepPendingClear) resolvePendingClear();
     endEncoder(PassEnd::Commit);

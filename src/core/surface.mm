@@ -276,11 +276,15 @@ void Surface::describe(RenderTargetDesc& target) const {
     target.width = width_;
     target.height = height_;
     target.samples = samples_;
+    target.colorResolve = resolve_;
 }
 
 void Surface::resolveForRead(CommandStream& stream) {
     if (!resolve_) return;
-    // Resolve with an empty pass whose store action resolves into resolve_.
+    // The pass drawing the frame resolves as it ends; else (nothing drawn
+    // since: a clear, or an earlier read) an empty pass whose store action
+    // resolves into resolve_.
+    if (stream.resolveOpenPass(color_)) return;
     stream.resolvePendingClear();
     stream.endEncoder();
     MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
