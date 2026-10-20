@@ -83,6 +83,21 @@ public:
     // ends without storing them unless a draw follows in it; otherwise the
     // target's next pass, if it is the next work recorded, does not load them.
     void invalidate(const RenderTargetDesc& target, uint8_t colorMask, bool depth, bool stencil);
+    // GPU timing of encoders for GL_TIME_ELAPSED queries, without commits:
+    // from the first query on, every render, compute and blit encoder samples
+    // the GPU timestamp at its start and its end into a counter sample buffer.
+    // beginTiming ends the open encoder and returns where the next encoder's
+    // start sample goes; endTiming ends the open encoder and returns the
+    // last sample taken since (below `first`: no encoder ran). False without
+    // stage-boundary counter sampling (the caller commits instead).
+    struct TimingMark {
+        id<MTLCounterSampleBuffer> buffer = nil;
+        uint32_t sample = 0;
+    };
+    bool beginTiming(TimingMark& first);
+    void endTiming(TimingMark& last);
+    // Whether the device samples timestamps at encoder boundaries.
+    static bool gpuTiming();
     // Whether a pending load-action clear is for an attachment of `texture`
     // (or of a view of it): writes to it must let the clear run first.
     bool pendingClearUses(id<MTLTexture> texture) const;
@@ -206,6 +221,13 @@ private:
     Queue& queue_;
     std::function<void()> deferred_;
     bool runningDeferred_ = false;
+    // Timing (beginTiming): encoders opened while timing_ sample into
+    // samples_ (two samples each, from nextSample_; a full buffer is replaced).
+    bool timing_ = false;
+    id<MTLCounterSampleBuffer> samples_ = nil;
+    uint32_t nextSample_ = 0;
+    // The two sample indices for a new encoder, or false (not timing).
+    bool takeSamples(uint32_t& start, uint32_t& end);
     // invalidate(): attachments of the open pass it ends without storing,
     // and of the next pass on discardTarget_ it starts without loading.
     struct Discard {

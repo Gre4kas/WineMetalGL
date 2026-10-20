@@ -164,6 +164,18 @@ void CommandStream::startRender(const RenderTargetDesc& target) {
         pass.visibilityResultBuffer = visibility_;
         passVisibility_ = true;
     }
+    uint32_t sampleStart, sampleEnd;
+    if (takeSamples(sampleStart, sampleEnd)) {
+        pass.sampleBufferAttachments[0].sampleBuffer = samples_;
+        // From the vertex stage's start to the fragment stage's end. A
+        // tile-based GPU runs a pass's vertex stage ahead, beside the
+        // fragments of the pass before: queries start no earlier than that
+        // pass's end (api/query.mm timedNanos).
+        pass.sampleBufferAttachments[0].startOfVertexSampleIndex = sampleStart;
+        pass.sampleBufferAttachments[0].endOfVertexSampleIndex = MTLCounterDontSample;
+        pass.sampleBufferAttachments[0].startOfFragmentSampleIndex = MTLCounterDontSample;
+        pass.sampleBufferAttachments[0].endOfFragmentSampleIndex = sampleEnd;
+    }
     if (clearsApply) pending_ = PendingClear();
     id<MTLCommandBuffer> buffer;
     {
@@ -256,13 +268,98 @@ bool CommandStream::pendingClearUses(id<MTLTexture> texture) const {
     return uses(pendingTarget_.depth.texture) || uses(pendingTarget_.stencil.texture);
 }
 
+namespace {
+
+constexpr uint32_t kTimingSamples = 4096;
+
+id<MTLCounterSet> timestampCounters() {
+    static id<MTLCounterSet> set = [] {
+        id<MTLDevice> device = Device::get().mtl();
+        if (![device supportsCounterSampling:MTLCounterSamplingPointAtStageBoundary]) return (id<MTLCounterSet>)nil;
+        for (id<MTLCounterSet> s in device.counterSets)
+            if ([s.name isEqualToString:MTLCommonCounterSetTimestamp]) return s;
+        return (id<MTLCounterSet>)nil;
+    }();
+    return set;
+}
+
+}  // namespace
+
+bool CommandStream::gpuTiming() {
+    static const bool enabled = [] {
+        const char* v = std::getenv("WINEMETALGL_GPU_TIMERS");
+        return (!v || v[0] != '0') && timestampCounters() != nil;
+    }();
+    return enabled;
+}
+
+namespace {
+
+id<MTLCounterSampleBuffer> newTimingSamples() {
+    MTLCounterSampleBufferDescriptor* desc = [MTLCounterSampleBufferDescriptor new];
+    desc.counterSet = timestampCounters();
+    desc.storageMode = MTLStorageModeShared;
+    desc.sampleCount = kTimingSamples;
+    NSError* error = nil;
+    id<MTLCounterSampleBuffer> buffer = [Device::get().mtl() newCounterSampleBufferWithDescriptor:desc error:&error];
+    if (!buffer) WMGL_WARN(Gpu, "no counter sample buffer for timer queries: %s", error.localizedDescription.UTF8String);
+    return buffer;
+}
+
+}  // namespace
+
+bool CommandStream::takeSamples(uint32_t& start, uint32_t& end) {
+    if (!timing_) return false;
+    if (!samples_ || nextSample_ + 2 > kTimingSamples) {
+        // A query's samples straddling two buffers reads as 0 (finalize).
+        samples_ = newTimingSamples();
+        nextSample_ = 0;
+        if (!samples_) return false;
+    }
+    start = nextSample_;
+    end = nextSample_ + 1;
+    nextSample_ += 2;
+    return true;
+}
+
+bool CommandStream::beginTiming(TimingMark& first) {
+    if (!gpuTiming()) return false;
+    // The query times the encoders opened from now on, in one sample buffer
+    // with room for 256 of them.
+    endEncoder(PassEnd::Other);
+    if (!samples_ || nextSample_ + 512 > kTimingSamples) {
+        samples_ = newTimingSamples();
+        nextSample_ = 0;
+        if (!samples_) return false;
+    }
+    // Once a context times queries every encoder takes samples: a query's
+    // first pass then knows when the pass before it ended.
+    timing_ = true;
+    first = {samples_, nextSample_};
+    return true;
+}
+
+void CommandStream::endTiming(TimingMark& last) {
+    endEncoder(PassEnd::Other);
+    last = {samples_, nextSample_ ? nextSample_ - 1 : 0};
+}
+
 id<MTLBlitCommandEncoder> CommandStream::uploadBlit(bool keepPendingClear) {
     loadDiscard_ = Discard();  // the copies may write the invalidated attachments
     // A clear recorded after this encoder opened must run before new commands.
     if (blit_ && (keepPendingClear || !pending_.any())) return blit_;
     if (!keepPendingClear) resolvePendingClear();
     endEncoder(PassEnd::Blit);
-    blit_ = [commandBuffer() blitCommandEncoder];
+    uint32_t start, end;
+    if (takeSamples(start, end)) {
+        MTLBlitPassDescriptor* pass = [MTLBlitPassDescriptor blitPassDescriptor];
+        pass.sampleBufferAttachments[0].sampleBuffer = samples_;
+        pass.sampleBufferAttachments[0].startOfEncoderSampleIndex = start;
+        pass.sampleBufferAttachments[0].endOfEncoderSampleIndex = end;
+        blit_ = [commandBuffer() blitCommandEncoderWithDescriptor:pass];
+    } else {
+        blit_ = [commandBuffer() blitCommandEncoder];
+    }
     waitForShaderWrites(blit_, false);
     return blit_;
 }
@@ -278,7 +375,16 @@ id<MTLComputeCommandEncoder> CommandStream::compute(bool keepPendingClear) {
     if (compute_ && (keepPendingClear || !pending_.any())) return compute_;
     if (!keepPendingClear) resolvePendingClear();
     endEncoder(PassEnd::Compute);
-    compute_ = [commandBuffer() computeCommandEncoder];
+    uint32_t start, end;
+    if (takeSamples(start, end)) {
+        MTLComputePassDescriptor* pass = [MTLComputePassDescriptor computePassDescriptor];
+        pass.sampleBufferAttachments[0].sampleBuffer = samples_;
+        pass.sampleBufferAttachments[0].startOfEncoderSampleIndex = start;
+        pass.sampleBufferAttachments[0].endOfEncoderSampleIndex = end;
+        compute_ = [commandBuffer() computeCommandEncoderWithDescriptor:pass];
+    } else {
+        compute_ = [commandBuffer() computeCommandEncoder];
+    }
     waitForShaderWrites(compute_, false);
     return compute_;
 }

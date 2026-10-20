@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "core/format/formats.h"
+#include "core/metal/command_stream.h"
 #include "core/shader/compiler.h"
 #include "core/gl/types.h"
 #include "core/util/ref.h"
@@ -506,6 +507,10 @@ public:
         std::atomic<bool> startSet{false}, endSet{false};
     };
     std::shared_ptr<Timer> timer;
+    // TIME_ELAPSED timed by GPU timestamps of the encoders between begin
+    // and end (CommandStream::beginTiming), without commits.
+    bool gpuTimed = false;
+    CommandStream::TimingMark timedFirst, timedLast;
 };
 
 class Sync : public RefCounted, public Labeled {

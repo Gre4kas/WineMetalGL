@@ -11,6 +11,7 @@
 #include <limits>
 #include <mutex>
 #include <tuple>
+#include <mach/mach_time.h>
 #include <unistd.h>
 
 #include "core/context.h"
@@ -86,6 +87,58 @@ bool anyOcclusionActive(Context& ctx) {
     return false;
 }
 
+// Nanoseconds per GPU timestamp tick, from pairs of CPU and GPU timestamps
+// (Metal's CPU timestamps: mach_absolute_time units), refined as time passes.
+double nanosPerGpuTick() {
+    static std::mutex lock;
+    static MTLTimestamp cpu0 = 0, gpu0 = 0;
+    static double ratio = 1.0;
+    static mach_timebase_info_data_t timebase = [] {
+        mach_timebase_info_data_t t;
+        mach_timebase_info(&t);
+        return t;
+    }();
+    std::lock_guard<std::mutex> guard(lock);
+    MTLTimestamp cpu = 0, gpu = 0;
+    [Device::get().mtl() sampleTimestamps:&cpu gpuTimestamp:&gpu];
+    if (!cpu0) {
+        cpu0 = cpu;
+        gpu0 = gpu;
+    } else if (gpu > gpu0 && cpu > cpu0 && cpu - cpu0 > 1000000) {
+        ratio = static_cast<double>(cpu - cpu0) * timebase.numer / timebase.denom / static_cast<double>(gpu - gpu0);
+    }
+    return ratio;
+}
+
+// A GPU-timed TIME_ELAPSED query: from the first timed encoder's start to
+// the last one's end (each encoder takes a start and an end sample).
+uint64_t timedNanos(const Query& q) {
+    const CommandStream::TimingMark& a = q.timedFirst;
+    const CommandStream::TimingMark& b = q.timedLast;
+    if (!a.buffer || a.buffer != b.buffer || b.sample < a.sample + 1) {
+        if (a.buffer && a.buffer != b.buffer)
+            logOnce(LogLevel::Warn, LogCategory::Gpu, "timer-samples", "a timer query spans two sample buffers; its result is 0");
+        return 0;
+    }
+    // From the end of the encoder before the first (sample a - 1), if any.
+    const uint32_t from = a.sample > 0 ? a.sample - 1 : a.sample;
+    NSData* data = [a.buffer resolveCounterRange:NSMakeRange(from, b.sample - from + 1)];
+    if (!data) return 0;
+    const auto* r = static_cast<const MTLCounterResultTimestamp*>(data.bytes);
+    const size_t n = data.length / sizeof(MTLCounterResultTimestamp);
+    const size_t skip = a.sample - from;
+    uint64_t start = MTLCounterErrorValue, end = 0;
+    for (size_t i = skip; i + 1 < n; i += 2) {
+        if (r[i].timestamp == MTLCounterErrorValue || r[i + 1].timestamp == MTLCounterErrorValue) continue;
+        start = std::min<uint64_t>(start, r[i].timestamp);
+        end = std::max<uint64_t>(end, r[i + 1].timestamp);
+    }
+    if (start == MTLCounterErrorValue || end <= start) return 0;
+    // The GPU was busy with the encoder before until it ended.
+    if (skip && r[0].timestamp != MTLCounterErrorValue && r[0].timestamp > start && r[0].timestamp < end) start = r[0].timestamp;
+    return static_cast<uint64_t>(static_cast<double>(end - start) * nanosPerGpuTick());
+}
+
 void finalize(Query& q) {
     switch (q.target) {
     case GL_SAMPLES_PASSED: case GL_ANY_SAMPLES_PASSED: case GL_ANY_SAMPLES_PASSED_CONSERVATIVE: {
@@ -122,7 +175,8 @@ void finalize(Query& q) {
         break;
     }
     case GL_TIME_ELAPSED:
-        if (q.timer && q.timer->startSet && q.timer->endSet)
+        if (q.gpuTimed) q.result = timedNanos(q);
+        else if (q.timer && q.timer->startSet && q.timer->endSet)
             q.result = static_cast<uint64_t>(std::max(0.0, (q.timer->end - q.timer->start) * 1e9));
         break;
     case GL_TIMESTAMP:
@@ -455,10 +509,14 @@ void beginQuery(Context& ctx, GLenum target, int index, GLuint name) {
     q->visibilitySlots.clear();
     q->counterSerial = 0;
     q->timer.reset();
+    q->gpuTimed = false;
     ctx.state.activeQueries[index] = q;
     if (isOcclusion(index)) {
         ++ctx.occlusionEpoch;
         ctx.stream().setVisibilityWanted(true);
+    } else if (index == kQueryTimeElapsed && ctx.stream().beginTiming(q->timedFirst)) {
+        // Timed by the GPU timestamps of the encoders until the end, without commits.
+        q->gpuTimed = true;
     } else if (index == kQueryTimeElapsed) {
         // Time from the start of the next command buffer.
         stats::count(&stats::Frame::queryCommits);
@@ -480,6 +538,9 @@ void endQuery(Context& ctx, int index) {
     if (isOcclusion(index)) {
         endVisibility(ctx);
         if (q->visibilitySlots.empty()) q->resultFinal = true;
+    } else if (index == kQueryTimeElapsed && q->gpuTimed) {
+        ctx.stream().endTiming(q->timedLast);
+        q->pendingSerial = ctx.stream().serial();  // the samples resolve once it completes
     } else if (index == kQueryTimeElapsed) {
         markTimerEnd(ctx, *q);
     } else if (index == kQueryStatisticsFirst + kStatFragmentShaderInvocations) {
