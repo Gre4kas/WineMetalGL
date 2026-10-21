@@ -294,3 +294,146 @@ void main() { o = vec4(c.r, c.inner[1].g + c.inner[0].g, blk.b.g, 1.0); })";
     glDeleteProgram(p);
     CHECK_GL();
 }
+
+// Line input (SpaceEngine's orbits, issue #35): each segment of GL_LINES,
+// GL_LINE_STRIP and GL_LINE_LOOP, and of an indexed strip split by primitive
+// restart, reaches the geometry shader, which widens it into a quad.
+GPU_TEST(gpu_geometry_line_input) {
+    const char* gs = R"(#version 330 core
+layout(lines) in;
+layout(triangle_strip, max_vertices = 4) out;
+noperspective out vec2 uv;
+out vec4 color;
+void main() {
+    vec2 a = gl_in[0].gl_Position.xy, b = gl_in[1].gl_Position.xy;
+    vec2 n = normalize(vec2(a.y - b.y, b.x - a.x)) * 0.1;
+    color = vec4(0.0, 1.0, 0.0, 1.0);
+    uv = vec2(0.0); gl_Position = vec4(a - n, 0.0, 1.0); EmitVertex();
+    uv = vec2(0.0); gl_Position = vec4(a + n, 0.0, 1.0); EmitVertex();
+    uv = vec2(1.0); gl_Position = vec4(b - n, 0.0, 1.0); EmitVertex();
+    uv = vec2(1.0); gl_Position = vec4(b + n, 0.0, 1.0); EmitVertex();
+    EndPrimitive();
+})";
+    const char* fs = R"(#version 330 core
+noperspective in vec2 uv; in vec4 color; out vec4 o;
+void main() { o = color * (uv.x >= 0.0 ? 1.0 : 0.0); })";
+    GLuint p = linkWithGeometry(kPassVs, gs, fs);
+    glUseProgram(p);
+    // A square: bottom, right, top and left edges between its corners.
+    static const float corners[] = {-0.5f, -0.5f, 0.5f, -0.5f, 0.5f, 0.5f, -0.5f, 0.5f};
+    static const GLushort restarted[] = {0, 1, 0xffff, 2, 3};
+    GLuint vao = 0, buffers[2] = {};
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(2, buffers);
+    glBindBuffer(GL_ARRAY_BUFFER, buffers[0]);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(corners), corners, GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
+    glEnableVertexAttribArray(0);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, buffers[1]);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(restarted), restarted, GL_STATIC_DRAW);
+    struct Case {
+        const char* name;
+        GLenum mode;
+        bool indexed;
+        bool bottom, right, top, left;
+    } cases[] = {
+        {"GL_LINES", GL_LINES, false, true, false, true, false},
+        {"GL_LINE_STRIP", GL_LINE_STRIP, false, true, true, true, false},
+        {"GL_LINE_LOOP", GL_LINE_LOOP, false, true, true, true, true},
+        {"GL_LINE_STRIP with primitive restart", GL_LINE_STRIP, true, true, false, true, false},
+    };
+    const uint8_t green[4] = {0, 255, 0, 255}, black[4] = {0, 0, 0, 255};
+    for (const Case& c : cases) {
+        glClearColor(0, 0, 0, 1);
+        glClear(GL_COLOR_BUFFER_BIT);
+        if (c.indexed) {
+            glEnable(GL_PRIMITIVE_RESTART);
+            glPrimitiveRestartIndex(0xffff);
+            glDrawElements(c.mode, 5, GL_UNSIGNED_SHORT, nullptr);
+            glDisable(GL_PRIMITIVE_RESTART);
+        } else {
+            glDrawArrays(c.mode, 0, 4);
+        }
+        CHECK_GL();
+        const struct { int x, y; bool want; const char* edge; } probes[] = {
+            {32, 16, c.bottom, "bottom"}, {48, 32, c.right, "right"}, {32, 48, c.top, "top"}, {16, 32, c.left, "left"}};
+        for (const auto& probe : probes) {
+            const auto px = gpu::readRGBA8(probe.x, probe.y, 1, 1);
+            if (!gpu::near(px.data(), probe.want ? green : black, 2)) {
+                std::printf("  %s: %s edge %s, got %d %d %d\n", c.name, probe.edge, probe.want ? "missing" : "drawn", px[0],
+                            px[1], px[2]);
+                CHECK(false);
+            }
+        }
+    }
+    glDeleteBuffers(2, buffers);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
+    CHECK_GL();
+}
+
+// Stages matched by location, not name (GL 4.6 section 4.4.1): the vertex
+// stage's "vsPos" feeds the geometry stage's "gsIn" at location 0, and
+// "gsColor" the fragment stage's "fsColor". The emulation captured the
+// vertex outputs by the geometry inputs' names, and SpaceEngine's orbits
+// (outPos -> inPos, outColor -> inColor) drew nothing (issue #35).
+GPU_TEST(gpu_geometry_inputs_by_location) {
+    const char* vs = R"(#version 410 core
+layout(location = 0) in vec2 position;
+layout(location = 0) out vec4 vsPos;
+void main() { vsPos = vec4(position, 0.0, 1.0); })";
+    const char* gs = R"(#version 410 core
+layout(lines) in;
+layout(triangle_strip, max_vertices = 4) out;
+layout(location = 0) in vec4 gsIn[2];
+layout(location = 0) out vec4 gsColor;
+void main() {
+    vec2 a = gsIn[0].xy, b = gsIn[1].xy;
+    vec2 n = normalize(vec2(a.y - b.y, b.x - a.x)) * 0.1;
+    gsColor = vec4(0.0, 1.0, 0.0, 1.0);
+    gl_Position = vec4(a - n, 0.0, 1.0); EmitVertex();
+    gl_Position = vec4(a + n, 0.0, 1.0); EmitVertex();
+    gl_Position = vec4(b - n, 0.0, 1.0); EmitVertex();
+    gl_Position = vec4(b + n, 0.0, 1.0); EmitVertex();
+    EndPrimitive();
+})";
+    const char* fs = R"(#version 410 core
+layout(location = 0) in vec4 fsColor; out vec4 o; void main() { o = fsColor; })";
+    // The same shaders with matching names draw the same.
+    for (int sameNames = 0; sameNames < 2; ++sameNames) {
+        std::string v = vs, g = gs, f = fs;
+        if (sameNames) {
+            auto all = [](std::string& t, const std::string& a, const std::string& b) {
+                for (size_t at = t.find(a); at != std::string::npos; at = t.find(a, at + b.size())) t.replace(at, a.size(), b);
+            };
+            all(v, "vsPos", "pos");
+            all(g, "gsIn", "pos");
+            all(g, "gsColor", "color");
+            all(f, "fsColor", "color");
+        }
+        GLuint p = linkWithGeometry(v.c_str(), g.c_str(), f.c_str());
+        glUseProgram(p);
+        static const float segment[] = {-0.5f, 0.0f, 0.5f, 0.0f};
+        GLuint vao = 0, vbo = 0;
+        glGenVertexArrays(1, &vao);
+        glBindVertexArray(vao);
+        glGenBuffers(1, &vbo);
+        glBindBuffer(GL_ARRAY_BUFFER, vbo);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(segment), segment, GL_STATIC_DRAW);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
+        glEnableVertexAttribArray(0);
+        glClearColor(0, 0, 0, 1);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glDrawArrays(GL_LINES, 0, 2);
+        CHECK_GL();
+        const uint8_t green[4] = {0, 255, 0, 255};
+        if (!gpu::near(gpu::readRGBA8(32, 32, 1, 1).data(), green)) {
+            std::printf("  %s names: the segment is missing\n", sameNames ? "same" : "different");
+            CHECK(false);
+        }
+        glDeleteBuffers(1, &vbo);
+        glDeleteVertexArrays(1, &vao);
+        glDeleteProgram(p);
+    }
+}

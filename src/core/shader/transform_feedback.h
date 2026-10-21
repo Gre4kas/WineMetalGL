@@ -26,6 +26,7 @@ struct StageOutputVar {
     // plain name: its "Block.member" name (the emulations translate stages
     // through GLSL that gives every block an instance name).
     std::string qualified;
+    int location = -1;  // a plain variable's explicit location (-1: none)
 };
 
 // Validates glTransformFeedbackVaryings against the capturing stage's outputs
