@@ -253,6 +253,9 @@ jobs:
           # The game fixes' Mach-O files and DLLs first, then the app; the
           # carried release keeps its signatures (scripts/stage-release.sh).
           scripts/sign-settings-app.sh "$app"
+          find "$app/Contents/Resources" -name '*.dll' | while IFS= read -r dll; do
+            codesign -dv "$dll" 2>&1 | grep -q "^TeamIdentifier=$APPLE_TEAM_ID\$" || { echo "not signed by the team: $dll"; exit 1; }
+          done
           for f in "$app/Contents/Resources/GamePatches/SpaceEngine/winemac.so" \
                    "$app/Contents/Resources/Installer/module/x86_64-unix/libwinemetalgl.dylib" \
                    "$app/Contents/Resources/Installer/module/x86_64-unix/x87sidecar" \

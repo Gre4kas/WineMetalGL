@@ -150,6 +150,8 @@ jobs:
             test -f "$app/Contents/Resources/$f" || { echo "missing from the app: $f"; exit 1; }
           done
           codesign --verify --strict "$app/Contents/Resources/GamePatches/Wolfenstein The New Order/xaudio2_7.dll"
+          # Every DLL the app carries is signed; this build carries no release.
+          find "$app/Contents/Resources" -name '*.dll' -print0 | xargs -0 -n1 codesign --verify --strict
           scripts/build-settings-dmg.sh "$app" "$RUNNER_TEMP/WineMetalGL-Settings.dmg"
           mnt="$RUNNER_TEMP/mnt"
           mkdir -p "$mnt"

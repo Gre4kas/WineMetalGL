@@ -96,9 +96,10 @@ The identity signs the Mach-O libraries (`libwinemetalgl.dylib`,
 packages are notarized together as a zip (`xcrun notarytool submit --wait`),
 and a release whose submission is not accepted is not published. Loose
 libraries cannot be stapled, so Gatekeeper checks the ticket online. The
-module's Windows DLLs are PE files and carry no Apple signature. The game
-fixes' DLLs in WineMetalGL Settings get a generic signature, which codesign
-keeps in the file's extended attributes. `install-wine-module.sh` keeps a valid signature on the
+module's Windows DLLs are PE files and carry no Apple signature in the
+tarballs. In WineMetalGL Settings, every DLL (the module's and the game
+fixes') is signed with the Developer ID: a generic signature, which codesign
+keeps in the file's extended attributes and the install scripts' copies keep. `install-wine-module.sh` keeps a valid signature on the
 copies it installs and signs ad hoc only those without one.
 
 ## MetalSharp
