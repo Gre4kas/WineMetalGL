@@ -23,7 +23,10 @@ if grep -i -n 'VKMT' scripts/build.sh scripts/stage-host-libs.sh scripts/stage-r
 fi
 
 # No source may use Apple's OpenGL (the patches only carry Wine's own context lines).
-if git grep -n -I -e 'OpenGL.framework' -e 'OpenGL/OpenGL.h' -e 'OpenGL/gl.h' -e 'CGLContextObj' -- src include tools tests CMakeLists.txt; then
+# WineMetalGL Settings' OpenMW fix names OpenGL.framework only to replace it
+# in OpenMW.app's load commands (src/settings-app/Arm64Fixes.swift).
+if git grep -n -I -e 'OpenGL.framework' -e 'OpenGL/OpenGL.h' -e 'OpenGL/gl.h' -e 'CGLContextObj' -- src include tools tests CMakeLists.txt \
+    ':!src/settings-app/Arm64Fixes.swift'; then
     printf '%s\n' 'source uses Apple OpenGL' >&2
     exit 1
 fi

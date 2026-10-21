@@ -15,9 +15,11 @@
 # The app also carries the game fixes it applies where their games are
 # installed (Contents/Resources/GamePatches, from Game Specific Patched
 # Files; src/settings-app/GamePatches.swift): Quake 4's, SpaceEngine's and
-# Wolfenstein: The New Order's. OpenMW's is not among them: it is built into
-# an OpenMW.app, outside any Wine. SOURCE-SHA256 there lists the fixed files
+# Wolfenstein: The New Order's. SOURCE-SHA256 there lists the fixed files
 # as the repository has them, before scripts/sign-settings-app.sh signs them.
+# The arm64 fixes (Minecraft, OpenMW: src/settings-app/Arm64Fixes.swift)
+# install the glue the staged arm64 core carries (ARM64_CORE/glue,
+# scripts/build-arm64-glue.sh).
 #
 # A universal (arm64, x86_64) app for macOS 14 and later; its Liquid Glass
 # needs the macOS 26 SDK (Xcode 26) to build, and macOS 26 to show (before

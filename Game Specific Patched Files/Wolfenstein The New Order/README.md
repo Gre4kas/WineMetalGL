@@ -33,7 +33,7 @@ a buffer pointer):
 ## Installing
 
 WineMetalGL Settings installs it by itself into MetalSharp's Wine 11.17 when
-it finds the game in a MetalSharp prefix (Game Fixes, on by default). It keeps
+it finds the game in a MetalSharp prefix (Game Fixes → Wine Fixes, on by default). It keeps
 the replaced file in `~/Library/Application Support/WineMetalGL/Backups`.
 
 By hand, into MetalSharp's Wine (64-bit games):

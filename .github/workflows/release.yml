@@ -112,8 +112,12 @@ jobs:
       - name: Stage the x86_64 release (Wine module and core)
         run: scripts/stage-release.sh "$RUNNER_TEMP/deps/wine-11.0" "$RUNNER_TEMP/out/winemetalgl-$VERSION-x86_64"
 
+      # The native games' glue links against stand-ins for their SDL2, SDL3
+      # and GLFW (scripts/build-arm64-glue.sh).
       - name: Stage the arm64 core
-        run: scripts/stage-arm64-core.sh "$RUNNER_TEMP/out/winemetalgl-$VERSION-arm64-core"
+        run: |
+          brew install sdl2 sdl3 glfw
+          WINEMETALGL_REQUIRE_GLUE=1 scripts/stage-arm64-core.sh "$RUNNER_TEMP/out/winemetalgl-$VERSION-arm64-core"
 
       - name: Notarize the signed libraries
         env:
@@ -131,6 +135,10 @@ jobs:
           cp "$out/winemetalgl-$VERSION-x86_64/module/x86_64-unix/winemetalgl.so" "$RUNNER_TEMP/notarize/winemetalgl.so"
           cp "$out/winemetalgl-$VERSION-x86_64/module/x86_64-unix/x87sidecar" "$RUNNER_TEMP/notarize/x87sidecar"
           cp "$out/winemetalgl-$VERSION-arm64-core/lib/libwinemetalgl.dylib" "$RUNNER_TEMP/notarize/libwinemetalgl-arm64.dylib"
+          for glue in "$out/winemetalgl-$VERSION-arm64-core"/glue/*/*.dylib; do
+            game=$(basename "$(dirname "$glue")")
+            cp "$glue" "$RUNNER_TEMP/notarize/glue-$game-$(basename "$glue")"
+          done
           ditto -c -k --keepParent "$RUNNER_TEMP/notarize" "$RUNNER_TEMP/notarize.zip"
           xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" --apple-id "$APPLE_ID" \
             --password "$APPLE_APP_SPECIFIC_PASSWORD" --team-id "$APPLE_TEAM_ID" \
@@ -249,6 +257,7 @@ jobs:
           app="$RUNNER_TEMP/app/WineMetalGL Settings.app"
           test -f "$app/Contents/Resources/Installer/evidence/games/results.json" || { echo "the app lacks the x86_64 release"; exit 1; }
           test -f "$app/Contents/Resources/arm64-core/lib/libwinemetalgl.dylib" || { echo "the app lacks the arm64 core"; exit 1; }
+          test -f "$app/Contents/Resources/arm64-core/glue/minecraft/libSDL3.dylib" || { echo "the app lacks the native games glue"; exit 1; }
           test -s "$app/Contents/Resources/Assets.car" || { echo "no Liquid Glass icon (actool)"; exit 1; }
           # The game fixes' Mach-O files and DLLs first, then the app; the
           # carried release keeps its signatures (scripts/stage-release.sh).

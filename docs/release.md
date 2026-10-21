@@ -58,14 +58,16 @@ image of WineMetalGL Settings, which carries both archives' contents, and
   evidence directory, for x86_64 Wine 11.x (under Rosetta). Its Wine evidence
   ran on stock Wine 11.0 with the module installed.
 - `winemetalgl-<version>-arm64-core.tar.gz`: `scripts/stage-arm64-core.sh
-  OUTPUT`, the arm64 core with the driver ABI header. Its evidence is the
+  OUTPUT`, the arm64 core with the driver ABI header and the native games'
+  glue (`glue/minecraft`, `glue/openmw`). Its evidence is the
   native runs (the core built for the build machine); the Wine module is
   built for x86_64 Wine only, so it has not yet run inside an arm64 Wine.
 - `WineMetalGL-Settings-<version>.dmg`: a disk image with WineMetalGL
   Settings.app and an alias to `/Applications` to drag it onto. It is a whole
   runtime: the app carries the x86_64 release above (its install scripts,
   module, docs, evidence and licenses, as `Contents/Resources/Installer`) and
-  the arm64 core (`Contents/Resources/arm64-core`), so it installs and
+  the arm64 core with its glue (`Contents/Resources/arm64-core`, which its
+  Arm64 Fixes install), so it installs and
   updates WineMetalGL without downloading anything else. The workflow's
   `settings-app` job builds it on macOS 26 from the two staged releases
   (handed over as a tarball, which keeps their file modes; see

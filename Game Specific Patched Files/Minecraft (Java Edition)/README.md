@@ -27,6 +27,11 @@ Java runtime are not modified:
 
 ## Installing
 
+WineMetalGL Settings installs it (Game Fixes → Arm64 Fixes → Minecraft): the
+core and the prebuilt glue, and the JVM arguments in every Prism Launcher
+instance and Minecraft Launcher installation, which it removes again when
+the fix is turned off. By hand:
+
 ```sh
 brew install sdl3 glfw                              # headers only
 scripts/stage-arm64-core.sh /tmp/wmgl-arm64        # builds build/arm64-release

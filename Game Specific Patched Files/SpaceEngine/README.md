@@ -34,7 +34,7 @@ This is a Wine bug, not a WineMetalGL one; any Wine program can hit it.
 ## Installing
 
 WineMetalGL Settings installs it by itself into MetalSharp's Wine 11.17 when
-it finds SpaceEngine in a MetalSharp prefix (Game Fixes, on by default). It
+it finds SpaceEngine in a MetalSharp prefix (Game Fixes → Wine Fixes, on by default). It
 keeps the replaced file in `~/Library/Application Support/WineMetalGL/Backups`.
 
 By hand, into MetalSharp's Wine:

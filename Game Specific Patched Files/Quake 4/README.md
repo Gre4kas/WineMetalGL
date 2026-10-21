@@ -25,7 +25,7 @@ draws), at 1470x956:
 | `r_useSMP 1` and x87 acceleration | 16.0 ms (62 fps) | 18.4 ms | 0.3% |
 
 WineMetalGL Settings applies both parts by itself where it finds Quake 4
-(Game Fixes, on by default), keeping a copy of `user.reg` and of an existing
+(Game Fixes → Wine Fixes, on by default), keeping a copy of `user.reg` and of an existing
 `autoexec.cfg`.
 
 ## Display modes: `legacy-display-modes.reg`

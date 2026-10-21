@@ -27,7 +27,8 @@ core links only Apple system frameworks and never links OpenGL.framework.
 
 That is the core for an x86_64 Wine under Rosetta. `scripts/stage-arm64-core.sh
 /path/to/output` builds the arm64 core and stages it with the driver ABI
-header; the Wine module is built for x86_64 Wine only, so the arm64 core has
+header and, with Homebrew's SDL2, SDL3 and GLFW (`brew install sdl2 sdl3
+glfw`), the native games' glue (`glue/`, `scripts/build-arm64-glue.sh`); the Wine module is built for x86_64 Wine only, so the arm64 core has
 not yet run inside an arm64 Wine.
 
 For development, the core and its tests also build for the machine itself,
@@ -151,7 +152,8 @@ Applications.
 - **Logging**: everything (`WINEMETALGL_LOG=2`) or nothing, and a button that
   opens `~/Library/Logs/WineMetalGL`. Until it is switched, WineMetalGL logs
   warnings, as without the app.
-- **Game Fixes**: on by default. The app applies the fixes in
+- **Game Fixes**: two sections, each with switches of its own.
+  **Wine Fixes**, on by default: the app applies the fixes in
   `Game Specific Patched Files` wherever it finds their games in those bottles
   and prefixes. It looks in Steam's libraries (from `libraryfolders.vdf`,
   inside the prefix or not), GOG's folders, Program Files, and MetalSharp's
@@ -163,8 +165,24 @@ Applications.
   - SpaceEngine (`winemac.so`) and Wolfenstein: The New Order
     (`xaudio2_7.dll`): installed into MetalSharp's Wine 11.17, the Wine they
     were built from, and nowhere else.
-  - OpenMW's glue is not applied: it is built into an `OpenMW.app`, outside
-    any Wine.
+
+  **Arm64 Fixes**, off by default, a switch per game: native games on the
+  arm64 core, outside Wine, through the glue the app carries prebuilt
+  (`scripts/build-arm64-glue.sh`, in the staged arm64 core's `glue`).
+  - Minecraft: the core and the glue go into
+    `~/.local/share/winemetalgl/minecraft`, beside LWJGL's own SDL3 and GLFW
+    (from its natives jars), and each Prism Launcher instance and Minecraft
+    Launcher installation gets the JVM arguments that load them (the SDL3 glue
+    for LWJGL 3.4, Minecraft 26.x; the GLFW glue for 3.3, 1.21.x), after its
+    own. What they had is recorded in
+    `~/Library/Application Support/WineMetalGL/NativeFixes.json`, and turning
+    the fix off puts it back. A launcher that is running waits until it quits.
+  - OpenMW: an `OpenMW.app` in `/Applications` or `~/Applications` gets what
+    its folder's `install.sh` installs: the glue as its SDL2 (the real one
+    renamed `libSDL2-real.dylib`), the GL stubs and the core, and `openmw`
+    and OpenSceneGraph's libraries load the stubs (their load commands
+    rewritten in place, without the Command Line Tools). It is signed ad hoc
+    again. Turning the fix off loads Apple's OpenGL again.
 
   A fix that is already in place is left alone. Each file a fix replaces is
   first copied to `~/Library/Application Support/WineMetalGL/Backups`, under

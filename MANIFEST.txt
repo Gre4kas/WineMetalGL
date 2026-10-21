@@ -62,6 +62,7 @@ docs/release.md
 docs/testing.md
 docs/unsupported.md
 include/winemetalgl/driver.h
+scripts/build-arm64-glue.sh
 scripts/build-settings-app.sh
 scripts/build-settings-dmg.sh
 scripts/build-wine-module.sh
@@ -215,6 +216,7 @@ src/core/util/thread_qos.cpp
 src/core/util/thread_qos.h
 src/core/util/version.h
 src/core/version.mm
+src/settings-app/Arm64Fixes.swift
 src/settings-app/GamePatches.swift
 src/settings-app/Installations.swift
 src/settings-app/MetalSharp.icon/Assets/metalsharp-transparent.png

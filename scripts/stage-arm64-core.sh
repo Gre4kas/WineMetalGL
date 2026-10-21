@@ -50,6 +50,17 @@ if test -n "${WINEMETALGL_SIGN_IDENTITY:-}"; then
 else
     codesign --force --sign - "$output/lib/libwinemetalgl.dylib"
 fi
+# The native games' glue (scripts/build-arm64-glue.sh), which WineMetalGL
+# Settings installs: built when Homebrew's SDL2, SDL3 and GLFW are there
+# (the release's runner installs them; WINEMETALGL_REQUIRE_GLUE=1 requires it).
+if brew --prefix sdl2 >/dev/null 2>&1 && brew --prefix sdl3 >/dev/null 2>&1 && brew --prefix glfw >/dev/null 2>&1; then
+    "$project_root/scripts/build-arm64-glue.sh" "$output/glue" >/dev/null
+elif test "${WINEMETALGL_REQUIRE_GLUE:-}" = 1; then
+    printf '%s\n' 'no glue: brew install sdl2 sdl3 glfw' >&2
+    exit 1
+else
+    printf '%s\n' 'skipping the native games glue: brew install sdl2 sdl3 glfw' >&2
+fi
 cp "$project_root/include/winemetalgl/driver.h" "$output/include/winemetalgl/driver.h"
 cp "$project_root/README.md" "$output/README.md"
 # LGPL-3.0-or-later: LICENSE, the GPL-3.0 it builds on and the third-party licenses.
@@ -71,6 +82,11 @@ architecture does not load.
 
 This core is the build the native runs in evidence/cts exercised. It has not
 yet run inside an arm64 Wine.
+
+glue/ (when staged with it) runs native games on this core, outside Wine:
+glue/minecraft for Minecraft (LWJGL's SDL3 or GLFW), glue/openmw for
+OpenMW.app (its SDL2). See Game Specific Patched Files in the repository;
+WineMetalGL Settings installs them (Game Fixes, Arm64 Fixes).
 EOF
 
 commit=$(git -C "$project_root" rev-parse HEAD)

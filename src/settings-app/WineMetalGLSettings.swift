@@ -290,6 +290,7 @@ struct SettingsView: View {
     @StateObject private var store = SettingsStore()
     @StateObject private var installations = Installations()
     @StateObject private var fixes = GamePatches()
+    @StateObject private var native = NativeFixes()
     @StateObject private var updater = Updater()
 
     private var version: String {
@@ -322,7 +323,7 @@ struct SettingsView: View {
 
             InstallationsCard(installations: installations)
 
-            GameFixesCard(fixes: fixes, installations: installations)
+            GameFixesCard(fixes: fixes, native: native, installations: installations)
 
             CollapsibleCard("UpscaleGL", systemImage: "arrow.up.left.and.arrow.down.right", summary: store.upscale.title) {
                 EmptyView()
@@ -402,6 +403,7 @@ struct SettingsView: View {
         }
         if await updater.offerUpdate() { return }
         await fixes.apply(to: installations.targets)
+        await native.apply()
     }
 }
 

@@ -13,8 +13,10 @@
 // A fix that is in place already is left alone, so applying is done each time
 // the app opens; a file it replaces is first copied to
 // ~/Library/Application Support/WineMetalGL/Backups, under its own path (the
-// first time only, so the backup is the file from before any fix). "Apply
-// Game Fixes" turns all of it off.
+// first time only, so the backup is the file from before any fix). The Wine
+// Fixes switch turns all of it off. Games that run natively on the arm64
+// core have fixes of their own (Arm64Fixes.swift), in the card's Arm64
+// Fixes section.
 
 import CryptoKit
 import Foundation
@@ -415,11 +417,14 @@ struct GameFinder {
 
 // MARK: - The card
 
+/// Game Fixes: the Wine fixes (this file) and the arm64 fixes
+/// (Arm64Fixes.swift), each a section with switches of its own.
 struct GameFixesCard: View {
     @ObservedObject var fixes: GamePatches
+    @ObservedObject var native: NativeFixes
     @ObservedObject var installations: Installations
 
-    private var summary: String {
+    private var wineSummary: String {
         if fixes.carried == nil || !fixes.enabled { return "Off" }
         if fixes.busy { return "Applying…" }
         let fixed = fixes.results.filter { $0.state == .applied || $0.state == .inPlace }.count
@@ -427,35 +432,106 @@ struct GameFixesCard: View {
         return fixed == 0 ? "No games to fix" : fixed == 1 ? "1 game fixed" : "\(fixed) fixed"
     }
 
+    private var nativeSummary: String {
+        if native.carried == nil { return "Not in this build" }
+        let on = [native.minecraft ? "Minecraft" : nil, native.openmw ? "OpenMW" : nil].compactMap { $0 }
+        if on.isEmpty { return "Off" }
+        if native.busy { return "Applying…" }
+        if native.results.contains(where: { $0.state == .failed }) { return "A fix failed" }
+        return ListFormatter.localizedString(byJoining: on)
+    }
+
     var body: some View {
-        CollapsibleCard("Game Fixes", systemImage: "wrench.and.screwdriver", summary: summary) {
-            Toggle("Apply Game Fixes", isOn: $fixes.enabled)
-                .toggleStyle(.switch)
-                .labelsHidden()
-                .disabled(fixes.carried == nil)
-                .onChange(of: fixes.enabled) { _, on in
-                    if on { Task { await fixes.apply(to: installations.targets) } }
-                }
+        CollapsibleCard("Game Fixes", systemImage: "wrench.and.screwdriver", summary: "Wine: \(wineSummary) · Arm64: \(nativeSummary)") {
+            EmptyView()
         } content: {
-            Text(fixes.carried == nil ? "This build of WineMetalGL Settings carries no game fixes."
-                 : !fixes.enabled ? "Game fixes are not applied."
-                 : fixes.results.isEmpty ? "Fixes Quake 4, SpaceEngine and Wolfenstein: The New Order where they are installed. None of them is installed here."
-                 : "Fixes Quake 4, SpaceEngine and Wolfenstein: The New Order where they are installed, keeping a copy of each file it replaces.")
-                .font(.callout)
+            ChildSection("Wine Fixes", systemImage: "wineglass", summary: wineSummary) {
+                Toggle("Apply Wine Fixes", isOn: $fixes.enabled)
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    .labelsHidden()
+                    .disabled(fixes.carried == nil)
+                    .onChange(of: fixes.enabled) { _, on in
+                        if on { Task { await fixes.apply(to: installations.targets) } }
+                    }
+            } content: {
+                Text(fixes.carried == nil ? "This build of WineMetalGL Settings carries no game fixes."
+                     : !fixes.enabled ? "Wine fixes are not applied."
+                     : fixes.results.isEmpty ? "Fixes Quake 4, SpaceEngine and Wolfenstein: The New Order where they are installed. None of them is installed here."
+                     : "Fixes Quake 4, SpaceEngine and Wolfenstein: The New Order where they are installed, keeping a copy of each file it replaces.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if fixes.enabled { FixResults(results: fixes.results) }
+            }
+            ChildSection("Arm64 Fixes", systemImage: "cpu", summary: nativeSummary) {
+                EmptyView()
+            } content: {
+                Text(native.carried == nil ? "This build of WineMetalGL Settings carries no arm64 core."
+                     : "Native games on the arm64 core, outside Wine. Each fix has its own switch; turning one off puts back what it changed.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                NativeFixRow(title: "Minecraft", isOn: $native.minecraft, available: native.carried != nil,
+                             detail: "Prism Launcher instances and Minecraft Launcher installations get the JVM arguments that load WineMetalGL (OpenGL 4.6), for Minecraft 1.21 and 26.",
+                             results: native.results.filter { $0.game == NativePatcher.minecraftTitle }) {
+                    Task { await native.apply() }
+                }
+                NativeFixRow(title: "OpenMW", isOn: $native.openmw, available: native.carried != nil,
+                             detail: "OpenMW.app in Applications runs Morrowind on WineMetalGL (OpenGL 4.6) instead of Apple's OpenGL 2.1.",
+                             results: native.results.filter { $0.game == NativePatcher.openmwTitle }) {
+                    Task { await native.apply() }
+                }
+            }
+        }
+    }
+}
+
+/// A game's arm64 fix: its switch, what it does, and what it did.
+struct NativeFixRow: View {
+    let title: String
+    @Binding var isOn: Bool
+    let available: Bool
+    let detail: String
+    let results: [GameFix]
+    let changed: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(title).fontWeight(.medium)
+                Spacer(minLength: 8)
+                Toggle(title, isOn: $isOn)
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    .labelsHidden()
+                    .disabled(!available)
+                    .onChange(of: isOn) { _, _ in changed() }
+            }
+            Text(detail)
+                .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            if fixes.enabled {
-                ForEach(fixes.results) { fix in
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Image(systemName: symbol(fix.state)).foregroundStyle(color(fix.state)).frame(width: 18)
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text("\(fix.game) · \(fix.place)").lineLimit(1)
-                            Text(fix.detail)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                    }
+            FixResults(results: results)
+        }
+        .padding(.top, 2)
+    }
+}
+
+/// Each fix's place and what happened there.
+struct FixResults: View {
+    let results: [GameFix]
+
+    var body: some View {
+        ForEach(results) { fix in
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: symbol(fix.state)).foregroundStyle(color(fix.state)).frame(width: 18)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("\(fix.game) · \(fix.place)").lineLimit(1)
+                    Text(fix.detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
         }
@@ -476,5 +552,61 @@ struct GameFixesCard: View {
         case .waiting, .notApplicable: .secondary
         case .failed: .orange
         }
+    }
+}
+
+/// A dropdown inside a card: CollapsibleCard's header, on a lighter
+/// background instead of a card of its own.
+struct ChildSection<Accessory: View, Content: View>: View {
+    let title: String
+    let systemImage: String
+    let summary: String
+    @ViewBuilder let accessory: Accessory
+    @ViewBuilder let content: Content
+    @StateObject private var state = CollapsibleCard<EmptyView, EmptyView>.Openness()
+
+    init(_ title: String, systemImage: String, summary: String = "",
+         @ViewBuilder accessory: () -> Accessory, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.systemImage = systemImage
+        self.summary = summary
+        self.accessory = accessory()
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Button {
+                    withAnimation(.snappy(duration: 0.2)) { state.open.toggle() }
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "chevron.right")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .rotationEffect(.degrees(state.open ? 90 : 0))
+                            .frame(width: 10)
+                        Label(title, systemImage: systemImage).font(.subheadline.weight(.semibold))
+                        if !state.open && !summary.isEmpty {
+                            Text(summary)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(title)
+                .accessibilityValue(state.open ? "Expanded" : "Collapsed")
+                accessory
+            }
+            if state.open { content }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 }
