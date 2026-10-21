@@ -1,4 +1,5 @@
 // WineMetalGL Settings: where WineMetalGL is installed (Installations.swift),
+// its updates (Updater.swift), the game fixes it applies (GamePatches.swift),
 // and UpscaleGL's preset, x87 acceleration and logging, for programs
 // launched without a way to set their environment. They go to the settings
 // file the core reads when it loads (src/core/util/settings.h); the
@@ -6,6 +7,25 @@
 
 import AppKit
 import SwiftUI
+
+// MARK: - Where the app looks
+
+/// The home directory and defaults the app works with. WINEMETALGL_SETTINGS_HOME
+/// gives it another home (and its own defaults), to try updates and game fixes
+/// on made-up prefixes without touching the real ones.
+enum AppEnvironment {
+    static let testHome: URL? = ProcessInfo.processInfo.environment["WINEMETALGL_SETTINGS_HOME"]
+        .flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0, isDirectory: true) }
+    static let home = testHome ?? FileManager.default.homeDirectoryForCurrentUser
+    static let defaults = testHome == nil ? UserDefaults.standard
+        : UserDefaults(suiteName: "com.metalsharp.winemetalgl.settings.test") ?? .standard
+    /// For the scripts the app runs.
+    static var processEnvironment: [String: String] {
+        var environment = ProcessInfo.processInfo.environment
+        if let testHome { environment["HOME"] = testHome.path }
+        return environment
+    }
+}
 
 // MARK: - The settings file
 
@@ -64,7 +84,7 @@ final class SettingsStore: ObservableObject {
     private var loading = false
 
     init() {
-        let home = FileManager.default.homeDirectoryForCurrentUser
+        let home = AppEnvironment.home
         fileURL = home.appendingPathComponent("Library/Application Support/WineMetalGL/settings.conf")
         logsURL = home.appendingPathComponent("Library/Logs/WineMetalGL", isDirectory: true)
         load()
@@ -125,23 +145,140 @@ final class SettingsStore: ObservableObject {
     }
 }
 
-// MARK: - Liquid Glass, with a material before macOS 26
+// MARK: - Liquid Glass, simulated before macOS 26
+
+/// macOS 26's Liquid Glass, or before it a simulation of it: a translucent
+/// material with a sheen across its top, a bright rim and a soft shadow.
+/// WINEMETALGL_SIMULATED_GLASS=1 shows the simulation on macOS 26 too.
+enum Glass {
+    static let simulated: Bool = {
+        if ProcessInfo.processInfo.environment["WINEMETALGL_SIMULATED_GLASS"] == "1" { return true }
+        if #available(macOS 26.0, *) { return false }
+        return true
+    }()
+}
+
+/// The simulated glass behind a view, in a shape.
+struct SimulatedGlass<S: InsettableShape>: ViewModifier {
+    let shape: S
+    var tint: Color? = nil
+    var pressed = false
+
+    func body(content: Content) -> some View {
+        content
+            .background {
+                ZStack {
+                    shape.fill(.ultraThinMaterial)
+                    if let tint { shape.fill(tint.opacity(pressed ? 0.95 : 0.8)) }
+                    // Light falling on the top of the glass.
+                    shape.fill(LinearGradient(colors: [.white.opacity(0.22), .white.opacity(0.04), .clear],
+                                              startPoint: .top, endPoint: .center))
+                    // The rim: bright where the light catches it, faint below.
+                    shape.strokeBorder(LinearGradient(colors: [.white.opacity(0.55), .white.opacity(0.08), .white.opacity(0.22)],
+                                                      startPoint: .top, endPoint: .bottom), lineWidth: 1)
+                    if pressed { shape.fill(.black.opacity(0.12)) }
+                }
+                .shadow(color: .black.opacity(0.18), radius: 10, y: 4)
+            }
+    }
+}
+
+/// Buttons in the simulated glass: a capsule, tinted when prominent.
+struct SimulatedGlassButtonStyle: ButtonStyle {
+    let prominent: Bool
+    @Environment(\.isEnabled) private var enabled
+    @Environment(\.controlSize) private var size
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(prominent ? AnyShapeStyle(.white) : AnyShapeStyle(.primary))
+            .padding(.horizontal, size == .large ? 14 : 10)
+            .padding(.vertical, size == .large ? 7 : 4)
+            .modifier(SimulatedGlass(shape: Capsule(), tint: prominent ? .accentColor : nil, pressed: configuration.isPressed))
+            .contentShape(Capsule())
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .opacity(enabled ? 1 : 0.5)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+    }
+}
 
 extension View {
     @ViewBuilder func glassCard() -> some View {
-        if #available(macOS 26.0, *) {
+        if #available(macOS 26.0, *), !Glass.simulated {
             self.padding(16).glassEffect(.regular, in: .rect(cornerRadius: 22))
         } else {
-            self.padding(16).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 22))
+            self.padding(16).modifier(SimulatedGlass(shape: RoundedRectangle(cornerRadius: 22, style: .continuous)))
         }
     }
 
     @ViewBuilder func glassButton(prominent: Bool) -> some View {
-        if #available(macOS 26.0, *) {
+        if #available(macOS 26.0, *), !Glass.simulated {
             if prominent { self.buttonStyle(.glassProminent) } else { self.buttonStyle(.glass) }
         } else {
-            if prominent { self.buttonStyle(.borderedProminent) } else { self.buttonStyle(.bordered) }
+            self.buttonStyle(SimulatedGlassButtonStyle(prominent: prominent))
         }
+    }
+}
+
+// MARK: - A card that opens
+
+/// A card whose title row opens and closes the rest of it; every card starts
+/// closed. The row keeps the card's switch (`accessory`) and, closed, a
+/// short summary.
+struct CollapsibleCard<Accessory: View, Content: View>: View {
+    let title: String
+    let systemImage: String
+    let summary: String
+    @ViewBuilder let accessory: Accessory
+    @ViewBuilder let content: Content
+    // A state object, not @State: the Command Line Tools' SDK has no plugin for its macro.
+    @StateObject private var state = Openness()
+
+    final class Openness: ObservableObject { @Published var open = false }
+    private var open: Bool { state.open }
+
+    init(_ title: String, systemImage: String, summary: String = "",
+         @ViewBuilder accessory: () -> Accessory, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.systemImage = systemImage
+        self.summary = summary
+        self.accessory = accessory()
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Button {
+                    withAnimation(.snappy(duration: 0.2)) { state.open.toggle() }
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "chevron.right")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .rotationEffect(.degrees(open ? 90 : 0))
+                            .frame(width: 10)
+                        Label(title, systemImage: systemImage).font(.headline)
+                        if !open && !summary.isEmpty {
+                            Text(summary)
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(title)
+                .accessibilityValue(open ? "Expanded" : "Collapsed")
+                accessory
+            }
+            if open { content }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .glassCard()
     }
 }
 
@@ -150,6 +287,8 @@ extension View {
 struct SettingsView: View {
     @StateObject private var store = SettingsStore()
     @StateObject private var installations = Installations()
+    @StateObject private var fixes = GamePatches()
+    @StateObject private var updater = Updater()
 
     private var version: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
@@ -172,11 +311,20 @@ struct SettingsView: View {
             }
             .padding(.top, 4)
 
+            if let status = updater.status {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text(status).font(.callout).foregroundStyle(.secondary)
+                }
+            }
+
             InstallationsCard(installations: installations)
 
-            VStack(alignment: .leading, spacing: 10) {
-                Label("UpscaleGL", systemImage: "arrow.up.left.and.arrow.down.right")
-                    .font(.headline)
+            GameFixesCard(fixes: fixes, installations: installations)
+
+            CollapsibleCard("UpscaleGL", systemImage: "arrow.up.left.and.arrow.down.right", summary: store.upscale.title) {
+                EmptyView()
+            } content: {
                 HStack(spacing: 6) {
                     ForEach(Upscale.allCases) { preset in
                         let selected = store.upscale == preset
@@ -200,34 +348,24 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .glassCard()
 
-            VStack(alignment: .leading, spacing: 10) {
-                HStack {
-                    Label("x87 Acceleration", systemImage: "bolt").font(.headline)
-                    Spacer()
-                    Toggle("x87 Acceleration", isOn: $store.x87)
-                        .toggleStyle(.switch)
-                        .labelsHidden()
-                }
+            CollapsibleCard("x87 Acceleration", systemImage: "bolt") {
+                Toggle("x87 Acceleration", isOn: $store.x87)
+                    .toggleStyle(.switch)
+                    .labelsHidden()
+            } content: {
                 Text(store.x87 ? "32-bit games get Rosetta's fast x87 math (x87sidecar), unless their Wine already gives it to them."
                      : "32-bit games run their x87 math the way Rosetta does it alone, which is much slower.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .glassCard()
 
-            VStack(alignment: .leading, spacing: 10) {
-                HStack {
-                    Label("Logging", systemImage: "text.alignleft").font(.headline)
-                    Spacer()
-                    Toggle("Logging", isOn: $store.logging)
-                        .toggleStyle(.switch)
-                        .labelsHidden()
-                }
+            CollapsibleCard("Logging", systemImage: "text.alignleft") {
+                Toggle("Logging", isOn: $store.logging)
+                    .toggleStyle(.switch)
+                    .labelsHidden()
+            } content: {
                 Text(store.logging ? "WineMetalGL logs everything it does, one file per game run."
                      : store.loggingChosen ? "WineMetalGL writes no log files."
                      : "WineMetalGL logs only warnings, one file per game run.")
@@ -240,8 +378,6 @@ struct SettingsView: View {
                 }
                 .glassButton(prominent: false)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .glassCard()
 
             Text("Changes apply to games started after them.")
                 .font(.footnote)
@@ -249,6 +385,20 @@ struct SettingsView: View {
         }
         .padding(20)
         .frame(width: 470)
+        .task { await launched() }
+        .alert(item: $updater.report) { report in
+            Alert(title: Text(report.title), message: Text(report.text))
+        }
+    }
+
+    /// After an update, the new release goes into every Wine WineMetalGL is
+    /// in; then a newer release is looked for, and the game fixes applied.
+    private func launched() async {
+        if let version = updater.takePendingModuleUpdate() {
+            await installations.updateEverywhere(to: version)
+        }
+        if await updater.offerUpdate() { return }
+        await fixes.apply(to: installations.targets)
     }
 }
 

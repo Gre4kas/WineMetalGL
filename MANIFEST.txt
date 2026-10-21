@@ -58,6 +58,7 @@ docs/testing.md
 docs/unsupported.md
 include/winemetalgl/driver.h
 scripts/build-settings-app.sh
+scripts/build-settings-dmg.sh
 scripts/build-wine-module.sh
 scripts/build-x87sidecar.sh
 scripts/build.sh
@@ -70,6 +71,7 @@ scripts/cts/summary.py
 scripts/docs/generate.py
 scripts/install-crossover.sh
 scripts/install-wine-module.sh
+scripts/sign-settings-app.sh
 scripts/stage-arm64-core.sh
 scripts/stage-host-libs.sh
 scripts/stage-release.sh
@@ -208,9 +210,11 @@ src/core/util/thread_qos.cpp
 src/core/util/thread_qos.h
 src/core/util/version.h
 src/core/version.mm
+src/settings-app/GamePatches.swift
 src/settings-app/Installations.swift
 src/settings-app/MetalSharp.icon/Assets/metalsharp-transparent.png
 src/settings-app/MetalSharp.icon/icon.json
+src/settings-app/Updater.swift
 src/settings-app/WineMetalGLSettings.swift
 src/wine/include/wmgl_gltypes.h
 src/wine/include/wmgl_wine.h

@@ -131,8 +131,10 @@ What matters:
 
 ## WineMetalGL Settings
 
-`WineMetalGL Settings.app` (`src/settings-app`; each release has it signed
-and notarized) is the easy way in:
+`WineMetalGL Settings.app` (`src/settings-app`) is the easy way in. Each
+release has it as a signed and notarized disk image,
+`WineMetalGL-Settings-<version>.dmg`: open it and drag the app onto
+Applications.
 
 - **WineMetalGL**: the CrossOver bottles, MetalSharp's prefixes, `~/.wine` and
   the prefixes installed into from the app, each with a switch that turns
@@ -147,13 +149,51 @@ and notarized) is the easy way in:
 - **Logging**: everything (`WINEMETALGL_LOG=2`) or nothing, and a button that
   opens `~/Library/Logs/WineMetalGL`. Until it is switched, WineMetalGL logs
   warnings, as without the app.
+- **Game Fixes**: on by default. The app applies the fixes in
+  `Game Specific Patched Files` wherever it finds their games in those bottles
+  and prefixes. It looks in Steam's libraries (from `libraryfolders.vdf`,
+  inside the prefix or not), GOG's folders, Program Files, and MetalSharp's
+  records of where its games are.
+  - Quake 4 (`Quake4.exe`): the display modes go into the prefix or bottle
+    (`apply-display-modes.sh`, once that prefix's programs have quit), and
+    `r_useSMP 1` into `q4base/autoexec.cfg`, added to one the game already
+    has.
+  - SpaceEngine (`winemac.so`) and Wolfenstein: The New Order
+    (`xaudio2_7.dll`): installed into MetalSharp's Wine 11.17, the Wine they
+    were built from, and nowhere else.
+  - OpenMW's glue is not applied: it is built into an `OpenMW.app`, outside
+    any Wine.
+
+  A fix that is already in place is left alone. Each file a fix replaces is
+  first copied to `~/Library/Application Support/WineMetalGL/Backups`, under
+  its own path; copying that back undoes it.
+
+When it opens, the app asks GitHub for the latest release. When that release
+is newer, the app asks whether to update. On Yes, it downloads the release's
+`WineMetalGL-Settings-<version>.dmg` and checks it against the release's
+`SHA256SUMS.txt`. It then checks the image's signature and the new app's: the
+same Developer ID team as the app, and accepted by Gatekeeper. The new app
+replaces this one (in `/Applications` when this one cannot be replaced) and
+opens. It then installs its own release, with the install scripts and module
+it carries, into every bottle and prefix that has WineMetalGL. To try updating
+without a release, set `WINEMETALGL_UPDATE_FEED` to the URL (`file://` works)
+of a release in the JSON of GitHub's releases API.
+`WINEMETALGL_UPDATE_TESTING=1` accepts the ad hoc signatures of local builds.
+`WINEMETALGL_SETTINGS_HOME` gives the app another home directory, with its own
+defaults, so made-up prefixes can be used.
 
 UpscaleGL, x87 acceleration and logging go to `~/Library/Application Support/WineMetalGL/settings.conf`,
 `NAME=value` lines of the variables below, which WineMetalGL reads when it
 loads; the environment wins over the file, and a change applies to games
 started afterwards. `scripts/build-settings-app.sh` builds the app (Liquid
-Glass needs Xcode 26 to build and macOS 26 to show; `PAYLOAD=<staged
-release>` puts a release in it, which it then installs without a download).
+Glass needs Xcode 26 to build and macOS 26 to show; on macOS 14 and 15 the
+app draws a simulation of it, which `WINEMETALGL_SIMULATED_GLASS=1` shows on
+macOS 26 too; `PAYLOAD=<staged
+release>` puts the x86_64 release in it whole, which it then installs without
+a download, `ARM64_CORE=<staged arm64 core>` the arm64 core, and
+`APP_VERSION` overrides its version). `scripts/sign-settings-app.sh` signs it,
+ad hoc without `WINEMETALGL_SIGN_IDENTITY`. `scripts/build-settings-dmg.sh`
+makes the disk image it is released in.
 
 ## Checking that a program uses the core
 

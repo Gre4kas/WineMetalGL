@@ -1,5 +1,6 @@
 // Where WineMetalGL is installed, switching it on and off there, and
-// installing it: CrossOver bottles, MetalSharp's prefixes, ~/.wine, and the
+// installing it: CrossOver bottles, MetalSharp's prefixes (its Steam and GOG
+// ones), ~/.wine, and the
 // prefixes installed into from here. On and off is the prefix's DLL
 // override, opengl32=native (WineMetalGL) or builtin (Wine's own OpenGL),
 // set through that Wine's `reg`. Installing runs the release's own scripts,
@@ -10,7 +11,7 @@
 import AppKit
 import SwiftUI
 
-struct WineTarget: Identifiable, Hashable {
+struct WineTarget: Identifiable, Hashable, Sendable {
     enum Kind { case crossover, prefix }
     var kind: Kind
     var name: String
@@ -33,7 +34,7 @@ final class Installations: ObservableObject {
         let text: String
     }
 
-    private let home = FileManager.default.homeDirectoryForCurrentUser
+    private let home = AppEnvironment.home
     private let savedKey = "installedPrefixes"  // [[prefix, wine]] installed into from here
 
     /// CrossOver's Contents/SharedSupport/CrossOver.
@@ -84,11 +85,18 @@ final class Installations: ObservableObject {
             let name = "MetalSharp " + dir.lastPathComponent.dropFirst("prefix-".count)
             found.append(target(.prefix, name: name, prefix: dir, wine: metalsharpWine))
         }
+        // MetalSharp's GOG games run in bottles/gog-prefix/prefix.
+        let bottlesPrefixes = metalsharp.appendingPathComponent("bottles")
+        for dir in (try? fm.contentsOfDirectory(at: bottlesPrefixes, includingPropertiesForKeys: nil)) ?? []
+        where fm.fileExists(atPath: dir.appendingPathComponent("prefix/drive_c").path) {
+            found.append(target(.prefix, name: "MetalSharp " + dir.lastPathComponent,
+                                prefix: dir.appendingPathComponent("prefix"), wine: metalsharpWine))
+        }
         let defaultPrefix = home.appendingPathComponent(".wine")
         if fm.fileExists(atPath: defaultPrefix.appendingPathComponent("drive_c").path) {
             found.append(target(.prefix, name: "Default prefix", prefix: defaultPrefix, wine: Self.wineApps().first))
         }
-        for pair in UserDefaults.standard.array(forKey: savedKey) as? [[String]] ?? [] where pair.count == 2 {
+        for pair in AppEnvironment.defaults.array(forKey: savedKey) as? [[String]] ?? [] where pair.count == 2 {
             let prefix = URL(fileURLWithPath: pair[0])
             guard !found.contains(where: { $0.prefix.path == prefix.path }),
                   fm.fileExists(atPath: prefix.appendingPathComponent("drive_c").path) else { continue }
@@ -164,6 +172,39 @@ final class Installations: ObservableObject {
         }
     }
 
+    /// After an update (Updater.swift): this app's release, installed again
+    /// into every bottle and prefix that has WineMetalGL, the way it was
+    /// installed there.
+    func updateEverywhere(to version: String) async {
+        refresh()
+        guard let installer else { return }
+        var failed: [String] = []
+        var updated: [String] = []
+        for target in targets where target.installed {
+            let arguments: [String]
+            if target.kind == .crossover {
+                arguments = [installer.appendingPathComponent("install-crossover.sh").path, target.prefix.path]
+            } else if let wine = target.wine {
+                arguments = [installer.appendingPathComponent("install-wine-module.sh").path, wine.path, target.prefix.path]
+            } else {
+                failed.append("\(target.name): WineMetalGL Settings does not know which Wine runs it.")
+                continue
+            }
+            let (ok, output) = await perform("Updating WineMetalGL in \(target.name)…", URL(fileURLWithPath: "/bin/sh"), arguments, [:])
+            if ok { updated.append(target.name) } else { failed.append("\(target.name): \(output)") }
+        }
+        refresh()
+        if !failed.isEmpty {
+            report = Report(title: "WineMetalGL \(version) could not be installed everywhere",
+                            text: failed.joined(separator: "\n\n"))
+        } else if !updated.isEmpty {
+            report = Report(title: "WineMetalGL Settings \(version) is installed",
+                            text: "WineMetalGL \(version) is now in " + ListFormatter.localizedString(byJoining: updated) + ".")
+        } else {
+            report = Report(title: "WineMetalGL Settings \(version) is installed", text: "WineMetalGL is not installed in any Wine yet.")
+        }
+    }
+
     func installNormally() {
         guard let installer else { return }
         let winePanel = NSOpenPanel()
@@ -192,10 +233,10 @@ final class Installations: ObservableObject {
             [installer.appendingPathComponent("install-wine-module.sh").path, wine.path, prefix.path], [:]) { [weak self] ok, output in
             guard let self else { return }
             if ok {
-                var saved = UserDefaults.standard.array(forKey: self.savedKey) as? [[String]] ?? []
+                var saved = AppEnvironment.defaults.array(forKey: self.savedKey) as? [[String]] ?? []
                 saved.removeAll { $0.first == prefix.path }
                 saved.append([prefix.path, wine.path])
-                UserDefaults.standard.set(saved, forKey: self.savedKey)
+                AppEnvironment.defaults.set(saved, forKey: self.savedKey)
             }
             self.finishInstall(ok, output, into: prefix.lastPathComponent)
         }
@@ -211,32 +252,43 @@ final class Installations: ObservableObject {
 
     private func run(_ message: String, _ executable: URL, _ arguments: [String], _ environment: [String: String],
                      then done: @escaping @MainActor (Bool, String) -> Void) {
+        Task {
+            let (ok, output) = await self.perform(message, executable, arguments, environment)
+            done(ok, output)
+        }
+    }
+
+    private func perform(_ message: String, _ executable: URL, _ arguments: [String],
+                         _ environment: [String: String]) async -> (Bool, String) {
         busy = message
-        Task.detached {
-            let process = Process()
-            process.executableURL = executable
-            process.arguments = arguments
-            process.environment = ProcessInfo.processInfo.environment.merging(environment) { $1 }
-            let pipe = Pipe()
-            process.standardOutput = pipe
-            process.standardError = pipe
-            var ok = false
-            var output = ""
-            do {
-                try process.run()
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                process.waitUntilExit()
-                output = String(decoding: data, as: UTF8.self)
-                ok = process.terminationStatus == 0
-            } catch {
-                output = error.localizedDescription
-            }
-            // The end of the output says what went wrong.
-            let tail = String(output.suffix(1500)).trimmingCharacters(in: .whitespacesAndNewlines)
-            await MainActor.run { [ok] in
-                self.busy = nil
-                done(ok, tail)
-            }
+        defer { busy = nil }
+        let (status, output) = await Self.execute(executable, arguments, environment)
+        // The end of the output says what went wrong.
+        return (status == 0, String(output.suffix(1500)).trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    /// Runs a program off the main thread: its exit status and output.
+    nonisolated static func execute(_ executable: URL, _ arguments: [String],
+                                    _ environment: [String: String] = [:]) async -> (Int32, String) {
+        await Task.detached { executeNow(executable, arguments, environment) }.value
+    }
+
+    nonisolated static func executeNow(_ executable: URL, _ arguments: [String],
+                                       _ environment: [String: String] = [:]) -> (Int32, String) {
+        let process = Process()
+        process.executableURL = executable
+        process.arguments = arguments
+        process.environment = AppEnvironment.processEnvironment.merging(environment) { $1 }
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        do {
+            try process.run()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            return (process.terminationStatus, String(decoding: data, as: UTF8.self))
+        } catch {
+            return (-1, error.localizedDescription)
         }
     }
 }
@@ -246,19 +298,22 @@ final class Installations: ObservableObject {
 struct InstallationsCard: View {
     @ObservedObject var installations: Installations
 
+    private var summary: String {
+        if let busy = installations.busy { return busy }
+        let count = installations.targets.filter(\.installed).count
+        return count == 0 ? "Not installed" : count == 1 ? "Installed in 1 Wine" : "Installed in \(count) Wines"
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Label("WineMetalGL", systemImage: "shippingbox").font(.headline)
-                Spacer()
-                Button {
-                    installations.refresh()
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                }
-                .buttonStyle(.borderless)
-                .help("Look again")
+        CollapsibleCard("WineMetalGL", systemImage: "shippingbox", summary: summary) {
+            Button {
+                installations.refresh()
+            } label: {
+                Image(systemName: "arrow.clockwise")
             }
+            .buttonStyle(.borderless)
+            .help("Look again")
+        } content: {
             if !installations.anyInstalled {
                 Text("WineMetalGL is not installed in any Wine yet.")
                     .font(.callout)
@@ -313,8 +368,6 @@ struct InstallationsCard: View {
                 }
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .glassCard()
         .alert(item: $installations.report) { report in
             Alert(title: Text(report.title), message: Text(report.text))
         }
