@@ -1,4 +1,5 @@
 // Clears, draws and read-back on the default framebuffer.
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 
@@ -395,5 +396,62 @@ GPU_TEST_VERSION(gpu_unnormalized_integer_attributes, 46) {
     glDeleteBuffers(2, buffers);
     glDeleteVertexArrays(1, &vao);
     glDeleteShader(vs);
+    glDeleteProgram(p);
+}
+
+// Arithmetic runs in the order the shader writes it, as GL drivers compile
+// GLSL: (uniform * varying) * uniform stays finite where uniform * uniform
+// overflows, and 0 times it stays 0. Relaxed math moved the uniforms'
+// product out of the per-pixel one; SpaceEngine's gas giants, lit by such
+// products, came out NaN (issue #35).
+GPU_TEST(gpu_shader_arithmetic_order) {
+    GLuint p = gpu::program(kQuadVs, R"(#version 330 core
+uniform float big1, big2, zero;
+uniform sampler2D smalls;
+out vec4 fragColor;
+void main() {
+    float small = texelFetch(smalls, ivec2(gl_FragCoord.xy), 0).r;
+    float light = (big1 * small) * big2;
+    fragColor = vec4(light * 1.0e-30, zero * light, 0.0, 1.0);
+})");
+    // The per-pixel factor comes from a texture: nothing the compiler can fold.
+    const float smalls[4] = {1.0e-30f, 2.0e-30f, 3.0e-30f, 4.0e-30f};
+    GLuint input = 0, tex = 0, fb = 0;
+    glGenTextures(1, &input);
+    glBindTexture(GL_TEXTURE_2D, input);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, 4, 1, 0, GL_RED, GL_FLOAT, smalls);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA32F, 4, 1);
+    glGenFramebuffers(1, &fb);
+    glBindFramebuffer(GL_FRAMEBUFFER, fb);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+    CHECK_EQ(glCheckFramebufferStatus(GL_FRAMEBUFFER), static_cast<GLenum>(GL_FRAMEBUFFER_COMPLETE));
+    glViewport(0, 0, 4, 1);
+    glUseProgram(p);
+    glUniform1f(glGetUniformLocation(p, "big1"), 1.0e30f);
+    glUniform1f(glGetUniformLocation(p, "big2"), 1.0e30f);
+    glUniform1f(glGetUniformLocation(p, "zero"), 0.0f);
+    glUniform1i(glGetUniformLocation(p, "smalls"), 0);
+    glBindTexture(GL_TEXTURE_2D, input);
+    GLuint vao = gpu::quad();
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    float out[16] = {};
+    glReadPixels(0, 0, 4, 1, GL_RGBA, GL_FLOAT, out);
+    CHECK_GL();
+    for (int x = 0; x < 4; ++x) {
+        const float light = out[x * 4], zeroed = out[x * 4 + 1];
+        if (!(std::fabs(light - static_cast<float>(x + 1)) < 1e-3f) || zeroed != 0.0f) {
+            std::printf("  pixel %d: light %g (want %d), zero * light %g (want 0)\n", x, light, x + 1, zeroed);
+            CHECK(false);
+        }
+    }
+    glViewport(0, 0, 64, 64);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &fb);
+    glDeleteTextures(1, &tex);
+    glDeleteTextures(1, &input);
+    glDeleteVertexArrays(1, &vao);
     glDeleteProgram(p);
 }

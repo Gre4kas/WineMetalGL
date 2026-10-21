@@ -134,18 +134,22 @@ id<MTLFunction> compileFunction(const std::string& msl, const std::string& entry
 id<MTLFunction> compileFunctionUncached(const std::string& msl, const std::string& entryPoint, int stage) {
     MTLCompileOptions* options = [MTLCompileOptions new];
     options.languageVersion = MTLLanguageVersion3_1;  // texture atomics
-    // Relaxed: the optimizations GL allows (contraction, reassociation) with
-    // IEEE infinities and NaNs kept, which GL requires to propagate.
-    // WINEMETALGL_SAFE_MATH=1 compiles without them.
+    // Safe: arithmetic in the order the shader writes it, as GL drivers
+    // compile GLSL. Relaxed math lets the compiler reassociate, and it moves
+    // uniform * uniform products out of per-pixel ones: (uniform * varying)
+    // * uniform overflows where the written order does not, and 0 * inf is
+    // NaN. SpaceEngine multiplies its lights' huge intensities that way, and
+    // its gas giants came out NaN, unlit (issue #35). WINEMETALGL_SAFE_MATH=0
+    // compiles with relaxed math (faster arithmetic-heavy shaders).
     static const bool safeMath = [] {
         const char* v = std::getenv("WINEMETALGL_SAFE_MATH");
-        return v && v[0] == '1';
+        return !(v && v[0] == '0');
     }();
     options.mathMode = safeMath ? MTLMathModeSafe : MTLMathModeRelaxed;
     // Positions are computed the same way in every vertex shader, declared
-    // `invariant` or not: with relaxed math the compiler may otherwise
-    // reassociate the same position expression differently from one shader
-    // to the next, and a pass that tests depth for equality against another
+    // `invariant` or not: with relaxed math (WINEMETALGL_SAFE_MATH=0) the
+    // compiler may otherwise reassociate the same position expression
+    // differently from one shader to the next, and a pass that tests depth for equality against another
     // pass's depth (a depth pre-pass, decals) fails on some pixels, which ones
     // changing with the camera (SOMA's flickering lights and console
     // details, issue #26). Only position math is constrained; the rest keeps
