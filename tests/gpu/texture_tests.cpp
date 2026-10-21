@@ -450,3 +450,68 @@ GPU_TEST(gpu_texture_upload_from_unpack_buffer) {
     glDeleteBuffers(1, &source);
     CHECK_GL();
 }
+
+// Depth comparisons clamp the reference to [0, 1] for fixed-point depth
+// formats and not for floating-point ones (GL 4.6 section 8.23.1). Metal
+// stores 24-bit depth as Depth32Float and compared it unclamped: OpenMW's
+// shadow maps (DEPTH_COMPONENT24) shadowed everything beyond their far plane
+// (issue #42). texture, textureProj and textureGather, past both ends.
+GPU_TEST(gpu_texture_shadow_reference_clamp) {
+    GLuint p = gpu::program(R"(#version 400 core
+in vec2 position;
+void main() { gl_Position = vec4(position, 0.0, 1.0); })",
+                            R"(#version 400 core
+uniform sampler2DShadow shadow;
+uniform float ref;
+out vec4 o;
+void main() {
+    o = vec4(texture(shadow, vec3(0.5, 0.5, ref)), textureProj(shadow, vec4(1.0, 1.0, 2.0 * ref, 2.0)),
+             textureGather(shadow, vec2(0.5), ref).x, 1.0);
+})");
+    glUseProgram(p);
+    glUniform1i(glGetUniformLocation(p, "shadow"), 0);
+    GLuint vao = gpu::quad();
+    struct Case {
+        float clear;
+        GLenum func;
+        float ref;
+    } cases[] = {{1.0f, GL_LEQUAL, 1.5f}, {0.0f, GL_GEQUAL, -0.5f}};
+    for (GLenum format : {GLenum(GL_DEPTH_COMPONENT16), GLenum(GL_DEPTH_COMPONENT24), GLenum(GL_DEPTH24_STENCIL8),
+                          GLenum(GL_DEPTH_COMPONENT32F)}) {
+        const bool fixedPoint = format != GL_DEPTH_COMPONENT32F;
+        GLuint tex = 0, fb = 0;
+        glGenTextures(1, &tex);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glTexStorage2D(GL_TEXTURE_2D, 1, format, 4, 4);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_REF_TO_TEXTURE);
+        glGenFramebuffers(1, &fb);
+        for (const Case& c : cases) {
+            glBindFramebuffer(GL_FRAMEBUFFER, fb);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, format == GL_DEPTH24_STENCIL8 ? GL_DEPTH_STENCIL_ATTACHMENT : GL_DEPTH_ATTACHMENT,
+                                   GL_TEXTURE_2D, tex, 0);
+            glClearDepth(c.clear);
+            glClear(GL_DEPTH_BUFFER_BIT);
+            glClearDepth(1.0);
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_FUNC, c.func);
+            glUniform1f(glGetUniformLocation(p, "ref"), c.ref);
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+            const auto px = gpu::readRGBA8(32, 32, 1, 1);
+            // Clamped, the reference equals the stored depth and the comparison passes.
+            const uint8_t want = fixedPoint ? 255 : 0;
+            for (int k = 0; k < 3; ++k)
+                if (px[k] != want) {
+                    std::printf("  format 0x%x, reference %g: lookup %d gave %d, want %d\n", format, c.ref, k, px[k], want);
+                    CHECK(false);
+                }
+        }
+        CHECK_GL();
+        glDeleteFramebuffers(1, &fb);
+        glDeleteTextures(1, &tex);
+    }
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
+}

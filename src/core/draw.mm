@@ -503,7 +503,11 @@ struct ConvertedAttribute {
 }  // namespace
 
 // The array feeding attribute `location`. In the compatibility profile
-// generic attribute 0 aliases the conventional vertex array (gl_Vertex).
+// generic attribute 0 aliases the conventional vertex array (gl_Vertex), both
+// ways: a program reading generic attribute 0 takes the vertex array when
+// only that one is enabled, as NVIDIA's, AMD's and Apple's drivers do
+// (OpenMW's post-processing draws its full-screen triangle with
+// glVertexPointer for a shader reading "in vec2 omw_Vertex", issue #42).
 // ARB vertex programs alias generic attributes with conventional ones as
 // NVIDIA does (normal 2, colours 3 and 4, fog coordinate 5, texture
 // coordinates 8-15); the GL leaves it implementation-dependent, and programs
@@ -529,6 +533,7 @@ static int arbAttributeAlias(int location) {
 
 const VertexAttrib& DrawState::attribFor(const VertexArray& vao, int location) const {
     if (location == kConvVertex && !vao.attribs[kConvVertex].enabled && vao.attribs[0].enabled) return vao.attribs[0];
+    if (location == 0 && !vao.attribs[0].enabled && vao.attribs[kConvVertex].enabled) return vao.attribs[kConvVertex];
     if (arbAliases_ && !vao.attribs[static_cast<size_t>(location)].enabled) {
         const int alias = arbAttributeAlias(location);
         if (alias >= 0 && vao.attribs[static_cast<size_t>(alias)].enabled) return vao.attribs[static_cast<size_t>(alias)];
@@ -1616,11 +1621,26 @@ uint16_t DrawState::borderVariant(LinkedProgram& program, int stage) {
         // Without sampler LOD bias in Metal (macOS 15), a biased lookup is
         // filtered in the shader.
         const bool bias = params.lodBias != 0.0f && !Device::get().caps().samplerLodBias;
-        if (!bias && params.wrapS != GL_CLAMP_TO_BORDER && params.wrapT != GL_CLAMP_TO_BORDER &&
-            params.wrapR != GL_CLAMP_TO_BORDER)
-            continue;
+        // Comparisons against a fixed-point depth format, which Metal stores
+        // as Depth32Float (or Depth16Unorm, which clamps alone), clamp the
+        // reference to [0, 1] (GL 4.6 section 8.23.1): beyond the far plane
+        // of OpenMW's shadow maps everything compared as shadowed (issue #42).
+        const bool compare = slot.shadow && params.compareMode == GL_COMPARE_REF_TO_TEXTURE;
+        const bool borders = params.wrapS == GL_CLAMP_TO_BORDER || params.wrapT == GL_CLAMP_TO_BORDER ||
+                             params.wrapR == GL_CLAMP_TO_BORDER;
+        if (!bias && !borders && !compare) continue;
+        if (!textureComplete(ctx_, *texture, &params)) continue;
+        const FormatInfo* format = texture->baseImage().format;
+        const bool clampReference = compare && format && format->isDepth() && !format->isFloat() &&
+                                    texture->depthStencilMode != GL_STENCIL_INDEX;
+        if (!bias && !borders && !clampReference) continue;
         shader::BorderSlot border;
-        if (!textureComplete(ctx_, *texture, &params) || !borderEmulation(*texture, params, slot.shadow, border, bias)) continue;
+        if (!(bias || borders) || !borderEmulation(*texture, params, slot.shadow, border, bias)) {
+            if (!clampReference) continue;
+            border = {};
+            border.emulate = false;
+        }
+        border.clampReference = clampReference;
         border.texture = static_cast<uint32_t>(index);
         slots.push_back(border);
     }
