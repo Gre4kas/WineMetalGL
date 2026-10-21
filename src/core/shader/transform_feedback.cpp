@@ -187,7 +187,11 @@ CaptureCode vertexCaptureCode(const LinkResult& layout, int glslVersion) {
          "    uint wmgl_xfb_stride[4];\n"
          "    uint wmgl_xfb_vertex_id[];\n"
          "};\n"
+         // active 2: one capture per vertex of a range starting at vertex
+         // wmgl_xfb_pad (DrawState::runVertexCapture's direct range); 1: per
+         // listed vertex.
          "int wmgl_xfb_vertex_id_of() {\n"
+         "    if (wmgl_xfb_active == 2u) return gl_VertexID + int(wmgl_xfb_pad);\n"
          "    if (wmgl_xfb_active != 0u) return int(wmgl_xfb_vertex_id[gl_VertexID]);\n"
          "    return gl_VertexID;\n"
          "}\n"

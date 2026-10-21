@@ -246,8 +246,9 @@ bool ensureTextureStorage(Context& ctx, Texture& tex) {
             : 0;
     // Reuse the existing storage if it already has this shape.
     if (tex.mtl && tex.storage == format->storage && tex.mtlWidth == w0 && tex.mtlHeight == h0 && tex.mtlDepth == d0 &&
-        tex.mtlSamples == samples && tex.mtlLevels >= levels && (tex.mtl.usage & writeUsage) == writeUsage &&
-        (tex.mtl.usage & viewUsage) == viewUsage) {
+        tex.mtlSamples == samples && tex.mtlLevels >= levels &&
+        (tex.mtl.usage & writeUsage & ~MTLTextureUsageShaderAtomic) == (writeUsage & ~MTLTextureUsageShaderAtomic) &&
+        (!(writeUsage & MTLTextureUsageShaderAtomic) || tex.mtlAtomics) && (tex.mtl.usage & viewUsage) == viewUsage) {
         tex.storageDirty = false;
         writePendingImages(ctx, tex);
         return true;
@@ -308,6 +309,7 @@ bool ensureTextureStorage(Context& ctx, Texture& tex) {
         }
     }
     tex.mtl = texture;
+    tex.mtlAtomics = (desc.usage & MTLTextureUsageShaderAtomic) != 0;
     tex.storage = format->storage;
     tex.mtlLevels = levels;
     tex.mtlWidth = w0;
@@ -1191,8 +1193,10 @@ id<MTLTexture> imageView(Context& ctx, const ImageUnit& unit, GLenum imageType, 
     default: return nil;
     }
     // Texture atomics on another 32-bit format: an R32 shadow (ImageShadow).
-    if ((pixelFormat == MTLPixelFormatR32Uint || pixelFormat == MTLPixelFormatR32Sint) &&
-        !(tex->mtl.usage & MTLTextureUsageShaderAtomic)) {
+    // Storage made for atomics says so in mtlAtomics: Metal leaves
+    // ShaderAtomic out of the usage it reports (macOS 27), though atomics
+    // need it.
+    if ((pixelFormat == MTLPixelFormatR32Uint || pixelFormat == MTLPixelFormatR32Sint) && !tex->root().mtlAtomics) {
         const NSUInteger level = static_cast<NSUInteger>(unit.level);
         const NSUInteger planes = viewType == MTLTextureType3D ? std::max<NSUInteger>(1, tex->mtl.depth >> level) : 1;
         return shadowTexture(*tex, viewType, pixelFormat, level, first, count, 0, planes, shadow);

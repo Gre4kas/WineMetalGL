@@ -423,7 +423,16 @@ id<MTLRenderPipelineState> PipelineCache::build(const PipelineKey& key, LinkedPr
 MTLRenderPipelineDescriptor* PipelineCache::describe(const PipelineKey& key, LinkedProgram& program) {
     const bool pointSizeAllowed = key.topologyClass == MTLPrimitiveTopologyClassUnspecified ||
                                   key.topologyClass == MTLPrimitiveTopologyClassPoint;
-    id<MTLFunction> vertex = key.tessellation ? program.postTessellationVertex(key.tessellation & 2, key.borders[0])
+    // geometryPass 2 to 4: the geometry emulation's kernel, its input
+    // expansion and its strips' provoking vertex rotation as vertex
+    // functions with rasterization off (drawGeometry).
+    static id<MTLFunction> expandVertex = [Device::get().utilityLibrary() newFunctionWithName:@"wmgl_gs_expand_vertex"];
+    static id<MTLFunction> rotateVertex =
+        [Device::get().utilityLibrary() newFunctionWithName:@"wmgl_strips_provoking_last_vertex"];
+    id<MTLFunction> vertex = key.geometryPass == 2 ? program.geometryKernelVertex(key.borders[0])
+                             : key.geometryPass == 3 ? expandVertex
+                             : key.geometryPass == 4 ? rotateVertex
+                             : key.tessellation ? program.postTessellationVertex(key.tessellation & 2, key.borders[0])
                              : key.borders[0] && !key.geometryPass
                                  ? program.vertexWithBorders(key.rasterization, pointSizeAllowed, key.borders[0])
                              : !key.rasterization ? program.vertexNoRaster()

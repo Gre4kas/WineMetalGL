@@ -437,3 +437,176 @@ layout(location = 0) in vec4 fsColor; out vec4 o; void main() { o = fsColor; })"
         glDeleteProgram(p);
     }
 }
+
+// An indexed, instanced draw through a geometry shader: the vertex stage
+// runs once per vertex of the index range (skipped vertices included), its
+// attributes fetched as a draw fetches them, and its outputs are copied into
+// gl_in order. gl_VertexID is the GL vertex number (index plus base vertex),
+// and an attribute converted on the CPU (unsigned short read as ivec2) is
+// read for the right vertices.
+GPU_TEST(gpu_geometry_indexed_instanced_direct_capture) {
+    const char* vs = R"(#version 330 core
+in vec2 position;
+in ivec2 tag;
+out vec4 vcolor;
+void main() {
+    bool listed = gl_VertexID == 6 || gl_VertexID == 8 || gl_VertexID == 9 || gl_VertexID == 11;
+    vcolor = vec4(tag.x == 40000 ? 1.0 : 0.0, listed ? 1.0 : 0.0, 0.0, 1.0);
+    gl_Position = vec4(position.x + float(gl_InstanceID), position.y, 0.0, 1.0);
+})";
+    const char* gs = R"(#version 330 core
+layout(triangles) in;
+layout(triangle_strip, max_vertices = 3) out;
+in vec4 vcolor[];
+out vec4 color;
+void main() {
+    for (int i = 0; i < 3; ++i) {
+        color = vcolor[i];
+        gl_Position = gl_in[i].gl_Position;
+        EmitVertex();
+    }
+    EndPrimitive();
+})";
+    GLuint p = linkWithGeometry(vs, gs, kColorFs);
+    glUseProgram(p);
+    struct Vertex {
+        float x, y;
+        uint16_t tag[2];
+    };
+    // Vertices 6, 8, 9 and 11 are the left half's corners; 7 and 10, inside
+    // the range, are never listed.
+    Vertex v[12] = {};
+    const Vertex corners[4] = {{-1, -1, {40000, 0}}, {0, -1, {40000, 0}}, {-1, 1, {40000, 0}}, {0, 1, {40000, 0}}};
+    v[6] = corners[0];
+    v[8] = corners[1];
+    v[9] = corners[2];
+    v[11] = corners[3];
+    v[7] = v[10] = {5, 5, {1, 1}};
+    const uint16_t indices[6] = {2, 4, 5, 5, 4, 7};  // base vertex 4
+    GLuint vao = 0, buffers[2] = {};
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(2, buffers);
+    glBindBuffer(GL_ARRAY_BUFFER, buffers[0]);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(v), v, GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), nullptr);
+    glEnableVertexAttribArray(0);
+    const GLint tag = glGetAttribLocation(p, "tag");
+    CHECK(tag > 0);
+    glVertexAttribIPointer(static_cast<GLuint>(tag), 2, GL_UNSIGNED_SHORT, sizeof(Vertex), reinterpret_cast<void*>(8));
+    glEnableVertexAttribArray(static_cast<GLuint>(tag));
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, buffers[1]);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
+    glClearColor(0, 0, 1, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glDrawElementsInstancedBaseVertex(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, nullptr, 2, 4);
+    CHECK_GL();
+    const uint8_t yellow[4] = {255, 255, 0, 255};
+    CHECK(gpu::near(gpu::readRGBA8(16, 32, 1, 1).data(), yellow));  // instance 0
+    CHECK(gpu::near(gpu::readRGBA8(48, 32, 1, 1).data(), yellow));  // instance 1
+    glDeleteBuffers(2, buffers);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
+    CHECK_GL();
+}
+
+// Under a geometry shader the vertex stage still runs for listed vertices
+// only: a vertex shader that counts its invocations per gl_VertexID through
+// image atomics sees each listed vertex and never the vertices of the index
+// range the list skips (Rethinking Voxels writes voxels from its shadow
+// pass's vertex and geometry stages).
+GPU_TEST(gpu_geometry_vertex_stage_skips_unlisted_vertices) {
+    const char* vs = R"(#version 430 core
+in vec2 position;
+layout(r32ui) uniform uimage2D counts;
+void main() {
+    imageAtomicAdd(counts, ivec2(gl_VertexID, 0), 1u);
+    gl_Position = vec4(position, 0.0, 1.0);
+})";
+    const char* gs = R"(#version 430 core
+layout(triangles) in;
+layout(triangle_strip, max_vertices = 3) out;
+out vec4 color;
+void main() {
+    for (int i = 0; i < 3; ++i) {
+        color = vec4(0.0, 1.0, 0.0, 1.0);
+        gl_Position = gl_in[i].gl_Position;
+        EmitVertex();
+    }
+    EndPrimitive();
+})";
+    GLuint p = linkWithGeometry(vs, gs, kColorFs);
+    glUseProgram(p);
+    GLuint counts = 0;
+    glGenTextures(1, &counts);
+    glBindTexture(GL_TEXTURE_2D, counts);
+    glTexStorage2D(GL_TEXTURE_2D, 1, GL_R32UI, 8, 1);
+    const uint32_t zeros[8] = {};
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 8, 1, GL_RED_INTEGER, GL_UNSIGNED_INT, zeros);
+    glBindImageTexture(0, counts, 0, GL_FALSE, 0, GL_READ_WRITE, GL_R32UI);
+    glUniform1i(glGetUniformLocation(p, "counts"), 0);
+    // Vertices 1, 3, 4 and 6 are listed; 2 and 5, inside the range, are not.
+    const float positions[16] = {9, 9, -1, -1, 9, 9, 1, -1, -1, 1, 9, 9, 1, 1, 9, 9};
+    const uint16_t indices[6] = {1, 3, 4, 4, 3, 6};
+    GLuint vao = 0, buffers[2] = {};
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(2, buffers);
+    glBindBuffer(GL_ARRAY_BUFFER, buffers[0]);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(positions), positions, GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
+    glEnableVertexAttribArray(0);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, buffers[1]);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
+    glClearColor(0, 0, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, nullptr);
+    glMemoryBarrier(GL_TEXTURE_UPDATE_BARRIER_BIT);
+    CHECK_GL();
+    uint32_t got[8] = {};
+    glGetTexImage(GL_TEXTURE_2D, 0, GL_RED_INTEGER, GL_UNSIGNED_INT, got);
+    for (int v : {1, 3, 4, 6}) CHECK(got[v] >= 1);
+    for (int v : {0, 2, 5, 7}) CHECK_EQ(got[v], 0u);
+    const uint8_t green[4] = {0, 255, 0, 255};
+    CHECK(gpu::near(gpu::readRGBA8(32, 32, 1, 1).data(), green));
+    glDeleteTextures(1, &counts);
+    glDeleteBuffers(2, buffers);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
+    CHECK_GL();
+}
+
+// A strip a geometry shader emits takes its flat values from GL's last
+// vertex of each triangle (the default convention), as Metal's first vertex
+// after the emulation rotates each triangle.
+GPU_TEST(gpu_geometry_strip_flat_last_vertex) {
+    const char* gs = R"(#version 330 core
+layout(points) in;
+layout(triangle_strip, max_vertices = 4) out;
+flat out vec4 color;
+void main() {
+    const vec2 corners[4] = vec2[4](vec2(-1, -1), vec2(1, -1), vec2(-1, 1), vec2(1, 1));
+    const vec4 colors[4] = vec4[4](vec4(0, 0, 1, 1), vec4(0, 0, 1, 1), vec4(1, 0, 0, 1), vec4(0, 1, 0, 1));
+    for (int i = 0; i < 4; ++i) {
+        color = colors[i];
+        gl_Position = vec4(corners[i], 0.0, 1.0);
+        EmitVertex();
+    }
+    EndPrimitive();
+})";
+    const char* fs = R"(#version 330 core
+flat in vec4 color; out vec4 o; void main() { o = color; })";
+    GLuint p = linkWithGeometry(kPassVs, gs, fs);
+    glUseProgram(p);
+    GLuint vao = gpu::quad();
+    glClearColor(0, 0, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glDrawArrays(GL_POINTS, 0, 1);
+    CHECK_GL();
+    const uint8_t red[4] = {255, 0, 0, 255}, green[4] = {0, 255, 0, 255};
+    CHECK(gpu::near(gpu::readRGBA8(8, 8, 1, 1).data(), red));     // triangle 0, 1, 2: vertex 2
+    CHECK(gpu::near(gpu::readRGBA8(56, 56, 1, 1).data(), green));  // triangle 1, 2, 3: vertex 3
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
+    CHECK_GL();
+}

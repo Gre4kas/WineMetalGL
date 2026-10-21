@@ -219,6 +219,9 @@ public:
     // Bound to an image unit (GL 4.2): storage is (re)allocated with
     // shader write (and, for 32-bit integer formats, atomic) usage.
     bool shaderWrite = false;
+    // The storage was made with ShaderAtomic usage (texture_storage.mm),
+    // which Metal does not report back in the texture's usage.
+    bool mtlAtomics = false;
     // Views in another format (GL texture views, stencil sampling, image
     // units) need MTLTextureUsagePixelFormatView, which turns off Apple
     // GPUs' lossless compression (render passes into a texture take several

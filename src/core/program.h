@@ -69,6 +69,12 @@ struct LinkedProgram {
     // gl_ViewportIndex writers).
     id<MTLFunction> vertexWithoutPointSize(bool geometryPass);
     id<MTLComputePipelineState> geometryKernel();
+    // The geometry kernel as a vertex function with rasterization off, with
+    // clamp-to-border emulation variant `borders`: thread t is vertex t, so a
+    // draw's geometry stage runs inside its render pass instead of ending it
+    // (shader::kernelAsVertexMsl). Nil when the kernel uses other compute
+    // built-ins or threadgroup memory.
+    id<MTLFunction> geometryKernelVertex(uint16_t borders);
     // Compute programs.
     id<MTLComputePipelineState> computePipeline();
     // Tessellation emulation (link.tess): the control kernel, and the
@@ -143,6 +149,7 @@ private:
     std::unordered_map<std::string, id<MTLFunction>> fragmentVariants_;  // nil entries: failed
     std::unordered_map<std::string, id<MTLFunction>> borderVertex_;
     std::unordered_map<std::string, id<MTLFunction>> postTessellation_;  // nil entries: failed
+    std::unordered_map<uint16_t, id<MTLFunction>> geometryVertex_;  // nil entries: failed
     std::unordered_map<std::string, id<MTLComputePipelineState>> borderKernels_;
     id<MTLFunction> passthrough_ = nil;
     id<MTLFunction> noPointSize_[2] = {};

@@ -48,7 +48,7 @@ struct PipelineKey {
     uint8_t logicOp;        // GL logical operation + 1 the fragment function applies (0: none; above 16: advanced blend + 17)
     uint8_t rasterization;
     uint8_t topologyClass;  // MTLPrimitiveTopologyClass
-    uint8_t geometryPass;   // vertex function: the geometry emulation's pass-through
+    uint8_t geometryPass;   // vertex function: the geometry emulation's pass-through (1), kernel (2), input expansion (3) or strip rotation (4)
     uint8_t cull;           // cull distances the vertex function writes (LinkedProgram::fragmentVariant)
     uint8_t countFragments;  // fragment function counts its invocations (FRAGMENT_SHADER_INVOCATIONS)
     // Metal tessellation (the vertex function is the post-tessellation

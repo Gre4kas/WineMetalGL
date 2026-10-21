@@ -1223,6 +1223,14 @@ id<MTLTexture> DrawState::imageBinding(LinkedProgram& program, size_t index) {
     return view ? view : dummyImage(slot.type);
 }
 
+// What CommandStream::profileNote calls the current program: its KHR_debug
+// label (Iris names its programs), else its name.
+std::string DrawState::profileName() const {
+    if (const Program* p = ctx_.state.program.get()) return p->label.empty() ? "program " + std::to_string(p->name) : p->label;
+    if (ctx_.state.programPipeline) return "pipeline";
+    return "fixed function";
+}
+
 LinkedProgram* DrawState::executable() {
     if (override_) return override_;
     if (Program* p = ctx_.state.program.get()) return p->linked.get();
@@ -1533,6 +1541,16 @@ void DrawState::bindStorageBlocks(id<MTLComputeCommandEncoder> encoder, const sh
     for (const auto& [buffer, writes] : args.resources)
         [encoder useResource:buffer usage:writes ? MTLResourceUsageRead | MTLResourceUsageWrite : MTLResourceUsageRead];
     [encoder setBuffer:args.buffer offset:args.offset atIndex:shader::kSlotStorageBlocks];
+}
+
+void DrawState::bindStorageBlocks(id<MTLRenderCommandEncoder> encoder, const shader::StageOutput& stage, const Program* owner) {
+    StorageArguments args;
+    if (!storageArguments(stage, owner, args)) return;
+    for (const auto& [buffer, writes] : args.resources)
+        [encoder useResource:buffer
+                       usage:writes ? MTLResourceUsageRead | MTLResourceUsageWrite : MTLResourceUsageRead
+                      stages:MTLRenderStageVertex];
+    [encoder setVertexBuffer:args.buffer offset:args.offset atIndex:shader::kSlotStorageBlocks];
 }
 
 void DrawState::markSampled(Texture& texture) {
@@ -1988,6 +2006,21 @@ id<MTLComputePipelineState> stripsProvokingLastKernel() {
     return state;
 }
 
+// The utility kernel that copies vertex outputs captured once per vertex
+// into a geometry shader's gl_in order (drawGeometry).
+id<MTLComputePipelineState> expandCapturedKernel() {
+    static std::once_flag once;
+    static id<MTLComputePipelineState> state = nil;
+    std::call_once(once, [] {
+        id<MTLFunction> function = [Device::get().utilityLibrary() newFunctionWithName:@"wmgl_gs_expand"];
+        NSError* error = nil;
+        if (function) state = [Device::get().mtl() newComputePipelineStateWithFunction:function error:&error];
+        if (!state) WMGL_ERR(Pipeline, "geometry input expansion kernel: %s",
+                             error ? error.localizedDescription.UTF8String : "missing");
+    });
+    return state;
+}
+
 // The utility kernel that writes Metal tessellation factors from patch records.
 id<MTLComputePipelineState> tessFactorsKernel() {
     static std::once_flag once;
@@ -2208,6 +2241,7 @@ bool DrawState::issue(GLenum mode, GLint first, GLsizei count, GLsizei instances
         encoder = prepare(points ? GL_POINTS : mode, primitive);
     }
     if (!encoder) return false;
+    if (CommandStream::passProfile()) ctx_.stream().profileNote(profileName());
     queriesBeforeDraw(ctx_, encoder, instances);
     LinkedProgram& program = *current;
     PipelineKey key = lastKey_;
@@ -2787,8 +2821,8 @@ DrawState::Capture DrawState::captureTransformFeedback(GLenum mode, const std::v
 
 bool DrawState::runVertexCapture(LinkedProgram& lp, const std::vector<uint32_t>& list, GLsizei instances, uint32_t limit,
                                  int bufferCount, const __strong id<MTLBuffer>* buffers, const uint32_t* baseWords,
-                                 const uint32_t* strides, GLenum drawMode, bool* rasterized) {
-    waitForCpuVertexReads(lp, true);
+                                 const uint32_t* strides, GLenum drawMode, bool* rasterized, const DirectCapture* direct) {
+    waitForCpuVertexReads(lp, !direct);
     prepareSamplerStorage(lp);
     id<MTLRenderCommandEncoder> encoder = nil;
     PipelineKey key;
@@ -2823,7 +2857,16 @@ bool DrawState::runVertexCapture(LinkedProgram& lp, const std::vector<uint32_t>&
             key.stencilFormat = static_cast<uint16_t>(formats.stencil);
         }
     }
-    if (!bindVertexInputs(encoder, key, lp, 0, static_cast<GLsizei>(list.size()), instances, &list)) return false;
+    if (direct) {
+        // Vertex k of the capture is vertex direct->first + k (issue()'s renumbering).
+        vertexRebase_ = static_cast<GLint>(direct->first);
+        const bool bound =
+            bindVertexInputs(encoder, key, lp, static_cast<GLint>(direct->first), static_cast<GLsizei>(direct->span), instances);
+        vertexRebase_ = 0;
+        if (!bound) return false;
+    } else if (!bindVertexInputs(encoder, key, lp, 0, static_cast<GLsizei>(list.size()), instances, &list)) {
+        return false;
+    }
     id<MTLRenderPipelineState> pipeline = ctx_.share().pipelines().render(key, lp);
     if (!pipeline) return false;
     [encoder setRenderPipelineState:pipeline];
@@ -2836,21 +2879,24 @@ bool DrawState::runVertexCapture(LinkedProgram& lp, const std::vector<uint32_t>&
         bindTextures(encoder, lp, false);
     }
     const uint64_t serial = ctx_.stream().serial();
-    // Control block: active, vertex count, slot limit, pad, base[4], stride[4], vertex ids.
-    const size_t controlBytes = 12 * 4 + list.size() * 4;
+    // Control block: active, vertex count, slot limit, first vertex, base[4],
+    // stride[4], vertex ids (vertex capture code, transform_feedback.cpp):
+    // active 1 captures the listed vertices, active 2 a direct range.
+    const size_t controlBytes = 12 * 4 + (direct ? 0 : list.size() * 4);
     TransientAllocation control = transient_.allocate(controlBytes, serial, 16);
     auto* words = static_cast<uint32_t*>(control.data);
     std::memset(words, 0, 12 * 4);
-    words[0] = 1;
-    words[1] = static_cast<uint32_t>(list.size());
+    words[0] = direct ? 2 : 1;
+    words[1] = direct ? direct->span : static_cast<uint32_t>(list.size());
     words[2] = limit;
+    words[3] = direct ? direct->first : 0;
     for (int b = 0; b < bufferCount; ++b) {
         words[4 + b] = baseWords[b];
         words[8 + b] = strides[b];
         static id<MTLBuffer> unused = [Device::get().mtl() newBufferWithLength:16 options:MTLResourceStorageModePrivate];
         [encoder setVertexBuffer:buffers[b] ?: unused offset:0 atIndex:shader::kSlotFirstXfbBuffer + static_cast<NSUInteger>(b)];
     }
-    std::memcpy(words + 12, list.data(), list.size() * 4);
+    if (!direct) std::memcpy(words + 12, list.data(), list.size() * 4);
     [encoder setVertexBuffer:control.buffer offset:control.offset atIndex:shader::kSlotXfbControl];
     const MTLPrimitiveType primitive = drawMode == GL_LINES       ? MTLPrimitiveTypeLine
                                        : drawMode == GL_TRIANGLES ? MTLPrimitiveTypeTriangle
@@ -2862,7 +2908,11 @@ bool DrawState::runVertexCapture(LinkedProgram& lp, const std::vector<uint32_t>&
         if (!order.buffer) return false;
         std::memcpy(order.data, captureOrder_->data(), captureOrder_->size() * 4);
     }
-    if (order.buffer)
+    if (direct)
+        [encoder drawIndexedPrimitives:MTLPrimitiveTypePoint indexCount:direct->count indexType:MTLIndexTypeUInt32
+                           indexBuffer:direct->indices indexBufferOffset:direct->offset
+                         instanceCount:static_cast<NSUInteger>(std::max(1, instances)) baseVertex:0 baseInstance:baseInstance_];
+    else if (order.buffer)
         [encoder drawIndexedPrimitives:primitive indexCount:captureOrder_->size() indexType:MTLIndexTypeUInt32
                            indexBuffer:order.buffer indexBufferOffset:order.offset
                          instanceCount:static_cast<NSUInteger>(std::max(1, instances)) baseVertex:0 baseInstance:baseInstance_];
@@ -2940,8 +2990,44 @@ GLenum geometryInputFor(GLenum mode) {
 
 }  // namespace
 
-void DrawState::bindKernelResources(id<MTLComputeCommandEncoder> encoder, LinkedProgram& program,
-                                    bool usesDefaultUniforms, int stage, const shader::StageOutput* kernel) {
+namespace {
+
+// Where bindKernelResourcesTo binds: a compute encoder, or the vertex stage
+// of a render encoder (a kernel run as a vertex function).
+struct ComputeBinder {
+    id<MTLComputeCommandEncoder> encoder;
+    void bytes(const void* data, NSUInteger length, NSUInteger index) { [encoder setBytes:data length:length atIndex:index]; }
+    void buffer(id<MTLBuffer> buffer, NSUInteger offset, NSUInteger index) { [encoder setBuffer:buffer offset:offset atIndex:index]; }
+    void texture(id<MTLTexture> texture, NSUInteger index) { [encoder setTexture:texture atIndex:index]; }
+    void sampler(id<MTLSamplerState> sampler, NSUInteger index) { [encoder setSamplerState:sampler atIndex:index]; }
+};
+struct VertexBinder {
+    id<MTLRenderCommandEncoder> encoder;
+    void bytes(const void* data, NSUInteger length, NSUInteger index) { [encoder setVertexBytes:data length:length atIndex:index]; }
+    void buffer(id<MTLBuffer> buffer, NSUInteger offset, NSUInteger index) {
+        [encoder setVertexBuffer:buffer offset:offset atIndex:index];
+    }
+    void texture(id<MTLTexture> texture, NSUInteger index) { [encoder setVertexTexture:texture atIndex:index]; }
+    void sampler(id<MTLSamplerState> sampler, NSUInteger index) { [encoder setVertexSamplerState:sampler atIndex:index]; }
+};
+
+}  // namespace
+
+void DrawState::bindKernelResources(id<MTLComputeCommandEncoder> encoder, LinkedProgram& program, bool usesDefaultUniforms,
+                                    int stage, const shader::StageOutput* kernel) {
+    ComputeBinder binder{encoder};
+    bindKernelResourcesTo(binder, program, usesDefaultUniforms, stage, kernel);
+}
+
+void DrawState::bindKernelResources(id<MTLRenderCommandEncoder> encoder, LinkedProgram& program, bool usesDefaultUniforms,
+                                    int stage, const shader::StageOutput* kernel) {
+    VertexBinder binder{encoder};
+    bindKernelResourcesTo(binder, program, usesDefaultUniforms, stage, kernel);
+}
+
+template <class Binder>
+void DrawState::bindKernelResourcesTo(Binder& binder, LinkedProgram& program, bool usesDefaultUniforms, int stage,
+                                      const shader::StageOutput* kernel) {
     const int cs = stage;
     // The compute program, or (geometry and tessellation kernels) the vertex program.
     Program* owner = stageProgram(program, cs);
@@ -2954,11 +3040,11 @@ void DrawState::bindKernelResources(id<MTLComputeCommandEncoder> encoder, Linked
     if (usesDefaultUniforms && size) {
         if (p.uniformData.size() < size) p.uniformData.resize(size, 0);
         if (size <= 4096) {
-            [encoder setBytes:p.uniformData.data() length:size atIndex:shader::kSlotDefaultUniforms];
+            binder.bytes(p.uniformData.data(), size, shader::kSlotDefaultUniforms);
         } else {
             TransientAllocation alloc = transient_.allocate(size, ctx_.stream().serial(), 256);
             std::memcpy(alloc.data, p.uniformData.data(), size);
-            [encoder setBuffer:alloc.buffer offset:alloc.offset atIndex:shader::kSlotDefaultUniforms];
+            binder.buffer(alloc.buffer, alloc.offset, shader::kSlotDefaultUniforms);
         }
     }
     static id<MTLBuffer> zero = [Device::get().mtl() newBufferWithLength:65536 options:MTLResourceStorageModePrivate];
@@ -2968,7 +3054,7 @@ void DrawState::bindKernelResources(id<MTLComputeCommandEncoder> encoder, Linked
         id<MTLBuffer> buffer = zero;
         NSUInteger offset = 0;
         uniformBlockBuffer(program, b, buffer, offset);
-        [encoder setBuffer:buffer offset:offset atIndex:static_cast<NSUInteger>(slot)];
+        binder.buffer(buffer, offset, static_cast<NSUInteger>(slot));
     }
     for (size_t i = 0; i < program.link.samplers.size(); ++i) {
         const int index = program.link.samplers[i].stageTexture[cs];
@@ -2976,8 +3062,8 @@ void DrawState::bindKernelResources(id<MTLComputeCommandEncoder> encoder, Linked
         id<MTLTexture> view = nil;
         id<MTLSamplerState> sampler = nil;
         samplerBinding(program, i, view, sampler);
-        [encoder setTexture:view atIndex:static_cast<NSUInteger>(index)];
-        [encoder setSamplerState:sampler atIndex:static_cast<NSUInteger>(index)];
+        binder.texture(view, static_cast<NSUInteger>(index));
+        binder.sampler(sampler, static_cast<NSUInteger>(index));
     }
     for (size_t b = 0; b < program.link.atomicBuffers.size(); ++b) {
         const int slot = program.link.atomicBuffers[b].stageSlot[cs];
@@ -2985,14 +3071,14 @@ void DrawState::bindKernelResources(id<MTLComputeCommandEncoder> encoder, Linked
         id<MTLBuffer> buffer = nil;
         NSUInteger offset = 0;
         atomicCounterBuffer(program, b, buffer, offset);
-        [encoder setBuffer:buffer offset:offset atIndex:static_cast<NSUInteger>(slot)];
+        binder.buffer(buffer, offset, static_cast<NSUInteger>(slot));
     }
     // The kernel's storage blocks: a compute program's own, or the geometry
     // or tessellation control emulation kernel's (they index the program's).
-    if (kernel) bindStorageBlocks(encoder, *kernel, owner);
+    if (kernel) bindStorageBlocks(binder.encoder, *kernel, owner);
     for (size_t i = 0; i < program.link.images.size(); ++i) {
         const int index = program.link.images[i].stageTexture[cs];
-        if (index >= 0) [encoder setTexture:imageBinding(program, i) atIndex:static_cast<NSUInteger>(index)];
+        if (index >= 0) binder.texture(imageBinding(program, i), static_cast<NSUInteger>(index));
     }
 }
 
@@ -3017,6 +3103,7 @@ void DrawState::dispatch(GLuint x, GLuint y, GLuint z, Buffer* indirect, GLintpt
     // A kernel without textures or images touches no attachment of a pending
     // clear (Foundation's culling, between its G-buffer clear and draws).
     id<MTLComputeCommandEncoder> encoder = ctx_.stream().compute(lp.link.samplers.empty() && lp.link.images.empty());
+    if (CommandStream::passProfile()) ctx_.stream().profileNote(profileName());
     [encoder setComputePipelineState:pipeline];
     bindKernelResources(encoder, lp, lp.stage(Stage::Compute).usesDefaultUniforms, static_cast<int>(Stage::Compute),
                         &lp.stage(Stage::Compute));
@@ -3154,8 +3241,22 @@ void DrawState::drawGeometry(GLenum mode, const std::vector<uint32_t>& vertices,
     id<MTLComputePipelineState> kernel =
         borders ? lp.kernelWithBorders(g.kernel, static_cast<int>(Stage::Geometry), borders) : lp.geometryKernel();
     if (!kernel || !lp.geometryPassthrough()) return;
+    // The vertex stage runs once per listed vertex, its attributes fetched
+    // as a draw fetches them, into a buffer with a place for each vertex of
+    // the list's range, and its outputs are copied into gl_in order on the
+    // GPU. Otherwise (a range too wide to hold), it runs once per list entry,
+    // in list order, from attributes converted in that order on the CPU
+    // (Sodium's terrain under a geometry shader: millions of vertices a frame).
+    uint32_t low = UINT32_MAX, high = 0;
+    for (uint32_t v : list) {
+        low = std::min(low, v);
+        high = std::max(high, v);
+    }
+    const uint64_t span = static_cast<uint64_t>(high) - low + 1;
+    const bool direct = !preludeCapture_ && span * copies * g.inputStride * 4 <= (uint64_t{256} << 20) &&
+                        span <= 16 * list.size() + 65536 && expandCapturedKernel();
     // Anything that flushes must happen before the transient allocations below.
-    waitForCpuVertexReads(lp, true);
+    waitForCpuVertexReads(lp, !direct);
     prepareSamplerStorage(lp);
     queriesPrepareVisibility(ctx_);
     const uint64_t serial = ctx_.stream().serial();
@@ -3163,11 +3264,30 @@ void DrawState::drawGeometry(GLenum mode, const std::vector<uint32_t>& vertices,
     // 1. Vertex outputs of every input primitive, in primitive order.
     TransientAllocation input = transient_.allocate(total * g.verticesIn * g.inputStride * 4, serial, 16);
     if (!input.buffer) return;  // too large for the device (logged)
-    const id<MTLBuffer> inputBuffers[1] = {input.buffer};
-    const uint32_t inputBase[1] = {static_cast<uint32_t>(input.offset / 4)};
+    TransientAllocation perVertex, expandList, unique;
+    uint32_t uniqueCount = 0;
+    if (direct) {
+        // The listed vertices, each once, in order (vertex - low).
+        std::vector<uint8_t> listed(static_cast<size_t>(span));
+        for (uint32_t v : list) listed[v - low] = 1;
+        for (uint8_t used : listed) uniqueCount += used;
+        perVertex = transient_.allocate(span * copies * g.inputStride * 4, serial, 16);
+        expandList = transient_.allocate(list.size() * 4, serial, 16);
+        unique = transient_.allocate(uniqueCount * 4, serial, 16);
+        if (!perVertex.buffer || !expandList.buffer || !unique.buffer) return;
+        auto* to = static_cast<uint32_t*>(expandList.data);
+        for (size_t i = 0; i < list.size(); ++i) to[i] = list[i] - low;
+        auto* order = static_cast<uint32_t*>(unique.data);
+        for (uint32_t k = 0, n = 0; k < span; ++k)
+            if (listed[k]) order[n++] = k;
+    }
+    const id<MTLBuffer> inputBuffers[1] = {direct ? perVertex.buffer : input.buffer};
+    const uint32_t inputBase[1] = {static_cast<uint32_t>((direct ? perVertex.offset : input.offset) / 4)};
     const uint32_t inputStride[1] = {g.inputStride};
-    if (!runVertexCapture(lp, list, instances, static_cast<uint32_t>(list.size() * copies), 1, inputBuffers, inputBase,
-                          inputStride))
+    const DirectCapture range{low, static_cast<uint32_t>(span), unique.buffer, unique.offset, uniqueCount};
+    if (!runVertexCapture(lp, list, instances,
+                          static_cast<uint32_t>(direct ? span * copies : list.size() * copies), 1, inputBuffers, inputBase,
+                          inputStride, GL_NONE, nullptr, direct ? &range : nullptr))
         return;
 
     // 2. The geometry shader: one thread per input primitive.
@@ -3179,17 +3299,95 @@ void DrawState::drawGeometry(GLenum mode, const std::vector<uint32_t>& vertices,
     // read-only bytes there).
     TransientAllocation params = transient_.allocate(16, serial, 16);
     if (!output.buffer || !indices.buffer || !params.buffer) return;
-    id<MTLComputeCommandEncoder> compute = ctx_.stream().compute();
-    [compute setComputePipelineState:kernel];
-    bindKernelResources(compute, lp, g.kernel.usesDefaultUniforms, static_cast<int>(Stage::Compute), &g.kernel);
     const uint32_t control[4] = {static_cast<uint32_t>(total), primitives, primitiveBase, 0};
-    [compute setBuffer:input.buffer offset:input.offset atIndex:shader::kSlotFirstXfbBuffer];
-    [compute setBuffer:output.buffer offset:output.offset atIndex:shader::kSlotFirstXfbBuffer + 1];
-    [compute setBuffer:indices.buffer offset:indices.offset atIndex:shader::kSlotFirstXfbBuffer + 2];
     std::memcpy(params.data, control, sizeof(control));
-    [compute setBuffer:params.buffer offset:params.offset atIndex:shader::kSlotFirstXfbBuffer + 3];
-    const NSUInteger width = std::min<NSUInteger>(64, kernel.maxTotalThreadsPerThreadgroup);
-    [compute dispatchThreads:MTLSizeMake(threads, 1, 1) threadsPerThreadgroup:MTLSizeMake(width, 1, 1)];
+    const uint32_t expandParams[4] = {static_cast<uint32_t>(list.size()), static_cast<uint32_t>(span), g.inputStride,
+                                      static_cast<uint32_t>(list.size() * copies)};
+    // In the render pass, as vertex functions with rasterization off: a
+    // compute encoder would end the pass, which on a tile-based GPU stores
+    // and reloads every attachment (hundreds of times a frame in Rethinking
+    // Voxels' shadow pass, a draw at a time). Compute kernels otherwise.
+    id<MTLFunction> kernelVertex = preludeCapture_ ? nil : lp.geometryKernelVertex(borders);
+    id<MTLRenderCommandEncoder> pass = nil;
+    PipelineKey passKey;
+    if (kernelVertex) {
+        RenderTargetDesc target;
+        TargetFormats formats;
+        if (drawTarget(target, formats, false)) pass = ctx_.stream().renderDraw(target);
+        std::memset(&passKey, 0, sizeof(passKey));
+        passKey.programId = lp.uid;
+        passKey.rasterization = 0;
+        passKey.topologyClass = static_cast<uint8_t>(MTLPrimitiveTopologyClassPoint);
+        passKey.sampleCount = static_cast<uint8_t>(target.samples);
+        for (int i = 0; i < 8; ++i) passKey.colorFormats[i] = static_cast<uint16_t>(formats.color[i]);
+        passKey.depthFormat = static_cast<uint16_t>(formats.depth);
+        passKey.stencilFormat = static_cast<uint16_t>(formats.stencil);
+    }
+    id<MTLRenderPipelineState> expandPipeline = nil, kernelPipeline = nil;
+    if (pass) {
+        PipelineKey key = passKey;
+        key.geometryPass = 3;
+        if (direct) expandPipeline = ctx_.share().pipelines().render(key, lp);
+        key.geometryPass = 2;
+        key.borders[0] = borders;
+        kernelPipeline = ctx_.share().pipelines().render(key, lp);
+    }
+    const bool inPass = kernelPipeline && (expandPipeline || !direct);
+    if (CommandStream::passProfile()) {
+        if (!inPass) ctx_.stream().compute();
+        ctx_.stream().profileNote("gs " + profileName());
+    }
+    if (inPass) {
+        // Each step's writes before the next one reads them (vertex stage
+        // to vertex stage; the geometry stage's image and storage writes
+        // before the draw's fragments too).
+        auto barrier = [&] {
+            [pass memoryBarrierWithScope:MTLBarrierScopeBuffers | MTLBarrierScopeTextures
+                             afterStages:MTLRenderStageVertex
+                            beforeStages:MTLRenderStageVertex | MTLRenderStageFragment];
+        };
+        if (direct) {
+            [pass setRenderPipelineState:expandPipeline];
+            [pass setVertexBuffer:perVertex.buffer offset:perVertex.offset atIndex:0];
+            [pass setVertexBuffer:input.buffer offset:input.offset atIndex:1];
+            [pass setVertexBuffer:expandList.buffer offset:expandList.offset atIndex:2];
+            [pass setVertexBytes:expandParams length:sizeof(expandParams) atIndex:3];
+            [pass drawPrimitives:MTLPrimitiveTypePoint vertexStart:0 vertexCount:expandParams[3]];
+            ctx_.stream().noteDraw();
+            barrier();
+        }
+        [pass setRenderPipelineState:kernelPipeline];
+        bindKernelResources(pass, lp, g.kernel.usesDefaultUniforms, static_cast<int>(Stage::Compute), &g.kernel);
+        [pass setVertexBuffer:input.buffer offset:input.offset atIndex:shader::kSlotFirstXfbBuffer];
+        [pass setVertexBuffer:output.buffer offset:output.offset atIndex:shader::kSlotFirstXfbBuffer + 1];
+        [pass setVertexBuffer:indices.buffer offset:indices.offset atIndex:shader::kSlotFirstXfbBuffer + 2];
+        [pass setVertexBuffer:params.buffer offset:params.offset atIndex:shader::kSlotFirstXfbBuffer + 3];
+        [pass drawPrimitives:MTLPrimitiveTypePoint vertexStart:0 vertexCount:threads];
+        ctx_.stream().noteDraw();
+        barrier();
+    } else {
+        id<MTLComputeCommandEncoder> compute = ctx_.stream().compute();
+        if (direct) {
+            // The captured vertices in gl_in order: input entry t is listed
+            // vertex t % list length of instance t / list length.
+            id<MTLComputePipelineState> expand = expandCapturedKernel();
+            [compute setComputePipelineState:expand];
+            [compute setBuffer:perVertex.buffer offset:perVertex.offset atIndex:0];
+            [compute setBuffer:input.buffer offset:input.offset atIndex:1];
+            [compute setBuffer:expandList.buffer offset:expandList.offset atIndex:2];
+            [compute setBytes:expandParams length:sizeof(expandParams) atIndex:3];
+            const NSUInteger expandWidth = std::min<NSUInteger>(64, expand.maxTotalThreadsPerThreadgroup);
+            [compute dispatchThreads:MTLSizeMake(expandParams[3], 1, 1) threadsPerThreadgroup:MTLSizeMake(expandWidth, 1, 1)];
+        }
+        [compute setComputePipelineState:kernel];
+        bindKernelResources(compute, lp, g.kernel.usesDefaultUniforms, static_cast<int>(Stage::Compute), &g.kernel);
+        [compute setBuffer:input.buffer offset:input.offset atIndex:shader::kSlotFirstXfbBuffer];
+        [compute setBuffer:output.buffer offset:output.offset atIndex:shader::kSlotFirstXfbBuffer + 1];
+        [compute setBuffer:indices.buffer offset:indices.offset atIndex:shader::kSlotFirstXfbBuffer + 2];
+        [compute setBuffer:params.buffer offset:params.offset atIndex:shader::kSlotFirstXfbBuffer + 3];
+        const NSUInteger width = std::min<NSUInteger>(64, kernel.maxTotalThreadsPerThreadgroup);
+        [compute dispatchThreads:MTLSizeMake(threads, 1, 1) threadsPerThreadgroup:MTLSizeMake(width, 1, 1)];
+    }
     primitiveBase += primitives;
 
     // Flat-shaded strips with GL's last-vertex convention are drawn as lists
@@ -3205,13 +3403,35 @@ void DrawState::drawGeometry(GLenum mode, const std::vector<uint32_t>& vertices,
             if (!lastList.buffer) return;
             const uint32_t params[4] = {2 * maxV, perThread, g.outputType == GL_LINE_STRIP ? 0u : 1u,
                                         static_cast<uint32_t>(threads)};
-            [compute setComputePipelineState:rotate];
-            [compute setBuffer:indices.buffer offset:indices.offset atIndex:0];
-            [compute setBuffer:lastList.buffer offset:lastList.offset atIndex:1];
-            [compute setBytes:params length:sizeof(params) atIndex:2];
-            const NSUInteger rotateWidth = std::min<NSUInteger>(64, rotate.maxTotalThreadsPerThreadgroup);
-            [compute dispatchThreads:MTLSizeMake(threads, 1, 1) threadsPerThreadgroup:MTLSizeMake(rotateWidth, 1, 1)];
+            PipelineKey key = passKey;
+            key.geometryPass = 4;
+            id<MTLRenderPipelineState> rotateInPass = inPass ? ctx_.share().pipelines().render(key, lp) : nil;
+            if (rotateInPass) {
+                [pass setRenderPipelineState:rotateInPass];
+                [pass setVertexBuffer:indices.buffer offset:indices.offset atIndex:0];
+                [pass setVertexBuffer:lastList.buffer offset:lastList.offset atIndex:1];
+                [pass setVertexBytes:params length:sizeof(params) atIndex:2];
+                [pass drawPrimitives:MTLPrimitiveTypePoint vertexStart:0 vertexCount:threads];
+                ctx_.stream().noteDraw();
+                [pass memoryBarrierWithScope:MTLBarrierScopeBuffers
+                                 afterStages:MTLRenderStageVertex
+                                beforeStages:MTLRenderStageVertex | MTLRenderStageFragment];
+            } else {
+                id<MTLComputeCommandEncoder> compute = ctx_.stream().compute();
+                [compute setComputePipelineState:rotate];
+                [compute setBuffer:indices.buffer offset:indices.offset atIndex:0];
+                [compute setBuffer:lastList.buffer offset:lastList.offset atIndex:1];
+                [compute setBytes:params length:sizeof(params) atIndex:2];
+                const NSUInteger rotateWidth = std::min<NSUInteger>(64, rotate.maxTotalThreadsPerThreadgroup);
+                [compute dispatchThreads:MTLSizeMake(threads, 1, 1) threadsPerThreadgroup:MTLSizeMake(rotateWidth, 1, 1)];
+            }
         }
+    }
+    if (inPass) {
+        // The pass's next draw sets all of its state again.
+        encoderState_.pipeline = nil;
+        encoderState_.vertexBuffersSet = 0;
+        encoderState_.pass = 0;
     }
 
     // 3. Draw the emitted vertices.
