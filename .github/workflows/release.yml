@@ -168,11 +168,16 @@ jobs:
             "dist/winemetalgl-$VERSION-x86_64.tar.gz" "dist/winemetalgl-$VERSION-arm64-core.tar.gz" \
             dist/install-wine-module.sh dist/install-crossover.sh dist/SHA256SUMS.txt
 
-      - name: Keep the staged release for the settings app
+      # The settings app carries both, a whole runtime in its disk image; a
+      # tarball keeps the modes (x87sidecar, the scripts) an artifact loses.
+      - name: Keep the staged releases for the settings app
+        run: tar -czf "$RUNNER_TEMP/staged.tar.gz" -C "$RUNNER_TEMP/out" "winemetalgl-$VERSION-x86_64" "winemetalgl-$VERSION-arm64-core"
+
+      - name: Upload the staged releases
         uses: actions/upload-artifact@v4
         with:
-          name: staged-x86_64
-          path: ${{ runner.temp }}/out/winemetalgl-${{ env.VERSION }}-x86_64
+          name: staged
+          path: ${{ runner.temp }}/staged.tar.gz
           retention-days: 1
 
       - name: Remove the signing keychain
@@ -193,11 +198,18 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v4
 
-      - name: Fetch the staged release
+      - name: Fetch the staged releases
         uses: actions/download-artifact@v4
         with:
-          name: staged-x86_64
-          path: ${{ runner.temp }}/staged
+          name: staged
+          path: ${{ runner.temp }}
+
+      - name: Unpack the staged releases
+        run: |
+          set -euo pipefail
+          tar -xzf "$RUNNER_TEMP/staged.tar.gz" -C "$RUNNER_TEMP"
+          echo "PAYLOAD=$RUNNER_TEMP/winemetalgl-$VERSION-x86_64" >> "$GITHUB_ENV"
+          echo "ARM64_CORE=$RUNNER_TEMP/winemetalgl-$VERSION-arm64-core" >> "$GITHUB_ENV"
 
       - name: Import the Developer ID certificate
         env:
@@ -233,14 +245,18 @@ jobs:
         run: |
           set -euo pipefail
           xcodebuild -version
-          PAYLOAD="$RUNNER_TEMP/staged" scripts/build-settings-app.sh "$RUNNER_TEMP/app"
+          scripts/build-settings-app.sh "$RUNNER_TEMP/app"
           app="$RUNNER_TEMP/app/WineMetalGL Settings.app"
+          test -f "$app/Contents/Resources/Installer/evidence/games/results.json" || { echo "the app lacks the x86_64 release"; exit 1; }
+          test -f "$app/Contents/Resources/arm64-core/lib/libwinemetalgl.dylib" || { echo "the app lacks the arm64 core"; exit 1; }
           test -s "$app/Contents/Resources/Assets.car" || { echo "no Liquid Glass icon (actool)"; exit 1; }
           # The game fixes' Mach-O files and DLLs first, then the app; the
           # carried release keeps its signatures (scripts/stage-release.sh).
           scripts/sign-settings-app.sh "$app"
           for f in "$app/Contents/Resources/GamePatches/SpaceEngine/winemac.so" \
-                   "$app/Contents/Resources/Installer/module/x86_64-unix/libwinemetalgl.dylib" "$app"; do
+                   "$app/Contents/Resources/Installer/module/x86_64-unix/libwinemetalgl.dylib" \
+                   "$app/Contents/Resources/Installer/module/x86_64-unix/x87sidecar" \
+                   "$app/Contents/Resources/arm64-core/lib/libwinemetalgl.dylib" "$app"; do
             codesign -dv "$f" 2>&1 | grep -q "^TeamIdentifier=$APPLE_TEAM_ID\$" || { echo "not signed by the team: $f"; exit 1; }
           done
         env:

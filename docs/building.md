@@ -189,7 +189,8 @@ started afterwards. `scripts/build-settings-app.sh` builds the app (Liquid
 Glass needs Xcode 26 to build and macOS 26 to show; on macOS 14 and 15 the
 app draws a simulation of it, which `WINEMETALGL_SIMULATED_GLASS=1` shows on
 macOS 26 too; `PAYLOAD=<staged
-release>` puts a release in it, which it then installs without a download, and
+release>` puts the x86_64 release in it whole, which it then installs without
+a download, `ARM64_CORE=<staged arm64 core>` the arm64 core, and
 `APP_VERSION` overrides its version). `scripts/sign-settings-app.sh` signs it,
 ad hoc without `WINEMETALGL_SIGN_IDENTITY`. `scripts/build-settings-dmg.sh`
 makes the disk image it is released in.

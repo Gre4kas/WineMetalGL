@@ -50,7 +50,9 @@ again by hand (from `main`) when a step failed.
 
 The notes come from `docs/release-notes/<version>.md` when that file exists,
 and are otherwise generated from the merged pull requests. Each release has
-two archives, the install scripts and `SHA256SUMS.txt`:
+two archives (for use with or without Wine), the install scripts, the disk
+image of WineMetalGL Settings, which carries both archives' contents, and
+`SHA256SUMS.txt`:
 
 - `winemetalgl-<version>-x86_64.tar.gz`: the staged release above, with the
   evidence directory, for x86_64 Wine 11.x (under Rosetta). Its Wine evidence
@@ -60,9 +62,15 @@ two archives, the install scripts and `SHA256SUMS.txt`:
   native runs (the core built for the build machine); the Wine module is
   built for x86_64 Wine only, so it has not yet run inside an arm64 Wine.
 - `WineMetalGL-Settings-<version>.dmg`: a disk image with WineMetalGL
-  Settings.app and an alias to `/Applications` to drag it onto. The
-  workflow's `settings-app` job builds it on macOS 26 with the x86_64 release
-  inside it (see `docs/building.md`, WineMetalGL Settings), and signs every
+  Settings.app and an alias to `/Applications` to drag it onto. It is a whole
+  runtime: the app carries the x86_64 release above (its install scripts,
+  module, docs, evidence and licenses, as `Contents/Resources/Installer`) and
+  the arm64 core (`Contents/Resources/arm64-core`), so it installs and
+  updates WineMetalGL without downloading anything else. The workflow's
+  `settings-app` job builds it on macOS 26 from the two staged releases
+  (handed over as a tarball, which keeps their file modes; see
+  `docs/building.md`, WineMetalGL Settings). It checks that every Mach-O
+  file in them is signed, and signs every
   Mach-O file and DLL among the game fixes the app carries, then the app
   (`scripts/sign-settings-app.sh`). It notarizes and staples the app, makes
   the image (`scripts/build-settings-dmg.sh`), and signs, notarizes and

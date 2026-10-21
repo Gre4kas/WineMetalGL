@@ -2,12 +2,15 @@
 # Builds "WineMetalGL Settings.app" (src/settings-app): UpscaleGL's preset,
 # x87 acceleration and logging, written to the settings file the core reads.
 #
-#   [PAYLOAD=DIR] scripts/build-settings-app.sh [OUTDIR]
+#   [PAYLOAD=DIR] [ARM64_CORE=DIR] scripts/build-settings-app.sh [OUTDIR]
 #
 # The app carries the install scripts (Contents/Resources/Installer) to
 # install WineMetalGL into CrossOver bottles and Wines. PAYLOAD is a staged
-# x86_64 release (scripts/stage-release.sh: its module directory) to carry
-# with them; without it, the scripts download the latest release.
+# x86_64 release (scripts/stage-release.sh), carried whole as Installer: its
+# module, docs, evidence and licenses. Without it, the scripts download the
+# latest release. ARM64_CORE is a staged arm64 core
+# (scripts/stage-arm64-core.sh), carried as Contents/Resources/arm64-core. With
+# both, as in a release, the app's disk image is a whole WineMetalGL runtime.
 #
 # The app also carries the game fixes it applies where their games are
 # installed (Contents/Resources/GamePatches, from Game Specific Patched
@@ -47,7 +50,12 @@ mkdir -p "$APP/Contents/Resources/Installer"
 cp "$ROOT/scripts/install-wine-module.sh" "$ROOT/scripts/install-crossover.sh" "$APP/Contents/Resources/Installer/"
 if test -n "${PAYLOAD:-}"; then
     test -f "$PAYLOAD/module/x86_64-unix/libwinemetalgl.dylib" || { echo "no staged release in $PAYLOAD" >&2; exit 1; }
-    cp -R "$PAYLOAD/module" "$APP/Contents/Resources/Installer/"
+    cp -R "$PAYLOAD"/. "$APP/Contents/Resources/Installer/"
+fi
+if test -n "${ARM64_CORE:-}"; then
+    test -f "$ARM64_CORE/lib/libwinemetalgl.dylib" || { echo "no staged arm64 core in $ARM64_CORE" >&2; exit 1; }
+    mkdir -p "$APP/Contents/Resources/arm64-core"
+    cp -R "$ARM64_CORE"/. "$APP/Contents/Resources/arm64-core/"
 fi
 
 FIXES="$ROOT/Game Specific Patched Files"

@@ -8,9 +8,10 @@
 #
 # WINEMETALGL_SIGN_IDENTITY is a Developer ID Application identity (the
 # release workflow's), used with the hardened runtime and a secure
-# timestamp; without it, everything is signed ad hoc. The release libraries
-# the app carries (Contents/Resources/Installer/module) keep the signatures
-# scripts/stage-release.sh gave them, and are only checked. The DLLs are PE
+# timestamp; without it, everything is signed ad hoc. The release the app
+# carries (Contents/Resources/Installer, Contents/Resources/arm64-core) keeps
+# the signatures scripts/stage-release.sh and scripts/stage-arm64-core.sh gave
+# it, and is only checked: every Mach-O file in it must be signed. The DLLs are PE
 # files: theirs is a generic signature, which codesign keeps in their
 # extended attributes. Notarizing is the caller's.
 set -eu
@@ -25,12 +26,12 @@ else
     set -- --force --sign -
 fi
 
-for f in "$APP/Contents/Resources/Installer/module/x86_64-unix/libwinemetalgl.dylib" \
-         "$APP/Contents/Resources/Installer/module/x86_64-unix/winemetalgl.so" \
-         "$APP/Contents/Resources/Installer/module/x86_64-unix/x87sidecar"; do
-    test -e "$f" || continue
+find "$APP/Contents/Resources/Installer" "$APP/Contents/Resources/arm64-core" -type f 2>/dev/null > "${TMPDIR:-/tmp}/wmgl-release.$$" || true
+while IFS= read -r f; do
+    file -b "$f" | grep -q '^Mach-O' || continue
     codesign --verify --strict "$f" || { echo "the carried release is not signed: $f" >&2; exit 1; }
-done
+done < "${TMPDIR:-/tmp}/wmgl-release.$$"
+rm -f "${TMPDIR:-/tmp}/wmgl-release.$$"
 
 count=0
 find "$APP/Contents/Resources/GamePatches" -type f > "${TMPDIR:-/tmp}/wmgl-fixes.$$"
