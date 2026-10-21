@@ -111,8 +111,11 @@ private:
 #else
         const std::string version = "dev";
 #endif
-        path_ = dir + "/" + logProgramName() + "-" + version + "-" + fileSafe(device.name.UTF8String) + "-" + fileSafe(build) +
-                ".metallib";
+        // Functions compiled with another math mode (program.mm) are kept apart.
+        const char* math = std::getenv("WINEMETALGL_SAFE_MATH");
+        const std::string mathSuffix = math && (math[0] == '0' || math[0] == '1') ? std::string("-math") + math[0] : "";
+        path_ = dir + "/" + logProgramName() + "-" + version + mathSuffix + "-" + fileSafe(device.name.UTF8String) + "-" +
+                fileSafe(build) + ".metallib";
         url_ = [NSURL fileURLWithPath:[NSString stringWithUTF8String:path_.c_str()]];
         dir_ = dir;
         queue_ = dispatch_queue_create_with_target("winemetalgl.pipeline-archive", DISPATCH_QUEUE_SERIAL,
@@ -420,7 +423,16 @@ id<MTLRenderPipelineState> PipelineCache::build(const PipelineKey& key, LinkedPr
 MTLRenderPipelineDescriptor* PipelineCache::describe(const PipelineKey& key, LinkedProgram& program) {
     const bool pointSizeAllowed = key.topologyClass == MTLPrimitiveTopologyClassUnspecified ||
                                   key.topologyClass == MTLPrimitiveTopologyClassPoint;
-    id<MTLFunction> vertex = key.tessellation ? program.postTessellationVertex(key.tessellation & 2, key.borders[0])
+    // geometryPass 2 to 4: the geometry emulation's kernel, its input
+    // expansion and its strips' provoking vertex rotation as vertex
+    // functions with rasterization off (drawGeometry).
+    static id<MTLFunction> expandVertex = [Device::get().utilityLibrary() newFunctionWithName:@"wmgl_gs_expand_vertex"];
+    static id<MTLFunction> rotateVertex =
+        [Device::get().utilityLibrary() newFunctionWithName:@"wmgl_strips_provoking_last_vertex"];
+    id<MTLFunction> vertex = key.geometryPass == 2 ? program.geometryKernelVertex(key.borders[0])
+                             : key.geometryPass == 3 ? expandVertex
+                             : key.geometryPass == 4 ? rotateVertex
+                             : key.tessellation ? program.postTessellationVertex(key.tessellation & 2, key.borders[0])
                              : key.borders[0] && !key.geometryPass
                                  ? program.vertexWithBorders(key.rasterization, pointSizeAllowed, key.borders[0])
                              : !key.rasterization ? program.vertexNoRaster()

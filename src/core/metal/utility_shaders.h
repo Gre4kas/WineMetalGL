@@ -175,14 +175,41 @@ kernel void wmgl_expand_rgb32(device const uint* in [[buffer(0)]], device uint4*
     out[t] = uint4(in[3 * t], in[3 * t + 1], in[3 * t + 2], params.y);
 }
 
+// Geometry shader emulation's vertex outputs, captured once per vertex of
+// the draw's index range, copied into gl_in order (DrawState::drawGeometry):
+// entry t of `out` is vertex list[t % params.x] of instance t / params.x.
+// params.x = list length, params.y = vertices captured per instance,
+// params.z = words per vertex, params.w = list length times instances. As a
+// kernel, and as a vertex function with rasterization off (vertex t is
+// entry t), which runs inside the draw's render pass.
+static void wmgl_gs_expand_entry(device const uint* captured, device uint* out, device const uint* list, uint4 params,
+                                 uint t) {
+    if (t >= params.w) return;
+    const uint instance = t / params.x;
+    device const uint* from = captured + (instance * params.y + list[t - instance * params.x]) * params.z;
+    device uint* to = out + t * params.z;
+    for (uint w = 0; w < params.z; ++w) to[w] = from[w];
+}
+kernel void wmgl_gs_expand(device const uint* captured [[buffer(0)]], device uint* out [[buffer(1)]],
+                           device const uint* list [[buffer(2)]], constant uint4& params [[buffer(3)]],
+                           uint t [[thread_position_in_grid]]) {
+    wmgl_gs_expand_entry(captured, out, list, params, t);
+}
+vertex void wmgl_gs_expand_vertex(device const uint* captured [[buffer(0)]], device uint* out [[buffer(1)]],
+                                  device const uint* list [[buffer(2)]], constant uint4& params [[buffer(3)]],
+                                  uint t [[vertex_id]]) {
+    wmgl_gs_expand_entry(captured, out, list, params, t);
+}
+
 // Geometry-shader strips as lists listing GL's last-vertex provoking vertex
 // first (Metal flat-shades from a primitive's first vertex); each triangle is
 // rotated, so its winding is unchanged. One thread per input primitive:
 // params.x = index region per thread (slot indices and 0xFFFFFFFF restarts),
 // params.y = output indices per thread, params.z = 1 for triangles and 0 for
 // lines, params.w = thread count. Unused output entries repeat one vertex.
-kernel void wmgl_strips_provoking_last(device const uint* in [[buffer(0)]], device uint* out [[buffer(1)]],
-                                       constant uint4& params [[buffer(2)]], uint t [[thread_position_in_grid]]) {
+// As a kernel, and as a vertex function with rasterization off (vertex t is
+// thread t), which runs inside the draw's render pass.
+static void wmgl_strips_provoking_last_entry(device const uint* in, device uint* out, uint4 params, uint t) {
     if (t >= params.w) return;
     device const uint* r = in + t * params.x;
     device uint* o = out + t * params.y;
@@ -207,6 +234,14 @@ kernel void wmgl_strips_provoking_last(device const uint* in [[buffer(0)]], devi
         ++run;
     }
     for (; n < params.y; ++n) o[n] = fill;
+}
+kernel void wmgl_strips_provoking_last(device const uint* in [[buffer(0)]], device uint* out [[buffer(1)]],
+                                       constant uint4& params [[buffer(2)]], uint t [[thread_position_in_grid]]) {
+    wmgl_strips_provoking_last_entry(in, out, params, t);
+}
+vertex void wmgl_strips_provoking_last_vertex(device const uint* in [[buffer(0)]], device uint* out [[buffer(1)]],
+                                              constant uint4& params [[buffer(2)]], uint t [[vertex_id]]) {
+    wmgl_strips_provoking_last_entry(in, out, params, t);
 }
 
 // Metal tessellation factors (MTLTriangle/QuadTessellationFactorsHalf) from

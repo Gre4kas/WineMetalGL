@@ -10,8 +10,8 @@
       "layers" : [
         {
           "blend-mode" : "normal",
-          "image-name" : "metalsharp-transparent.png",
-          "name" : "metalsharp-transparent",
+          "image-name" : "winemetalgl-transparent.png",
+          "name" : "winemetalgl-transparent",
           "opacity" : 0.9,
           "position" : {
             "scale" : 0.77,

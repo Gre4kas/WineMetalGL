@@ -69,6 +69,7 @@ public:
     // compatibility profile) the generated fixed-function program for the
     // draw begun with beginDraw. Null if none.
     LinkedProgram* executable();
+    std::string profileName() const;
     // Starts a draw of `mode`: the fixed-function program is chosen for it.
     void beginDraw(GLenum mode);
 
@@ -203,9 +204,20 @@ private:
     // With `drawMode` (GL_POINTS, GL_LINES or GL_TRIANGLES) the list is drawn
     // as those primitives with the current state instead, rasterized, and
     // *rasterized says whether it was (not when the state draws nothing).
+    // A capture of each listed vertex once, at its place in the range from
+    // `first` (`span` vertices): `count` indices (vertex - first) at `offset`
+    // in `indices`. The attributes are fetched as a draw fetches them, not
+    // converted in list order on the CPU (drawGeometry).
+    struct DirectCapture {
+        uint32_t first, span;
+        id<MTLBuffer> indices;
+        NSUInteger offset;
+        uint32_t count;
+    };
     bool runVertexCapture(LinkedProgram& program, const std::vector<uint32_t>& list, GLsizei instances, uint32_t limit,
                           int bufferCount, const __strong id<MTLBuffer>* buffers, const uint32_t* baseWords,
-                          const uint32_t* strides, GLenum drawMode = GL_NONE, bool* rasterized = nullptr);
+                          const uint32_t* strides, GLenum drawMode = GL_NONE, bool* rasterized = nullptr,
+                          const DirectCapture* direct = nullptr);
     // The vertex stage writes memory (storage blocks, atomic counters or images).
     static bool vertexWritesMemory(LinkedProgram& program);
     // Draws `vertices` (vertex numbers in draw order, one restart-free
@@ -252,6 +264,13 @@ private:
     // `kernel`: the kernel's stage output (its storage block arguments).
     void bindKernelResources(id<MTLComputeCommandEncoder> encoder, LinkedProgram& program, bool usesDefaultUniforms,
                              int stage = static_cast<int>(shader::Stage::Compute), const shader::StageOutput* kernel = nullptr);
+    // The same resources for the vertex stage of a render encoder: a kernel
+    // run as a vertex function with rasterization off (drawGeometry).
+    void bindKernelResources(id<MTLRenderCommandEncoder> encoder, LinkedProgram& program, bool usesDefaultUniforms,
+                             int stage, const shader::StageOutput* kernel);
+    template <class Binder>
+    void bindKernelResourcesTo(Binder& binder, LinkedProgram& program, bool usesDefaultUniforms, int stage,
+                               const shader::StageOutput* kernel);
     void bindCaptureDefaults(id<MTLRenderCommandEncoder> encoder, LinkedProgram& program);
     // Whether a draw must list its primitives with the provoking vertex first
     // (LAST_VERTEX_CONVENTION and flat fragment inputs).
@@ -276,6 +295,7 @@ private:
     bool storageArguments(const shader::StageOutput& stage, const Program* owner, StorageArguments& out);
     void bindStorageBlocks(id<MTLRenderCommandEncoder> encoder, LinkedProgram& program, int s);
     void bindStorageBlocks(id<MTLComputeCommandEncoder> encoder, const shader::StageOutput& stage, const Program* owner);
+    void bindStorageBlocks(id<MTLRenderCommandEncoder> encoder, const shader::StageOutput& stage, const Program* owner);
     // The program object whose state feeds `stage` (pipelines: the stage's
     // program), and the owner and own index of a uniform block or sampler.
     Program* stageProgram(LinkedProgram& program, int stage);

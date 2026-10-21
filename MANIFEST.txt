@@ -16,6 +16,10 @@ CMakePresets.json
 CODE_OF_CONDUCT.md
 CONTRIBUTING.md
 DEPENDENCIES.md
+Game Specific Patched Files/Minecraft (Java Edition)/README.md
+Game Specific Patched Files/Minecraft (Java Edition)/glue.m
+Game Specific Patched Files/Minecraft (Java Edition)/glue_glfw.m
+Game Specific Patched Files/Minecraft (Java Edition)/install.sh
 Game Specific Patched Files/Quake 4/README.md
 Game Specific Patched Files/Quake 4/apply-display-modes.sh
 Game Specific Patched Files/Quake 4/autoexec.cfg
@@ -58,6 +62,7 @@ docs/release.md
 docs/testing.md
 docs/unsupported.md
 include/winemetalgl/driver.h
+scripts/build-arm64-glue.sh
 scripts/build-settings-app.sh
 scripts/build-settings-dmg.sh
 scripts/build-wine-module.sh
@@ -211,11 +216,13 @@ src/core/util/thread_qos.cpp
 src/core/util/thread_qos.h
 src/core/util/version.h
 src/core/version.mm
+src/settings-app/Arm64Fixes.swift
 src/settings-app/GamePatches.swift
 src/settings-app/Installations.swift
-src/settings-app/MetalSharp.icon/Assets/metalsharp-transparent.png
-src/settings-app/MetalSharp.icon/icon.json
 src/settings-app/Updater.swift
+src/settings-app/WineMetalGL-plain.png
+src/settings-app/WineMetalGL.icon/Assets/winemetalgl-transparent.png
+src/settings-app/WineMetalGL.icon/icon.json
 src/settings-app/WineMetalGLSettings.swift
 src/wine/include/wmgl_gltypes.h
 src/wine/include/wmgl_wine.h

@@ -134,20 +134,25 @@ id<MTLFunction> compileFunction(const std::string& msl, const std::string& entry
 id<MTLFunction> compileFunctionUncached(const std::string& msl, const std::string& entryPoint, int stage) {
     MTLCompileOptions* options = [MTLCompileOptions new];
     options.languageVersion = MTLLanguageVersion3_1;  // texture atomics
-    // Safe: arithmetic in the order the shader writes it, as GL drivers
-    // compile GLSL. Relaxed math lets the compiler reassociate, and it moves
-    // uniform * uniform products out of per-pixel ones: (uniform * varying)
-    // * uniform overflows where the written order does not, and 0 * inf is
-    // NaN. SpaceEngine multiplies its lights' huge intensities that way, and
-    // its gas giants came out NaN, unlit (issue #35). WINEMETALGL_SAFE_MATH=0
-    // compiles with relaxed math (faster arithmetic-heavy shaders).
-    static const bool safeMath = [] {
+    // Relaxed math without reassociation: arithmetic in the order the shader
+    // writes it, as GL drivers compile GLSL, with relaxed math's other
+    // freedoms (fused multiply-adds, reciprocals; infinities and NaN kept).
+    // Reassociation moves uniform * uniform products out of per-pixel ones:
+    // (uniform * varying) * uniform overflows where the written order does
+    // not, and 0 * inf is NaN. SpaceEngine multiplies its lights' huge
+    // intensities that way, and its gas giants came out NaN, unlit (issue
+    // #35). Safe math, which also keeps the order, costs arithmetic-heavy
+    // shaders much more: Minecraft's BSL shaders run about 45% faster this
+    // way. WINEMETALGL_SAFE_MATH=1 compiles with safe math,
+    // WINEMETALGL_SAFE_MATH=0 with relaxed math and reassociation.
+    static const int mathSetting = [] {
         const char* v = std::getenv("WINEMETALGL_SAFE_MATH");
-        return !(v && v[0] == '0');
+        return v && v[0] == '1' ? 1 : v && v[0] == '0' ? 0 : -1;
     }();
-    options.mathMode = safeMath ? MTLMathModeSafe : MTLMathModeRelaxed;
+    options.mathMode = mathSetting == 1 ? MTLMathModeSafe : MTLMathModeRelaxed;
+    const char* const orderedPrefix = mathSetting < 0 ? "#pragma clang fp reassociate(off)\n" : "";
     // Positions are computed the same way in every vertex shader, declared
-    // `invariant` or not: with relaxed math (WINEMETALGL_SAFE_MATH=0) the
+    // `invariant` or not: with relaxed math the
     // compiler may otherwise reassociate the same position expression
     // differently from one shader to the next, and a pass that tests depth for equality against another
     // pass's depth (a depth pre-pass, decals) fails on some pixels, which ones
@@ -161,7 +166,7 @@ id<MTLFunction> compileFunctionUncached(const std::string& msl, const std::strin
     }();
     options.preserveInvariance = invarianceAlways || msl.find("invariant]]") != std::string::npos;
     NSError* error = nil;
-    id<MTLLibrary> library = [Device::get().mtl() newLibraryWithSource:[NSString stringWithUTF8String:msl.c_str()]
+    id<MTLLibrary> library = [Device::get().mtl() newLibraryWithSource:[NSString stringWithUTF8String:(orderedPrefix + msl).c_str()]
                                                                options:options
                                                                  error:&error];
     if (!library) {
@@ -436,6 +441,56 @@ id<MTLComputePipelineState> computePipelineFor(const shader::StageOutput& output
 }
 
 }  // namespace
+
+namespace {
+
+// A compute kernel as a vertex function for a draw with rasterization off:
+// its thread position becomes the vertex id (thread t is vertex t). Empty
+// when the kernel uses another thread or threadgroup built-in, threadgroup
+// memory or barriers, which vertex functions do not have.
+std::string kernelAsVertexMsl(const std::string& msl, const std::string& entryPoint) {
+    for (const char* unsupported : {"threadgroup_barrier", "[[threadgroup(", "[[thread_position_in_threadgroup]]",
+                                    "[[threadgroup_position_in_grid]]", "[[threads_per_threadgroup]]",
+                                    "[[threadgroups_per_grid]]", "[[threads_per_grid]]", "[[thread_index_in_",
+                                    "simdgroup", "[[simd", "[[dispatch_"})
+        if (msl.find(unsupported) != std::string::npos) return "";
+    const std::string head = "kernel void " + entryPoint + "(";
+    const size_t at = msl.find(head);
+    const std::string marker = " [[thread_position_in_grid]]";
+    const size_t position = at == std::string::npos ? at : msl.find(marker, at);
+    if (position == std::string::npos) return "";
+    // "<type> <name> [[thread_position_in_grid]]", type uint or uint3.
+    const size_t nameStart = msl.rfind(' ', position - 1) + 1;
+    const size_t typeStart = msl.rfind(' ', nameStart - 2) + 1;
+    const std::string name = msl.substr(nameStart, position - nameStart);
+    const std::string type = msl.substr(typeStart, nameStart - 1 - typeStart);
+    if (type != "uint" && type != "uint3") return "";
+    std::string out = msl;
+    out.replace(typeStart, position + marker.size() - typeStart, "uint wmgl_vertex_id [[vertex_id]]");
+    const size_t body = out.find("\n{", at);
+    if (body == std::string::npos) return "";
+    out.insert(body + 2, "\n    const " + type + " " + name + " = " +
+                             (type == "uint3" ? "uint3(wmgl_vertex_id, 0u, 0u)" : "wmgl_vertex_id") + ";");
+    out.replace(at, 6, "vertex");
+    return out;
+}
+
+}  // namespace
+
+id<MTLFunction> LinkedProgram::geometryKernelVertex(uint16_t borders) {
+    if (pipeline) {
+        const auto& vs = stageExecutable[static_cast<int>(shader::Stage::Vertex)];
+        return vs ? vs->geometryKernelVertex(borders) : nil;
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (auto it = geometryVertex_.find(borders); it != geometryVertex_.end()) return it->second;
+    const shader::StageOutput& kernel = link.geometry.kernel;
+    std::string msl = link.geometry.active ? kernelAsVertexMsl(kernel.msl, kernel.entryPoint) : "";
+    if (!msl.empty() && borders) msl = shader::mslWithBorders(msl, shader::borderVariantDefinitions(borders));
+    id<MTLFunction> function = msl.empty() ? nil : compileFunction(msl, kernel.entryPoint, static_cast<int>(shader::Stage::Geometry));
+    geometryVertex_[borders] = function;
+    return function;
+}
 
 id<MTLComputePipelineState> LinkedProgram::geometryKernel() {
     if (pipeline) {

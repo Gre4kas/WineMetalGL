@@ -24,6 +24,10 @@ to `libwmglhost.dylib`, and the app is signed ad hoc.
 
 ## Installing
 
+WineMetalGL Settings installs it into an `OpenMW.app` in `/Applications` or
+`~/Applications` (Game Fixes → Arm64 Fixes → OpenMW), and takes it out again
+when the fix is turned off. By hand:
+
 You need OpenMW's macOS arm64 build: a [release](https://github.com/OpenMW/openmw/releases)
 (0.51.0 was tested) or a nightly from OpenMW's GitLab CI (0.52.0 master was
 tested). Install it on a copy of the app.

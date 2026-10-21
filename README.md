@@ -1,3 +1,7 @@
+<p align="center">
+  <img alt="WineMetalGL" src="src/settings-app/WineMetalGL-plain.png" width="200">
+</p>
+
 <h1 align="center">WineMetalGL</h1>
 
 <p align="center">

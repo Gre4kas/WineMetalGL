@@ -12,10 +12,15 @@
 #include <array>
 #include <cstdint>
 #include <functional>
+#include <string>
+#include <vector>
 
 #include "core/metal/queue.h"
 
 namespace wmgl {
+
+// Nanoseconds per GPU timestamp tick (api/query.mm).
+double nanosPerGpuTick();
 
 struct RenderTargetDesc {
     struct Target {
@@ -170,6 +175,12 @@ public:
     void waitForPrelude();
     // Why an open render pass ends (stats: each end stores and reloads the
     // attachments on tile-based GPUs).
+    // WINEMETALGL_PASS_PROFILE=1: every encoder takes GPU timestamps, and
+    // its GPU time is logged (perf, info) every few seconds, summed by what
+    // the encoder ran: its kind and target, and the programs profileNote
+    // names (KHR_debug labels, as Iris names its passes' programs).
+    static bool passProfile();
+    void profileNote(const std::string& what);
     enum class PassEnd : uint8_t { Other, Target, Blit, Compute, Visibility, Commit, Barrier, Clear, Count };
     void endEncoder(PassEnd cause = PassEnd::Other);
     // glMemoryBarrier: orders shader writes to buffers and textures before
@@ -258,6 +269,14 @@ private:
     // samples_ (two samples each, from nextSample_; a full buffer is replaced).
     bool timing_ = false;
     id<MTLCounterSampleBuffer> samples_ = nil;
+    struct ProfileEntry {
+        id<MTLCounterSampleBuffer> buffer;
+        uint32_t start, end;
+        std::string label;
+    };
+    std::vector<ProfileEntry> profile_;  // this command buffer's encoders (passProfile)
+    void profileOpen(std::string label, uint32_t start, uint32_t end);
+    static void profileCollect(const std::vector<ProfileEntry>& entries);
     uint32_t nextSample_ = 0;
     // The two sample indices for a new encoder, or false (not timing).
     bool takeSamples(uint32_t& start, uint32_t& end);

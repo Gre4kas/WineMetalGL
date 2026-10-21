@@ -88,6 +88,8 @@ bool anyOcclusionActive(Context& ctx) {
     return false;
 }
 
+}  // namespace
+
 // Nanoseconds per GPU timestamp tick, from pairs of CPU and GPU timestamps,
 // refined as time passes. Metal's CPU timestamps are nanoseconds or
 // mach_absolute_time units (as an x86_64 process under Rosetta, whose
@@ -113,6 +115,8 @@ double nanosPerGpuTick() {
     }
     return ratio;
 }
+
+namespace {
 
 // A GPU-timed TIME_ELAPSED query: from the first timed encoder's start to
 // the last one's end (each encoder takes a start and an end sample).

@@ -515,3 +515,44 @@ void main() {
     glDeleteVertexArrays(1, &vao);
     glDeleteProgram(p);
 }
+
+// Samplers a program declares but never uses are inactive and take no
+// texture slot, as in GL: Iris shader packs declare dozens through shared
+// headers and use a few per program (Rethinking Voxels' prepare1 failed to
+// link with "too many samplers in one stage").
+GPU_TEST(gpu_texture_unused_samplers_inactive) {
+    std::string fs = "#version 330 core\nin vec2 uv;\nout vec4 o;\n";
+    for (int i = 0; i < 24; ++i) fs += "uniform sampler2D t" + std::to_string(i) + ";\n";
+    fs += "void main() { o = vec4(texture(t3, uv).r * 0.0, texture(t20, uv).g, 0.0, 1.0); }\n";
+    static const char* vs = R"(#version 330 core
+in vec2 position;
+out vec2 uv;
+void main() { uv = position * 0.5 + 0.5; gl_Position = vec4(position, 0.0, 1.0); })";
+    GLuint p = gpu::program(vs, fs.c_str());
+    GLint linked = 0;
+    glGetProgramiv(p, GL_LINK_STATUS, &linked);
+    CHECK(linked == GL_TRUE);
+    if (!linked) return;
+    const uint8_t red[4] = {255, 0, 0, 255}, green[4] = {0, 255, 0, 255};
+    GLuint tex[2];
+    glGenTextures(2, tex);
+    for (int i = 0; i < 2; ++i) {
+        glActiveTexture(GL_TEXTURE0 + i);
+        glBindTexture(GL_TEXTURE_2D, tex[i]);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, i ? green : red);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    }
+    glActiveTexture(GL_TEXTURE0);
+    glUseProgram(p);
+    glUniform1i(glGetUniformLocation(p, "t3"), 0);
+    glUniform1i(glGetUniformLocation(p, "t20"), 1);
+    GLuint vao = gpu::quad();
+    glClearColor(0, 0, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    CHECK(gpu::near(gpu::readRGBA8(32, 32, 1, 1).data(), green));
+    glDeleteVertexArrays(1, &vao);
+    glDeleteTextures(2, tex);
+    glDeleteProgram(p);
+    CHECK_GL();
+}

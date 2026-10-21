@@ -27,7 +27,8 @@ core links only Apple system frameworks and never links OpenGL.framework.
 
 That is the core for an x86_64 Wine under Rosetta. `scripts/stage-arm64-core.sh
 /path/to/output` builds the arm64 core and stages it with the driver ABI
-header; the Wine module is built for x86_64 Wine only, so the arm64 core has
+header and, with Homebrew's SDL2, SDL3 and GLFW (`brew install sdl2 sdl3
+glfw`), the native games' glue (`glue/`, `scripts/build-arm64-glue.sh`); the Wine module is built for x86_64 Wine only, so the arm64 core has
 not yet run inside an arm64 Wine.
 
 For development, the core and its tests also build for the machine itself,
@@ -151,7 +152,8 @@ Applications.
 - **Logging**: everything (`WINEMETALGL_LOG=2`) or nothing, and a button that
   opens `~/Library/Logs/WineMetalGL`. Until it is switched, WineMetalGL logs
   warnings, as without the app.
-- **Game Fixes**: on by default. The app applies the fixes in
+- **Game Fixes**: two sections, each with switches of its own.
+  **Wine Fixes**, on by default: the app applies the fixes in
   `Game Specific Patched Files` wherever it finds their games in those bottles
   and prefixes. It looks in Steam's libraries (from `libraryfolders.vdf`,
   inside the prefix or not), GOG's folders, Program Files, and MetalSharp's
@@ -163,8 +165,24 @@ Applications.
   - SpaceEngine (`winemac.so`) and Wolfenstein: The New Order
     (`xaudio2_7.dll`): installed into MetalSharp's Wine 11.17, the Wine they
     were built from, and nowhere else.
-  - OpenMW's glue is not applied: it is built into an `OpenMW.app`, outside
-    any Wine.
+
+  **Arm64 Fixes**, off by default, a switch per game: native games on the
+  arm64 core, outside Wine, through the glue the app carries prebuilt
+  (`scripts/build-arm64-glue.sh`, in the staged arm64 core's `glue`).
+  - Minecraft: the core and the glue go into
+    `~/.local/share/winemetalgl/minecraft`, beside LWJGL's own SDL3 and GLFW
+    (from its natives jars), and each Prism Launcher instance and Minecraft
+    Launcher installation gets the JVM arguments that load them (the SDL3 glue
+    for LWJGL 3.4, Minecraft 26.x; the GLFW glue for 3.3, 1.21.x), after its
+    own. What they had is recorded in
+    `~/Library/Application Support/WineMetalGL/NativeFixes.json`, and turning
+    the fix off puts it back. A launcher that is running waits until it quits.
+  - OpenMW: an `OpenMW.app` in `/Applications` or `~/Applications` gets what
+    its folder's `install.sh` installs: the glue as its SDL2 (the real one
+    renamed `libSDL2-real.dylib`), the GL stubs and the core, and `openmw`
+    and OpenSceneGraph's libraries load the stubs (their load commands
+    rewritten in place, without the Command Line Tools). It is signed ad hoc
+    again. Turning the fix off loads Apple's OpenGL again.
 
   A fix that is already in place is left alone. Each file a fix replaces is
   first copied to `~/Library/Application Support/WineMetalGL/Backups`, under
@@ -217,6 +235,7 @@ no `opengl32=native` override, and the program got Wine's own OpenGL.
 | `WINEMETALGL_CRASH_HANDLER=0` | Do not write crash reports (they go to the log file, with the recent history, when WineMetalGL's code faults or the process aborts) |
 | `WINEMETALGL_TRACE=1` | Log every GL call |
 | `WINEMETALGL_STATS=1` | Log per-frame statistics: frame and GL time, draws, passes and why they ended, command buffers, pipeline compiles, CPU conversions, readbacks, indirect draw commands read by the GPU or (after a wait) the CPU, and why the CPU reads them (each reason described once per program), and the memory the Metal device has allocated (growing while a scene stands still means GPU resources are retained); every 60 frames, the costliest commands |
+| `WINEMETALGL_PASS_PROFILE=1` | Time every Metal encoder on the GPU and log (category `perf`, info: `WINEMETALGL_LOG=perf:2`) every 3 seconds the GPU milliseconds per second each kind of encoder took, by its target and the programs it ran, named by their `KHR_debug` labels. Encoder times overlap on tile-based GPUs, so their sum can exceed the frame time |
 | `WINEMETALGL_BATCH=0` | Make every GL call its own unix call (by default the module batches calls that return nothing and take values, and runs them before the next other call) |
 | `WINEMETALGL_COMMIT_DRAWS=<n>` | Commit the recorded work to the GPU once it holds `n` draws (default 256), so the GPU runs a frame's work while the CPU records the rest: where a draw starts a render pass, or within one past `8 × n` draws (a commit ends the pass); 0 commits only when a GL call needs the GPU's results and at SwapBuffers |
 | `WINEMETALGL_METAL_TESSELLATION=0` | Tessellate every patch on the CPU, after reading the control stage's levels back, instead of drawing rasterized triangle and quad patches with Metal's tessellator |
@@ -230,7 +249,8 @@ no `opengl32=native` override, and the program got Wine's own OpenGL.
 | `WINEMETALGL_PREDICT_PIPELINES=0` | Do not build pipelines ahead of their first draw. By default, the render state of each new pipeline is built in the background for the other programs with the same vertex inputs and fragment outputs, so an effect's first draw does not wait for the Metal compiler |
 | `WINEMETALGL_THREAD_QOS=0` | Leave thread priorities alone. By default, a thread that makes a context current, and the thread that presents frames at swap interval 0, ask macOS for the user-interactive quality-of-service class, as a native game's render thread does, so they keep performance cores while a game's worker threads load every core |
 | `WINEMETALGL_INVARIANCE=0` | Compile vertex positions for invariance only in shaders that declare `invariant`. By default every vertex shader computes positions the same way, so passes that test depth for equality against another pass's depth (pre-passes, decals) match exactly under relaxed math |
-| `WINEMETALGL_SAFE_MATH=0` | Compile shaders with Metal's relaxed math instead of safe math. By default arithmetic runs in the order the shader writes it, as GL drivers compile GLSL; relaxed math reassociates it (it keeps infinities and NaN), which makes arithmetic-heavy shaders faster but can overflow products a shader keeps finite (SpaceEngine's gas giants, issue #35) |
+| `WINEMETALGL_SAFE_MATH=1` | Compile shaders with Metal's safe math. By default they compile with relaxed math without reassociation: arithmetic runs in the order the shader writes it, as GL drivers compile GLSL, with fused multiply-adds (infinities and NaN are kept). Safe math keeps the order too, at a large cost to arithmetic-heavy shaders (Minecraft's BSL shaders run about 45% slower) |
+| `WINEMETALGL_SAFE_MATH=0` | Compile shaders with relaxed math and reassociation: faster still, but it can overflow products a shader keeps finite (SpaceEngine's gas giants, issue #35) |
 | `WINEMETALGL_METALFX=0`, `=<factor>` | Turn off, or set the factor of, MetalFX spatial upscaling of window back buffers. Unset, WineMetalGL follows DXMT's setting: off when `DXMT_METALFX_SPATIAL_SWAPCHAIN=0`, else `d3d11.metalSpatialUpscaleFactor` from `DXMT_CONFIG`, `DXMT_CONFIG_FILE` or the Wine installation's `etc/dxmt.conf` (2 when only `DXMT_METALFX_SPATIAL_SWAPCHAIN=1` is set). Factors above 1 (at most 4) present a back buffer through the MetalFX spatial scaler into a drawable that much larger, on GPUs MetalFX supports |
 | `WINEMETALGL_X87=1` | x87 acceleration for 32-bit programs: when a 32-bit program loads `opengl32.dll`, WineMetalGL starts `x87sidecar` (installed next to `winemetalgl.so`; another with `WINEMETALGL_X87_SIDECAR=<path>`), which makes Rosetta translate x87 floating-point code into fast native code instead of its slow soft-float, and hands it this process. Code Rosetta translated before that stays slow; most of a game runs after it (Quake 4's heaviest scenes, with its `r_useSMP 1`, went from 33 to 62 fps). A Wine that runs 32-bit programs through x87sidecar already (MetalSharp) is left alone; where Rosetta is a version x87sidecar does not know, the program runs as without it. Off by default |
 | `WINEMETALGL_UPSCALE=<preset>` | UpscaleGL: fullscreen programs render at a fraction of the screen and MetalFX scales their frames up to it, as DLSS's modes do in a game that supports them. `quality` renders at 67% of the screen's width and height, `balanced` at 58%, `performance` at 50% (960×540 on a 1080p screen) and `ultra` at 33%; a percentage (`75%`) sets another; `off` (the default) leaves the screen alone. The program is shown one display, the main one, at that size: it is the only resolution listed (at the screen's refresh rates), the system metrics and monitor rectangles agree, and a mode change succeeds without changing the real mode (a mode of another shape is shown with black bars, not stretched). A top-level window that covers that display is made to cover the real screen, and the program sees its client area, window rectangle, size messages and mouse and cursor positions at the size it asked for. Spatial upscaling (MetalFX), not temporal: OpenGL programs give no motion vectors. Windowed programs are not scaled, and a program that reads the display before it loads `opengl32.dll` sees the real one |

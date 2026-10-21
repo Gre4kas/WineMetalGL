@@ -4,8 +4,12 @@
 
 #import <QuartzCore/CAMetalLayer.h>
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
+#include <time.h>
+#include <unordered_map>
 
 #include "core/metal/device.h"
 #include "core/util/log.h"
@@ -172,6 +176,13 @@ void CommandStream::startRender(const RenderTargetDesc& target) {
     }
     uint32_t sampleStart, sampleEnd;
     if (takeSamples(sampleStart, sampleEnd)) {
+        if (passProfile()) {
+            int colors = 0;
+            for (const auto& t : target.color) colors += t.texture != nil;
+            profileOpen("pass " + std::to_string(target.width) + "x" + std::to_string(target.height) + " " +
+                            std::to_string(colors) + "c" + (target.depth.texture ? "+d" : ""),
+                        sampleStart, sampleEnd);
+        }
         pass.sampleBufferAttachments[0].sampleBuffer = samples_;
         // From the vertex stage's start to the fragment stage's end. A
         // tile-based GPU runs a pass's vertex stage ahead, beside the
@@ -327,7 +338,7 @@ id<MTLCounterSampleBuffer> newTimingSamples() {
 }  // namespace
 
 bool CommandStream::takeSamples(uint32_t& start, uint32_t& end) {
-    if (!timing_) return false;
+    if (!timing_ && !passProfile()) return false;
     if (!samples_ || nextSample_ + 2 > kTimingSamples) {
         // A query's samples straddling two buffers reads as 0 (finalize).
         samples_ = newTimingSamples();
@@ -338,6 +349,65 @@ bool CommandStream::takeSamples(uint32_t& start, uint32_t& end) {
     end = nextSample_ + 1;
     nextSample_ += 2;
     return true;
+}
+
+bool CommandStream::passProfile() {
+    static const bool enabled = [] {
+        const char* v = std::getenv("WINEMETALGL_PASS_PROFILE");
+        return v && v[0] == '1' && timestampCounters() != nil;
+    }();
+    return enabled;
+}
+
+void CommandStream::profileOpen(std::string label, uint32_t start, uint32_t end) {
+    profile_.push_back({samples_, start, end, std::move(label)});
+}
+
+void CommandStream::profileNote(const std::string& what) {
+    if (profile_.empty()) return;
+    std::string& label = profile_.back().label;
+    // Up to four names per encoder; more are counted as "...".
+    const std::string item = " " + what + ";";
+    if (label.find(item) != std::string::npos || label.find(" ...") != std::string::npos) return;
+    if (std::count(label.begin(), label.end(), ';') >= 4) label += " ...";
+    else label += item;
+}
+
+void CommandStream::profileCollect(const std::vector<ProfileEntry>& entries) {
+    struct Total {
+        double nanos = 0;
+        uint64_t count = 0;
+    };
+    static std::mutex mutex;
+    static std::unordered_map<std::string, Total> totals;
+    static uint64_t since = 0;
+    std::lock_guard<std::mutex> lock(mutex);
+    const double perTick = nanosPerGpuTick();
+    for (const ProfileEntry& e : entries) {
+        NSData* data = [e.buffer resolveCounterRange:NSMakeRange(e.start, 2)];
+        if (!data || data.length < 2 * sizeof(MTLCounterResultTimestamp)) continue;
+        const auto* r = static_cast<const MTLCounterResultTimestamp*>(data.bytes);
+        if (r[0].timestamp == MTLCounterErrorValue || r[1].timestamp == MTLCounterErrorValue || r[1].timestamp < r[0].timestamp)
+            continue;
+        Total& t = totals[e.label];
+        t.nanos += static_cast<double>(r[1].timestamp - r[0].timestamp) * perTick;
+        ++t.count;
+    }
+    const uint64_t now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+    if (!since) since = now;
+    if (now - since < 3'000'000'000ull) return;
+    std::vector<std::pair<std::string, Total>> sorted(totals.begin(), totals.end());
+    std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) { return a.second.nanos > b.second.nanos; });
+    double all = 0;
+    for (const auto& [label, t] : sorted) all += t.nanos;
+    const double seconds = static_cast<double>(now - since) / 1e9;
+    WMGL_INFO(Perf, "pass profile: %.1f GPU ms per second in %zu kinds of encoder", all / 1e6 / seconds, sorted.size());
+    for (size_t i = 0; i < std::min<size_t>(30, sorted.size()); ++i)
+        WMGL_INFO(Perf, "pass profile: %7.2f ms/s %5.1f%% %6.1f/s  %s", sorted[i].second.nanos / 1e6 / seconds,
+                  all > 0 ? 100.0 * sorted[i].second.nanos / all : 0.0, static_cast<double>(sorted[i].second.count) / seconds,
+                  sorted[i].first.c_str());
+    totals.clear();
+    since = now;
 }
 
 bool CommandStream::beginTiming(TimingMark& first) {
@@ -370,6 +440,7 @@ id<MTLBlitCommandEncoder> CommandStream::uploadBlit(bool keepPendingClear) {
     endEncoder(PassEnd::Blit);
     uint32_t start, end;
     if (takeSamples(start, end)) {
+        if (passProfile()) profileOpen("blit", start, end);
         MTLBlitPassDescriptor* pass = [MTLBlitPassDescriptor blitPassDescriptor];
         pass.sampleBufferAttachments[0].sampleBuffer = samples_;
         pass.sampleBufferAttachments[0].startOfEncoderSampleIndex = start;
@@ -418,6 +489,7 @@ id<MTLComputeCommandEncoder> CommandStream::compute(bool keepPendingClear) {
     endEncoder(PassEnd::Compute);
     uint32_t start, end;
     if (takeSamples(start, end)) {
+        if (passProfile()) profileOpen("compute", start, end);
         MTLComputePassDescriptor* pass = [MTLComputePassDescriptor computePassDescriptor];
         pass.sampleBufferAttachments[0].sampleBuffer = samples_;
         pass.sampleBufferAttachments[0].startOfEncoderSampleIndex = start;
@@ -545,6 +617,11 @@ uint64_t CommandStream::flush(bool keepPendingClear) {
     stats::count(&stats::Frame::commits);
     lastCommitNanos_ = stats::nowNanos();
     drawsSinceCommit_ = 0;
+    if (!profile_.empty()) {
+        std::vector<ProfileEntry> entries = std::move(profile_);
+        profile_.clear();
+        [buffer_ addCompletedHandler:^(id<MTLCommandBuffer>) { profileCollect(entries); }];
+    }
     queue_.commit(buffer_, serial_);
     lastCommitted_ = serial_;
     buffer_ = nil;

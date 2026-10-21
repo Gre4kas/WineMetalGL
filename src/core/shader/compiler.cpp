@@ -4342,10 +4342,15 @@ static LinkResult linkImplCore(const LinkInput& input, const CaptureCode* captur
                 sizes.msl_buffer = static_cast<uint32_t>(stage.storageArgs.size());
                 msl.add_msl_resource_binding(sizes);
             }
-            // Samplers.
+            // Samplers. Only those the stage uses take a texture slot: an
+            // unused one is inactive, as in GL, and SPIRV-Cross leaves it out
+            // of the function (Iris shader packs declare dozens in shared
+            // headers and use a few per program).
+            const std::unordered_set<spirv_cross::VariableID> active = msl.get_active_interface_variables();
             uint32_t nextTexture = 0;
             std::vector<std::pair<uint32_t, std::vector<int>>> samplerSlotsById;  // image id -> its slots
             for (const auto& image : resources.sampled_images) {
+                if (!active.count(image.id)) continue;
                 const std::string name = unescapeName(msl.get_name(image.id));
                 const spirv_cross::SPIRType& type = msl.get_type(image.type_id);
                 const uint32_t count = type.array.empty() ? 1 : std::max(1u, type.array.back());
@@ -4377,6 +4382,7 @@ static LinkResult linkImplCore(const LinkInput& input, const CaptureCode* captur
             // (inferStorageImageAccess).
             uint32_t nextImage = kSlotFirstImage, readWriteImages = 0;
             for (const auto& image : resources.storage_images) {
+                if (!active.count(image.id)) continue;  // inactive, as samplers
                 const std::string name = unescapeName(msl.get_name(image.id));
                 const spirv_cross::SPIRType& type = msl.get_type(image.type_id);
                 const uint32_t count = type.array.empty() ? 1 : std::max(1u, type.array.back());

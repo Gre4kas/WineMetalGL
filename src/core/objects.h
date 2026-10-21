@@ -83,6 +83,15 @@ public:
     // the CPU's writes; any other GPU write or respecification invalidates it.
     std::vector<uint8_t> shadow;
     bool shadowValid = false;
+    bool shadowCurrent() const { return shadowValid && shadow.size() == static_cast<size_t>(size); }
+    // Starts the shadow from the contents, when they are current: no GPU
+    // writes pending (small, unmapped buffers only).
+    void startShadow() {
+        if (size <= (64 << 20) && !mapped && !pinned && contents()) {
+            shadow.assign(contents(), contents() + size);
+            shadowValid = true;
+        }
+    }
     void shadowWrite(GLintptr offset, GLsizeiptr bytes, const void* data) {
         if (shadowValid && bytes > 0 && static_cast<size_t>(offset + bytes) <= shadow.size())
             std::memcpy(shadow.data() + offset, data, static_cast<size_t>(bytes));
@@ -210,6 +219,9 @@ public:
     // Bound to an image unit (GL 4.2): storage is (re)allocated with
     // shader write (and, for 32-bit integer formats, atomic) usage.
     bool shaderWrite = false;
+    // The storage was made with ShaderAtomic usage (texture_storage.mm),
+    // which Metal does not report back in the texture's usage.
+    bool mtlAtomics = false;
     // Views in another format (GL texture views, stencil sampling, image
     // units) need MTLTextureUsagePixelFormatView, which turns off Apple
     // GPUs' lossless compression (render passes into a texture take several

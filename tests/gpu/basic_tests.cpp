@@ -455,3 +455,32 @@ void main() {
     glDeleteVertexArrays(1, &vao);
     glDeleteProgram(p);
 }
+
+// GLSL names that are MSL or C++ keywords (Minecraft's BSL shaders through
+// Iris: a function named vertex, a variable named new) compile.
+GPU_TEST(gpu_shader_msl_keyword_names) {
+    GLuint p = gpu::program(R"(#version 330 core
+in vec2 position;
+out vec2 delete;
+vec2 vertex(int index) { return position * float(index); }
+void main() { delete = vec2(1.0, 0.0); gl_Position = vec4(vertex(1), 0.0, 1.0); })",
+                            R"(#version 330 core
+in vec2 delete;
+uniform vec4 operator;
+out vec4 fragColor;
+vec4 fragment(vec2 new) { bool explicit = new.x > 0.5; return explicit ? operator : vec4(1.0, 0.0, 0.0, 1.0); }
+void main() { fragColor = fragment(delete); })");
+    CHECK(p != 0);
+    GLuint vao = gpu::quad();
+    glUseProgram(p);
+    glUniform4f(glGetUniformLocation(p, "operator"), 0, 1, 0, 1);
+    glClearColor(0, 0, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    const auto pixels = gpu::readRGBA8(32, 32, 1, 1);
+    const uint8_t green[4] = {0, 255, 0, 255};
+    CHECK(gpu::near(pixels.data(), green));
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
+    CHECK_GL();
+}
