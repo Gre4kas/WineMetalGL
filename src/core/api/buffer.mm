@@ -715,8 +715,20 @@ void CopyBufferSubData(Context& ctx, GLenum readTarget, GLenum writeTarget, GLin
     if (!size) return;
     [ctx.stream().blit(true) copyFromBuffer:src->mtl sourceOffset:static_cast<NSUInteger>(readOffset) toBuffer:dst->mtl
                         destinationOffset:static_cast<NSUInteger>(writeOffset) size:static_cast<NSUInteger>(size)];
+    // The copied bytes are on the CPU when the source has no pending GPU
+    // writes (or a shadow of them): the destination's shadow takes them too,
+    // so CPU reads of its indices and vertices need not wait for the copy.
+    // A small buffer the GPU has not used yet starts one, its contents being
+    // current: Minecraft fills each new vertex and index buffer this way,
+    // from a mapped staging buffer, and draws from it at once.
+    const bool srcShadow = src->shadowCurrent();
+    const bool srcCurrent = srcShadow || !src->lastWriteSerial || ctx.share().queue.isComplete(src->lastWriteSerial);
+    if (srcCurrent && !dst->shadowValid && !dst->lastUseSerial && dst->size <= (4 << 20)) dst->startShadow();
+    if (dst->shadowValid) {
+        if (srcCurrent) dst->shadowWrite(writeOffset, size, (srcShadow ? src->shadow.data() : src->contents()) + readOffset);
+        else dst->shadowValid = false;
+    }
     src->lastUseSerial = dst->lastUseSerial = dst->lastWriteSerial = ctx.stream().serial();
-    dst->shadowValid = false;
     ++dst->version;
 }
 

@@ -14501,6 +14501,13 @@ const std::unordered_set<std::string> &CompilerMSL::get_reserved_keyword_set()
 		"quad_broadcast",
 		"thread",
 		"threadgroup",
+		// C++ keywords GLSL does not reserve (WineMetalGL): MSL is C++.
+		"alignas", "alignof", "and", "and_eq", "auto", "bitand", "bitor", "catch", "char", "char8_t",
+		"char16_t", "char32_t", "co_await", "co_return", "co_yield", "compl", "concept", "consteval",
+		"constexpr", "constinit", "const_cast", "decltype", "delete", "dynamic_cast", "explicit", "export",
+		"friend", "mutable", "new", "noexcept", "not_eq", "nullptr", "operator", "or", "or_eq", "private",
+		"protected", "register", "reinterpret_cast", "requires", "signed", "static_assert", "static_cast",
+		"thread_local", "throw", "try", "typeid", "typename", "virtual", "wchar_t", "xor", "xor_eq",
 	};
 
 	return keywords;
@@ -14660,8 +14667,10 @@ void CompilerMSL::replace_illegal_names()
 		if (!meta)
 			return;
 
+		// Keywords too (WineMetalGL): a GLSL function named vertex or new.
 		auto &dec = meta->decoration;
-		if (illegal_func_names.find(dec.alias) != end(illegal_func_names))
+		if (illegal_func_names.find(dec.alias) != end(illegal_func_names) ||
+		    keywords.find(dec.alias) != end(keywords))
 			dec.alias += "0";
 	});
 

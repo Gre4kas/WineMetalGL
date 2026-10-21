@@ -16,6 +16,9 @@ CMakePresets.json
 CODE_OF_CONDUCT.md
 CONTRIBUTING.md
 DEPENDENCIES.md
+Game Specific Patched Files/Minecraft (Java Edition)/README.md
+Game Specific Patched Files/Minecraft (Java Edition)/glue.m
+Game Specific Patched Files/Minecraft (Java Edition)/install.sh
 Game Specific Patched Files/Quake 4/README.md
 Game Specific Patched Files/Quake 4/apply-display-modes.sh
 Game Specific Patched Files/Quake 4/autoexec.cfg

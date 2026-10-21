@@ -729,8 +729,11 @@ void DrawState::waitForCpuVertexReads(LinkedProgram& program, bool gather) {
         if (input.location < 0 || input.location >= VertexArray::kAttribSlots) continue;
         if (plan.how[static_cast<size_t>(input.location)] != VertexInputPlan::Converted) continue;
         const VertexAttrib& a = attribFor(vao, input.source());
-        if (a.buffer && a.buffer->lastWriteSerial && !queue.isComplete(a.buffer->lastWriteSerial))
+        // A shadow has the contents the pending GPU writes copy (Buffer::shadow).
+        if (a.buffer && a.buffer->lastWriteSerial && !a.buffer->shadowCurrent() && !queue.isComplete(a.buffer->lastWriteSerial)) {
             ctx_.stream().waitFor(a.buffer->lastWriteSerial);
+            a.buffer->startShadow();
+        }
     }
 }
 
@@ -1036,7 +1039,8 @@ bool DrawState::bindVertexInputs(id<MTLRenderCommandEncoder> encoder, PipelineKe
             const uint8_t* source = nullptr;
             if (a.buffer) {
                 readable = a.buffer->size > a.offset ? static_cast<size_t>(a.buffer->size - a.offset) : 0;
-                source = a.buffer->contents() + std::min<size_t>(static_cast<size_t>(a.offset), static_cast<size_t>(a.buffer->size));
+                const uint8_t* bytes = a.buffer->shadowCurrent() ? a.buffer->shadow.data() : a.buffer->contents();
+                source = bytes + std::min<size_t>(static_cast<size_t>(a.offset), static_cast<size_t>(a.buffer->size));
             } else {
                 source = reinterpret_cast<const uint8_t*>(a.offset);
             }
@@ -4151,17 +4155,14 @@ void DrawState::drawElements(GLenum mode, GLsizei count, GLenum type, const void
     auto cpuSource = [&] {
         if (!cpuReadable) {
             Buffer& b = *elementBuffer;
-            if (b.shadowValid && b.shadow.size() == static_cast<size_t>(b.size)) {
+            if (b.shadowCurrent()) {
                 // The pending GPU writes copy CPU data the copy has already.
                 source = b.shadow.data() + offset;
             } else if (b.lastWriteSerial && !ctx_.share().queue.isComplete(b.lastWriteSerial)) {
                 ctx_.stream().waitFor(b.lastWriteSerial);
                 // Keep a copy from now on (Buffer::shadow): CPU updates of the
                 // buffer then need no wait here.
-                if (b.size <= (64 << 20) && !b.mapped && !b.pinned) {
-                    b.shadow.assign(b.contents(), b.contents() + b.size);
-                    b.shadowValid = true;
-                }
+                b.startShadow();
             }
             cpuReadable = true;
         }

@@ -123,6 +123,13 @@ Local changes to vendored sources (each marked `WineMetalGL:` in the code):
   takes no level, so a level-0 sample (glslang's `texture()` outside fragment
   shaders) is written as `texture()` and a fetch without a level, when
   geometry and tessellation control stages are translated back to GLSL.
+- SPIRV-Cross `spirv_msl.cpp`, `get_reserved_keyword_set` and
+  `replace_illegal_names`: the C++ keywords GLSL does not reserve (`new`,
+  `delete`, `operator`, `explicit` and the rest) are reserved in MSL too, and
+  function names are checked against the reserved keywords as well as the
+  illegal function names, so a GLSL function named `vertex` or a variable
+  named `new` (Minecraft's BSL shaders through Iris) is renamed instead of
+  failing to compile.
 
 The built dylib dynamically links only Apple system frameworks and libraries
 (Metal, Foundation, QuartzCore, CoreFoundation, libc++, libSystem and

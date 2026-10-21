@@ -134,20 +134,25 @@ id<MTLFunction> compileFunction(const std::string& msl, const std::string& entry
 id<MTLFunction> compileFunctionUncached(const std::string& msl, const std::string& entryPoint, int stage) {
     MTLCompileOptions* options = [MTLCompileOptions new];
     options.languageVersion = MTLLanguageVersion3_1;  // texture atomics
-    // Safe: arithmetic in the order the shader writes it, as GL drivers
-    // compile GLSL. Relaxed math lets the compiler reassociate, and it moves
-    // uniform * uniform products out of per-pixel ones: (uniform * varying)
-    // * uniform overflows where the written order does not, and 0 * inf is
-    // NaN. SpaceEngine multiplies its lights' huge intensities that way, and
-    // its gas giants came out NaN, unlit (issue #35). WINEMETALGL_SAFE_MATH=0
-    // compiles with relaxed math (faster arithmetic-heavy shaders).
-    static const bool safeMath = [] {
+    // Relaxed math without reassociation: arithmetic in the order the shader
+    // writes it, as GL drivers compile GLSL, with relaxed math's other
+    // freedoms (fused multiply-adds, reciprocals; infinities and NaN kept).
+    // Reassociation moves uniform * uniform products out of per-pixel ones:
+    // (uniform * varying) * uniform overflows where the written order does
+    // not, and 0 * inf is NaN. SpaceEngine multiplies its lights' huge
+    // intensities that way, and its gas giants came out NaN, unlit (issue
+    // #35). Safe math, which also keeps the order, costs arithmetic-heavy
+    // shaders much more: Minecraft's BSL shaders run about 45% faster this
+    // way. WINEMETALGL_SAFE_MATH=1 compiles with safe math,
+    // WINEMETALGL_SAFE_MATH=0 with relaxed math and reassociation.
+    static const int mathSetting = [] {
         const char* v = std::getenv("WINEMETALGL_SAFE_MATH");
-        return !(v && v[0] == '0');
+        return v && v[0] == '1' ? 1 : v && v[0] == '0' ? 0 : -1;
     }();
-    options.mathMode = safeMath ? MTLMathModeSafe : MTLMathModeRelaxed;
+    options.mathMode = mathSetting == 1 ? MTLMathModeSafe : MTLMathModeRelaxed;
+    const char* const orderedPrefix = mathSetting < 0 ? "#pragma clang fp reassociate(off)\n" : "";
     // Positions are computed the same way in every vertex shader, declared
-    // `invariant` or not: with relaxed math (WINEMETALGL_SAFE_MATH=0) the
+    // `invariant` or not: with relaxed math the
     // compiler may otherwise reassociate the same position expression
     // differently from one shader to the next, and a pass that tests depth for equality against another
     // pass's depth (a depth pre-pass, decals) fails on some pixels, which ones
@@ -161,7 +166,7 @@ id<MTLFunction> compileFunctionUncached(const std::string& msl, const std::strin
     }();
     options.preserveInvariance = invarianceAlways || msl.find("invariant]]") != std::string::npos;
     NSError* error = nil;
-    id<MTLLibrary> library = [Device::get().mtl() newLibraryWithSource:[NSString stringWithUTF8String:msl.c_str()]
+    id<MTLLibrary> library = [Device::get().mtl() newLibraryWithSource:[NSString stringWithUTF8String:(orderedPrefix + msl).c_str()]
                                                                options:options
                                                                  error:&error];
     if (!library) {

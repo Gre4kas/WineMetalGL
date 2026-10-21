@@ -111,8 +111,11 @@ private:
 #else
         const std::string version = "dev";
 #endif
-        path_ = dir + "/" + logProgramName() + "-" + version + "-" + fileSafe(device.name.UTF8String) + "-" + fileSafe(build) +
-                ".metallib";
+        // Functions compiled with another math mode (program.mm) are kept apart.
+        const char* math = std::getenv("WINEMETALGL_SAFE_MATH");
+        const std::string mathSuffix = math && (math[0] == '0' || math[0] == '1') ? std::string("-math") + math[0] : "";
+        path_ = dir + "/" + logProgramName() + "-" + version + mathSuffix + "-" + fileSafe(device.name.UTF8String) + "-" +
+                fileSafe(build) + ".metallib";
         url_ = [NSURL fileURLWithPath:[NSString stringWithUTF8String:path_.c_str()]];
         dir_ = dir;
         queue_ = dispatch_queue_create_with_target("winemetalgl.pipeline-archive", DISPATCH_QUEUE_SERIAL,
