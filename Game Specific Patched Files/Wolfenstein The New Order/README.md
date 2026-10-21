@@ -32,7 +32,11 @@ a buffer pointer):
 
 ## Installing
 
-Into MetalSharp's Wine (64-bit games):
+WineMetalGL Settings installs it by itself into MetalSharp's Wine 11.17 when
+it finds the game in a MetalSharp prefix (Game Fixes, on by default). It keeps
+the replaced file in `~/Library/Application Support/WineMetalGL/Backups`.
+
+By hand, into MetalSharp's Wine (64-bit games):
 
 ```sh
 cp ~/.metalsharp/runtime/wine/lib/wine/x86_64-windows/xaudio2_7.dll ~/xaudio2_7.dll.metalsharp

@@ -59,9 +59,15 @@ two archives, the install scripts and `SHA256SUMS.txt`:
   OUTPUT`, the arm64 core with the driver ABI header. Its evidence is the
   native runs (the core built for the build machine); the Wine module is
   built for x86_64 Wine only, so it has not yet run inside an arm64 Wine.
-- `WineMetalGL-Settings-<version>.zip`: WineMetalGL Settings.app, signed and
-  notarized, built on macOS 26 by the workflow's `settings-app` job with the
-  x86_64 release inside it (see `docs/building.md`, WineMetalGL Settings).
+- `WineMetalGL-Settings-<version>.dmg`: a disk image with WineMetalGL
+  Settings.app and an alias to `/Applications` to drag it onto. The
+  workflow's `settings-app` job builds it on macOS 26 with the x86_64 release
+  inside it (see `docs/building.md`, WineMetalGL Settings), and signs every
+  Mach-O file and DLL among the game fixes the app carries, then the app
+  (`scripts/sign-settings-app.sh`). It notarizes and staples the app, makes
+  the image (`scripts/build-settings-dmg.sh`), and signs, notarizes and
+  staples that too. It adds the image to `SHA256SUMS.txt` before uploading it,
+  since the app's updates look for both.
 
 The two cores are not interchangeable: a library of the other architecture
 does not load.
@@ -81,8 +87,10 @@ The identity signs the Mach-O libraries (`libwinemetalgl.dylib`,
 `verify-release.sh` then checks that authority. The libraries of both
 packages are notarized together as a zip (`xcrun notarytool submit --wait`),
 and a release whose submission is not accepted is not published. Loose
-libraries cannot be stapled, so Gatekeeper checks the ticket online. The Windows DLLs are PE files and carry
-no Apple signature. `install-wine-module.sh` keeps a valid signature on the
+libraries cannot be stapled, so Gatekeeper checks the ticket online. The
+module's Windows DLLs are PE files and carry no Apple signature. The game
+fixes' DLLs in WineMetalGL Settings get a generic signature, which codesign
+keeps in the file's extended attributes. `install-wine-module.sh` keeps a valid signature on the
 copies it installs and signs ad hoc only those without one.
 
 ## MetalSharp

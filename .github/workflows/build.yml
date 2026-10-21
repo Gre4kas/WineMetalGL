@@ -129,3 +129,31 @@ jobs:
             build/wine-module/i386-windows/*.dll
             build/wine-module/x86_64-unix/winemetalgl.so
           if-no-files-found: error
+
+  settings-app:
+    name: WineMetalGL Settings (app and disk image, ad hoc)
+    # Liquid Glass needs Xcode 26, as in the release.
+    runs-on: macos-26
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Build, sign ad hoc and make the disk image
+        run: |
+          set -euo pipefail
+          scripts/build-settings-app.sh "$RUNNER_TEMP/app"
+          app="$RUNNER_TEMP/app/WineMetalGL Settings.app"
+          scripts/sign-settings-app.sh "$app"
+          for f in "GamePatches/SpaceEngine/winemac.so" "GamePatches/Wolfenstein The New Order/xaudio2_7.dll" \
+                   "GamePatches/Quake 4/apply-display-modes.sh" "GamePatches/Quake 4/legacy-display-modes.reg" \
+                   "GamePatches/Quake 4/autoexec.cfg" "GamePatches/SOURCE-SHA256"; do
+            test -f "$app/Contents/Resources/$f" || { echo "missing from the app: $f"; exit 1; }
+          done
+          codesign --verify --strict "$app/Contents/Resources/GamePatches/Wolfenstein The New Order/xaudio2_7.dll"
+          scripts/build-settings-dmg.sh "$app" "$RUNNER_TEMP/WineMetalGL-Settings.dmg"
+          mnt="$RUNNER_TEMP/mnt"
+          mkdir -p "$mnt"
+          hdiutil attach "$RUNNER_TEMP/WineMetalGL-Settings.dmg" -nobrowse -readonly -mountpoint "$mnt"
+          test -L "$mnt/Applications"
+          codesign --verify --strict --deep "$mnt/WineMetalGL Settings.app"
+          hdiutil detach "$mnt"

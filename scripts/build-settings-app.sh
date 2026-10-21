@@ -9,12 +9,21 @@
 # x86_64 release (scripts/stage-release.sh: its module directory) to carry
 # with them; without it, the scripts download the latest release.
 #
+# The app also carries the game fixes it applies where their games are
+# installed (Contents/Resources/GamePatches, from Game Specific Patched
+# Files; src/settings-app/GamePatches.swift): Quake 4's, SpaceEngine's and
+# Wolfenstein: The New Order's. OpenMW's is not among them: it is built into
+# an OpenMW.app, outside any Wine. SOURCE-SHA256 there lists the fixed files
+# as the repository has them, before scripts/sign-settings-app.sh signs them.
+#
 # A universal (arm64, x86_64) app for macOS 14 and later; its Liquid Glass
 # needs the macOS 26 SDK (Xcode 26) to build, and macOS 26 to show. The
 # icon is MetalSharp's Liquid Glass icon (src/settings-app/MetalSharp.icon),
 # compiled by actool (full Xcode: ACTOOL, or xcrun's); without actool, a
-# plain .icns of its artwork stands in. Signing is the caller's (the release
-# workflow signs with the Developer ID and notarizes).
+# plain .icns of its artwork stands in. Signing is the caller's
+# (scripts/sign-settings-app.sh; the release workflow signs with the
+# Developer ID, then notarizes, and scripts/build-settings-dmg.sh makes the
+# disk image). APP_VERSION replaces the version (to try an update).
 set -eu
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -23,6 +32,7 @@ SRC=$ROOT/src/settings-app
 APP="$OUT/WineMetalGL Settings.app"
 VERSION=$(sed -n 's/^project(WineMetalGL VERSION \([0-9][0-9.]*\) .*/\1/p' "$ROOT/CMakeLists.txt")
 test -n "$VERSION" || { echo "no project() version in CMakeLists.txt" >&2; exit 1; }
+VERSION=${APP_VERSION:-$VERSION}
 
 rm -rf "$APP" "$OUT/obj"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$OUT/obj"
@@ -38,6 +48,16 @@ if test -n "${PAYLOAD:-}"; then
     test -f "$PAYLOAD/module/x86_64-unix/libwinemetalgl.dylib" || { echo "no staged release in $PAYLOAD" >&2; exit 1; }
     cp -R "$PAYLOAD/module" "$APP/Contents/Resources/Installer/"
 fi
+
+FIXES="$ROOT/Game Specific Patched Files"
+PATCHES="$APP/Contents/Resources/GamePatches"
+mkdir -p "$PATCHES/Quake 4" "$PATCHES/SpaceEngine" "$PATCHES/Wolfenstein The New Order"
+cp "$FIXES/Quake 4/README.md" "$FIXES/Quake 4/legacy-display-modes.reg" "$FIXES/Quake 4/apply-display-modes.sh" \
+    "$FIXES/Quake 4/autoexec.cfg" "$PATCHES/Quake 4/"
+cp "$FIXES/SpaceEngine/README.md" "$FIXES/SpaceEngine/winemac.so" "$PATCHES/SpaceEngine/"
+cp "$FIXES/Wolfenstein The New Order/README.md" "$FIXES/Wolfenstein The New Order/xaudio2_7.dll" \
+    "$PATCHES/Wolfenstein The New Order/"
+(cd "$FIXES" && shasum -a 256 SpaceEngine/winemac.so "Wolfenstein The New Order/xaudio2_7.dll") > "$PATCHES/SOURCE-SHA256"
 
 # The logo at the top of the window: the icon's artwork.
 sips -Z 256 "$SRC/MetalSharp.icon/Assets/metalsharp-transparent.png" --out "$APP/Contents/Resources/MetalSharpLogo.png" >/dev/null

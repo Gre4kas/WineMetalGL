@@ -236,37 +236,75 @@ jobs:
           PAYLOAD="$RUNNER_TEMP/staged" scripts/build-settings-app.sh "$RUNNER_TEMP/app"
           app="$RUNNER_TEMP/app/WineMetalGL Settings.app"
           test -s "$app/Contents/Resources/Assets.car" || { echo "no Liquid Glass icon (actool)"; exit 1; }
-          # The carried libraries keep the release's signatures (scripts/stage-release.sh).
-          codesign --verify --strict "$app/Contents/Resources/Installer/module/x86_64-unix/libwinemetalgl.dylib"
-          codesign --verify --strict "$app/Contents/Resources/Installer/module/x86_64-unix/winemetalgl.so"
-          codesign --force --options runtime --timestamp --sign "$WINEMETALGL_SIGN_IDENTITY" "$app"
-          codesign --verify --strict --deep "$app"
+          # The game fixes' Mach-O files and DLLs first, then the app; the
+          # carried release keeps its signatures (scripts/stage-release.sh).
+          scripts/sign-settings-app.sh "$app"
+          for f in "$app/Contents/Resources/GamePatches/SpaceEngine/winemac.so" \
+                   "$app/Contents/Resources/Installer/module/x86_64-unix/libwinemetalgl.dylib" "$app"; do
+            codesign -dv "$f" 2>&1 | grep -q "^TeamIdentifier=$APPLE_TEAM_ID\$" || { echo "not signed by the team: $f"; exit 1; }
+          done
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
-      - name: Notarize, staple and publish
+      - name: Notarize and staple the app, then the disk image
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          notarize() {
+            xcrun notarytool submit "$1" --apple-id "$APPLE_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+              --team-id "$APPLE_TEAM_ID" --wait --timeout 1h --output-format json > "$RUNNER_TEMP/notary.json"
+            status=$(plutil -extract status raw "$RUNNER_TEMP/notary.json")
+            id=$(plutil -extract id raw "$RUNNER_TEMP/notary.json")
+            echo "Notarization of $(basename "$1") $id: $status"
+            if test "$status" != Accepted; then
+              xcrun notarytool log "$id" --apple-id "$APPLE_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+                --team-id "$APPLE_TEAM_ID" || true
+              exit 1
+            fi
+          }
+          app="$RUNNER_TEMP/app/WineMetalGL Settings.app"
+          dmg="$RUNNER_TEMP/WineMetalGL-Settings-$VERSION.dmg"
+          # The app is stapled before it goes into the image, so a copy
+          # dragged out of it opens offline too.
+          ditto -c -k --keepParent "$app" "$RUNNER_TEMP/app.zip"
+          notarize "$RUNNER_TEMP/app.zip"
+          xcrun stapler staple "$app"
+          scripts/build-settings-dmg.sh "$app" "$dmg"
+          notarize "$dmg"
+          xcrun stapler staple "$dmg"
+          xcrun stapler validate "$dmg"
+          spctl --assess --type open --context context:primary-signature -vv "$dmg"
+          # What WineMetalGL Settings checks before it installs an update.
+          mnt="$RUNNER_TEMP/dmg-check"
+          mkdir -p "$mnt"
+          hdiutil attach "$dmg" -nobrowse -readonly -noautoopen -mountpoint "$mnt"
+          requirement="anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = \"$APPLE_TEAM_ID\""
+          codesign --verify --strict --deep "-R=$requirement" "$dmg"
+          codesign --verify --strict --deep "-R=$requirement" "$mnt/WineMetalGL Settings.app"
+          spctl --assess --type execute -vv "$mnt/WineMetalGL Settings.app"
+          test -L "$mnt/Applications"
+          hdiutil detach "$mnt"
+
+      - name: Publish the disk image
+        env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          app="$RUNNER_TEMP/app/WineMetalGL Settings.app"
-          zip="$RUNNER_TEMP/WineMetalGL-Settings-$VERSION.zip"
-          ditto -c -k --keepParent "$app" "$zip"
-          xcrun notarytool submit "$zip" --apple-id "$APPLE_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD" \
-            --team-id "$APPLE_TEAM_ID" --wait --timeout 1h --output-format json > "$RUNNER_TEMP/notary.json"
-          status=$(plutil -extract status raw "$RUNNER_TEMP/notary.json")
-          id=$(plutil -extract id raw "$RUNNER_TEMP/notary.json")
-          echo "Notarization $id: $status"
-          if test "$status" != Accepted; then
-            xcrun notarytool log "$id" --apple-id "$APPLE_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD" \
-              --team-id "$APPLE_TEAM_ID" || true
-            exit 1
-          fi
-          xcrun stapler staple "$app"
-          rm -f "$zip"
-          ditto -c -k --keepParent "$app" "$zip"
-          gh release upload "winemetalgl-$VERSION" "$zip" --clobber
+          tag="winemetalgl-$VERSION"
+          name="WineMetalGL-Settings-$VERSION.dmg"
+          # SHA256SUMS.txt lists the image before the image is up: the app
+          # offers an update only once both are there.
+          gh release download "$tag" --pattern SHA256SUMS.txt --dir "$RUNNER_TEMP/sums" --clobber
+          sums="$RUNNER_TEMP/sums/SHA256SUMS.txt"
+          grep -v "  $name\$" "$sums" > "$sums.new" || true
+          (cd "$RUNNER_TEMP" && shasum -a 256 "$name") >> "$sums.new"
+          mv "$sums.new" "$sums"
+          cat "$sums"
+          gh release upload "$tag" "$sums" --clobber
+          gh release upload "$tag" "$RUNNER_TEMP/$name" --clobber
 
       - name: Remove the signing keychain
         if: always()
