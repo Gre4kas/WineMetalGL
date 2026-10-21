@@ -1,0 +1,8 @@
+Windows Registry Editor Version 5.00
+
+; Old 4:3 and 16:9 modes (640x480 ... 1920x1080) become virtual modes up to
+; the screen size, instead of the Mac display's native modes only (issue #58).
+; Prefix-wide: Wine builds the mode list in whichever of its processes
+; refreshes the displays (explorer.exe), so an AppDefaults key has no effect.
+[HKEY_CURRENT_USER\Software\Wine\X11 Driver]
+"EmulateModeset"="Y"
