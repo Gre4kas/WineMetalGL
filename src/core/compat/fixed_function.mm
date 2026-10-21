@@ -118,13 +118,18 @@ void packMatrices(const FixedState& f, Context::FixedFunctionBlockCache& cache) 
     cache.matricesValid = true;
 }
 
+// gl_NormalScale, the tail's first value: 1 / length of the third row of
+// the inverse modelview (GL 2.1 section 2.11.3).
+float normalScale(const Mat4& mvInv) {
+    const float row = std::sqrt(mvInv.m[2] * mvInv.m[2] + mvInv.m[6] * mvInv.m[6] + mvInv.m[10] * mvInv.m[10]);
+    return row > 0.0f ? 1.0f / row : 1.0f;
+}
+
 // The block from gl_NormalScale on.
 std::vector<uint8_t> packTail(const ContextState& st, const Mat4& mvInv) {
     const FixedState& f = st.fixed;
     Std140 b;
-    // gl_NormalScale: 1 / length of the third row of the inverse modelview (GL 2.1 section 2.11.3).
-    const float row = std::sqrt(mvInv.m[2] * mvInv.m[2] + mvInv.m[6] * mvInv.m[6] + mvInv.m[10] * mvInv.m[10]);
-    b.scalar(row > 0 ? 1.0f / row : 1.0f);
+    b.scalar(normalScale(mvInv));
     for (const auto& plane : f.clipPlanes) b.vec4(plane);
     b.beginStruct();  // gl_Point
     b.scalar(st.pointSize);
@@ -732,10 +737,18 @@ const std::vector<uint8_t>& fixedFunctionBlock(Context& ctx, uint64_t& generatio
         cache.data.resize(kTailOffset + tail.size());
         std::memcpy(cache.data.data() + kTailOffset, tail.data(), tail.size());
         cache.version = st.fixed.version;
+        cache.matrixVersion = st.fixed.matrixVersion;
         cache.pointSize = st.pointSize;
         cache.fade = st.pointFadeThresholdSize;
         cache.lineWidth = st.lineWidth;
         std::copy(st.viewports[0], st.viewports[0] + 4, cache.viewport);
+        cache.generation = ++generations;
+    } else if (cache.matrixVersion != st.fixed.matrixVersion) {
+        // Only matrices changed: their section and gl_NormalScale.
+        packMatrices(st.fixed, cache);
+        const float scale = normalScale(cache.modelviewInverse);
+        std::memcpy(cache.data.data() + kTailOffset, &scale, sizeof(scale));
+        cache.matrixVersion = st.fixed.matrixVersion;
         cache.generation = ++generations;
     }
     generation = cache.generation;

@@ -98,7 +98,8 @@ std::vector<Mat4>* matrixStack(Context& ctx) {
         ctx.setError(GL_INVALID_OPERATION);
         return nullptr;
     }
-    return &fixedState(ctx).currentStack(ctx.state.activeTexture);
+    ++ctx.state.fixed.matrixVersion;
+    return &ctx.state.fixed.currentStack(ctx.state.activeTexture);
 }
 
 void load(Context& ctx, const Mat4& m) {

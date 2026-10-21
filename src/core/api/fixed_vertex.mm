@@ -218,7 +218,11 @@ void drawBatch(Context& ctx, const ImmediateBatch& batch, bool list) {
     const ListBatchBuffer* gpu = own ? listBatchBuffer(batch) : nullptr;
     if (n) {
         const ImmediateBatch::Value* source = batch.data.data();
-        if (batch.varying & ~batch.known) {
+        // A batch drawn from its buffer object sets every slot from its first
+        // vertex: nothing to fill in, and no copy (a vertex array draw
+        // compiled into a list has every slot unknown, and OpenSceneGraph's
+        // lists copied their whole batch at each glCallList, issue #42).
+        if (!gpu && (batch.varying & ~batch.known)) {
             // A list's batch: vertices before a slot's first set take the current value.
             im.scratch = batch.data;
             for (int slot = 0; slot < kAttribSlotCount; ++slot) {

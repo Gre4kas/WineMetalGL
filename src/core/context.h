@@ -189,7 +189,7 @@ public:
     // (compat/fixed_function.h), immediate mode (compat/immediate.h) and
     // display list compilation (compat/display_list.h).
     struct FixedFunctionBlockCache {
-        uint64_t version = 0, generation = 0;
+        uint64_t version = 0, matrixVersion = 0, generation = 0;
         float pointSize = -1, fade = -1, lineWidth = -1;
         GLfloat viewport[4] = {};
         std::vector<uint8_t> data;
