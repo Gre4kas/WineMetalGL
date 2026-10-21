@@ -1,7 +1,3 @@
-<p align="center">
-  <img alt="WineMetalGL" src="src/settings-app/WineMetalGL-plain.png" width="200">
-</p>
-
 <h1 align="center">WineMetalGL</h1>
 
 <p align="center">
@@ -32,10 +28,6 @@ WineMetalGL's main method of installation is with the DMG. It will help you inst
 
 </div>
 
-
-([Test suite](docs/testing.md#direct3d-through-wined3d))
-
-
 The core,libwinemetalgl.dylib, has no dependency on Apple's OpenGL. It
 compiles GLSL with glslang and SPIRV-Cross to the Metal Shading Language and implements the GL state machine, resources and draws on Metal. The Wine modules (winemetalgl.dll / winemetalgl.so, with a forwarding opengl32.dll in the prefix) carries WGL and every GL call to it through the driver ABI in `include/winemetalgl/driver.h`. 
 
@@ -43,7 +35,8 @@ Wine itself is not patched or rebuilt ([Build it yourself](docs/building.md#the-
 
 
 <!-- BEGIN GENERATED: totals (scripts/docs/generate.py) -->
-## Conformance totals
+
+## Conformance totals | ([Test suite](docs/testing.md#direct3d-through-wined3d))
 
 <table>
 <tr>
