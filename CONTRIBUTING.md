@@ -41,10 +41,9 @@ affected Khronos CTS lists, in `mustpass.xml` configurations 1 to 4.
   `scripts/check-forbidden-identifiers.sh` keeps it out.
 - **Generated files are not edited by hand.** `docs/conformance.md`,
   `docs/performance.md`, `docs/games.md`, `docs/api-coverage.json` and the
-  sections between `GENERATED` markers in `README.md`, `docs/unsupported.md`
-  and `docs/testing.md` come from `scripts/docs/generate.py`. Change the
-  evidence or the generator and regenerate. Hand-written README content goes
-  outside the markers.
+  sections between `GENERATED` markers in `docs/unsupported.md` and
+  `docs/testing.md` come from `scripts/docs/generate.py`. Change the
+  evidence or the generator and regenerate.
 - **Evidence describes a commit.** CTS results (`tests/cts/baseline`) and game
   corpus results (`tests/games/*.json`) are recorded from a tree without
   uncommitted changes, and the source gate rejects any that are not.
@@ -53,7 +52,10 @@ affected Khronos CTS lists, in `mustpass.xml` configurations 1 to 4.
   `tests/cts/notsupported.json`.
 - **Checksums.** After adding, removing or changing tracked files, run
   `scripts/update-checksums.sh` so `MANIFEST.txt` and `SHA256SUMS` match.
-  `README.md` is not checksummed, so it can be edited on GitHub.
+  `README.md` is not checked at all (not checksummed, not compared with
+  `scripts/docs/generate.py`'s output, not scanned by `scripts/verify-source.sh`),
+  so it can be edited on GitHub. Running the generator still refreshes its
+  conformance totals while the `GENERATED` markers are there.
 - **No Apple OpenGL.** The core must not link OpenGL.framework, and it exports
   only the driver ABI in `include/winemetalgl/driver.h`.
 - **No Wine changes.** The Wine module (`src/wine`) builds against the headers

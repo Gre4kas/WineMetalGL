@@ -17,7 +17,9 @@ Inputs (all tracked):
 Outputs:
   docs/conformance.md, docs/performance.md, docs/games.md,
   docs/api-coverage.json, and the sections between GENERATED markers in
-  README.md, docs/unsupported.md and docs/testing.md.
+  docs/unsupported.md and docs/testing.md; README.md's conformance totals
+  when it has the markers (README.md is edited on GitHub: it is never
+  checked, and a README without the markers is left alone).
 
 --check exits non-zero if any output differs from what is committed;
 --check-provenance if any evidence was recorded from uncommitted changes.
@@ -38,6 +40,9 @@ sys.path.insert(0, os.path.join(ROOT, "scripts", "cts"))
 import results as cts  # noqa: E402
 
 BEGIN = "<!-- BEGIN GENERATED: %s (scripts/docs/generate.py) -->"
+# Outputs edited by hand outside this script (README.md, on GitHub): their
+# sections are written when present and never checked.
+UNCHECKED = {"README.md"}
 END = "<!-- END GENERATED: %s -->"
 STATUSES = ["Pass", "Fail", "NotSupported", "InternalError", "Crash", "Timeout", "Missing"]
 # Mustpass lists with committed baselines (tests/cts/baseline/<list>-cfgN-<runner>.txt).
@@ -1004,9 +1009,14 @@ def main():
             raise SystemExit("evidence recorded from uncommitted trees:\n  " + "\n  ".join(dirty))
     outputs, blocks = render(suites, es_suites)
     for (path, name), content in sorted(blocks.items()):
+        # README.md is edited on GitHub: refreshed when generating, never checked.
+        if path in UNCHECKED and args.check:
+            continue
         text = outputs.get(path) or open(rel(path)).read()
         begin, end = BEGIN % name, END % name
         if begin not in text or end not in text:
+            if path in UNCHECKED:
+                continue
             raise SystemExit("%s has no generated %s section" % (path, name))
         outputs[path] = text[:text.index(begin)] + begin + "\n" + content + "\n" + end + text[text.index(end) + len(end):]
     stale = []
