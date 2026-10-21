@@ -24,7 +24,7 @@
 # A universal (arm64, x86_64) app for macOS 14 and later; its Liquid Glass
 # needs the macOS 26 SDK (Xcode 26) to build, and macOS 26 to show (before
 # it, the app simulates it; WINEMETALGL_SIMULATED_GLASS=1 shows that). The
-# icon is MetalSharp's Liquid Glass icon (src/settings-app/MetalSharp.icon),
+# icon is WineMetalGL's Liquid Glass icon (src/settings-app/WineMetalGL.icon),
 # compiled by actool (full Xcode: ACTOOL, or xcrun's); without actool, a
 # plain .icns of its artwork stands in. Signing is the caller's
 # (scripts/sign-settings-app.sh; the release workflow signs with the
@@ -71,24 +71,24 @@ cp "$FIXES/Wolfenstein The New Order/README.md" "$FIXES/Wolfenstein The New Orde
 (cd "$FIXES" && shasum -a 256 SpaceEngine/winemac.so "Wolfenstein The New Order/xaudio2_7.dll") > "$PATCHES/SOURCE-SHA256"
 
 # The logo at the top of the window: the icon's artwork.
-sips -Z 256 "$SRC/MetalSharp.icon/Assets/metalsharp-transparent.png" --out "$APP/Contents/Resources/MetalSharpLogo.png" >/dev/null
+sips -Z 256 "$SRC/WineMetalGL.icon/Assets/winemetalgl-transparent.png" --out "$APP/Contents/Resources/WineMetalGLLogo.png" >/dev/null
 
 ACTOOL_BIN=${ACTOOL:-$(xcrun --find actool 2>/dev/null || true)}
 if test -n "$ACTOOL_BIN" && "$ACTOOL_BIN" --version >/dev/null 2>&1; then
-    "$ACTOOL_BIN" --compile "$OUT/obj" --platform macosx --minimum-deployment-target 14.0 --app-icon MetalSharp \
-        --output-partial-info-plist "$OUT/obj/partial-Info.plist" "$SRC/MetalSharp.icon" >/dev/null
+    "$ACTOOL_BIN" --compile "$OUT/obj" --platform macosx --minimum-deployment-target 14.0 --app-icon WineMetalGL \
+        --output-partial-info-plist "$OUT/obj/partial-Info.plist" "$SRC/WineMetalGL.icon" >/dev/null
     test -s "$OUT/obj/Assets.car" || { echo "actool made no Assets.car" >&2; exit 1; }
     cp "$OUT/obj/Assets.car" "$APP/Contents/Resources/"
-    cp "$OUT/obj/MetalSharp.icns" "$APP/Contents/Resources/"
+    cp "$OUT/obj/WineMetalGL.icns" "$APP/Contents/Resources/"
 else
     echo "no actool (full Xcode): a plain icon stands in for the Liquid Glass one" >&2
-    set=$OUT/obj/MetalSharp.iconset
+    set=$OUT/obj/WineMetalGL.iconset
     mkdir -p "$set"
     for size in 16 32 128 256 512; do
-        sips -Z $size "$SRC/MetalSharp.icon/Assets/metalsharp-transparent.png" --out "$set/icon_${size}x${size}.png" >/dev/null
-        sips -Z $((size * 2)) "$SRC/MetalSharp.icon/Assets/metalsharp-transparent.png" --out "$set/icon_${size}x${size}@2x.png" >/dev/null
+        sips -Z $size "$SRC/WineMetalGL.icon/Assets/winemetalgl-transparent.png" --out "$set/icon_${size}x${size}.png" >/dev/null
+        sips -Z $((size * 2)) "$SRC/WineMetalGL.icon/Assets/winemetalgl-transparent.png" --out "$set/icon_${size}x${size}@2x.png" >/dev/null
     done
-    iconutil -c icns "$set" -o "$APP/Contents/Resources/MetalSharp.icns"
+    iconutil -c icns "$set" -o "$APP/Contents/Resources/WineMetalGL.icns"
 fi
 
 cat > "$APP/Contents/Info.plist" <<PLIST
@@ -99,8 +99,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleDevelopmentRegion</key><string>en</string>
     <key>CFBundleDisplayName</key><string>WineMetalGL Settings</string>
     <key>CFBundleExecutable</key><string>WineMetalGL Settings</string>
-    <key>CFBundleIconFile</key><string>MetalSharp</string>
-    <key>CFBundleIconName</key><string>MetalSharp</string>
+    <key>CFBundleIconFile</key><string>WineMetalGL</string>
+    <key>CFBundleIconName</key><string>WineMetalGL</string>
     <key>CFBundleIdentifier</key><string>com.metalsharp.winemetalgl.settings</string>
     <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
     <key>CFBundleName</key><string>WineMetalGL Settings</string>

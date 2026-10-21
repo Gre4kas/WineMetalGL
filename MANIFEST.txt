@@ -219,9 +219,9 @@ src/core/version.mm
 src/settings-app/Arm64Fixes.swift
 src/settings-app/GamePatches.swift
 src/settings-app/Installations.swift
-src/settings-app/MetalSharp.icon/Assets/metalsharp-transparent.png
-src/settings-app/MetalSharp.icon/icon.json
 src/settings-app/Updater.swift
+src/settings-app/WineMetalGL.icon/Assets/winemetalgl-transparent.png
+src/settings-app/WineMetalGL.icon/icon.json
 src/settings-app/WineMetalGLSettings.swift
 src/wine/include/wmgl_gltypes.h
 src/wine/include/wmgl_wine.h

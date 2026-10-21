@@ -300,7 +300,7 @@ struct SettingsView: View {
     var body: some View {
         VStack(spacing: 14) {
             VStack(spacing: 6) {
-                if let logo = Bundle.main.image(forResource: "MetalSharpLogo") {
+                if let logo = Bundle.main.image(forResource: "WineMetalGLLogo") {
                     Image(nsImage: logo)
                         .resizable()
                         .interpolation(.high)
