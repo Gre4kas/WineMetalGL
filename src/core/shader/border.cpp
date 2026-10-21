@@ -9,6 +9,39 @@
 namespace wmgl::shader {
 namespace {
 
+// `call` (a sample_compare or gather_compare) with its reference argument,
+// the one that holds `reference` (divided by q for a projective lookup),
+// clamped to [0, 1]; empty if it is not found.
+std::string clampedReference(const std::string& call, const std::string& reference) {
+    size_t open = call.find("sample_compare(");
+    if (open == std::string::npos) open = call.find("gather_compare(");
+    if (open == std::string::npos) return {};
+    open = call.find('(', open);
+    // The top-level arguments: sampler, coordinates, [layer,] reference, ...
+    std::vector<std::pair<size_t, size_t>> args;
+    int depth = 0;
+    size_t start = open + 1;
+    for (size_t i = start; i < call.size(); ++i) {
+        const char c = call[i];
+        if (c == '(' || c == '[') ++depth;
+        else if ((c == ')' || c == ']') && depth > 0) --depth;
+        else if ((c == ',' || c == ')') && depth == 0) {
+            args.push_back({start, i});
+            if (c == ')') break;
+            start = i + 1;
+        }
+    }
+    for (size_t k = 2; k < args.size(); ++k) {
+        const auto [from, to] = args[k];
+        if (std::string(call, from, to - from).find(reference) == std::string::npos) continue;
+        std::string out = call;
+        out.insert(to, ")");
+        out.insert(from, "saturate(");
+        return out;
+    }
+    return {};
+}
+
 // The emulation's MSL helpers (one copy per variant function).
 //
 // A macro's arguments: r, the sampled or gathered value; t, s, the texture
@@ -392,6 +425,9 @@ std::string BorderMsl::to_texture_op(const spirv_cross::Instruction& i, bool spa
         c += kPrefix[n];
     }
     const std::string slotText = std::to_string(slot->second);
+    if (drefId)
+        if (const std::string clamped = clampedReference(expr, to_expression(drefId)); !clamped.empty())
+            expr = "wmgl_bcr_" + slotText + "(" + expr + ", " + clamped + ")";
     const std::string tex = to_expression(img), sampler = to_sampler_expression(img);
     const std::string off = offset ? to_expression(offset) : "0";
     // A projective comparison divides the reference by q too.
@@ -424,7 +460,7 @@ void addDefaultBorderMacros(std::string& msl) {
         msl.insert(at == std::string::npos ? 0 : at + anchor.size(), kCubeLod);
     }
     std::set<std::string> names;
-    for (const char* prefix : {"wmgl_bcs_", "wmgl_bcg_"})
+    for (const char* prefix : {"wmgl_bcs_", "wmgl_bcg_", "wmgl_bcr_"})
         for (size_t at = msl.find(prefix); at != std::string::npos; at = msl.find(prefix, at + 1)) {
             size_t end = at + std::strlen(prefix);
             while (end < msl.size() && msl[end] >= '0' && msl[end] <= '9') ++end;
@@ -455,11 +491,14 @@ std::string borderDefinitions(const std::vector<BorderSlot>& slots, bool fragmen
         for (int k = 0; k < 4; ++k)
             border += (k ? ", " : "") + std::string("as_type<") + element + ">(" + hexBits(s.border[k]) + ")";
         border += ")";
+        if (s.clampReference) out += "#define wmgl_bcr_" + n + "(r, rc) (rc)\n";
+        if (!s.emulate) continue;
+        const std::string d = s.clampReference ? "saturate(d)" : "d";
         out += "constant wmgl_bp wmgl_bp_" + n + " = " + p + ";\n";
         out += "#define wmgl_bcs_" + n + kSampleArgs + " wmgl_border_sample(r, t, s, c, wmgl_off(o), lk, la, wmgl_f3(gx), "
-               "wmgl_f3(gy), d, wmgl_bp_" + n + ", " + border + ")\n";
-        out += "#define wmgl_bcg_" + n + "(r, t, s, c, o, k, d) wmgl_border_gather(r, t, c, wmgl_off(o), k, d, wmgl_bp_" + n +
-               ", " + border + (s.compare ? ", true" : "") + ")\n";
+               "wmgl_f3(gy), " + d + ", wmgl_bp_" + n + ", " + border + ")\n";
+        out += "#define wmgl_bcg_" + n + "(r, t, s, c, o, k, d) wmgl_border_gather(r, t, c, wmgl_off(o), k, " + d + ", wmgl_bp_" +
+               n + ", " + border + (s.compare ? ", true" : "") + ")\n";
     }
     return out;
 }

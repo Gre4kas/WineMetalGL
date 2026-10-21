@@ -1485,3 +1485,32 @@ COMPAT_TEST(compat_bench_call_list) {
     glDeleteLists(base, kLists);
     CHECK_GL();
 }
+
+// Generic attribute 0 aliases the conventional vertex array both ways: a
+// shader reading a generic attribute at location 0 takes glVertexPointer's
+// array when generic array 0 is disabled. OpenMW's post-processing draws its
+// full-screen triangle that way, and every pass drew nothing (issue #42).
+COMPAT_TEST(compat_generic_attribute_zero_from_vertex_array) {
+    GLuint p = gpu::program("#version 330 compatibility\nlayout(location = 0) in vec2 vertex;\n"
+                            "void main() { gl_Position = vec4(vertex, 0.0, 1.0); }\n",
+                            "#version 330 compatibility\nout vec4 o;\nvoid main() { o = vec4(1.0, 0.0, 0.0, 1.0); }\n");
+    static const float triangle[] = {-1, -1, 0, -1, 3, 0, 3, -1, 0};
+    GLuint vbo = 0;
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(triangle), triangle, GL_STATIC_DRAW);
+    glVertexPointer(3, GL_FLOAT, 0, nullptr);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glEnableClientState(GL_VERTEX_ARRAY);
+    glDisableVertexAttribArray(0);
+    clear();
+    glUseProgram(p);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    CHECK_GL();
+    CHECK(pixel(32, 32, kRed));
+    CHECK(pixel(2, 2, kRed));
+    glDisableClientState(GL_VERTEX_ARRAY);
+    glUseProgram(0);
+    glDeleteBuffers(1, &vbo);
+    glDeleteProgram(p);
+}
