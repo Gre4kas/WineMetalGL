@@ -224,6 +224,54 @@ TEST(shader_legacy_fragdata) {
     CHECK(!both.ok);
 }
 
+// Doom 3 BFG's generated GLSL (issue #25): GLSL 1.50 without a profile that
+// redeclares built-ins and uses the compatibility profile's, as desktop
+// drivers accept.
+TEST(shader_glsl150_redeclared_compatibility_builtins) {
+    LinkInput in;
+    in.shaders.push_back({Stage::Vertex,
+                          "#version 150\n#define PC\n\nuniform vec4 _va_[4];\n"
+                          "in vec4 in_Position;\nin vec2 in_TexCoord;\nin vec4 in_Color;\n\n"
+                          "out vec4 gl_Position;\nout vec4 vofi_TexCoord0;\nout vec4 gl_FrontColor;\n\n"
+                          "void main() {\n\tgl_Position . x = dot ( in_Position , _va_[0] ) ;\n"
+                          "\tgl_Position . y = dot ( in_Position , _va_[1] ) ;\n"
+                          "\tgl_Position . z = dot ( in_Position , _va_[2] ) ;\n"
+                          "\tgl_Position . w = dot ( in_Position , _va_[3] ) ;\n"
+                          "\tvofi_TexCoord0 = vec4 ( in_TexCoord , 0 , 0 ) ;\n"
+                          "\tgl_FrontColor = in_Color ;\n}\n"});
+    in.shaders.push_back({Stage::Fragment,
+                          "#version 150\n#define PC\n\nuniform sampler2D samp0;\n\n"
+                          "in vec4 gl_FragCoord;\nin vec4 vofi_TexCoord0;\nin vec4 gl_Color;\n\n"
+                          "out vec4 gl_FragColor;\nout float gl_FragDepth;\n\n"
+                          "void main() {\n\tgl_FragColor = texture ( samp0 , vofi_TexCoord0 . xy ) * gl_Color ;\n"
+                          "\tgl_FragDepth = gl_FragCoord . z ;\n}\n"});
+    for (const ShaderSource& shader : in.shaders) {
+        CompileResult c = compile(shader.stage, shader.source);
+        if (!c.ok) std::fprintf(stderr, "%s\n", c.log.c_str());
+        CHECK(c.ok);
+    }
+    LinkResult r = link(in);
+    if (!r.ok) std::fprintf(stderr, "%s\n", r.log.c_str());
+    CHECK(r.ok);
+    CHECK(findAttrib(r, "in_Position") != nullptr);
+    CHECK(findAttrib(r, "in_Color") != nullptr);
+    CHECK(findUniform(r, "samp0") != nullptr);
+
+    const std::string relaxed = relaxDesktopGlsl("#version 150\nout vec4 gl_Position;\nout vec4 gl_FrontColor;\n"
+                                                 "void main() { gl_FrontColor = vec4(1.0); }\n");
+    CHECK(relaxed.find("#version 150 compatibility\n") == 0);
+    CHECK(relaxed.find("gl_Position") == std::string::npos);
+    CHECK(relaxed.find("out vec4 gl_FrontColor;") != std::string::npos);  // glslang takes this one
+    CHECK_EQ(std::count(relaxed.begin(), relaxed.end(), '\n'), 4);        // line numbers stay
+    // Without compatibility built-ins the profile stays core; an explicit
+    // core profile stays strict.
+    CHECK(relaxDesktopGlsl("#version 150\nout vec4 gl_Position;\nvoid main() {}\n").find("#version 150\n") == 0);
+    CHECK(relaxDesktopGlsl("#version 150 core\nout vec4 gl_FrontColor;\n").find("#version 150 core\n") == 0);
+    // Redeclarations with qualifiers are kept.
+    CHECK(relaxDesktopGlsl("#version 150\nlayout(origin_upper_left) in vec4 gl_FragCoord;\n").find("gl_FragCoord") !=
+          std::string::npos);
+}
+
 TEST(shader_version_parsing) {
     CHECK_EQ(parseGlslVersion("// comment\n/* block */\n#version 330 core\n").number, 330);
     CHECK(!parseGlslVersion("#version 330 core\n").compatibility);

@@ -18,11 +18,25 @@ namespace wmgl::shader {
 struct GlslVersion {
     int number = 110;            // 110 when there is no #version
     bool compatibility = false;  // "compatibility" profile (or implicit for <= 130)
+    bool core = false;           // an explicit "core" profile
     bool es = false;
     bool declared = false;       // the shader has a #version directive
 };
 
 GlslVersion parseGlslVersion(const std::string& source);
+
+// Desktop GLSL as desktop drivers take it, where the specification and
+// glslang are stricter (issue #25: Doom 3 BFG's generated GLSL 1.50):
+//  - plain global redeclarations of gl_Position, gl_PointSize,
+//    gl_FragColor, gl_FragData, gl_FragDepth and gl_FragCoord ("out vec4
+//    gl_Position;"), most of which glslang refuses, are blanked: without
+//    qualifiers they change nothing;
+//  - GLSL 1.50+ without a profile (core by the specification) that uses the
+//    compatibility profile's built-ins (gl_FrontColor, gl_Color,
+//    gl_FragColor, gl_ModelViewMatrix...) becomes "compatibility", as the
+//    contexts WineMetalGL creates are. An explicit "core" stays strict.
+// Line numbers stay as they were.
+std::string relaxDesktopGlsl(const std::string& source);
 
 // GLSL ES shaders (OpenGL ES contexts) as the desktop GLSL the compiler
 // takes, from glslang's ES preprocessor output (macros such as __VERSION__,
