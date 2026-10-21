@@ -13,6 +13,13 @@
 // every lookup of a texture whose sampler has a TEXTURE_LOD_BIAS on Metal
 // without sampler LOD bias (macOS 15), applying the bias itself (without
 // anisotropy; cube maps keep the unbiased lookup).
+//
+// A depth comparison of such a texture also has a selector, wmgl_bcr_N(r,
+// rc): r is the comparison as the shader makes it, rc the same with its
+// reference clamped to [0, 1]. GL clamps the reference for fixed-point depth
+// formats (GL 4.6 section 8.23.1), which Metal stores as Depth32Float and
+// compares unclamped; a draw comparing against one uses a variant that
+// selects rc.
 #pragma once
 
 #include <spirv_msl.hpp>
@@ -57,6 +64,8 @@ struct BorderSlot {
     bool always = false;      // filter every lookup here, not only at the border: the LOD bias
                               // where Metal's samplers have none (DeviceCaps::samplerLodBias)
     uint32_t border[4] = {};  // the GL border colour after the texture's swizzle (bits)
+    bool emulate = true;      // the border or LOD bias is emulated (false: only clampReference)
+    bool clampReference = false;  // comparisons against a fixed-point depth format: the reference clamped to [0, 1]
 };
 
 // The macro definitions a draw's border textures need in one stage
