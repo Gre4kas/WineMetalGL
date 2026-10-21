@@ -12,11 +12,11 @@
 
 ### What It Is: 
 
-WineMetalGL is a replacement to Apple's own OpenGL.Framework (Depreciated in 2018), which allows both native Arm64 applications and Wine Apps to receive and use up-to OpenGL 4.6. It is fully conformant with the Khronos GL-CTS Test Suite, and also supports GLES 2 through 3.2. WineMetalGL is OpenGL -> Metal. 
+WineMetalGL is a replacement to Apple's own OpenGL.Framework (Deprecated in 2018), which allows both native Arm64 applications and Wine Apps to receive and use OpenGL 1.0 -> OpenGL 4.6. It is fully conformant with the Khronos GL-CTS Test Suite, and also supports GLES 2 through 3.2. WineMetalGL is OpenGL -> Metal. 
 
 ### Quick Start: 
 
-WineMetalGL's main method of installation is with the DMG. It will help you install it into any Wine Prefix / Crossover Bottle. If a new version is released, the application detects this and can update your app and installed runtime to the latest available version. Otherwise, use the scripts from releases in combination with your preferred download (Arm64, x86_64). 
+WineMetalGL's main method of installation is with the DMG. It will help you install it into any Wine Prefix / Crossover Bottle. If a new version is released, the application detects this and can update your app and installed runtime to the latest available version. Otherwise, use the scripts from releases in combination with your preferred download (Arm64, x86_64). The below table explains the apps capabilities; 
 
 | Feature | Use-Case | 
 |---|---|
@@ -36,10 +36,8 @@ WineMetalGL's main method of installation is with the DMG. It will help you inst
 ([Test suite](docs/testing.md#direct3d-through-wined3d))
 
 
-The core, `libwinemetalgl.dylib`, has no dependency on Apple's OpenGL. It
-compiles GLSL with glslang and SPIRV-Cross to the Metal Shading Language and implements the GL state machine, resources and draws on Metal. The Wine module (`winemetalgl.dll` and `winemetalgl.so`, with a forwarding
-`opengl32.dll` in the prefix) carries WGL and every GL call to it through the
-driver ABI in `include/winemetalgl/driver.h`. 
+The core,libwinemetalgl.dylib, has no dependency on Apple's OpenGL. It
+compiles GLSL with glslang and SPIRV-Cross to the Metal Shading Language and implements the GL state machine, resources and draws on Metal. The Wine modules (winemetalgl.dll / winemetalgl.so, with a forwarding opengl32.dll in the prefix) carries WGL and every GL call to it through the driver ABI in `include/winemetalgl/driver.h`. 
 
 Wine itself is not patched or rebuilt ([Build it yourself](docs/building.md#the-wine-module)).
 
@@ -76,10 +74,6 @@ Wine itself is not patched or rebuilt ([Build it yourself](docs/building.md#the-
 </td>
 </tr>
 </table>
-
-**Conformance %**: passing cases over applicable cases (cases that are not NotSupported) of the version's Khronos CTS mustpass lists (OpenGL: the worst of its runs; GLES: its lists together). **Unsupported %**: cases the CTS reports NotSupported because WineMetalGL does not offer what they test. Each version's features, what is supported and every run: [Conformance results](docs/conformance.md#conformance-totals).
-
-OpenGL 1.0 to 2.1 are implemented by WineMetalGL itself, as its compatibility profile: the fixed-function pipeline, immediate mode, display lists and legacy GLSL, alongside every 3.x / 4.x feature. No public Khronos suite measures them; the Wine fixtures, GPU tests and game corpus exercise them, and [Unsupported](docs/unsupported.md#compatibility-profile-opengl-10-to-21) lists what is not implemented.
 
 <!-- END GENERATED: totals -->
 
