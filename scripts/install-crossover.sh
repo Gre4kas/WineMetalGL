@@ -127,9 +127,17 @@ cp "$MODULE/x86_64-windows/winemetalgl.dll" "$LIB/x86_64-windows/winemetalgl.dll
 cp "$MODULE/i386-windows/winemetalgl.dll" "$LIB/i386-windows/winemetalgl.dll"
 cp "$MODULE/x86_64-unix/winemetalgl.so" "$LIB/x86_64-unix/winemetalgl.so"
 cp "$CORE" "$LIB/x86_64-unix/libwinemetalgl.dylib"
+# The x87 acceleration helper (WINEMETALGL_X87), when the module has one.
+if test -e "$MODULE/x86_64-unix/x87sidecar"; then
+    cp "$MODULE/x86_64-unix/x87sidecar" "$LIB/x86_64-unix/x87sidecar"
+else
+    rm -f "$LIB/x86_64-unix/x87sidecar"
+    echo "This module has no x87sidecar: x87 acceleration (WINEMETALGL_X87) stays off."
+fi
 # Copies keep a valid signature (a release's Developer ID one); others are
 # signed ad hoc.
-for f in "$LIB/x86_64-unix/winemetalgl.so" "$LIB/x86_64-unix/libwinemetalgl.dylib"; do
+for f in "$LIB/x86_64-unix/winemetalgl.so" "$LIB/x86_64-unix/libwinemetalgl.dylib" "$LIB/x86_64-unix/x87sidecar"; do
+    test -e "$f" || continue
     codesign --verify "$f" 2>/dev/null && continue
     if ! out=$(codesign -f -s - "$f" 2>&1); then
         echo "$out" >&2
@@ -214,7 +222,8 @@ if test "$into_app" = 1; then
     if cp "$LIB/x86_64-windows/winemetalgl.dll" "$CXLIB/x86_64-windows/winemetalgl.dll" &&
         cp "$LIB/i386-windows/winemetalgl.dll" "$CXLIB/i386-windows/winemetalgl.dll" &&
         cp "$LIB/x86_64-unix/winemetalgl.so" "$CXLIB/x86_64-unix/winemetalgl.so" &&
-        cp "$LIB/x86_64-unix/libwinemetalgl.dylib" "$CXLIB/x86_64-unix/libwinemetalgl.dylib"; then
+        cp "$LIB/x86_64-unix/libwinemetalgl.dylib" "$CXLIB/x86_64-unix/libwinemetalgl.dylib" &&
+        { ! test -e "$LIB/x86_64-unix/x87sidecar" || cp "$LIB/x86_64-unix/x87sidecar" "$CXLIB/x86_64-unix/x87sidecar"; }; then
         echo "Installed winemetalgl into $CXLIB"
         echo "This changes CrossOver.app: updating CrossOver removes the module, and this has to run again."
     else
@@ -225,6 +234,7 @@ if test "$into_app" = 1; then
         echo "  $LIB/i386-windows/winemetalgl.dll -> $CXLIB/i386-windows/" >&2
         echo "  $LIB/x86_64-unix/winemetalgl.so -> $CXLIB/x86_64-unix/" >&2
         echo "  $LIB/x86_64-unix/libwinemetalgl.dylib -> $CXLIB/x86_64-unix/" >&2
+        test -e "$LIB/x86_64-unix/x87sidecar" && echo "  $LIB/x86_64-unix/x87sidecar -> $CXLIB/x86_64-unix/" >&2
         exit 1
     fi
 fi

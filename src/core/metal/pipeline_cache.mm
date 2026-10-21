@@ -231,6 +231,7 @@ private:
             if ([writing_ serializeToURL:url error:&error] && ::rename(temporary.c_str(), path_.c_str()) == 0) {
                 WMGL_INFO(Pipeline, "pipeline cache: saved %d new pipelines", unsaved_);
                 unsaved_ = 0;
+                failures_ = 0;
                 struct stat st;
                 if (::stat(path_.c_str(), &st) == 0 && st.st_size > kMaxBytes) {
                     full_ = true;
@@ -239,15 +240,33 @@ private:
                 return true;
             }
             ::unlink(temporary.c_str());
+            // Metal had none of the additions to write (they were in the
+            // archive already): nothing is lost, and trying again finds the same.
+            const char* reason = error.localizedDescription.UTF8String;
+            if (reason && std::strstr(reason, "Nothing to serialize")) {
+                unsaved_ = 0;
+                failures_ = 0;
+                return true;
+            }
             if (last) {
-                WMGL_WARN(Pipeline, "pipeline cache: %d new pipelines not saved (%s)", unsaved_,
-                          error.localizedDescription.UTF8String);
+                WMGL_WARN(Pipeline, "pipeline cache: %d new pipelines not saved (%s)", unsaved_, reason ? reason : "");
                 return false;
             }
-            WMGL_INFO(Pipeline, "pipeline cache: not saved, trying again (%s)", error.localizedDescription.UTF8String);
+            // Each try runs Metal's archiver over the whole archive (CPU time
+            // the game is using): 3, 6, then 12 s apart, then not again until
+            // new pipelines come (they are still in writing_ for that save).
+            if (++failures_ > 3) {
+                WMGL_INFO(Pipeline, "pipeline cache: not saved after %d tries (%s); saving again with the next new pipelines",
+                          failures_ - 1, reason ? reason : "");
+                unsaved_ = 0;
+                failures_ = 0;
+                return false;
+            }
+            WMGL_INFO(Pipeline, "pipeline cache: not saved, trying again (%s)", reason ? reason : "");
             if (!stopping_ && !saveScheduled_) {
                 saveScheduled_ = true;
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), queue_, ^{ save(); });
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t{3} << (failures_ - 1)) * NSEC_PER_SEC), queue_,
+                               ^{ save(); });
             }
             return false;
         }
@@ -267,6 +286,7 @@ private:
     dispatch_queue_t queue_ = nil;
     std::atomic<bool> full_{false}, stopping_{false};
     int unsaved_ = 0;          // queue_ only
+    int failures_ = 0;         // queue_ only: saves that failed since the last success
     bool saveScheduled_ = false;  // queue_ only
 };
 

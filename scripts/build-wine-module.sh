@@ -74,3 +74,8 @@ done
 "$UNIX_CC" -arch x86_64 -mmacosx-version-min=15.0 -shared -o "$OUT/x86_64-unix/winemetalgl.so" $uobjs "$OBJ/unix/unix_window.o" \
     -framework AppKit -framework Metal -framework QuartzCore -Wl,-undefined,dynamic_lookup
 echo "Built: $OUT/{x86_64,i386}-windows/{winemetalgl,opengl32}.dll, $OUT/x86_64-unix/winemetalgl.so"
+
+# x87 acceleration for 32-bit programs (unix_x87.c): its helper goes next to
+# winemetalgl.so. Without it the module works, and x87 code stays slow.
+"$ROOT/scripts/build-x87sidecar.sh" "$OUT" ||
+    echo "warning: x87sidecar was not built (scripts/build-x87sidecar.sh); WINEMETALGL_X87 will have no helper" >&2

@@ -10,10 +10,12 @@ fi
 stage=$1
 core="$stage/module/x86_64-unix/libwinemetalgl.dylib"
 unix="$stage/module/x86_64-unix/winemetalgl.so"
+sidecar="$stage/module/x86_64-unix/x87sidecar"
 
 for path in \
     "$core" \
     "$unix" \
+    "$sidecar" \
     "$stage/module/x86_64-windows/winemetalgl.dll" \
     "$stage/module/x86_64-windows/opengl32.dll" \
     "$stage/module/i386-windows/winemetalgl.dll" \
@@ -22,6 +24,7 @@ for path in \
     "$stage/install-crossover.sh" \
     "$stage/LICENSE" \
     "$stage/LICENSES/GPL-3.0.txt" \
+    "$stage/LICENSES/x87sidecar-MIT.txt" \
     "$stage/docs/api-coverage.json" \
     "$stage/docs/conformance.md" \
     "$stage/docs/games.md" \
@@ -37,9 +40,12 @@ for path in \
     test -f "$path" || { printf 'missing staged artifact: %s\n' "$path" >&2; exit 1; }
 done
 
-for path in "$core" "$unix"; do
+# The x87 helper runs natively; the libraries run in Wine's x86_64 process.
+for path in "$core" "$unix" "$sidecar"; do
     arch=$(lipo -archs "$path")
-    test "$arch" = x86_64 || { printf 'unexpected Mach-O architecture %s: %s\n' "$arch" "$path" >&2; exit 1; }
+    want=x86_64
+    test "$path" = "$sidecar" && want=arm64
+    test "$arch" = "$want" || { printf 'unexpected Mach-O architecture %s: %s\n' "$arch" "$path" >&2; exit 1; }
     codesign --verify "$path" 2>/dev/null || { printf 'not validly signed: %s\n' "$path" >&2; exit 1; }
     # A release signed with WINEMETALGL_SIGN_IDENTITY carries that authority.
     if test -n "${WINEMETALGL_SIGN_IDENTITY:-}"; then

@@ -43,6 +43,7 @@ mkdir -p "$output/module/x86_64-unix" "$output/module/x86_64-windows" "$output/m
     "$output/evidence/cts" "$output/evidence/games"
 cp "$core" "$output/module/x86_64-unix/libwinemetalgl.dylib"
 cp "$module/x86_64-unix/winemetalgl.so" "$output/module/x86_64-unix/winemetalgl.so"
+cp "$module/x86_64-unix/x87sidecar" "$output/module/x86_64-unix/x87sidecar"
 for arch in x86_64 i386; do
     cp "$module/$arch-windows/winemetalgl.dll" "$module/$arch-windows/opengl32.dll" "$output/module/$arch-windows/"
 done

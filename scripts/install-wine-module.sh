@@ -108,9 +108,16 @@ install_file "$MODULE/x86_64-windows/winemetalgl.dll" "$LIB/x86_64-windows/winem
 install_file "$MODULE/i386-windows/winemetalgl.dll" "$LIB/i386-windows/winemetalgl.dll"
 install_file "$MODULE/x86_64-unix/winemetalgl.so" "$LIB/x86_64-unix/winemetalgl.so"
 if test "$CORE" != "$LIB/x86_64-unix/libwinemetalgl.dylib"; then install_file "$CORE" "$LIB/x86_64-unix/libwinemetalgl.dylib"; fi
+# The x87 acceleration helper (WINEMETALGL_X87), when the module has one.
+if test -e "$MODULE/x86_64-unix/x87sidecar"; then
+    install_file "$MODULE/x86_64-unix/x87sidecar" "$LIB/x86_64-unix/x87sidecar"
+else
+    echo "This module has no x87sidecar: x87 acceleration (WINEMETALGL_X87) stays off."
+fi
 # Copies keep a valid signature (a release's Developer ID one); others are
 # signed ad hoc.
-for f in "$LIB/x86_64-unix/winemetalgl.so" "$LIB/x86_64-unix/libwinemetalgl.dylib"; do
+for f in "$LIB/x86_64-unix/winemetalgl.so" "$LIB/x86_64-unix/libwinemetalgl.dylib" "$LIB/x86_64-unix/x87sidecar"; do
+    test -e "$f" || continue
     codesign --verify "$f" 2>/dev/null && continue
     if ! out=$(codesign -f -s - "$f" 2>&1); then
         echo "$out" >&2

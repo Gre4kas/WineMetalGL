@@ -9,6 +9,13 @@ configuration:
 | glslang | `46ef757e048e760b46601e6e77ae0cb72c97bd2f` | GLSL parsing and SPIR-V generation |
 | Reference tessellator (Microsoft, MIT; from Mesa) | Mesa `65c2dc5a634b6ee31979546ec5eb5212d6ffe721` | GL tessellation (`vendor/tessellator`) |
 
+x87sidecar (athei, MIT; `LICENSES/x87sidecar-MIT.txt`), the native helper of
+`WINEMETALGL_X87`, is not vendored: `scripts/build-x87sidecar.sh` (run by
+`scripts/build-wine-module.sh`) fetches github.com/athei/x87sidecar at
+`third_party/x87sidecar/REVISION` and applies
+`third_party/x87sidecar/serve-pid.patch`, which adds `--serve-pid=<pid>`, a
+cooperative attach to a process that is already running.
+
 Local changes to vendored sources (each marked `WineMetalGL:` in the code):
 
 - glslang `glslang/MachineIndependent/linkValidate.cpp`, `checkStageIO`: the

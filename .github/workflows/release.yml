@@ -129,6 +129,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/notarize"
           cp "$out/winemetalgl-$VERSION-x86_64/module/x86_64-unix/libwinemetalgl.dylib" "$RUNNER_TEMP/notarize/libwinemetalgl-x86_64.dylib"
           cp "$out/winemetalgl-$VERSION-x86_64/module/x86_64-unix/winemetalgl.so" "$RUNNER_TEMP/notarize/winemetalgl.so"
+          cp "$out/winemetalgl-$VERSION-x86_64/module/x86_64-unix/x87sidecar" "$RUNNER_TEMP/notarize/x87sidecar"
           cp "$out/winemetalgl-$VERSION-arm64-core/lib/libwinemetalgl.dylib" "$RUNNER_TEMP/notarize/libwinemetalgl-arm64.dylib"
           ditto -c -k --keepParent "$RUNNER_TEMP/notarize" "$RUNNER_TEMP/notarize.zip"
           xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" --apple-id "$APPLE_ID" \

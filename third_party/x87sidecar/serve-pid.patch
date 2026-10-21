@@ -1,0 +1,139 @@
+WineMetalGL: x87sidecar --serve-pid=<pid>, a cooperative attach to a process
+that is already running (winemetalgl.so starts the sidecar for its own pid and
+performs the handshake itself; src/wine/unix/unix_x87.c). Applied to
+github.com/athei/x87sidecar at third_party/x87sidecar/REVISION by
+scripts/build-x87sidecar.sh.
+
+diff --git a/rosetta_loader/src/main.cpp b/rosetta_loader/src/main.cpp
+index 8aa64e6..7e350e8 100644
+--- a/rosetta_loader/src/main.cpp
++++ b/rosetta_loader/src/main.cpp
+@@ -1380,6 +1380,19 @@ int main(int argc, char* argv[]) try {
+         cooperative = true;
+         ++argi;
+     }
++    // --serve-pid=<pid>: cooperative attach to a process that is already
++    // running (a library inside it spawned us and performs the handshake
++    // itself). No fork, no exec: this process is the sidecar.
++    pid_t servePid = 0;
++    if (argi < argc && std::string_view(argv[argi]).starts_with("--serve-pid=")) {
++        servePid = static_cast<pid_t>(atoi(argv[argi] + 12));
++        if (servePid <= 0) {
++            std::fprintf(stderr, "%s: bad --serve-pid\n", argv[0]);
++            return 2;
++        }
++        cooperative = true;
++        ++argi;
++    }
+     // Sampling profiler options; X87_SAMPLE and friends override these below.
+     sidecar::SamplerConfig samplerCfg;
+     while (argi < argc) {
+@@ -1412,6 +1425,12 @@ int main(int argc, char* argv[]) try {
+         ++argi;
+     }
+ 
++    static char servedName[] = "(running process)";
++    static char* servedArgv[] = {servedName, nullptr};
++    if (servePid != 0 && argi >= argc) {
++        argv = servedArgv;
++        argi = 0;
++    }
+     if (argi >= argc) {
+         std::fprintf(stderr, "%s: missing <program> argument (try --help)\n", argv[0]);
+         return 2;
+@@ -1429,7 +1448,7 @@ int main(int argc, char* argv[]) try {
+     // obtains the tracee's task port (below); from "runtime ready" on it is all
+     // shared.
+     char** progArgv = &argv[argi];
+-    pid_t parentPid = getpid();
++    pid_t parentPid = servePid != 0 ? servePid : getpid();
+     MuhDebugger dbg;
+     bool needsInitBarrier = true;
+     mach_port_t coopReplyPort = MACH_PORT_NULL;
+@@ -1439,13 +1458,18 @@ int main(int argc, char* argv[]) try {
+     // to launch it. The default attach serves the test and benchmark harness
+     // and explicit command lines, where running unhooked would hide the
+     // failure behind results that look hooked.
+-    if (cooperative) {
++    if (cooperative && servePid == 0) {
+         g_unhookedArgv = progArgv;
+         if (const char* v = getenv("ROSETTA_DISABLE_AOT")) {
+             g_inheritedDisableAot = v;
+         }
+     }
+     auto notLaunching = [&](const std::string& reason) -> int {
++        if (servePid != 0) {
++            fprintf(stdout, "[rosettax87] %s; pid %d keeps running without the hook\n",
++                    reason.c_str(), static_cast<int>(servePid));
++            return 1;
++        }
+         if (cooperative) {
+             return runUnhooked(reason);
+         }
+@@ -1524,7 +1548,9 @@ int main(int argc, char* argv[]) try {
+     // harmless for default mode, which also wants AOT off. Set only once the
+     // runtime is known to be supported, so a target run without the hook keeps
+     // its AOT path.
+-    setenv("ROSETTA_DISABLE_AOT", "1", 1);
++    if (servePid == 0) {
++        setenv("ROSETTA_DISABLE_AOT", "1", 1);
++    }
+ 
+     // Cooperative mode publishes its bootstrap service name (derived from the
+     // pid the parent keeps across execv) BEFORE forking, so the target inherits
+@@ -1532,14 +1558,18 @@ int main(int argc, char* argv[]) try {
+     std::string coopName;
+     if (cooperative) {
+         coopName = coop_service_name(parentPid);
+-        setenv(X87_COOP_ENV, coopName.c_str(), 1);
++        if (servePid == 0) {
++            setenv(X87_COOP_ENV, coopName.c_str(), 1);
++        }
+     }
+ 
+     // Nothing buffered may cross the forks below, or it is written twice.
+     fflush(stdout);
+     fflush(stderr);
+ 
+-    int syncPipe[2];
++    int syncPipe[2] = {-1, -1};
++    pid_t intermediatePid = 0;
++    if (servePid == 0) {
+     if (pipe(syncPipe) == -1) {
+         return notLaunching(std::string("pipe: ") + strerror(errno));
+     }
+@@ -1585,7 +1615,7 @@ int main(int argc, char* argv[]) try {
+     close(syncPipe[0]);
+     // Only the original process may exec the target.
+     g_unhookedArgv = nullptr;
+-    pid_t intermediatePid = getpid();  // valid in C; G inherits via fork copy
++    intermediatePid = getpid();  // valid in C; G inherits via fork copy
+     pid_t grandchild = fork();
+     if (grandchild == -1) {
+         fprintf(stdout, "fork (double-fork): %s\n", strerror(errno));
+@@ -1595,6 +1625,10 @@ int main(int argc, char* argv[]) try {
+         _exit(0);  // intermediate child exits; grandchild reparented to launchd
+     }
+ 
++    } else if (pipe(syncPipe) == -1) {
++        return notLaunching(std::string("pipe: ") + strerror(errno));
++    }
++
+     // ── GRANDCHILD == the sidecar ───────────────────────────────────────────
+     UnhookedNotice unhookedNotice;
+     if (cooperative) {
+@@ -1630,6 +1664,14 @@ int main(int argc, char* argv[]) try {
+         task_t traceeTask = rcv.req.task_port.name;
+         thread_t traceeThread = rcv.req.thread_port.name;
+         coopReplyPort = rcv.req.header.msgh_remote_port;
++        if (servePid != 0) {
++            int taskPid = 0;
++            if (pid_for_task(traceeTask, &taskPid) != KERN_SUCCESS || taskPid != servePid) {
++                fprintf(stdout, "[rosettax87] handshake came from pid %d, not %d\n", taskPid,
++                        static_cast<int>(servePid));
++                return 1;
++            }
++        }
+         VERBOSE_LOG("[rosettax87] cooperative attach: task=0x%x thread=0x%x reply=0x%x\n",
+                     traceeTask, traceeThread, coopReplyPort);
+         if (!dbg.adopt(parentPid, traceeTask, traceeThread)) {

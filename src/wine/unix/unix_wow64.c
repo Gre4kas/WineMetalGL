@@ -129,6 +129,7 @@ static void low_free( void *memory, size_t size )
 }
 
 extern NTSTATUS wmgl_unix_init( void *args );
+extern void wmgl_x87_attach(void);
 
 /* The first call of a 32-bit PE side. */
 NTSTATUS wmgl_unix_init_wow64( void *args )
@@ -147,6 +148,7 @@ NTSTATUS wmgl_unix_init_wow64( void *args )
         return STATUS_SUCCESS;
     }
     set_buffer_memory( low_alloc, low_free );
+    wmgl_x87_attach();
     return STATUS_SUCCESS;
 }
 
