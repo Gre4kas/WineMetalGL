@@ -75,8 +75,10 @@ final class SettingsStore: ObservableObject {
             save()
         }
     }
-    /// x87 acceleration is in the file (chosen here or there).
-    private var x87Chosen = false
+    /// x87 acceleration is in the file (chosen here or there); until then
+    /// the games known to need it (Quake 4, Doom 3, Doom 3: BFG Edition)
+    /// get it, and others do not.
+    @Published private(set) var x87Chosen = false
 
     let fileURL: URL
     let logsURL: URL
@@ -355,7 +357,8 @@ struct SettingsView: View {
                     .labelsHidden()
             } content: {
                 Text(store.x87 ? "32-bit games get Rosetta's fast x87 math (x87sidecar), unless their Wine already gives it to them."
-                     : "32-bit games run their x87 math the way Rosetta does it alone, which is much slower.")
+                     : store.x87Chosen ? "32-bit games run their x87 math the way Rosetta does it alone, which is much slower."
+                     : "Quake 4, Doom 3 and Doom 3: BFG Edition get Rosetta's fast x87 math (x87sidecar); other 32-bit games run it the way Rosetta does alone, which is much slower.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

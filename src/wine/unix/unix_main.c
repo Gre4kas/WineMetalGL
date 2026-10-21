@@ -17,6 +17,11 @@ static void *core_handle;
 /* What the PE side tells about the process (wmgl_unix_init), for the log. */
 static char program[3 * 1024], host_version[256];
 
+const char *wmgl_program(void)
+{
+    return program;
+}
+
 void *wmgl_core_symbol( const char *name )
 {
     return core_handle ? dlsym( core_handle, name ) : NULL;

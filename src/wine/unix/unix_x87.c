@@ -8,8 +8,10 @@
  * Rosetta translated before then stays slow; what the program runs from here
  * on (most of a game: its renderer, its game DLL) is fast.
  *
- * Opt-in for now: WINEMETALGL_X87=1. The sidecar is x87sidecar next to
- * winemetalgl.so, or WINEMETALGL_X87_SIDECAR. */
+ * Opt-in for now: WINEMETALGL_X87=1, or, when it is not set, on for the
+ * games known to need it (x87_games); WINEMETALGL_X87=0 turns it off for
+ * them too. The sidecar is x87sidecar next to winemetalgl.so, or
+ * WINEMETALGL_X87_SIDECAR. */
 
 #include <dlfcn.h>
 #include <libgen.h>
@@ -42,6 +44,28 @@ typedef struct
     uint64_t icache_addr[2];
     uint64_t icache_len[2];
 } x87_coop_reply_t;
+
+/* 32-bit games whose x87 math holds them far below their frame rate
+ * without the sidecar: id Tech 4's (Quake 4 runs at 60 fps only with it,
+ * as does Doom 3: BFG Edition, issue #25). */
+static const char *const x87_games[] = { "Quake4.exe", "Doom3.exe", "Doom3BFG.exe" };
+
+static BOOL x87_wanted(void)
+{
+    const char *enabled = getenv( "WINEMETALGL_X87" ), *program = wmgl_program(), *name = program;
+    const char *p;
+    unsigned int i;
+
+    if (enabled) return !strcmp( enabled, "1" );
+    for (p = program; *p; p++) if (*p == '\\' || *p == '/') name = p + 1;
+    for (i = 0; i < ARRAY_SIZE(x87_games); i++)
+        if (!strcasecmp( name, x87_games[i] ))
+        {
+            WMGL_INFO( "x87: on for %s (WINEMETALGL_X87=0 turns it off)\n", name );
+            return TRUE;
+        }
+    return FALSE;
+}
 
 static BOOL find_sidecar( char *path, size_t size )
 {
@@ -134,7 +158,6 @@ static BOOL handshake( mach_port_t service )
 
 static void attach(void)
 {
-    const char *enabled = getenv( "WINEMETALGL_X87" );
     char sidecar[4096], pid_arg[32], name[64];
     char *argv[] = { sidecar, pid_arg, NULL };
     mach_port_t bootstrap = MACH_PORT_NULL, service = MACH_PORT_NULL;
@@ -142,7 +165,7 @@ static void attach(void)
     pid_t child;
     int i;
 
-    if (!enabled || strcmp( enabled, "1" )) return;
+    if (!x87_wanted()) return;
     snprintf( name, sizeof(name), "x87sidecar.%d", (int)getpid() );
     if (task_get_bootstrap_port( mach_task_self(), &bootstrap ) != KERN_SUCCESS) return;
     /* Hooked at launch (the sidecar keeps its service for its translations). */
@@ -154,7 +177,7 @@ static void attach(void)
     }
     if (!find_sidecar( sidecar, sizeof(sidecar) ))
     {
-        WMGL_WARN( "x87: WINEMETALGL_X87=1 but no x87sidecar at %s\n", sidecar );
+        WMGL_WARN( "x87: on, but no x87sidecar at %s\n", sidecar );
         return;
     }
     snprintf( pid_arg, sizeof(pid_arg), "--serve-pid=%d", (int)getpid() );
