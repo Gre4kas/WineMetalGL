@@ -13,7 +13,7 @@ WineMetalGL is in it's early development stages. Please report any issues with a
 
 <div align="center">
 
-<img width="582" height="720" alt="WineMetalGL Settings App" src="https://github.com/user-attachments/assets/db7655a2-d32a-4580-b259-e2cc298dd8aa" />
+<img width="582" height="673" alt="WineMetalGL-Settings-app" src="https://github.com/user-attachments/assets/c4de5354-dfd4-426d-bd2d-6822a4bec8ec" />
 
 </div>
 
