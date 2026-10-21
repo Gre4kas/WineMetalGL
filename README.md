@@ -10,10 +10,21 @@
   <a href="https://github.com/metalsharp/WineMetalGL/actions/workflows/codeql.yml"><img alt="CodeQL" src="https://img.shields.io/github/actions/workflow/status/metalsharp/WineMetalGL/codeql.yml?branch=main&label=CodeQL&color=white"></a>
 </p>
 
-WineMetalGL is an OpenGL implementation on Metal for Wine on macOS 15 or newer. It installs into an unmodified Wine 11.x as a Wine module of its own, and gives Windows programs OpenGL 4.6 contexts, core or compatibility profile, instead of Apple's OpenGL: It runs x86_64 and i386 Windows programs together in a WoW64 prefix. Wine's Direct3D 10 and 11
-(wined3d), which draw through OpenGL, get feature level 11_1 on it. It also gives OpenGL ES 2.0, 3.0, 3.1 and 3.2 contexts. 
+### What It Is: 
 
-WineMetalGL is in it's early development stages. Please report any issues with an attached log and / or screenshot when problems arrive. A Developer Signed Settings Application (Written in Swift UI) can help you install, manage upscaling, apply game fixes, and turn logging on or off to a dedicated folder. Download `WineMetalGL-Settings-<version>.dmg` from the [latest release](https://github.com/metalsharp/WineMetalGL/releases/latest), open it, and drag the app onto Applications; it offers each new release when it opens. 
+WineMetalGL is a replacement to Apple's own OpenGL.Framework (Depreciated in 2018), which allows both native Arm64 applications and Wine Apps to receive and use up-to OpenGL 4.6. It is fully conformant with the Khronos GL-CTS Test Suite, and also supports GLES 2 through 3.2. WineMetalGL is OpenGL -> Metal. 
+
+### Quick Start: 
+
+WineMetalGL's main method of installation is with the DMG. It will help you install it into any Wine Prefix / Crossover Bottle. If a new version is released, the application detects this and can update your app and installed runtime to the latest available version. Otherwise, use the scripts from releases in combination with your preferred download (Arm64, x86_64). 
+
+| Feature | Use-Case | 
+|---|---|
+| Install Normally | Install WineMetalGL Into a Non-Crossover Wine & Enable / Disable It |
+| Install Crossover | Install WineMetalGL Into a Crossover Bottle & Enable / Disable It |
+| Game Fixes | Enable Quick Fixes For Tested Games or Disable Them | 
+| x87 Acceleration | Older Titles Use x87 Calls: Enable This Option For Older 32-Bit Games |
+| Runtime Logs | Enable Logs Before Launching to See What Fails and Submit an Issue Report | 
 
 <div align="center">
 
