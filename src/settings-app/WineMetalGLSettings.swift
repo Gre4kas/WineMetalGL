@@ -145,22 +145,77 @@ final class SettingsStore: ObservableObject {
     }
 }
 
-// MARK: - Liquid Glass, with a material before macOS 26
+// MARK: - Liquid Glass, simulated before macOS 26
+
+/// macOS 26's Liquid Glass, or before it a simulation of it: a translucent
+/// material with a sheen across its top, a bright rim and a soft shadow.
+/// WINEMETALGL_SIMULATED_GLASS=1 shows the simulation on macOS 26 too.
+enum Glass {
+    static let simulated: Bool = {
+        if ProcessInfo.processInfo.environment["WINEMETALGL_SIMULATED_GLASS"] == "1" { return true }
+        if #available(macOS 26.0, *) { return false }
+        return true
+    }()
+}
+
+/// The simulated glass behind a view, in a shape.
+struct SimulatedGlass<S: InsettableShape>: ViewModifier {
+    let shape: S
+    var tint: Color? = nil
+    var pressed = false
+
+    func body(content: Content) -> some View {
+        content
+            .background {
+                ZStack {
+                    shape.fill(.ultraThinMaterial)
+                    if let tint { shape.fill(tint.opacity(pressed ? 0.95 : 0.8)) }
+                    // Light falling on the top of the glass.
+                    shape.fill(LinearGradient(colors: [.white.opacity(0.22), .white.opacity(0.04), .clear],
+                                              startPoint: .top, endPoint: .center))
+                    // The rim: bright where the light catches it, faint below.
+                    shape.strokeBorder(LinearGradient(colors: [.white.opacity(0.55), .white.opacity(0.08), .white.opacity(0.22)],
+                                                      startPoint: .top, endPoint: .bottom), lineWidth: 1)
+                    if pressed { shape.fill(.black.opacity(0.12)) }
+                }
+                .shadow(color: .black.opacity(0.18), radius: 10, y: 4)
+            }
+    }
+}
+
+/// Buttons in the simulated glass: a capsule, tinted when prominent.
+struct SimulatedGlassButtonStyle: ButtonStyle {
+    let prominent: Bool
+    @Environment(\.isEnabled) private var enabled
+    @Environment(\.controlSize) private var size
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(prominent ? AnyShapeStyle(.white) : AnyShapeStyle(.primary))
+            .padding(.horizontal, size == .large ? 14 : 10)
+            .padding(.vertical, size == .large ? 7 : 4)
+            .modifier(SimulatedGlass(shape: Capsule(), tint: prominent ? .accentColor : nil, pressed: configuration.isPressed))
+            .contentShape(Capsule())
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .opacity(enabled ? 1 : 0.5)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+    }
+}
 
 extension View {
     @ViewBuilder func glassCard() -> some View {
-        if #available(macOS 26.0, *) {
+        if #available(macOS 26.0, *), !Glass.simulated {
             self.padding(16).glassEffect(.regular, in: .rect(cornerRadius: 22))
         } else {
-            self.padding(16).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 22))
+            self.padding(16).modifier(SimulatedGlass(shape: RoundedRectangle(cornerRadius: 22, style: .continuous)))
         }
     }
 
     @ViewBuilder func glassButton(prominent: Bool) -> some View {
-        if #available(macOS 26.0, *) {
+        if #available(macOS 26.0, *), !Glass.simulated {
             if prominent { self.buttonStyle(.glassProminent) } else { self.buttonStyle(.glass) }
         } else {
-            if prominent { self.buttonStyle(.borderedProminent) } else { self.buttonStyle(.bordered) }
+            self.buttonStyle(SimulatedGlassButtonStyle(prominent: prominent))
         }
     }
 }

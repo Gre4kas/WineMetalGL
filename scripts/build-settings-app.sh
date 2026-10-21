@@ -17,7 +17,8 @@
 # as the repository has them, before scripts/sign-settings-app.sh signs them.
 #
 # A universal (arm64, x86_64) app for macOS 14 and later; its Liquid Glass
-# needs the macOS 26 SDK (Xcode 26) to build, and macOS 26 to show. The
+# needs the macOS 26 SDK (Xcode 26) to build, and macOS 26 to show (before
+# it, the app simulates it; WINEMETALGL_SIMULATED_GLASS=1 shows that). The
 # icon is MetalSharp's Liquid Glass icon (src/settings-app/MetalSharp.icon),
 # compiled by actool (full Xcode: ACTOOL, or xcrun's); without actool, a
 # plain .icns of its artwork stands in. Signing is the caller's

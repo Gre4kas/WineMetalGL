@@ -186,7 +186,9 @@ UpscaleGL, x87 acceleration and logging go to `~/Library/Application Support/Win
 `NAME=value` lines of the variables below, which WineMetalGL reads when it
 loads; the environment wins over the file, and a change applies to games
 started afterwards. `scripts/build-settings-app.sh` builds the app (Liquid
-Glass needs Xcode 26 to build and macOS 26 to show; `PAYLOAD=<staged
+Glass needs Xcode 26 to build and macOS 26 to show; on macOS 14 and 15 the
+app draws a simulation of it, which `WINEMETALGL_SIMULATED_GLASS=1` shows on
+macOS 26 too; `PAYLOAD=<staged
 release>` puts a release in it, which it then installs without a download, and
 `APP_VERSION` overrides its version). `scripts/sign-settings-app.sh` signs it,
 ad hoc without `WINEMETALGL_SIGN_IDENTITY`. `scripts/build-settings-dmg.sh`
