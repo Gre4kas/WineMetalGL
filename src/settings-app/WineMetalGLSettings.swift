@@ -1,6 +1,6 @@
 // WineMetalGL Settings: where WineMetalGL is installed (Installations.swift),
-// and UpscaleGL's preset and logging, for programs
-// launched without a way to set their environment. Both go to the settings
+// and UpscaleGL's preset, x87 acceleration and logging, for programs
+// launched without a way to set their environment. They go to the settings
 // file the core reads when it loads (src/core/util/settings.h); the
 // environment still wins, and a change applies to games started afterwards.
 
@@ -48,6 +48,15 @@ final class SettingsStore: ObservableObject {
     /// Logging is in the file (chosen here or there); until then WineMetalGL
     /// keeps its default, warnings only, and the file says nothing of it.
     @Published private(set) var loggingChosen = false
+    @Published var x87 = false {
+        didSet {
+            guard x87 != oldValue else { return }
+            if !loading { x87Chosen = true }
+            save()
+        }
+    }
+    /// x87 acceleration is in the file (chosen here or there).
+    private var x87Chosen = false
 
     let fileURL: URL
     let logsURL: URL
@@ -61,7 +70,7 @@ final class SettingsStore: ObservableObject {
         load()
     }
 
-    private static let managed: Set<String> = ["WINEMETALGL_UPSCALE", "WINEMETALGL_LOG", "WINEMETALGL_LOG_FILE"]
+    private static let managed: Set<String> = ["WINEMETALGL_UPSCALE", "WINEMETALGL_LOG", "WINEMETALGL_LOG_FILE", "WINEMETALGL_X87"]
 
     private static func entry(_ line: String) -> (name: String, value: String)? {
         let text = line.trimmingCharacters(in: .whitespaces)
@@ -82,6 +91,8 @@ final class SettingsStore: ObservableObject {
         let level = (values["WINEMETALGL_LOG"] ?? "").lowercased()
         loggingChosen = !level.isEmpty
         logging = !level.isEmpty && !["off", "none", "-1", "0", "1", "err", "error", "warn", "warning"].contains(level)
+        x87Chosen = values["WINEMETALGL_X87"] != nil
+        x87 = values["WINEMETALGL_X87"] == "1"
     }
 
     private func save() {
@@ -98,6 +109,7 @@ final class SettingsStore: ObservableObject {
             kept.append("WINEMETALGL_LOG=off")
             kept.append("WINEMETALGL_LOG_FILE=0")
         }
+        if x87Chosen { kept.append("WINEMETALGL_X87=\(x87 ? 1 : 0)") }
         lines = kept
         do {
             try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -184,6 +196,23 @@ struct SettingsView: View {
                     }
                 }
                 Text(store.upscale.detail)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .glassCard()
+
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Label("x87 Acceleration", systemImage: "bolt").font(.headline)
+                    Spacer()
+                    Toggle("x87 Acceleration", isOn: $store.x87)
+                        .toggleStyle(.switch)
+                        .labelsHidden()
+                }
+                Text(store.x87 ? "32-bit games get Rosetta's fast x87 math (x87sidecar), unless their Wine already gives it to them."
+                     : "32-bit games run their x87 math the way Rosetta does it alone, which is much slower.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

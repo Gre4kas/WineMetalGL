@@ -33,6 +33,7 @@ LICENSES/SPIRV-Cross-Khronos-Free-Use.txt
 LICENSES/Wine-LGPL-2.1.txt
 LICENSES/glslang.txt
 LICENSES/tessellator-MIT.txt
+LICENSES/x87sidecar-MIT.txt
 MANIFEST.txt
 README.md
 SECURITY.md
@@ -54,6 +55,7 @@ docs/unsupported.md
 include/winemetalgl/driver.h
 scripts/build-settings-app.sh
 scripts/build-wine-module.sh
+scripts/build-x87sidecar.sh
 scripts/build.sh
 scripts/check-forbidden-identifiers.sh
 scripts/cts/diff.py
@@ -218,6 +220,7 @@ src/wine/unix/unix_main.c
 src/wine/unix/unix_wgl.c
 src/wine/unix/unix_window.m
 src/wine/unix/unix_wow64.c
+src/wine/unix/unix_x87.c
 src/wine/unix/wmgl_unix.h
 src/wine/unix/wmgl_window.h
 tests/cts/baseline/gl30-cfg1-native.txt
@@ -491,6 +494,8 @@ tests/wine/probe-opengl-wow64.sh
 third_party/khronos/REVISION
 third_party/khronos/gl.xml
 third_party/khronos/wgl.xml
+third_party/x87sidecar/REVISION
+third_party/x87sidecar/serve-pid.patch
 tools/gen/extensions.txt
 tools/gen/gl_gen.py
 tools/gen/wine_gen.py

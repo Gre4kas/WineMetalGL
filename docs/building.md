@@ -142,11 +142,13 @@ and notarized) is the easy way in:
   run `install-crossover.sh` and `install-wine-module.sh` with the release the
   app carries, or, when it carries none, the latest release they download.
 - **UpscaleGL**: Off, Quality, Balanced or Performance (`WINEMETALGL_UPSCALE`).
+- **x87 Acceleration**: on (`WINEMETALGL_X87=1`) or off (`=0`); off until
+  it is switched.
 - **Logging**: everything (`WINEMETALGL_LOG=2`) or nothing, and a button that
   opens `~/Library/Logs/WineMetalGL`. Until it is switched, WineMetalGL logs
   warnings, as without the app.
 
-UpscaleGL and logging go to `~/Library/Application Support/WineMetalGL/settings.conf`,
+UpscaleGL, x87 acceleration and logging go to `~/Library/Application Support/WineMetalGL/settings.conf`,
 `NAME=value` lines of the variables below, which WineMetalGL reads when it
 loads; the environment wins over the file, and a change applies to games
 started afterwards. `scripts/build-settings-app.sh` builds the app (Liquid
@@ -188,6 +190,7 @@ no `opengl32=native` override, and the program got Wine's own OpenGL.
 | `WINEMETALGL_INVARIANCE=0` | Compile vertex positions for invariance only in shaders that declare `invariant`. By default every vertex shader computes positions the same way, so passes that test depth for equality against another pass's depth (pre-passes, decals) match exactly under relaxed math |
 | `WINEMETALGL_SAFE_MATH=1` | Compile shaders with Metal's safe math instead of relaxed math (relaxed allows optimizations such as reassociation that can change results slightly, and keeps infinities and NaN; safe allows none) |
 | `WINEMETALGL_METALFX=0`, `=<factor>` | Turn off, or set the factor of, MetalFX spatial upscaling of window back buffers. Unset, WineMetalGL follows DXMT's setting: off when `DXMT_METALFX_SPATIAL_SWAPCHAIN=0`, else `d3d11.metalSpatialUpscaleFactor` from `DXMT_CONFIG`, `DXMT_CONFIG_FILE` or the Wine installation's `etc/dxmt.conf` (2 when only `DXMT_METALFX_SPATIAL_SWAPCHAIN=1` is set). Factors above 1 (at most 4) present a back buffer through the MetalFX spatial scaler into a drawable that much larger, on GPUs MetalFX supports |
+| `WINEMETALGL_X87=1` | x87 acceleration for 32-bit programs: when a 32-bit program loads `opengl32.dll`, WineMetalGL starts `x87sidecar` (installed next to `winemetalgl.so`; another with `WINEMETALGL_X87_SIDECAR=<path>`), which makes Rosetta translate x87 floating-point code into fast native code instead of its slow soft-float, and hands it this process. Code Rosetta translated before that stays slow; most of a game runs after it (Quake 4's heaviest scenes, with its `r_useSMP 1`, went from 33 to 62 fps). A Wine that runs 32-bit programs through x87sidecar already (MetalSharp) is left alone; where Rosetta is a version x87sidecar does not know, the program runs as without it. Off by default |
 | `WINEMETALGL_UPSCALE=<preset>` | UpscaleGL: fullscreen programs render at a fraction of the screen and MetalFX scales their frames up to it, as DLSS's modes do in a game that supports them. `quality` renders at 67% of the screen's width and height, `balanced` at 58%, `performance` at 50% (960×540 on a 1080p screen) and `ultra` at 33%; a percentage (`75%`) sets another; `off` (the default) leaves the screen alone. The program is shown one display, the main one, at that size: it is the only resolution listed (at the screen's refresh rates), the system metrics and monitor rectangles agree, and a mode change succeeds without changing the real mode (a mode of another shape is shown with black bars, not stretched). A top-level window that covers that display is made to cover the real screen, and the program sees its client area, window rectangle, size messages and mouse and cursor positions at the size it asked for. Spatial upscaling (MetalFX), not temporal: OpenGL programs give no motion vectors. Windowed programs are not scaled, and a program that reads the display before it loads `opengl32.dll` sees the real one |
 | `WINEMETALGL_SETTINGS=<path>`, `=0` | Read the settings file from there, or none. By default `~/Library/Application Support/WineMetalGL/settings.conf` (written by WineMetalGL Settings) sets the variables of this table the environment does not set |
 | `WINEMETALGL_WINE_DEBUG=1` | Log what the Wine module does (contexts, surfaces, windows): `WINEMETALGL_LOG=wine:3,pe:3` |

@@ -1,6 +1,6 @@
 #!/bin/sh
-# Builds "WineMetalGL Settings.app" (src/settings-app): UpscaleGL's preset
-# and logging, written to the settings file the core reads.
+# Builds "WineMetalGL Settings.app" (src/settings-app): UpscaleGL's preset,
+# x87 acceleration and logging, written to the settings file the core reads.
 #
 #   [PAYLOAD=DIR] scripts/build-settings-app.sh [OUTDIR]
 #
