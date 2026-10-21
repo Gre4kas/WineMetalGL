@@ -50,6 +50,8 @@ struct GeometryVar {
     std::string path;
     std::string structType;
     int structArray = 0;
+    int location = -1;      // inputs: an explicit layout(location) (-1: none)
+    std::string captureAs;  // inputs: the vertex output captured for it, when its name differs
 };
 
 struct GeometryShaderInfo {
@@ -76,6 +78,11 @@ struct GeometryShaderInfo {
 // Parses SPIRV-Cross GLSL for a geometry stage. Returns false (with `log`) on
 // constructs the emulation does not support.
 bool parseGeometryGlsl(const std::string& glsl, GeometryShaderInfo& info, std::string& log);
+
+// Inputs with an explicit location that the vertex stage writes under another
+// name at that location (an interface matched by location, GL 4.6 section
+// 4.4.1; SpaceEngine's orbits, issue #35) are captured from that output.
+void matchGeometryInputs(GeometryShaderInfo& info, const std::vector<StageOutputVar>& vertexOutputs);
 
 // Varyings the capture pass must write: gl_Position, the user inputs and the
 // built-ins the shader reads, named as transform feedback varyings.

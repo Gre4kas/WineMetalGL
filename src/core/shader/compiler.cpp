@@ -2715,6 +2715,8 @@ std::vector<StageOutputVar> captureableOutputs(glslang::TIntermediate* intermedi
                 outputs.push_back({legacy ? "gl_" + name.substr(5) : name, glTypeOfAst(type),
                                    type.isSizedArray() ? type.getOuterArraySize() : 0,
                                    legacy || codegenName != name ? codegenName : std::string()});
+                if (symbol->getQualifier().hasLocation())
+                    outputs.back().location = static_cast<int>(symbol->getQualifier().layoutLocation);
             }
         }
     }
@@ -3422,6 +3424,7 @@ static LinkResult linkImplCore(const LinkInput& input, const CaptureCode* captur
             // Inputs the vertex stage does not write (allowed when the
             // geometry shader never reads them) are not captured.
             const std::vector<StageOutputVar> vertexOutputs = captureableOutputs(program.getIntermediate(EShLangVertex));
+            matchGeometryInputs(*geometry, vertexOutputs);
             std::vector<std::string> varyings;
             for (const std::string& v : geometryCaptureVaryings(*geometry))
                 for (const StageOutputVar& o : vertexOutputs)

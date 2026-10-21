@@ -105,6 +105,18 @@ int layoutStream(const std::string& decl) {
     return 0;
 }
 
+// The location of a declaration's layout qualifier, -1 without one.
+int layoutLocation(const std::string& decl) {
+    if (decl.compare(0, 7, "layout(") != 0) return -1;
+    std::istringstream parts(decl.substr(7, decl.find(')') - 7));
+    std::string part;
+    while (std::getline(parts, part, ',')) {
+        part = trim(part);
+        if (part.compare(0, 8, "location") == 0 && part.find('=') != std::string::npos) return std::atoi(part.c_str() + part.find('=') + 1);
+    }
+    return -1;
+}
+
 // The declaration without its stream qualifier (vertex shaders have none).
 std::string withoutStream(const std::string& decl) {
     std::string out = decl;
@@ -228,6 +240,7 @@ std::string renameGlIn(const std::string& text, GeometryShaderInfo& info) {
 // The varying name the capture pass records an input under: GL names, so
 // identifiers escaped for codegen (escapeVulkanKeywords) are restored.
 std::string captureName(const GeometryVar& v) {
+    if (!v.captureAs.empty()) return v.captureAs;
     return unescapeName((v.member.empty() ? v.name : v.blockName + "." + v.member) + v.path);
 }
 
@@ -399,6 +412,7 @@ bool parseGeometryGlsl(const std::string& glsl, GeometryShaderInfo& info, std::s
             // Inputs are arrays of vertices: their own array size is the second dimension.
             GeometryVar v{type, glType, name, "", "", direction == "out" ? arraySize : innerSize, flat};
             if (direction == "out") v.stream = layoutStream(flat);
+            else v.location = layoutLocation(flat);
             (direction == "in" ? info.inputs : info.outputs).push_back(v);
             continue;
         }
@@ -509,6 +523,20 @@ bool parseGeometryGlsl(const std::string& glsl, GeometryShaderInfo& info, std::s
     functions.replace(mainAt, 11, "void wmgl_gs_main()");
     info.functions = functions;
     return true;
+}
+
+void matchGeometryInputs(GeometryShaderInfo& info, const std::vector<StageOutputVar>& vertexOutputs) {
+    for (GeometryVar& v : info.inputs) {
+        if (v.location < 0) continue;
+        const std::string name = captureName(v);
+        if (std::any_of(vertexOutputs.begin(), vertexOutputs.end(), [&](const StageOutputVar& o) { return o.name == name; }))
+            continue;
+        for (const StageOutputVar& o : vertexOutputs)
+            if (o.location == v.location) {
+                v.captureAs = o.name;
+                break;
+            }
+    }
 }
 
 std::vector<std::string> geometryCaptureVaryings(const GeometryShaderInfo& info) {
