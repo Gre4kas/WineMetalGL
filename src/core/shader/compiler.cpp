@@ -1836,11 +1836,13 @@ std::string legacyTextureFunctions(Stage stage, const std::string& source) {
 }
 
 std::string raiseComputeVersion(Stage stage, const std::string& source) {
-    std::string raised = source;
+    // Redeclared built-ins and profile-less GLSL 1.50 with compatibility
+    // built-ins, as desktop drivers accept them (issue #25).
+    std::string raised = relaxDesktopGlsl(source);
     // GL_ARB_cull_distance (GLSL 4.50 core): glslang has gl_CullDistance in
     // GLSL 4.50 only and no such extension, so the #extension line goes
     // (kPreamble defines the macro) and the shader becomes GLSL 4.50.
-    const GlslVersion version = parseGlslVersion(source);
+    const GlslVersion version = parseGlslVersion(raised);
     bool cull = false, gpuShader4 = false;
     for (size_t at = raised.find("#extension"); at != std::string::npos; at = raised.find("#extension", at + 1)) {
         const size_t end = raised.find('\n', at);
@@ -3016,7 +3018,7 @@ static LinkResult linkImplCore(const LinkInput& input, const CaptureCode* captur
     if (!hasGeometry)
         for (const ShaderSource& shader : input.shaders)
             if (shader.stage == Stage::Fragment)
-                for (const std::string& v : upgradeLegacyGlsl(Stage::Fragment, shader.source).builtinVaryingsRead)
+                for (const std::string& v : upgradeLegacyGlsl(Stage::Fragment, relaxDesktopGlsl(shader.source)).builtinVaryingsRead)
                     vertexUpgrade.provideVaryings.insert(v);
     for (size_t i = 0; i < input.shaders.size(); ++i) {
         const bool captureHere = capture && input.shaders[i].stage == Stage::Vertex && definesMain(input.shaders[i].source);

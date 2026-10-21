@@ -85,6 +85,8 @@ OpenGL 1.0 to 2.1 are implemented by WineMetalGL itself, as its compatibility pr
 - [Performance](docs/performance.md): frame times against Apple's OpenGL.
 - [Logging](docs/logging.md): log levels and categories, the log file, and
   crash reports.
+- [List Of OpenGL Games](https://www.pcgamingwiki.com/wiki/List_of_OpenGL_games):
+  PCGamingWiki's list of games that render with OpenGL.
 
 Also: the [game corpus](docs/games.md) results, [releasing](docs/release.md), and the [design decisions](docs/decisions/).
 

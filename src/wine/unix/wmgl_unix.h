@@ -50,6 +50,8 @@ extern struct wmgl_core wmgl;
 
 /* An optional symbol of the core, or NULL. */
 void *wmgl_core_symbol( const char *name );
+/* The program's Windows path, as the PE side gave it ("" before wmgl_unix_init). */
+const char *wmgl_program( void );
 /* A pointer for a 32-bit caller (0, logged, when beyond its reach). */
 UINT wmgl_wow64_pointer( const void *pointer );
 

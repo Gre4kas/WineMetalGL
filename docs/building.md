@@ -144,8 +144,10 @@ Applications.
   run `install-crossover.sh` and `install-wine-module.sh` with the release the
   app carries, or, when it carries none, the latest release they download.
 - **UpscaleGL**: Off, Quality, Balanced or Performance (`WINEMETALGL_UPSCALE`).
-- **x87 Acceleration**: on (`WINEMETALGL_X87=1`) or off (`=0`); off until
-  it is switched.
+- **x87 Acceleration**: on (`WINEMETALGL_X87=1`) or off (`=0`). Until it
+  is switched, it is on only for the games known to need it (Quake 4, Doom 3
+  and Doom 3: BFG Edition: `Quake4.exe`, `Doom3.exe`, `Doom3BFG.exe`), and
+  off for the others.
 - **Logging**: everything (`WINEMETALGL_LOG=2`) or nothing, and a button that
   opens `~/Library/Logs/WineMetalGL`. Until it is switched, WineMetalGL logs
   warnings, as without the app.

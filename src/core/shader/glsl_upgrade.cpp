@@ -97,6 +97,7 @@ GlslVersion parseGlslVersion(const std::string& source) {
             if (number) v.number = number;
             v.es = profile == "es";
             v.compatibility = profile == "compatibility";
+            v.core = profile == "core";
         }
     }
     if (v.number <= 130 && !v.es) v.compatibility = true;
@@ -166,6 +167,108 @@ std::string esToDesktopGlsl(const std::string& preprocessed, int version) {
         }
         out += '\n';
     }
+    return out;
+}
+
+std::string relaxDesktopGlsl(const std::string& source) {
+    const GlslVersion version = parseGlslVersion(source);
+    if (version.es) return source;
+    // Built-ins a shader may redeclare plainly ("<storage> <type> <name>;")
+    // where glslang refuses it.
+    struct Redeclaration {
+        const char* name;
+        const char* storage;
+        const char* type;
+        bool array;
+    };
+    static const Redeclaration kRedeclarations[] = {
+        {"gl_Position", "out", "vec4", false}, {"gl_PointSize", "out", "float", false},
+        {"gl_FragColor", "out", "vec4", false}, {"gl_FragData", "out", "vec4", true},
+        {"gl_FragDepth", "out", "float", false}, {"gl_FragCoord", "in", "vec4", false},
+    };
+    auto compatibilityBuiltin = [](const std::string& word) {
+        if (word.rfind("gl_", 0) != 0) return false;
+        for (const BuiltinDecl& b : kVertexInputs)
+            if (word == b.name) return true;
+        for (const BuiltinDecl& b : kVaryings)
+            if (word == b.name) return true;
+        for (const char* u : kFixedFunctionUniforms)
+            if (word == u) return true;
+        return word == "gl_TexCoord" || word == "gl_FragColor" || word == "gl_FragData";
+    };
+
+    // Tokens outside comments and preprocessor directives.
+    struct Token {
+        size_t begin, end;
+    };
+    std::vector<Token> tokens;
+    size_t versionEnd = std::string::npos;  // after the #version directive's number
+    const size_t n = source.size();
+    bool lineStart = true;
+    for (size_t i = 0; i < n;) {
+        const char c = source[i];
+        if (c == '\n') {
+            lineStart = true;
+            ++i;
+        } else if (std::isspace(static_cast<unsigned char>(c))) {
+            ++i;
+        } else if (source.compare(i, 2, "//") == 0) {
+            while (i < n && source[i] != '\n') ++i;
+        } else if (source.compare(i, 2, "/*") == 0) {
+            const size_t end = source.find("*/", i + 2);
+            i = end == std::string::npos ? n : end + 2;
+        } else if (c == '#' && lineStart) {
+            size_t j = i + 1;
+            while (j < n && (source[j] == ' ' || source[j] == '\t')) ++j;
+            if (versionEnd == std::string::npos && source.compare(j, 7, "version") == 0) {
+                j += 7;
+                while (j < n && (source[j] == ' ' || source[j] == '\t')) ++j;
+                while (j < n && std::isdigit(static_cast<unsigned char>(source[j]))) ++j;
+                versionEnd = j;
+            }
+            while (i < n && source[i] != '\n') i += source[i] == '\\' && i + 1 < n && source[i + 1] == '\n' ? 2 : 1;
+        } else {
+            lineStart = false;
+            size_t end = i + 1;
+            if (isIdent(c))
+                while (end < n && isIdent(source[end])) ++end;
+            tokens.push_back({i, end});
+            i = end;
+        }
+    }
+    auto text = [&](size_t t) {
+        return t < tokens.size() ? source.substr(tokens[t].begin, tokens[t].end - tokens[t].begin) : std::string();
+    };
+
+    std::string out = source;
+    bool usesCompatibilityBuiltins = false;
+    int depth = 0;
+    for (size_t t = 0; t < tokens.size(); ++t) {
+        const std::string word = text(t);
+        depth += word == "{" ? 1 : word == "}" ? -1 : 0;
+        usesCompatibilityBuiltins |= compatibilityBuiltin(word);
+        if (depth != 0 || (t > 0 && text(t - 1) != ";" && text(t - 1) != "}")) continue;
+        const std::string name = text(t + 2);
+        const Redeclaration* r = nullptr;
+        for (const Redeclaration& candidate : kRedeclarations)
+            if (name == candidate.name && word == candidate.storage && text(t + 1) == candidate.type) r = &candidate;
+        if (!r) continue;
+        size_t last = t + 3;
+        if (r->array && text(last) == "[") {
+            ++last;
+            if (!text(last).empty() && std::isdigit(static_cast<unsigned char>(text(last)[0]))) ++last;
+            if (text(last) != "]") continue;
+            ++last;
+        }
+        if (text(last) != ";") continue;
+        for (size_t k = tokens[t].begin; k < tokens[last].end; ++k)
+            if (out[k] != '\n') out[k] = ' ';
+        usesCompatibilityBuiltins |= compatibilityBuiltin(name);
+        t = last;
+    }
+    if (versionEnd != std::string::npos && version.number >= 150 && !version.compatibility && !version.core &&
+        usesCompatibilityBuiltins)
+        out.insert(versionEnd, " compatibility");
     return out;
 }
 
