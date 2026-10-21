@@ -1,6 +1,7 @@
 // Compatibility profile (W22): fixed-function processing, immediate mode,
 // display lists, client arrays, legacy GLSL built-ins and pixel rectangles.
 
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -18,7 +19,7 @@
     X(glPushAttrib) X(glPopAttrib) X(glRasterPos2f) X(glWindowPos2i) X(glBitmap) X(glDrawPixels)                \
     X(glPixelZoom) X(glIsEnabled) X(glColorMaterial) X(glInterleavedArrays) X(glArrayElement)                  \
     X(glFrustum) X(glMultMatrixf) X(glLoadMatrixf) X(glLineWidth) X(glPolygonStipple) X(glGetPolygonStipple) X(glRenderMode) X(glInitNames) X(glPushName) X(glLightf) X(glMaterialf) X(glTexGenf) \
-    X(glGetMaterialfv) X(glGetMaterialiv) X(glGetLightiv) X(glTexEnvf)
+    X(glGetMaterialfv) X(glGetMaterialiv) X(glGetLightiv) X(glTexEnvf) X(glNormalPointer)
 
 #define WMGL_COMPAT_DECLARE(name) static PFN_##name name;
 WMGL_COMPAT_FUNCS(WMGL_COMPAT_DECLARE)
@@ -1370,6 +1371,118 @@ void main() { gl_FragColor = texture2D(tex, vec2(0.5)); })");
     glDeleteTextures(1, &tex);
     glUseProgram(0);
     glDeleteProgram(p);
+    CHECK_GL();
+}
+
+// A shader keeps its own __VERSION__ through the legacy upgrade (GLSL 1.10
+// and 1.20 compile as 1.40): osgText's fragment shader, with no #version,
+// reads glyph coverage from .a below GLSL 1.30 and from .r above, and its
+// GL_ALPHA glyph atlas has coverage in alpha only. Under the upgrade's
+// __VERSION__ it read .r, always 0, and OpenMW's statistics text (F3) was
+// invisible (issue #42).
+COMPAT_TEST(compat_legacy_shader_keeps_version) {
+    GLuint p = gpu::program("varying vec2 uv;\nvoid main() { uv = gl_Vertex.xy * 0.5 + 0.5; gl_Position = gl_Vertex; }\n",
+                            "#if __VERSION__>=130\n    #define ALPHA r\n#else\n    #define ALPHA a\n#endif\n"
+                            "#define VERSION_SEEN __VERSION__\n"
+                            "uniform sampler2D glyphTexture;\nvarying vec2 uv;\n"
+                            "void main() { gl_FragColor = vec4(texture2D(glyphTexture, uv).ALPHA, VERSION_SEEN == 110 ? 1.0 : 0.0, 0.0, 1.0); }\n");
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    const uint8_t coverage = 255;
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_ALPHA, 1, 1, 0, GL_ALPHA, GL_UNSIGNED_BYTE, &coverage);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    static const float triangle[] = {-1, -1, 0, -1, 3, 0, 3, -1, 0};
+    glEnableClientState(GL_VERTEX_ARRAY);
+    glVertexPointer(3, GL_FLOAT, 0, triangle);
+    clear();
+    glUseProgram(p);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glDisableClientState(GL_VERTEX_ARRAY);
+    CHECK_GL();
+    const uint8_t yellow[4] = {255, 255, 0, 255};  // coverage read from alpha, __VERSION__ 110
+    CHECK(pixel(32, 32, yellow));
+    glUseProgram(0);
+    glDeleteTextures(1, &tex);
+    glDeleteProgram(p);
+}
+
+// A matrix command alone updates the matrix built-ins and gl_NormalScale (the
+// block keeps its other values: OpenSceneGraph loads a matrix before each
+// drawable, issue #42).
+COMPAT_TEST(compat_matrix_only_changes) {
+    GLuint p = gpu::program("#version 120\nvarying vec2 v;\n"
+                            "void main() { v = vec2(gl_NormalScale * 0.25, gl_ModelViewMatrix[0][0] * 0.25);\n"
+                            "  gl_Position = vec4(gl_Vertex.xy, 0.0, 1.0); }\n",
+                            "#version 120\nvarying vec2 v;\nvoid main() { gl_FragColor = vec4(v, 0.0, 1.0); }\n");
+    glUseProgram(p);
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
+    clear();
+    static const float left[] = {-1, -1, 0, -1, 1, 0, 0, -1, 0, 0, 1, 0};
+    static const float right[] = {0, -1, 0, 0, 1, 0, 1, -1, 0, 1, 1, 0};
+    glEnableClientState(GL_VERTEX_ARRAY);
+    glVertexPointer(3, GL_FLOAT, 0, left);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glScalef(2, 2, 2);  // gl_NormalScale 2, gl_ModelViewMatrix[0][0] 2
+    glVertexPointer(3, GL_FLOAT, 0, right);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glDisableClientState(GL_VERTEX_ARRAY);
+    CHECK_GL();
+    const uint8_t quarter[4] = {64, 64, 0, 255}, half[4] = {128, 128, 0, 255};
+    CHECK(pixel(16, 32, quarter));
+    CHECK(pixel(48, 32, half));
+    glLoadIdentity();
+    glUseProgram(0);
+    glDeleteProgram(p);
+}
+
+// glCallList cost, shaped like OpenMW's (OpenSceneGraph's display lists, issue
+// #42): lists compiled from client vertex, normal and texture coordinate
+// arrays and a glDrawElements with client indices, each called after a
+// glLoadMatrixf. Runs only with WMGL_BENCH set; prints CPU microseconds per call.
+COMPAT_TEST(compat_bench_call_list) {
+    if (!std::getenv("WMGL_BENCH")) return;
+    GLuint p = gpu::program("#version 120\nvarying vec2 uv;\nvoid main() { uv = gl_MultiTexCoord0.xy; gl_Position = gl_ModelViewProjectionMatrix * gl_Vertex; }\n",
+                            "#version 120\nvarying vec2 uv;\nvoid main() { gl_FragColor = vec4(uv, 0.0, 1.0); }\n");
+    glUseProgram(p);
+    constexpr int kLists = 200, kVerts = 400, kIndices = 1200, kCallsPerFrame = 1000;
+    std::vector<float> pos(kVerts * 3), nrm(kVerts * 3, 0.5f), uv(kVerts * 2);
+    for (int i = 0; i < kVerts; ++i) {
+        pos[i * 3] = (i % 20) * 0.005f; pos[i * 3 + 1] = (i / 20) * 0.005f; pos[i * 3 + 2] = 0;
+        uv[i * 2] = pos[i * 3]; uv[i * 2 + 1] = pos[i * 3 + 1];
+    }
+    std::vector<GLushort> idx(kIndices);
+    for (int i = 0; i < kIndices; ++i) idx[i] = static_cast<GLushort>((i * 7) % kVerts);
+    const GLuint base = glGenLists(kLists);
+    glEnableClientState(GL_VERTEX_ARRAY);
+    glEnableClientState(GL_NORMAL_ARRAY);
+    glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+    for (int l = 0; l < kLists; ++l) {
+        glNewList(base + l, GL_COMPILE);
+        glVertexPointer(3, GL_FLOAT, 0, pos.data());
+        glNormalPointer(GL_FLOAT, 0, nrm.data());
+        glTexCoordPointer(2, GL_FLOAT, 0, uv.data());
+        glDrawElements(GL_TRIANGLES, kIndices, GL_UNSIGNED_SHORT, idx.data());
+        glEndList();
+    }
+    glMatrixMode(GL_MODELVIEW);
+    const int frames = std::atoi(std::getenv("WMGL_BENCH")) > 0 ? std::atoi(std::getenv("WMGL_BENCH")) : 100;
+    double total = 0;
+    for (int f = -10; f < frames; ++f) {
+        const auto t0 = std::chrono::steady_clock::now();
+        for (int c = 0; c < kCallsPerFrame; ++c) {
+            const float m[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, (c % 32) * 0.05f - 0.8f, (c / 32 % 32) * 0.05f - 0.8f, 0, 1};
+            glLoadMatrixf(m);
+            glCallList(base + c % kLists);
+        }
+        glFinish();
+        const double us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count();
+        if (f >= 0) total += us;
+    }
+    std::printf("BENCH call_list calls=%d us_per_call=%.2f\n", kCallsPerFrame, total / frames / kCallsPerFrame);
+    glDeleteLists(base, kLists);
     CHECK_GL();
 }
 

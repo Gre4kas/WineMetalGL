@@ -14,6 +14,20 @@ namespace {
 bool isIdentStart(char c) { return std::isalpha(static_cast<unsigned char>(c)) || c == '_'; }
 bool isIdent(char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; }
 
+// `text` with the identifier `name` (whole words) replaced by `with`.
+std::string replaceIdentifier(const std::string& text, const std::string& name, const std::string& with) {
+    std::string out;
+    size_t from = 0;
+    for (size_t at = text.find(name); at != std::string::npos; at = text.find(name, at + name.size())) {
+        if ((at > 0 && isIdent(text[at - 1])) || (at + name.size() < text.size() && isIdent(text[at + name.size()]))) continue;
+        out.append(text, from, at - from);
+        out += with;
+        from = at + name.size();
+    }
+    out.append(text, from, std::string::npos);
+    return out;
+}
+
 // Compatibility built-ins that become declared variables. The declarations
 // use the same names with a wmgl_ prefix; the compatibility profile (W22)
 // binds the inputs to the conventional vertex arrays and fills the uniform
@@ -292,6 +306,12 @@ UpgradeResult upgradeLegacyGlsl(Stage stage, const std::string& source, const Up
     } else if (stage == Stage::Geometry) {
         rename["varying"] = "out";
     }
+    // __VERSION__ stays the shader's own: its #if __VERSION__ >= 130 blocks
+    // choose what they would on a GL driver, not the GLSL 1.40 the upgrade
+    // writes (osgText's fragment shader, with no #version, read glyph
+    // coverage from .r instead of .a and drew nothing, issue #42).
+    const std::string ownVersion = std::to_string(version.number);
+    if (version.number != newVersion) rename["__VERSION__"] = ownVersion;
 
     // GLSL 1.x texture functions. Under the GLSL 1.40+ rules used for codegen
     // texture2D etc. are type names, so calls must use the generic functions.
@@ -410,6 +430,8 @@ UpgradeResult upgradeLegacyGlsl(Stage stage, const std::string& source, const Up
             if (!versionReplaced && directive.compare(k, 7, "version") == 0) {
                 out += "#version " + std::to_string(newVersion);
                 versionReplaced = true;
+            } else if (version.number != newVersion) {
+                out += replaceIdentifier(directive, "__VERSION__", ownVersion);
             } else {
                 out += directive;
             }

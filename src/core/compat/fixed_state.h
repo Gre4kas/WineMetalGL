@@ -145,7 +145,12 @@ struct FixedState {
     // feedback records are not produced (nothing is drawn outside GL_RENDER).
     GLenum renderMode = GL_RENDER;
     std::vector<GLuint> nameStack;
-    uint64_t version = 1;  // bumped by every change (uniform block caching)
+    uint64_t version = 1;  // bumped by every change but the matrix commands' (uniform block caching)
+    // Bumped by the matrix commands, which change only the block's matrix
+    // section and gl_NormalScale: OpenSceneGraph loads a matrix before each
+    // drawable, and repacking the whole block each time doubled the cost of
+    // OpenMW's glCallList (issue #42).
+    uint64_t matrixVersion = 1;
 
     FixedState() {
         stipple.fill(~0u);
