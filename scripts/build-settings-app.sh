@@ -26,7 +26,8 @@
 # it, the app simulates it; WINEMETALGL_SIMULATED_GLASS=1 shows that). The
 # icon is WineMetalGL's Liquid Glass icon (src/settings-app/WineMetalGL.icon),
 # compiled by actool (full Xcode: ACTOOL, or xcrun's); without actool, a
-# plain .icns of its artwork stands in. Signing is the caller's
+# plain .icns stands in: src/settings-app/WineMetalGL-plain.png, the artwork
+# on the icon's dark gradient (readable on a light Dock). Signing is the caller's
 # (scripts/sign-settings-app.sh; the release workflow signs with the
 # Developer ID, then notarizes, and scripts/build-settings-dmg.sh makes the
 # disk image). APP_VERSION replaces the version (to try an update).
@@ -85,8 +86,8 @@ else
     set=$OUT/obj/WineMetalGL.iconset
     mkdir -p "$set"
     for size in 16 32 128 256 512; do
-        sips -Z $size "$SRC/WineMetalGL.icon/Assets/winemetalgl-transparent.png" --out "$set/icon_${size}x${size}.png" >/dev/null
-        sips -Z $((size * 2)) "$SRC/WineMetalGL.icon/Assets/winemetalgl-transparent.png" --out "$set/icon_${size}x${size}@2x.png" >/dev/null
+        sips -Z $size "$SRC/WineMetalGL-plain.png" --out "$set/icon_${size}x${size}.png" >/dev/null
+        sips -Z $((size * 2)) "$SRC/WineMetalGL-plain.png" --out "$set/icon_${size}x${size}@2x.png" >/dev/null
     done
     iconutil -c icns "$set" -o "$APP/Contents/Resources/WineMetalGL.icns"
 fi

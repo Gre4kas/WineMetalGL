@@ -220,6 +220,7 @@ src/settings-app/Arm64Fixes.swift
 src/settings-app/GamePatches.swift
 src/settings-app/Installations.swift
 src/settings-app/Updater.swift
+src/settings-app/WineMetalGL-plain.png
 src/settings-app/WineMetalGL.icon/Assets/winemetalgl-transparent.png
 src/settings-app/WineMetalGL.icon/icon.json
 src/settings-app/WineMetalGLSettings.swift
