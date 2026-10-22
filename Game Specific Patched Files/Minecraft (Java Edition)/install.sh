@@ -23,7 +23,8 @@ generated="$root/build/arm64-release/generated/gl_entry.gen.cpp"
 sdl_include=${SDL3_INCLUDE:-$(brew --prefix sdl3 2>/dev/null)/include}
 glfw_include=${GLFW_INCLUDE:-$(brew --prefix glfw 2>/dev/null)/include}
 libraries="$HOME/Library/Application Support/minecraft/libraries/org/lwjgl
-$HOME/Library/Application Support/PrismLauncher/libraries/org/lwjgl"
+$HOME/Library/Application Support/PrismLauncher/libraries/org/lwjgl
+$HOME/Library/Application Support/ModrinthApp/meta/libraries/org/lwjgl"
 test -e "$core" -a -e "$generated" || {
     printf '%s\n' "build the arm64 core first: scripts/stage-arm64-core.sh (or build/arm64-release)" >&2
     exit 1

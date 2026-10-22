@@ -473,7 +473,7 @@ struct GameFixesCard: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 NativeFixRow(title: "Minecraft", isOn: $native.minecraft, available: native.carried != nil,
-                             detail: "Prism Launcher instances and Minecraft Launcher installations get the JVM arguments that load WineMetalGL (OpenGL 4.6), for Minecraft 1.21 and 26.",
+                             detail: "Prism Launcher instances, Minecraft Launcher installations and Modrinth App instances get the JVM arguments that load WineMetalGL (OpenGL 4.6), for Minecraft 1.21 and 26.",
                              results: native.results.filter { $0.game == NativePatcher.minecraftTitle }) {
                     Task { await native.apply() }
                 }
