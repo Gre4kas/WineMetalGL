@@ -14,6 +14,8 @@ WineMetalGL is a replacement to Apple's own OpenGL.Framework (Deprecated in 2018
 
 WineMetalGL's main method of installation is with the DMG. It will help you install it into any Wine Prefix / Crossover Bottle. If a new version is released, the application detects this and can update your app and installed runtime to the latest available version. Otherwise, use the scripts from releases in combination with your preferred download (Arm64, x86_64). The below table explains the apps capabilities; 
 
+---
+
 | Feature | Use-Case | 
 |---|---|
 | Install | Install WineMetalGL Into a Wine Found on Your Mac (Its Default Prefix) & Enable / Disable It |
