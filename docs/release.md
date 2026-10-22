@@ -31,6 +31,8 @@ was staged with.
 
 `./install-crossover.sh BOTTLE [/path/to/CrossOver.app]` installs it for a
 CrossOver bottle without changing CrossOver.app ([CrossOver](building.md#crossover)).
+The bottle can be anywhere; without CrossOver (none given or found), it still
+gets everything that goes into it, the override written into its `user.reg`.
 
 `scripts/verify-release.sh OUTPUT` checks the layout, the architectures and
 code signatures, that the core links no OpenGL.framework and exports only the

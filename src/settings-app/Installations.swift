@@ -22,9 +22,18 @@ struct WineTarget: Identifiable, Hashable, Sendable {
     var id: String { prefix.path }
 }
 
+/// A Wine on this Mac, for Install: its name and the directory with bin/wine.
+struct FoundWine: Identifiable, Hashable, Sendable {
+    var name: String
+    var wine: URL
+    var id: String { wine.path }
+}
+
 @MainActor
 final class Installations: ObservableObject {
     @Published private(set) var targets: [WineTarget] = []
+    @Published private(set) var wines: [FoundWine] = []  // Install's choices (findWines)
+    @Published private(set) var crossovers: [URL] = []   // CrossOver copies (findCrossOvers), each its Contents/SharedSupport/CrossOver
     @Published private(set) var busy: String?
     @Published var report: Report?
 
@@ -36,12 +45,71 @@ final class Installations: ObservableObject {
 
     private let home = AppEnvironment.home
     private let savedKey = "installedPrefixes"  // [[prefix, wine]] installed into from here
+    private let crossoverKey = "crossover"      // the CrossOver last installed with (its SharedSupport/CrossOver)
+    private let bottlesKey = "installedBottles"  // bottles installed into from here, wherever they are
 
-    /// CrossOver's Contents/SharedSupport/CrossOver.
+    /// The CrossOver the bottles run in: the one last installed with, else the first found.
     var crossover: URL? {
-        ["/Applications/CrossOver.app", home.appendingPathComponent("Applications/CrossOver.app").path]
-            .map { URL(fileURLWithPath: $0).appendingPathComponent("Contents/SharedSupport/CrossOver") }
-            .first { FileManager.default.isExecutableFile(atPath: $0.appendingPathComponent("bin/wine").path) }
+        if let saved = AppEnvironment.defaults.string(forKey: crossoverKey),
+           Self.isCrossOver(URL(fileURLWithPath: saved)) { return URL(fileURLWithPath: saved) }
+        return crossovers.first
+    }
+
+    nonisolated static func isCrossOver(_ dir: URL) -> Bool {
+        FileManager.default.isExecutableFile(atPath: dir.appendingPathComponent("bin/wine").path)
+    }
+
+    /// A CrossOver app's (or its Contents/SharedSupport/CrossOver's) Wine directory.
+    nonisolated static func crossoverDir(_ url: URL) -> URL {
+        url.pathExtension == "app" ? url.appendingPathComponent("Contents/SharedSupport/CrossOver") : url
+    }
+
+    /// The CrossOver.app a Contents/SharedSupport/CrossOver belongs to, for its name in a menu.
+    static func crossoverApp(_ dir: URL) -> URL {
+        dir.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    }
+
+    /// Every CrossOver bottle on this Mac (its directory, with cxbottle.conf):
+    /// CrossOver's own Bottles folder, the bottles installed into from here,
+    /// and any other Spotlight knows, so a bottle shows even without CrossOver.app.
+    nonisolated static func findBottles(home: URL, saved: [String]) -> [URL] {
+        let fm = FileManager.default
+        var found: [URL] = []
+        func add(_ dir: URL) {
+            let real = dir.resolvingSymlinksInPath()
+            guard fm.fileExists(atPath: real.appendingPathComponent("cxbottle.conf").path),
+                  fm.fileExists(atPath: real.appendingPathComponent("drive_c").path),
+                  !found.contains(where: { $0.path == real.path }) else { return }
+            found.append(real)
+        }
+        let bottlesDir = home.appendingPathComponent("Library/Application Support/CrossOver/Bottles")
+        for bottle in (try? fm.contentsOfDirectory(at: bottlesDir, includingPropertiesForKeys: nil)) ?? [] { add(bottle) }
+        for path in saved { add(URL(fileURLWithPath: path)) }
+        let (status, output) = executeNow(URL(fileURLWithPath: "/usr/bin/mdfind"), ["kMDItemFSName == 'cxbottle.conf'"])
+        if status == 0 {
+            for line in output.split(separator: "\n") where line.hasSuffix("/cxbottle.conf") {
+                add(URL(fileURLWithPath: String(line)).deletingLastPathComponent())
+            }
+        }
+        return found
+    }
+
+    /// Every copy of CrossOver: in /Applications and ~/Applications, the one
+    /// last installed with, and any other Spotlight knows (by its bundle ID).
+    nonisolated static func findCrossOvers(home: URL, saved: String?) -> [URL] {
+        var found: [URL] = []
+        func add(_ app: URL) {
+            let dir = crossoverDir(app).resolvingSymlinksInPath()
+            if isCrossOver(dir), !found.contains(where: { $0.path == dir.path }) { found.append(dir) }
+        }
+        add(URL(fileURLWithPath: "/Applications/CrossOver.app"))
+        add(home.appendingPathComponent("Applications/CrossOver.app"))
+        if let saved { add(URL(fileURLWithPath: saved)) }
+        let (status, output) = executeNow(URL(fileURLWithPath: "/usr/bin/mdfind"), ["kMDItemCFBundleIdentifier == 'com.codeweavers.CrossOver'"])
+        if status == 0 {
+            for line in output.split(separator: "\n") where line.hasSuffix(".app") { add(URL(fileURLWithPath: String(line))) }
+        }
+        return found
     }
 
     /// The release carried with the scripts (else they download it).
@@ -60,11 +128,6 @@ final class Installations: ObservableObject {
 
     var bottles: [WineTarget] { targets.filter { $0.kind == .crossover } }
     var anyInstalled: Bool { targets.contains { $0.installed } }
-    /// An install button shows only until that kind of install exists: a
-    /// bottle with WineMetalGL hides Install into CrossOver (as does having no
-    /// bottles), a prefix with it Install Normally.
-    var offersCrossOver: Bool { !bottles.isEmpty && !bottles.contains { $0.installed } }
-    var offersNormal: Bool { !targets.contains { $0.kind == .prefix && $0.installed } }
 
     init() { refresh() }
 
@@ -73,9 +136,11 @@ final class Installations: ObservableObject {
     func refresh() {
         let fm = FileManager.default
         var found: [WineTarget] = []
+        // The bottles known at once; the rest (Spotlight's) follow below.
+        let savedBottles = AppEnvironment.defaults.stringArray(forKey: bottlesKey) ?? []
         let bottlesDir = home.appendingPathComponent("Library/Application Support/CrossOver/Bottles")
-        for bottle in (try? fm.contentsOfDirectory(at: bottlesDir, includingPropertiesForKeys: nil)) ?? []
-        where fm.fileExists(atPath: bottle.appendingPathComponent("cxbottle.conf").path) {
+        for bottle in ((try? fm.contentsOfDirectory(at: bottlesDir, includingPropertiesForKeys: nil)) ?? []) + savedBottles.map({ URL(fileURLWithPath: $0) })
+        where fm.fileExists(atPath: bottle.appendingPathComponent("cxbottle.conf").path) && !found.contains(where: { $0.prefix.path == bottle.path }) {
             found.append(target(.crossover, name: bottle.lastPathComponent, prefix: bottle, wine: crossover))
         }
         let metalsharp = home.appendingPathComponent(".metalsharp")
@@ -94,7 +159,7 @@ final class Installations: ObservableObject {
         }
         let defaultPrefix = home.appendingPathComponent(".wine")
         if fm.fileExists(atPath: defaultPrefix.appendingPathComponent("drive_c").path) {
-            found.append(target(.prefix, name: "Default prefix", prefix: defaultPrefix, wine: Self.wineApps().first))
+            found.append(target(.prefix, name: "Default prefix", prefix: defaultPrefix, wine: wines.first?.wine))
         }
         for pair in AppEnvironment.defaults.array(forKey: savedKey) as? [[String]] ?? [] where pair.count == 2 {
             let prefix = URL(fileURLWithPath: pair[0])
@@ -103,6 +168,23 @@ final class Installations: ObservableObject {
             found.append(target(.prefix, name: prefix.lastPathComponent, prefix: prefix, wine: URL(fileURLWithPath: pair[1])))
         }
         targets = found
+        // The Wines on this Mac, looked for away from the main thread (Spotlight
+        // among them); ~/.wine's Wine is the first, once they are known.
+        let home = self.home, saved = AppEnvironment.defaults.string(forKey: crossoverKey)
+        Task {
+            let wines = await Task.detached { Self.findWines(home: home) }.value
+            self.crossovers = await Task.detached { Self.findCrossOvers(home: home, saved: saved) }.value
+            let bottles = await Task.detached { Self.findBottles(home: home, saved: savedBottles) }.value
+            let bottleCount = self.targets.filter { $0.kind == .crossover }.count
+            for bottle in bottles where !self.targets.contains(where: { $0.prefix.resolvingSymlinksInPath().path == bottle.path }) {
+                self.targets.insert(self.target(.crossover, name: bottle.lastPathComponent, prefix: bottle, wine: nil), at: bottleCount)
+            }
+            for i in self.targets.indices where self.targets[i].kind == .crossover { self.targets[i].wine = self.crossover }
+            self.wines = wines
+            if let i = self.targets.firstIndex(where: { $0.prefix.path == defaultPrefix.path && $0.wine == nil }) {
+                self.targets[i].wine = wines.first?.wine
+            }
+        }
     }
 
     private func target(_ kind: WineTarget.Kind, name: String, prefix: URL, wine: URL?) -> WineTarget {
@@ -112,11 +194,57 @@ final class Installations: ObservableObject {
                           enabled: Self.overrideIsNative(prefix: prefix))
     }
 
-    /// WineHQ's apps' Wines (Contents/Resources/wine).
-    static func wineApps() -> [URL] {
-        ["Wine Stable", "Wine Devel", "Wine Staging"].map {
-            URL(fileURLWithPath: "/Applications/\($0).app/Contents/Resources/wine")
-        }.filter { FileManager.default.isExecutableFile(atPath: $0.appendingPathComponent("bin/wine").path) }
+    /// Every Wine on this Mac (the directories with bin/wine), for Install:
+    /// apps that carry one (WineHQ's first) in /Applications and
+    /// ~/Applications, a folder deep; Homebrew's and MacPorts'; Whisky's and
+    /// MetalSharp's; and any other bin/wine Spotlight knows. CrossOver's is
+    /// left out (its bottles have their own install).
+    nonisolated static func findWines(home: URL) -> [FoundWine] {
+        let fm = FileManager.default
+        var found: [FoundWine] = []
+        func add(_ name: String, _ dir: URL) {
+            let real = dir.resolvingSymlinksInPath()
+            guard fm.isExecutableFile(atPath: real.appendingPathComponent("bin/wine").path),
+                  !real.path.contains("/CrossOver.app/"),
+                  !found.contains(where: { $0.wine.path == real.path }) else { return }
+            found.append(FoundWine(name: name, wine: real))
+        }
+        var apps: [URL] = []
+        for dir in [URL(fileURLWithPath: "/Applications"), home.appendingPathComponent("Applications")] {
+            for item in (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? [] {
+                if item.pathExtension == "app" {
+                    apps.append(item)
+                } else {
+                    apps += ((try? fm.contentsOfDirectory(at: item, includingPropertiesForKeys: nil)) ?? []).filter { $0.pathExtension == "app" }
+                }
+            }
+        }
+        let winehq = ["Wine Stable", "Wine Devel", "Wine Staging"]
+        func rank(_ app: URL) -> (Int, String) {
+            let name = app.deletingPathExtension().lastPathComponent
+            return (winehq.firstIndex(of: name) ?? winehq.count, name)
+        }
+        for app in apps.sorted(by: { rank($0) < rank($1) }) {
+            for inner in ["Contents/Resources/wine", "Contents/SharedSupport/wine", "Contents/Resources"] {
+                add(app.deletingPathExtension().lastPathComponent, app.appendingPathComponent(inner))
+            }
+        }
+        for (name, bin) in [("Homebrew's Wine", "/opt/homebrew/bin/wine"), ("Homebrew's Wine", "/usr/local/bin/wine"),
+                            ("MacPorts' Wine", "/opt/local/bin/wine")] {
+            add(name, URL(fileURLWithPath: bin).resolvingSymlinksInPath().deletingLastPathComponent().deletingLastPathComponent())
+        }
+        add("Whisky's Wine", home.appendingPathComponent("Library/Application Support/com.isaacmarovitz.Whisky/Libraries/Wine"))
+        add("MetalSharp's Wine", home.appendingPathComponent(".metalsharp/runtime/wine"))
+        let (status, output) = executeNow(URL(fileURLWithPath: "/usr/bin/mdfind"), ["kMDItemFSName == 'wine'"])
+        if status == 0 {
+            // Not a CI runner's work (its builds come and go); a Wine outside an app by its path.
+            for line in output.split(separator: "\n") where line.hasSuffix("/bin/wine") && !line.contains("/actions-runner/") {
+                let dir = URL(fileURLWithPath: String(line)).deletingLastPathComponent().deletingLastPathComponent()
+                let app = dir.pathComponents.first { $0.hasSuffix(".app") }
+                add(app.map { ($0 as NSString).deletingPathExtension } ?? (dir.path as NSString).abbreviatingWithTildeInPath, dir)
+            }
+        }
+        return found
     }
 
     /// The prefix's opengl32 override, from user.reg (as wineserver last saved it).
@@ -164,11 +292,64 @@ final class Installations: ObservableObject {
 
     // MARK: Installing
 
-    func installCrossOver(_ bottle: WineTarget) {
+    /// Install into CrossOver: a bottle, with a copy of CrossOver (the one
+    /// the bottles run in when none is given).
+    func installCrossOver(_ bottle: WineTarget, using copy: URL? = nil) {
+        installCrossOver(bottle: bottle.prefix, name: bottle.name, using: copy ?? crossover)
+    }
+
+    /// Install into CrossOver, choosing in Finder: a CrossOver app anywhere (a
+    /// copy, or one kept outside Applications), then one of its bottles.
+    func installCrossOverCustom() {
+        let appPanel = NSOpenPanel()
+        appPanel.message = "Choose the CrossOver app to install WineMetalGL with (any copy of CrossOver, wherever it is)."
+        appPanel.prompt = "Choose CrossOver"
+        appPanel.canChooseDirectories = false
+        appPanel.canChooseFiles = true
+        appPanel.allowedContentTypes = [.applicationBundle]
+        appPanel.directoryURL = URL(fileURLWithPath: "/Applications")
+        guard appPanel.runModal() == .OK, let app = appPanel.url else { return }
+        let copy = Self.crossoverDir(app)
+        guard Self.isCrossOver(copy) else {
+            report = Report(title: "Not CrossOver", text: "\(app.path) has no Contents/SharedSupport/CrossOver/bin/wine.")
+            return
+        }
+        chooseBottle(using: copy)
+    }
+
+    /// Install into CrossOver, choosing a bottle anywhere in Finder (with the
+    /// given CrossOver, else the one the bottles run in, else none: the
+    /// script then installs into the bottle only).
+    func chooseBottle(using copy: URL? = nil) {
+        let bottlePanel = NSOpenPanel()
+        bottlePanel.message = "Choose the CrossOver bottle whose games should use WineMetalGL."
+        bottlePanel.prompt = "Choose Bottle"
+        bottlePanel.canChooseDirectories = true
+        bottlePanel.canChooseFiles = false
+        bottlePanel.showsHiddenFiles = true
+        bottlePanel.directoryURL = home.appendingPathComponent("Library/Application Support/CrossOver/Bottles")
+        guard bottlePanel.runModal() == .OK, let bottle = bottlePanel.url else { return }
+        guard FileManager.default.fileExists(atPath: bottle.appendingPathComponent("cxbottle.conf").path) else {
+            report = Report(title: "Not a CrossOver bottle", text: "\(bottle.path) has no cxbottle.conf.")
+            return
+        }
+        installCrossOver(bottle: bottle, name: bottle.lastPathComponent, using: copy ?? crossover)
+    }
+
+    private func installCrossOver(bottle: URL, name: String, using copy: URL?) {
         guard let installer else { return }
-        run("Installing WineMetalGL into \(bottle.name)…", URL(fileURLWithPath: "/bin/sh"),
-            [installer.appendingPathComponent("install-crossover.sh").path, bottle.prefix.path], [:]) { [weak self] ok, output in
-            self?.finishInstall(ok, output, into: bottle.name)
+        var arguments = [installer.appendingPathComponent("install-crossover.sh").path, bottle.path]
+        if let copy { arguments.append(copy.path) }
+        run("Installing WineMetalGL into \(name)…", URL(fileURLWithPath: "/bin/sh"), arguments, [:]) { [weak self] ok, output in
+            guard let self else { return }
+            // The bottles' switches then use that CrossOver's Wine.
+            if ok, let copy { AppEnvironment.defaults.set(copy.path, forKey: self.crossoverKey) }
+            if ok {
+                var saved = AppEnvironment.defaults.stringArray(forKey: self.bottlesKey) ?? []
+                if !saved.contains(bottle.path) { saved.append(bottle.path) }
+                AppEnvironment.defaults.set(saved, forKey: self.bottlesKey)
+            }
+            self.finishInstall(ok, output, into: name)
         }
     }
 
@@ -183,7 +364,7 @@ final class Installations: ObservableObject {
         for target in targets where target.installed {
             let arguments: [String]
             if target.kind == .crossover {
-                arguments = [installer.appendingPathComponent("install-crossover.sh").path, target.prefix.path]
+                arguments = [installer.appendingPathComponent("install-crossover.sh").path, target.prefix.path] + (crossover.map { [$0.path] } ?? [])
             } else if let wine = target.wine {
                 arguments = [installer.appendingPathComponent("install-wine-module.sh").path, wine.path, target.prefix.path]
             } else {
@@ -205,7 +386,14 @@ final class Installations: ObservableObject {
         }
     }
 
-    func installNormally() {
+    /// Install: into a Wine found on this Mac, in its default prefix, ~/.wine.
+    func install(into found: FoundWine) {
+        guard let installer else { return }
+        install(installer, wine: found.wine, prefix: home.appendingPathComponent(".wine"), name: "the default prefix (~/.wine)")
+    }
+
+    /// Custom Install: any Wine and any prefix, chosen in Finder.
+    func installCustom() {
         guard let installer else { return }
         let winePanel = NSOpenPanel()
         winePanel.message = "Choose the Wine to install WineMetalGL into: a Wine app (such as Wine Stable) or the folder with bin/wine."
@@ -215,7 +403,12 @@ final class Installations: ObservableObject {
         winePanel.allowedContentTypes = [.applicationBundle, .folder]
         winePanel.directoryURL = URL(fileURLWithPath: "/Applications")
         guard winePanel.runModal() == .OK, var wine = winePanel.url else { return }
-        if wine.pathExtension == "app" { wine = wine.appendingPathComponent("Contents/Resources/wine") }
+        if wine.pathExtension == "app" {
+            // The app's Wine, wherever in it findWines would look.
+            wine = ["Contents/Resources/wine", "Contents/SharedSupport/wine", "Contents/Resources"]
+                .map { wine.appendingPathComponent($0) }
+                .first { FileManager.default.isExecutableFile(atPath: $0.appendingPathComponent("bin/wine").path) } ?? wine
+        }
         guard FileManager.default.isExecutableFile(atPath: wine.appendingPathComponent("bin/wine").path) else {
             report = Report(title: "Not a Wine", text: "\(wine.path) has no bin/wine.")
             return
@@ -229,7 +422,11 @@ final class Installations: ObservableObject {
         prefixPanel.showsHiddenFiles = true
         prefixPanel.directoryURL = home
         guard prefixPanel.runModal() == .OK, let prefix = prefixPanel.url else { return }
-        run("Installing WineMetalGL into \(prefix.lastPathComponent)…", URL(fileURLWithPath: "/bin/sh"),
+        install(installer, wine: wine, prefix: prefix, name: prefix.lastPathComponent)
+    }
+
+    private func install(_ installer: URL, wine: URL, prefix: URL, name: String) {
+        run("Installing WineMetalGL into \(name)…", URL(fileURLWithPath: "/bin/sh"),
             [installer.appendingPathComponent("install-wine-module.sh").path, wine.path, prefix.path], [:]) { [weak self] ok, output in
             guard let self else { return }
             if ok {
@@ -238,7 +435,7 @@ final class Installations: ObservableObject {
                 saved.append([prefix.path, wine.path])
                 AppEnvironment.defaults.set(saved, forKey: self.savedKey)
             }
-            self.finishInstall(ok, output, into: prefix.lastPathComponent)
+            self.finishInstall(ok, output, into: name)
         }
     }
 
@@ -327,40 +524,24 @@ struct InstallationsCard: View {
                 }
                 .frame(height: min(CGFloat(installations.targets.count) * 40, 168))
             }
-            if installations.offersCrossOver || installations.offersNormal {
-                HStack(spacing: 8) {
-                    if installations.offersCrossOver {
-                        Menu {
-                            ForEach(installations.bottles) { bottle in
-                                Button(bottle.name) { installations.installCrossOver(bottle) }
-                            }
-                        } label: {
-                            Label("Install into CrossOver", systemImage: "wineglass")
-                        }
-                        .glassButton(prominent: !installations.anyInstalled)
-                        .fixedSize()
-                        .disabled(installations.installer == nil || installations.busy != nil)
-                        .help("Choose a bottle.")
-                    }
-                    if installations.offersNormal {
-                        Button {
-                            installations.installNormally()
-                        } label: {
-                            Label("Install Normally", systemImage: "square.and.arrow.down")
-                        }
-                        .glassButton(prominent: !installations.anyInstalled)
-                        .disabled(installations.installer == nil || installations.busy != nil)
-                        .help("Choose a Wine and a prefix.")
-                    }
+            HStack(spacing: 8) {
+                crossoverButton
+                installButton
+                Button {
+                    installations.installCustom()
+                } label: {
+                    Label("Custom Install", systemImage: "folder.badge.gearshape")
                 }
+                .glassButton(prominent: false)
+                .fixedSize()
+                .disabled(installations.installer == nil || installations.busy != nil)
+                .help("Choose any Wine in Finder, then its prefix.")
             }
-            if installations.offersCrossOver || installations.offersNormal {
-                Text(installations.installer == nil ? "This build of WineMetalGL Settings cannot install WineMetalGL."
-                     : installations.carriesRelease ? "Installs the WineMetalGL that comes with this app."
-                     : "Downloads the latest WineMetalGL release from GitHub to install.")
-                    .font(.footnote)
-                    .foregroundStyle(.tertiary)
-            }
+            Text(installations.installer == nil ? "This build of WineMetalGL Settings cannot install WineMetalGL."
+                 : installations.carriesRelease ? "Installs the WineMetalGL that comes with this app."
+                 : "Downloads the latest WineMetalGL release from GitHub to install.")
+                .font(.footnote)
+                .foregroundStyle(.tertiary)
             if let busy = installations.busy {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
@@ -370,6 +551,72 @@ struct InstallationsCard: View {
         }
         .alert(item: $installations.report) { report in
             Alert(title: Text(report.title), message: Text(report.text))
+        }
+    }
+
+    /// Install into CrossOver: the bottles found anywhere on the Mac (by copy
+    /// of CrossOver when there are several), or one chosen in Finder, with or
+    /// without a CrossOver app.
+    private var crossoverButton: some View {
+        Menu {
+            if installations.crossovers.count > 1 {
+                ForEach(installations.crossovers, id: \.path) { copy in
+                    Menu((Installations.crossoverApp(copy).path as NSString).abbreviatingWithTildeInPath) {
+                        ForEach(installations.bottles) { bottle in
+                            Button(bottle.name) { installations.installCrossOver(bottle, using: copy) }
+                        }
+                        Button("Choose Bottle…") { installations.chooseBottle(using: copy) }
+                    }
+                }
+            } else {
+                ForEach(installations.bottles) { bottle in
+                    Button(bottle.name) { installations.installCrossOver(bottle) }
+                }
+                if installations.bottles.isEmpty {
+                    Text("No CrossOver bottles found")
+                }
+            }
+            Divider()
+            Button("Choose Bottle…") { installations.chooseBottle() }
+            Button("Choose CrossOver and Bottle…") { installations.installCrossOverCustom() }
+        } label: {
+            Label("CrossOver", systemImage: "wineglass")
+        }
+        .glassButton(prominent: !installations.anyInstalled)
+        .fixedSize()
+        .disabled(installations.installer == nil || installations.busy != nil)
+        .help(installations.crossover == nil ? "Install into CrossOver: no CrossOver app found, so WineMetalGL goes into the bottle itself."
+              : "Install into CrossOver: choose a bottle, or a CrossOver app and a bottle.")
+    }
+
+    /// Install: into the one Wine found, or a menu of them; with none found, Custom Install's choice.
+    @ViewBuilder private var installButton: some View {
+        let disabled = installations.installer == nil || installations.busy != nil
+        if installations.wines.count > 1 {
+            Menu {
+                ForEach(installations.wines) { found in
+                    Button(found.name) { installations.install(into: found) }
+                }
+            } label: {
+                Label("Install", systemImage: "square.and.arrow.down")
+            }
+            .glassButton(prominent: !installations.anyInstalled)
+            .fixedSize()
+            .disabled(disabled)
+            .help("Choose a Wine: WineMetalGL goes into its default prefix, ~/.wine.")
+        } else {
+            Button {
+                if let found = installations.wines.first {
+                    installations.install(into: found)
+                } else {
+                    installations.installCustom()
+                }
+            } label: {
+                Label("Install", systemImage: "square.and.arrow.down")
+            }
+            .glassButton(prominent: !installations.anyInstalled)
+            .disabled(disabled)
+            .help(installations.wines.first.map { "Into \($0.name)'s default prefix, ~/.wine." } ?? "No Wine found: choose one.")
         }
     }
 
