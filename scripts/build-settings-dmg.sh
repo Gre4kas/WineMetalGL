@@ -17,11 +17,18 @@ test -d "$APP/Contents" || { echo "not an app: $APP" >&2; exit 1; }
 codesign --verify --strict --deep "$APP" || { echo "sign the app first: $APP" >&2; exit 1; }
 
 stage=$(mktemp -d "${TMPDIR:-/tmp}/wmgl-dmg.XXXXXX")
-trap 'rm -rf "$stage"' EXIT
+trap 'rm -rf "$stage" "$stage.rw.dmg"' EXIT
 ditto "$APP" "$stage/WineMetalGL Settings.app"
 ln -s /Applications "$stage/Applications"
 rm -f "$DMG"
-hdiutil create -quiet -volname "WineMetalGL Settings" -srcfolder "$stage" -fs HFS+ -format UDZO -ov "$DMG"
+# A read/write image first, then compressed: hdiutil create making UDZO
+# straight from the folder (macOS 26's) can write a chunk table it then
+# refuses ("chunk 1 data starts beyond end of data fork": corrupt image);
+# hdiutil convert writes the table anew. Verified before it is signed.
+hdiutil create -quiet -volname "WineMetalGL Settings" -srcfolder "$stage" -fs HFS+ -format UDRW -ov "$stage.rw.dmg"
+hdiutil convert -quiet "$stage.rw.dmg" -format UDZO -o "$DMG"
+rm -f "$stage.rw.dmg"
+hdiutil verify -quiet "$DMG" || { echo "the disk image does not verify: $DMG" >&2; exit 1; }
 if test -n "${WINEMETALGL_SIGN_IDENTITY:-}"; then
     codesign --force --timestamp --sign "$WINEMETALGL_SIGN_IDENTITY" "$DMG"
 else

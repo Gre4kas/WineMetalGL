@@ -16,8 +16,9 @@ WineMetalGL's main method of installation is with the DMG. It will help you inst
 
 | Feature | Use-Case | 
 |---|---|
-| Install Normally | Install WineMetalGL Into a Non-Crossover Wine & Enable / Disable It |
-| Install Crossover | Install WineMetalGL Into a Crossover Bottle & Enable / Disable It |
+| Install | Install WineMetalGL Into a Wine Found on Your Mac (Its Default Prefix) & Enable / Disable It |
+| Custom Install | Choose Any Wine & Prefix in Finder to Install WineMetalGL Into |
+| Install Crossover | Install WineMetalGL Into a Crossover Bottle Found Anywhere (Any Copy of CrossOver, or None) & Enable / Disable It |
 | Game Fixes | Enable Quick Fixes For Tested Games or Disable Them | 
 | x87 Acceleration | Older Titles Use x87 Calls: Enable This Option For Older 32-Bit Games |
 | Runtime Logs | Enable Logs Before Launching to See What Fails and Submit an Issue Report | 

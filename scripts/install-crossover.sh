@@ -5,9 +5,12 @@
 #   scripts/install-crossover.sh BOTTLE [CROSSOVER]
 #
 # BOTTLE is a bottle's name (in ~/Library/Application Support/CrossOver/Bottles)
-# or its directory. CROSSOVER is CrossOver.app, or its
+# or its directory, wherever it is. CROSSOVER is CrossOver.app, or its
 # Contents/SharedSupport/CrossOver (default /Applications/CrossOver.app, then
-# ~/Applications/CrossOver.app). Run it once per bottle.
+# ~/Applications/CrossOver.app, then any copy Spotlight knows). Run it once per
+# bottle. Without CrossOver, the bottle still gets everything that goes into
+# it (and WINEMETALGL_HOME the module): the override is then written into its
+# user.reg, and CrossOver, once there, finds the module through DllPath.
 #
 # CrossOver.app is signed and macOS does not let it be changed, so nothing goes
 # into it:
@@ -88,17 +91,21 @@ else
 fi
 
 if test -z "$CX"; then
-    for app in /Applications/CrossOver.app "$HOME/Applications/CrossOver.app"; do
-        test -d "$app" && { CX=$app; break; }
-    done
-    test -n "$CX" || { echo "CrossOver.app not found; pass its path: $usage" >&2; exit 1; }
+    CX=$({ printf '%s\n' /Applications/CrossOver.app "$HOME/Applications/CrossOver.app"
+           mdfind "kMDItemCFBundleIdentifier == 'com.codeweavers.CrossOver'" 2>/dev/null; } |
+         while IFS= read -r app; do
+             test -x "$app/Contents/SharedSupport/CrossOver/bin/wine" && { printf '%s\n' "$app"; break; }
+         done) || :
+    test -n "$CX" || echo "CrossOver not found: installing into the bottle only (pass CrossOver's path to use it: $usage)"
 fi
-CX=${CX%/}
-test -d "$CX/Contents/SharedSupport/CrossOver" && CX="$CX/Contents/SharedSupport/CrossOver"
-test -x "$CX/bin/wine" && test -x "$CX/bin/cxbottle" || { echo "not CrossOver: $CX" >&2; exit 1; }
+if test -n "$CX"; then
+    CX=${CX%/}
+    test -d "$CX/Contents/SharedSupport/CrossOver" && CX="$CX/Contents/SharedSupport/CrossOver"
+    test -x "$CX/bin/wine" && test -x "$CX/bin/cxbottle" || { echo "not CrossOver: $CX" >&2; exit 1; }
+fi
 # An arm64 CrossOver (27) may carry the x86_64 Wine as well (issue #26); only
 # one without it cannot run the module.
-if test -e "$CX/lib/wine/aarch64-unix/ntdll.so"; then
+if test -n "$CX" && test -e "$CX/lib/wine/aarch64-unix/ntdll.so"; then
     if ! test -e "$CX/lib/wine/x86_64-unix/ntdll.so"; then
         echo "This CrossOver runs an arm64 Wine only; the module is built for x86_64 Wine (issue #13)." >&2
         exit 1
@@ -187,11 +194,26 @@ else
     cp "$MODULE/i386-windows/opengl32.dll" "$MODULE/i386-windows/winemetalgl.dll" "$sys/syswow64/"
 fi
 # CrossOver's wine script picks the bottle with --bottle and ignores WINEPREFIX.
-if ! out=$("$CX/bin/wine" --bottle "$BOTTLE" --wait-children reg add \
-    'HKCU\Software\Wine\DllOverrides' /v opengl32 /d native /f 2>&1); then
-    echo "$out" >&2
-    echo "could not set opengl32=native in $BOTTLE" >&2
-    exit 1
+# Without CrossOver, the override goes straight into the bottle's user.reg
+# (Wine reads it when the bottle next starts).
+if test -n "$CX"; then
+    if ! out=$("$CX/bin/wine" --bottle "$BOTTLE" --wait-children reg add \
+        'HKCU\Software\Wine\DllOverrides' /v opengl32 /d native /f 2>&1); then
+        echo "$out" >&2
+        echo "could not set opengl32=native in $BOTTLE" >&2
+        exit 1
+    fi
+else
+    reg=$BOTTLE/user.reg
+    test -f "$reg" || printf 'WINE REGISTRY Version 2\n;; All keys relative to \\\\User\\\\S-1-5-21-0-0-0-1000\n' > "$reg"
+    awk -v ts="$(date +%s)" '
+        function emit() { if (!done) { print "\"opengl32\"=\"native\""; done = 1 } }
+        /^\[/ { if (overrides) emit(); overrides = index(tolower($0), "[software\\\\wine\\\\dlloverrides]") == 1 }
+        overrides && tolower($0) ~ /^"opengl32"=/ { emit(); next }
+        { print }
+        END { if (overrides) emit(); if (!done) { print ""; print "[Software\\\\Wine\\\\DllOverrides] " ts; emit() } }
+    ' "$reg" > "$reg.winemetalgl"
+    mv "$reg.winemetalgl" "$reg"
 fi
 echo "Installed opengl32.dll (opengl32=native) into $BOTTLE"
 
@@ -203,7 +225,11 @@ echo "Installed opengl32.dll (opengl32=native) into $BOTTLE"
 # module goes into CrossOver's lib/wine instead, the one place such a build
 # looks. WINEMETALGL_INTO_APP=1 does that without asking Wine.
 into_app=${WINEMETALGL_INTO_APP:-}
-if test -z "$into_app"; then
+if test -z "$CX"; then
+    test "$into_app" = 1 && { echo "WINEMETALGL_INTO_APP=1 needs CrossOver: $usage" >&2; exit 1; }
+    echo "With no CrossOver to ask, CrossOver finds the module through the bottle's DllPath; if a game"
+    echo "cannot load winemetalgl, run this again with CrossOver's path (and WINEMETALGL_INTO_APP=1)."
+elif test -z "$into_app"; then
     # shellcheck disable=SC1003 # tr gets a backslash
     dirs=$("$CX/bin/wine" --bottle "$BOTTLE" --wait-children cmd /c set WINEDLLDIR 2>/dev/null |
         tr -d '\r' | tr '\\' '/' | grep -i '^WINEDLLDIR[0-9]*=') || dirs=

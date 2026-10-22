@@ -140,10 +140,23 @@ Applications.
 - **WineMetalGL**: the CrossOver bottles, MetalSharp's prefixes, `~/.wine` and
   the prefixes installed into from the app, each with a switch that turns
   WineMetalGL on or off there (the `opengl32` override, `native` or
-  `builtin`). Where it is installed nowhere yet, **Install into CrossOver**
-  (choose a bottle) and **Install Normally** (choose a Wine, then a prefix)
-  run `install-crossover.sh` and `install-wine-module.sh` with the release the
-  app carries, or, when it carries none, the latest release they download.
+  `builtin`). Three buttons always show:
+  - **CrossOver** (Install into CrossOver): a bottle found anywhere on the Mac
+    (CrossOver's Bottles folder, the bottles installed into from the app, any
+    other `cxbottle.conf` Spotlight finds), grouped by copy of CrossOver when
+    there are several; or **Choose Bottle…**, or **Choose CrossOver and
+    Bottle…** (a CrossOver app anywhere, a copy or one outside Applications),
+    in Finder. Without CrossOver.app, the bottle still gets WineMetalGL (the
+    override is written into its `user.reg`).
+  - **Install**: one of the Wines found on the Mac, in its default prefix,
+    `~/.wine` (a menu when there are several): apps in `/Applications` and
+    `~/Applications`, Homebrew's and MacPorts', Whisky's and MetalSharp's,
+    and any other `bin/wine` Spotlight finds.
+  - **Custom Install**: any Wine, then any prefix, chosen in Finder.
+
+  They run `install-crossover.sh` and `install-wine-module.sh` with the
+  release the app carries, or, when it carries none, the latest release they
+  download.
 - **UpscaleGL**: Off, Quality, Balanced or Performance (`WINEMETALGL_UPSCALE`).
 - **x87 Acceleration**: on (`WINEMETALGL_X87=1`) or off (`=0`). Until it
   is switched, it is on only for the games known to need it (Quake 4, Doom 3
