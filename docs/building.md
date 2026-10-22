@@ -184,10 +184,10 @@ Applications.
   (`scripts/build-arm64-glue.sh`, in the staged arm64 core's `glue`).
   - Minecraft: the core and the glue go into
     `~/.local/share/winemetalgl/minecraft`, beside LWJGL's own SDL3 and GLFW
-    (from its natives jars), and each Prism Launcher instance and Minecraft
-    Launcher installation gets the JVM arguments that load them (the SDL3 glue
-    for LWJGL 3.4, Minecraft 26.x; the GLFW glue for 3.3, 1.21.x), after its
-    own. What they had is recorded in
+    (from its natives jars), and each Prism Launcher instance, Minecraft
+    Launcher installation and Modrinth App instance gets the JVM arguments that
+    load them (the SDL3 glue for LWJGL 3.4, Minecraft 26.x; the GLFW glue for
+    3.3, 1.21.x), after its own. What they had is recorded in
     `~/Library/Application Support/WineMetalGL/NativeFixes.json`, and turning
     the fix off puts it back. A launcher that is running waits until it quits.
   - OpenMW: an `OpenMW.app` in `/Applications` or `~/Applications` gets what

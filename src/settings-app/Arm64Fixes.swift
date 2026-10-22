@@ -5,12 +5,14 @@
 //
 //   Minecraft: the core and the glue go into ~/.local/share/winemetalgl/
 //     minecraft, beside the SDL3 and GLFW of the player's LWJGL (from its
-//     natives jars), and each Prism Launcher instance and official launcher
-//     installation gets the JVM arguments that load them: the SDL3 glue for
-//     LWJGL 3.4 and later (Minecraft 26.x), the GLFW glue before it. Their
-//     earlier arguments are kept, and recorded (NativeFixes.json) so that
-//     turning the fix off restores them. A launcher that is running would
-//     write its settings over the change: the fix waits until it quits.
+//     natives jars), and each Prism Launcher instance, official launcher
+//     installation and Modrinth App instance gets the JVM arguments that load
+//     them: the SDL3 glue for LWJGL 3.4 and later (Minecraft 26.x), the GLFW
+//     glue before it. Their earlier arguments are kept, and recorded
+//     (NativeFixes.json) so that turning the fix off restores them. A
+//     launcher that is running would write its settings over the change: the
+//     fix waits until it quits. (Modrinth's Java, Zulu, loads the glue as
+//     Mojang's does: it may load libraries signed ad hoc.)
 //   OpenMW: OpenMW.app (in /Applications or ~/Applications) gets the glue as
 //     its libSDL2-2.0.0.dylib (the real one renamed libSDL2-real.dylib), the
 //     GL stubs and the core, and openmw and OpenSceneGraph's libraries load
@@ -22,6 +24,7 @@
 // WineMetalGL/Backups, as the Wine fixes' are (GamePatches.swift).
 
 import Foundation
+import SQLite3
 import SwiftUI
 
 @MainActor
@@ -116,6 +119,7 @@ struct NativePatcher: Sendable {
         var results: [GameFix] = []
         let prismRunning = Self.running("Prism Launcher.app/Contents/MacOS/prismlauncher")
         let launcherRunning = Self.running("Minecraft.app/Contents/MacOS/launcher")
+        let modrinthRunning = Self.running("Modrinth App.app/Contents/MacOS/Modrinth App")
 
         guard on else {
             // Off: the launchers get their own arguments back.
@@ -153,12 +157,29 @@ struct NativePatcher: Sendable {
                     }
                 }
             }
+            if !record.modrinth.isEmpty {
+                if modrinthRunning {
+                    results.append(GameFix(game: Self.minecraftTitle, place: "Modrinth App", state: .waiting,
+                                           detail: "Its instances' own JVM arguments come back once Modrinth App quits."))
+                } else {
+                    do {
+                        try restoreModrinth(record.modrinth)
+                        record.modrinth = [:]
+                        results.append(GameFix(game: Self.minecraftTitle, place: "Modrinth App", state: .notApplicable,
+                                               detail: "Removed: its instances' own JVM arguments are back."))
+                    } catch {
+                        results.append(GameFix(game: Self.minecraftTitle, place: "Modrinth App", state: .failed,
+                                               detail: error.localizedDescription))
+                    }
+                }
+            }
             return results
         }
 
         let instances = prismInstances()
         let profiles = launcherProfiles()
-        guard !instances.isEmpty || !profiles.isEmpty else { return [] }
+        let modrinth = modrinthInstances()
+        guard !instances.isEmpty || !profiles.isEmpty || !modrinth.isEmpty else { return [] }
         guard !minecraftLibraries.path.contains(" ") else {
             return [GameFix(game: Self.minecraftTitle, place: "Java", state: .failed,
                             detail: "\(minecraftLibraries.path) has a space, which JVM arguments cannot hold.")]
@@ -260,14 +281,52 @@ struct NativePatcher: Sendable {
                 }
             }
         }
+
+        var pending: [(ModrinthInstance, Glue)] = []
+        for instance in modrinth {
+            let name = "Modrinth · " + instance.name
+            guard let glue = instance.glue else {
+                results.append(GameFix(game: Self.minecraftTitle, place: name, state: .notApplicable,
+                                       detail: "Its version is not downloaded, or its LWJGL is not one the glue is for."))
+                continue
+            }
+            guard available.contains(glue.module) else {
+                results.append(GameFix(game: Self.minecraftTitle, place: name, state: .waiting,
+                                       detail: "LWJGL's \(glue == .sdl3 ? "SDL3" : "GLFW") is not downloaded yet: play it once."))
+                continue
+            }
+            if Set(arguments(glue)).isSubset(of: Set(instance.arguments ?? [])) {
+                results.append(GameFix(game: Self.minecraftTitle, place: name, state: .inPlace, detail: "In place."))
+            } else if modrinthRunning {
+                results.append(GameFix(game: Self.minecraftTitle, place: name, state: .waiting,
+                                       detail: "The JVM arguments go in once Modrinth App quits."))
+            } else {
+                pending.append((instance, glue))
+            }
+        }
+        if !pending.isEmpty {
+            do {
+                try backUpModrinth()
+                let saved = try setModrinth(pending)
+                for (id, value) in saved where record.modrinth[id] == nil { record.modrinth[id] = value }
+                for (instance, glue) in pending {
+                    results.append(GameFix(game: Self.minecraftTitle, place: "Modrinth · " + instance.name, state: .applied,
+                                           detail: "Added the JVM arguments for the \(glue == .sdl3 ? "SDL3" : "GLFW") glue."))
+                }
+            } catch {
+                results.append(GameFix(game: Self.minecraftTitle, place: "Modrinth App", state: .failed,
+                                       detail: error.localizedDescription))
+            }
+        }
         return results
     }
 
-    /// The newest natives jar of an LWJGL module, from either launcher.
+    /// The newest natives jar of an LWJGL module, from any of the launchers.
     private func nativesJar(_ glue: Glue) -> URL? {
         let fm = FileManager.default
         var jars: [URL] = []
-        for libraries in [minecraftHome, prismHome].map({ $0.appendingPathComponent("libraries/org/lwjgl") }) {
+        for libraries in [minecraftHome, prismHome, modrinthHome.appendingPathComponent("meta")]
+            .map({ $0.appendingPathComponent("libraries/org/lwjgl") }) {
             guard let walker = fm.enumerator(at: libraries, includingPropertiesForKeys: nil) else { continue }
             for case let url as URL in walker {
                 let name = url.lastPathComponent
@@ -469,6 +528,127 @@ struct NativePatcher: Sendable {
             .write(to: file, options: .atomic)
     }
 
+    // Modrinth App
+
+    var modrinthHome: URL { home.appendingPathComponent("Library/Application Support/ModrinthApp", isDirectory: true) }
+    var modrinthDatabase: URL { modrinthHome.appendingPathComponent("app.db") }
+
+    struct ModrinthInstance {
+        let id: String
+        let name: String
+        let glue: Glue?
+        let overrides: [String: Any]  // its launch overrides (instance_launch_overrides), as JSON
+        var arguments: [String]? { overrides["extra_launch_args"] as? [String] }
+    }
+
+    /// Modrinth App's instances (its app.db), each with the glue for its
+    /// game version's LWJGL, from Modrinth's version metadata.
+    private func modrinthInstances() -> [ModrinthInstance] {
+        guard let db = SQLiteFile(modrinthDatabase, readOnly: true),
+              let rows = db.rows("""
+                  SELECT i.id, i.name, c.game_version, c.loader, c.loader_version, o.overrides
+                  FROM instances i
+                  LEFT JOIN instance_content_sets c ON c.id = i.applied_content_set_id
+                  LEFT JOIN instance_launch_overrides o ON o.instance_id = i.id
+                  """) else { return [] }
+        return rows.compactMap { row in
+            guard case let .text(id) = row[0], case let .text(name) = row[1] else { return nil }
+            var glue: Glue?
+            if case let .text(game) = row[2] {
+                let loader = row[3].string ?? "vanilla", loaderVersion = row[4].string
+                glue = modrinthGlue(loader == "vanilla" || loaderVersion == nil ? game : "\(game)-\(loaderVersion!)", game: game)
+            }
+            return ModrinthInstance(id: id, name: name, glue: glue, overrides: row[5].json as? [String: Any] ?? [:])
+        }.sorted { $0.name < $1.name }
+    }
+
+    /// The glue for a version Modrinth has downloaded, by its LWJGL libraries
+    /// (meta/versions/<id>/<id>.json, a loader's merged with the game's).
+    private func modrinthGlue(_ id: String, game: String) -> Glue? {
+        let versions = modrinthHome.appendingPathComponent("meta/versions")
+        let ids = [id] + ((try? FileManager.default.contentsOfDirectory(atPath: versions.path)) ?? []).filter { $0.hasPrefix(game) && $0 != id }
+        for id in ids {
+            guard let data = try? Data(contentsOf: versions.appendingPathComponent("\(id)/\(id).json")),
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
+            let names = (json["libraries"] as? [[String: Any]] ?? []).compactMap { $0["name"] as? String }
+            if names.contains(where: { $0.hasPrefix("org.lwjgl:lwjgl-sdl:") }) { return .sdl3 }
+            if names.contains(where: { $0.hasPrefix("org.lwjgl:lwjgl-glfw:3") }) { return .glfw }
+        }
+        return nil
+    }
+
+    /// Modrinth's own JVM arguments (settings), which an instance without its own uses.
+    private func modrinthGlobalArguments() -> [String] {
+        guard let db = SQLiteFile(modrinthDatabase, readOnly: true),
+              let rows = db.rows("SELECT extra_launch_args FROM settings"), let row = rows.first else { return [] }
+        return row[0].json as? [String] ?? []
+    }
+
+    /// Sets the instances' JVM arguments: theirs (or Modrinth's global ones)
+    /// and the glue's. Returns the arguments they had (JSON; "" for none).
+    /// Written as JSON text: Modrinth reads the column through json(),
+    /// which takes text as well as JSONB.
+    private func setModrinth(_ pending: [(ModrinthInstance, Glue)]) throws -> [String: String] {
+        guard let db = SQLiteFile(modrinthDatabase, readOnly: false) else {
+            throw CocoaError(.fileWriteUnknown, userInfo: [NSFilePathErrorKey: modrinthDatabase.path])
+        }
+        let global = modrinthGlobalArguments()
+        var saved: [String: String] = [:]
+        for (instance, glue) in pending {
+            saved[instance.id] = instance.arguments.flatMap { Self.jsonText($0) } ?? ""
+            var overrides = instance.overrides
+            let kept = (instance.arguments ?? global).filter { !isOurs(Substring($0)) }
+            overrides["extra_launch_args"] = kept + arguments(glue)
+            try writeModrinth(db, instance.id, overrides)
+        }
+        return saved
+    }
+
+    private func restoreModrinth(_ saved: [String: String]) throws {
+        guard let db = SQLiteFile(modrinthDatabase, readOnly: false) else { return }
+        let global = modrinthGlobalArguments()
+        for instance in modrinthInstances() {
+            guard let before = saved[instance.id] else { continue }
+            var overrides = instance.overrides
+            let withoutOurs = (instance.arguments ?? []).filter { !isOurs(Substring($0)) }
+            // Back to none (Modrinth's own) when that is all that is left.
+            if before.isEmpty && withoutOurs == global {
+                overrides["extra_launch_args"] = nil
+            } else {
+                overrides["extra_launch_args"] = withoutOurs
+            }
+            try writeModrinth(db, instance.id, overrides)
+        }
+    }
+
+    private func writeModrinth(_ db: SQLiteFile, _ id: String, _ overrides: [String: Any]) throws {
+        guard let text = Self.jsonText(overrides),
+              db.run("""
+                  INSERT INTO instance_launch_overrides (instance_id, overrides) VALUES (?1, ?2)
+                  ON CONFLICT (instance_id) DO UPDATE SET overrides = excluded.overrides
+                  """, [id, text]) else {
+            throw CocoaError(.fileWriteUnknown, userInfo: [NSFilePathErrorKey: modrinthDatabase.path,
+                                                          NSLocalizedDescriptionKey: "Could not write Modrinth App's settings."])
+        }
+    }
+
+    /// Modrinth's database copied to Backups, as backUp does a file, with
+    /// what its write-ahead log holds (VACUUM INTO).
+    private func backUpModrinth() throws {
+        guard let db = SQLiteFile(modrinthDatabase, readOnly: true) else { return }
+        let copy = backups.appendingPathComponent(String(modrinthDatabase.resolvingSymlinksInPath().path.dropFirst()))
+        guard !FileManager.default.fileExists(atPath: copy.path) else { return }
+        try FileManager.default.createDirectory(at: copy.deletingLastPathComponent(), withIntermediateDirectories: true)
+        guard db.run("VACUUM INTO ?1", [copy.path]) else {
+            throw CocoaError(.fileWriteUnknown, userInfo: [NSFilePathErrorKey: copy.path])
+        }
+    }
+
+    static func jsonText(_ value: Any) -> String? {
+        (try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys, .withoutEscapingSlashes]))
+            .map { String(decoding: $0, as: UTF8.self) }
+    }
+
     // MARK: OpenMW
 
     static let openGL = "/System/Library/Frameworks/OpenGL.framework/Versions/A/OpenGL"
@@ -595,11 +775,13 @@ struct NativePatcher: Sendable {
 
 /// What the Minecraft fix changed in the launchers, to restore it:
 /// NativeFixes.json, {"prism": {cfg path: {key: value before}},
-/// "launcher": {profile id: javaArgs before, "" for none}}.
+/// "launcher": {profile id: javaArgs before, "" for none},
+/// "modrinth": {instance id: its JVM arguments before (JSON), "" for none}}.
 struct Records {
     let file: URL
     var prism: [String: [String: String]] = [:]
     var launcher: [String: String] = [:]
+    var modrinth: [String: String] = [:]
 
     init(file: URL) {
         self.file = file
@@ -607,12 +789,13 @@ struct Records {
            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             prism = json["prism"] as? [String: [String: String]] ?? [:]
             launcher = json["launcher"] as? [String: String] ?? [:]
+            modrinth = json["modrinth"] as? [String: String] ?? [:]
         }
     }
 
     func save() {
         try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
-        if let data = try? JSONSerialization.data(withJSONObject: ["prism": prism, "launcher": launcher],
+        if let data = try? JSONSerialization.data(withJSONObject: ["prism": prism, "launcher": launcher, "modrinth": modrinth],
                                                   options: [.prettyPrinted, .sortedKeys]) {
             try? data.write(to: file, options: .atomic)
         }
@@ -735,6 +918,116 @@ enum MachO {
                 }
                 at += size
             }
+        }
+    }
+}
+
+/// A SQLite database (Modrinth App's app.db), through the system's SQLite.
+final class SQLiteFile {
+    enum Value {
+        case null, integer(Int64), real(Double), text(String), blob([UInt8])
+
+        var string: String? { if case let .text(text) = self { return text } else { return nil } }
+        /// A JSON column: text, or SQLite's binary JSON (JSONB), read here
+        /// so that a SQLite older than JSONB (3.45) can read it too.
+        var json: Any? {
+            switch self {
+            case let .text(text): return try? JSONSerialization.jsonObject(with: Data(text.utf8), options: [.fragmentsAllowed])
+            case let .blob(bytes): var at = 0; return JSONB.value(bytes, &at)
+            default: return nil
+            }
+        }
+    }
+
+    private var db: OpaquePointer?
+
+    init?(_ file: URL, readOnly: Bool) {
+        guard FileManager.default.fileExists(atPath: file.path),
+              sqlite3_open_v2(file.path, &db, readOnly ? SQLITE_OPEN_READONLY : SQLITE_OPEN_READWRITE, nil) == SQLITE_OK else {
+            sqlite3_close(db)
+            return nil
+        }
+        sqlite3_busy_timeout(db, 3000)
+    }
+
+    deinit { sqlite3_close(db) }
+
+    private func prepare(_ sql: String, _ binds: [String]) -> OpaquePointer? {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { return nil }
+        let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        for (i, value) in binds.enumerated() { sqlite3_bind_text(statement, Int32(i + 1), value, -1, transient) }
+        return statement
+    }
+
+    func rows(_ sql: String, _ binds: [String] = []) -> [[Value]]? {
+        guard let statement = prepare(sql, binds) else { return nil }
+        defer { sqlite3_finalize(statement) }
+        var rows: [[Value]] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            rows.append((0..<sqlite3_column_count(statement)).map { column in
+                switch sqlite3_column_type(statement, column) {
+                case SQLITE_INTEGER: return .integer(sqlite3_column_int64(statement, column))
+                case SQLITE_FLOAT: return .real(sqlite3_column_double(statement, column))
+                case SQLITE_TEXT: return .text(String(cString: sqlite3_column_text(statement, column)))
+                case SQLITE_BLOB:
+                    let count = Int(sqlite3_column_bytes(statement, column))
+                    guard count > 0, let bytes = sqlite3_column_blob(statement, column) else { return .blob([]) }
+                    return .blob(Array(UnsafeRawBufferPointer(start: bytes, count: count)))
+                default: return .null
+                }
+            })
+        }
+        return rows
+    }
+
+    func run(_ sql: String, _ binds: [String] = []) -> Bool {
+        guard let statement = prepare(sql, binds) else { return false }
+        defer { sqlite3_finalize(statement) }
+        return sqlite3_step(statement) == SQLITE_DONE
+    }
+}
+
+/// SQLite's JSONB (sqlite.org/jsonb.html): each element a header (its type
+/// in the low four bits, its payload's size in the high four, or in the 1,
+/// 2, 4 or 8 bytes after) and its payload.
+enum JSONB {
+    static func value(_ bytes: [UInt8], _ at: inout Int) -> Any? {
+        guard at < bytes.count else { return nil }
+        let type = bytes[at] & 0x0f
+        var size = Int(bytes[at] >> 4)
+        at += 1
+        if size >= 12 {
+            let width = [1, 2, 4, 8][size - 12]
+            guard at + width <= bytes.count else { return nil }
+            size = bytes[at..<at + width].reduce(0) { $0 << 8 | Int($1) }
+            at += width
+        }
+        guard at + size <= bytes.count else { return nil }
+        let payload = Array(bytes[at..<at + size])
+        at += size
+        let text = String(decoding: payload, as: UTF8.self)
+        switch type {
+        case 0: return NSNull()
+        case 1: return true
+        case 2: return false
+        case 3, 4: return Int(text) ?? Double(text)
+        case 5, 6: return Double(text)
+        case 7, 10: return text
+        case 8, 9:  // with JSON escapes
+            return (try? JSONSerialization.jsonObject(with: Data("\"\(text)\"".utf8), options: [.fragmentsAllowed])) ?? text
+        case 11:
+            var items: [Any] = [], inner = 0
+            while inner < payload.count { guard let item = value(payload, &inner) else { return nil }; items.append(item) }
+            return items
+        case 12:
+            var object: [String: Any] = [:], inner = 0
+            while inner < payload.count {
+                guard let key = value(payload, &inner) as? String, let item = value(payload, &inner) else { return nil }
+                object[key] = item
+            }
+            return object
+        default: return nil
         }
     }
 }

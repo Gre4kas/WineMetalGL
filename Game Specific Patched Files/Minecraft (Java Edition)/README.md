@@ -29,8 +29,8 @@ Java runtime are not modified:
 
 WineMetalGL Settings installs it (Game Fixes → Arm64 Fixes → Minecraft): the
 core and the prebuilt glue, and the JVM arguments in every Prism Launcher
-instance and Minecraft Launcher installation, which it removes again when
-the fix is turned off. By hand:
+instance, Minecraft Launcher installation and Modrinth App instance, which
+it removes again when the fix is turned off. By hand:
 
 ```sh
 brew install sdl3 glfw                              # headers only
@@ -38,8 +38,8 @@ scripts/stage-arm64-core.sh /tmp/wmgl-arm64        # builds build/arm64-release
 "Game Specific Patched Files/Minecraft (Java Edition)/install.sh"
 ```
 
-`install.sh` takes LWJGL's SDL3 and GLFW from the official launcher's or
-Prism Launcher's libraries (each glue is built when its library and headers
+`install.sh` takes LWJGL's SDL3 and GLFW from the official launcher's,
+Prism Launcher's or Modrinth App's libraries (each glue is built when its library and headers
 are there), installs into `~/.local/share/winemetalgl/minecraft` (or the
 folder given as its first argument), and prints the JVM arguments for each
 Minecraft generation. The default path has no spaces, so the arguments need no quoting.
@@ -48,7 +48,8 @@ Run it again after rebuilding the core.
 The Java runtime must load ad-hoc-signed libraries. Mojang's runtimes have
 the `disable-library-validation` entitlement and work: Java 25
 (`java-runtime-epsilon`, 26.x) and Java 21 (`java-runtime-delta`, 1.21.x),
-which Prism Launcher downloads too.
+which Prism Launcher downloads too. So does Azul Zulu, the Java Modrinth App
+downloads.
 
 ### Prism Launcher
 
@@ -60,6 +61,15 @@ the same instance on Apple's OpenGL for comparison.
 
 In **Installations → (installation) → More options**, set **Java executable**
 and add the two arguments to **JVM arguments**.
+
+### Modrinth App
+
+In the instance's **Settings → Java and memory**, turn on **Custom Java
+arguments** and add the two arguments. Modrinth's own Java (Zulu) loads the
+glue, so the Java installation can stay as it is. WineMetalGL Settings
+writes them into Modrinth's `app.db` (`instance_launch_overrides`) while
+Modrinth App is closed. Tested with Modrinth App 0.22.0, Minecraft 26.3,
+Fabric, Sodium 0.9.3 and Iris 1.11.7: `4.6.0 WineMetalGL Core Profile`.
 
 ## Diagnostics
 
