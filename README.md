@@ -25,7 +25,7 @@ WineMetalGL's main method of installation is with the DMG. It will help you inst
 
 <div align="center">
 
-<img width="582" height="673" alt="WineMetalGL-Settings-app" src="https://github.com/user-attachments/assets/c4de5354-dfd4-426d-bd2d-6822a4bec8ec" />
+<img width="582" height="911" alt="WineMetalGL Settings" src="https://github.com/user-attachments/assets/9c163b25-40cf-436e-85a8-fda88008bc23" />
 
 </div>
 
