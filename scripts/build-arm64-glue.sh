@@ -39,13 +39,15 @@ python3 "$fixes/The Elder Scrolls III Morrowind (OpenMW)/gen_stubs.py" "$generat
 standin() {
     cp "$1" "$work/$2"
     chmod u+w "$work/$2"
-    install_name_tool -id "$3" "$work/$2" 2>/dev/null
+    xcrun install_name_tool -id "$3" "$work/$2" 2>/dev/null
 }
 standin "$sdl3/lib/libSDL3.dylib" libSDL3-real.dylib @loader_path/libSDL3-real.dylib
 standin "$glfw/lib/libglfw.dylib" libglfw-real.dylib @loader_path/libglfw-real.dylib
 standin "$sdl2/lib/libSDL2-2.0.0.dylib" libSDL2-real.dylib @executable_path/../Frameworks/libSDL2-real.dylib
 
-cc() { clang -dynamiclib -arch arm64 -mmacosx-version-min=15.0 -O2 "$@"; }
+# Apple's clang (xcrun): another first in PATH (the release's llvm-mingw, for
+# the Wine module) has no macOS SDK ("ld: library 'System' not found").
+cc() { xcrun clang -dynamiclib -arch arm64 -mmacosx-version-min=15.0 -O2 "$@"; }
 glue() { cc -fobjc-arc -Wall -I"$root/include" -I"$work" -framework Cocoa -framework QuartzCore -framework Metal "$@"; }
 
 mc="$out/minecraft"
