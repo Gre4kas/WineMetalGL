@@ -92,6 +92,14 @@ else
     iconutil -c icns "$set" -o "$APP/Contents/Resources/WineMetalGL.icns"
 fi
 
+# The app shows as WineMetalGL (Dock, menu bar, and, through the localized
+# display name, Finder, Launchpad and Spotlight). Its file stays "WineMetalGL
+# Settings.app": installed copies update by that name in the disk image
+# (Updater.swift). Finder uses the localized name only while Info.plist's
+# CFBundleDisplayName is the file's name, so that one stays as it was.
+mkdir -p "$APP/Contents/Resources/en.lproj"
+printf '"CFBundleDisplayName" = "WineMetalGL";\n"CFBundleName" = "WineMetalGL";\n' > "$APP/Contents/Resources/en.lproj/InfoPlist.strings"
+
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -104,8 +112,9 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleIconName</key><string>WineMetalGL</string>
     <key>CFBundleIdentifier</key><string>com.metalsharp.winemetalgl.settings</string>
     <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
-    <key>CFBundleName</key><string>WineMetalGL Settings</string>
+    <key>CFBundleName</key><string>WineMetalGL</string>
     <key>CFBundlePackageType</key><string>APPL</string>
+    <key>LSHasLocalizedDisplayName</key><true/>
     <key>CFBundleShortVersionString</key><string>$VERSION</string>
     <key>CFBundleVersion</key><string>$VERSION</string>
     <key>LSApplicationCategoryType</key><string>public.app-category.utilities</string>

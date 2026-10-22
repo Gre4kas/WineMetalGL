@@ -416,7 +416,7 @@ struct WineMetalGLSettingsApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
 
     var body: some Scene {
-        Window("WineMetalGL Settings", id: "settings") {
+        Window("WineMetalGL", id: "settings") {
             if #available(macOS 15.0, *) {
                 SettingsView().containerBackground(.thinMaterial, for: .window)
             } else {
