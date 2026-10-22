@@ -155,7 +155,28 @@ jobs:
           scripts/build-settings-dmg.sh "$app" "$RUNNER_TEMP/WineMetalGL-Settings.dmg"
           mnt="$RUNNER_TEMP/mnt"
           mkdir -p "$mnt"
-          hdiutil attach "$RUNNER_TEMP/WineMetalGL-Settings.dmg" -nobrowse -readonly -mountpoint "$mnt"
+          # The runner sometimes refuses a fresh image ("corrupt image") while
+          # it is still being scanned: try again, and say what is wrong with it
+          # when it stays refused.
+          for try in 1 2 3 4 5; do
+            hdiutil attach "$RUNNER_TEMP/WineMetalGL-Settings.dmg" -nobrowse -readonly -noautoopen -mountpoint "$mnt" && break
+            if test "$try" = 5; then
+              ls -l "$RUNNER_TEMP/WineMetalGL-Settings.dmg"
+              hdiutil imageinfo "$RUNNER_TEMP/WineMetalGL-Settings.dmg" || true
+              hdiutil verify "$RUNNER_TEMP/WineMetalGL-Settings.dmg" || true
+              codesign -dvvv "$RUNNER_TEMP/WineMetalGL-Settings.dmg" || true
+              exit 1
+            fi
+            sleep $((try * 5))
+          done
           test -L "$mnt/Applications"
           codesign --verify --strict --deep "$mnt/WineMetalGL Settings.app"
           hdiutil detach "$mnt"
+
+      - name: Keep the disk image when it fails
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: winemetalgl-settings-dmg
+          path: ${{ runner.temp }}/WineMetalGL-Settings.dmg
+          if-no-files-found: ignore
